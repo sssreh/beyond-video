@@ -1,3 +1,11 @@
+# Architecture
+
+**Status:** Draft
+
+**Version:** 0.1
+
+**Last updated:** 2026-07-10
+
 \# Architecture
 
 
