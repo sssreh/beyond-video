@@ -1,0 +1,16 @@
+blackvue-tools
+
+Started in 2026 by Christer R (sssreh).
+
+The project originated from a Bash script used to synchronize
+recordings from a BlackVue DR900S installed in a vehicle named
+Kirby.
+
+Its goal is to create an open, privacy-focused, cross-platform
+framework for understanding, documenting, and automating dashcams.
+
+The project is designed to be vendor-neutral at its core, with
+manufacturer-specific adapters beginning with BlackVue.
+
+We welcome everyone—from developers and reverse engineers to
+hardware testers and documentation contributors.
