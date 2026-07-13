@@ -33,7 +33,7 @@ def parse_timestamp(stem: str) -> datetime:
     return datetime.strptime(stem[:15], "%Y%m%d_%H%M%S")
 
 
-def parse_asset(line: str) -> VodEntry:
+def parse_vod_entry(line: str) -> VodEntry:
     """Parse one line from a BlackVue VOD response."""
 
     fields = parse_fields(line)
@@ -57,6 +57,6 @@ def parse_vod(text: str) -> list[Recording]:
         if not line:
             continue
 
-        entries.append(parse_asset(line))
+        entries.append(parse_vod_entry(line))
 
     raise NotImplementedError
