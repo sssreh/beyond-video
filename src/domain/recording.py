@@ -9,7 +9,6 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 from .vod_entry import VodEntry
 
@@ -18,6 +17,6 @@ from .vod_entry import VodEntry
 class Recording:
     """One logical recording consisting of one or more VOD entries."""
 
-    timestamp: datetime
+    recording: str
     entries: list[VodEntry]
     

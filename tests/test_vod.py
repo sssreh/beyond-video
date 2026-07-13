@@ -8,7 +8,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from pathlib import PurePosixPath
 
-from src.parser.vod import parse_vod_entries, parse_vod_entry
+from src.parser.vod import (
+    parse_vod,
+    parse_vod_entries,
+    parse_vod_entry,
+)
 
 
 def test_parse_vod_entry() -> None:
@@ -38,6 +42,7 @@ def test_parse_vod_entries() -> None:
     """Parse multiple VOD entries from a BlackVue VOD response."""
 
     text = (
+        "v:1.00\n"
         "n:/Record/20260711_121334_EF.mp4,s:1000000\n"
         "n:/Record/20260711_121334_ER.mp4,s:1000000"
     )
@@ -48,3 +53,25 @@ def test_parse_vod_entries() -> None:
 
     assert entries[0].recording == "20260711_121334_E"
     assert entries[1].recording == "20260711_121334_E"
+
+
+def test_parse_vod() -> None:
+    """Group VOD entries into recordings."""
+
+    text = (
+        "v:1.00\n"
+        "n:/Record/20260711_121334_EF.mp4,s:1000000\n"
+        "n:/Record/20260711_121334_ER.mp4,s:1000000\n"
+        "n:/Record/20260711_121635_NF.mp4,s:1000000"
+    )
+
+    recordings = parse_vod(text)
+
+    assert len(recordings) == 2
+
+    assert recordings[0].recording == "20260711_121334_E"
+    assert len(recordings[0].entries) == 2
+
+    assert recordings[1].recording == "20260711_121635_N"
+    assert len(recordings[1].entries) == 1
+    
