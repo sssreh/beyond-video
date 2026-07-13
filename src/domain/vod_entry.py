@@ -1,5 +1,5 @@
 """
-Recording domain model.
+VOD entry domain model.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-
-from .vod_entry import VodEntry
+from pathlib import PurePosixPath
 
 
 @dataclass(slots=True)
-class Recording:
-    """One logical recording consisting of one or more VOD entries."""
+class VodEntry:
+    """One entry from a BlackVue VOD response."""
 
     timestamp: datetime
-    entries: list[VodEntry]
+    path: PurePosixPath
+    fields: dict[str, str]
     
