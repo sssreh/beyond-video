@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePosixPath
 
 from ..domain.asset import Asset
 from ..domain.recording import Recording
@@ -37,7 +38,14 @@ def parse_asset(line: str) -> Asset:
 
     fields = parse_fields(line)
 
-    raise NotImplementedError
+    path = PurePosixPath(fields["n"])
+    timestamp = parse_timestamp(path.name)
+
+    return Asset(
+        timestamp=timestamp,
+        path=path,
+        fields=fields,
+    )
 
 
 def parse_vod(text: str) -> list[Recording]:

@@ -19,4 +19,5 @@ class Asset:
 
     timestamp: datetime
     path: PurePosixPath
-    size: int
+    fields: dict[str, str]
+    
