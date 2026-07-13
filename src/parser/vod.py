@@ -48,8 +48,8 @@ def parse_vod_entry(line: str) -> VodEntry:
     )
 
 
-def parse_vod(text: str) -> list[Recording]:
-    """Parse a BlackVue VOD response."""
+def parse_vod_entries(text: str) -> list[VodEntry]:
+    """Parse a BlackVue VOD response into VOD entries."""
 
     entries: list[VodEntry] = []
 
@@ -58,5 +58,11 @@ def parse_vod(text: str) -> list[Recording]:
             continue
 
         entries.append(parse_vod_entry(line))
+
+    return entries
+
+
+def parse_vod(text: str) -> list[Recording]:
+    """Parse a BlackVue VOD response."""
 
     raise NotImplementedError
