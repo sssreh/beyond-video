@@ -20,4 +20,12 @@ class VodEntry:
     timestamp: datetime
     path: PurePosixPath
     fields: dict[str, str]
+
+    @property
+    def recording(self) -> str:
+        """Return the recording identifier."""
+
+        stem = self.path.stem
+
+        return stem[:-1]
     
