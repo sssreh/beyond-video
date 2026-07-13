@@ -8,13 +8,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from pathlib import PurePosixPath
 
-from src.parser.vod import parse_asset
+from src.parser.vod import parse_vod_entry
 
 
-def test_parse_asset() -> None:
+def test_parse_vod_entry() -> None:
     """Parse one VOD entry from a BlackVue VOD response."""
 
-    entry = parse_asset(
+    entry = parse_vod_entry(
         "n:/Record/20260711_121334_ER.mp4,s:1000000"
     )
 
