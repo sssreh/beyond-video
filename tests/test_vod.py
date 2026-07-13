@@ -12,21 +12,21 @@ from src.parser.vod import parse_asset
 
 
 def test_parse_asset() -> None:
-    """Parse one asset from a BlackVue VOD response."""
+    """Parse one VOD entry from a BlackVue VOD response."""
 
-    asset = parse_asset(
+    entry = parse_asset(
         "n:/Record/20260711_121334_ER.mp4,s:1000000"
     )
 
-    assert asset.path == PurePosixPath(
+    assert entry.path == PurePosixPath(
         "/Record/20260711_121334_ER.mp4"
     )
 
-    assert asset.timestamp.strftime(
+    assert entry.timestamp.strftime(
         "%Y%m%d_%H%M%S"
     ) == "20260711_121334"
 
-    assert asset.fields == {
+    assert entry.fields == {
         "n": "/Record/20260711_121334_ER.mp4",
         "s": "1000000",
     }
