@@ -14,6 +14,18 @@ from ..domain.asset import Asset
 from ..domain.recording import Recording
 
 
+def parse_fields(line: str) -> dict[str, str]:
+    """Parse a comma-separated list of key:value pairs."""
+
+    fields: dict[str, str] = {}
+
+    for part in line.split(","):
+        key, value = part.split(":", 1)
+        fields[key] = value
+
+    return fields
+
+
 def parse_timestamp(stem: str) -> datetime:
     """Parse a timestamp from the start of a BlackVue filename."""
 
@@ -23,9 +35,7 @@ def parse_timestamp(stem: str) -> datetime:
 def parse_asset(line: str) -> Asset:
     """Parse one line from a BlackVue VOD response."""
 
-    filename_part, size_part = line.split(",")
-    _, path = filename_part.split(":", 1)
-    _, size_text = size_part.split(":", 1)
+    fields = parse_fields(line)
 
     raise NotImplementedError
 
