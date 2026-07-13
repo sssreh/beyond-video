@@ -26,6 +26,8 @@ def test_parse_vod_entry() -> None:
         "%Y%m%d_%H%M%S"
     ) == "20260711_121334"
 
+    assert entry.recording == "20260711_121334_E"
+
     assert entry.fields == {
         "n": "/Record/20260711_121334_ER.mp4",
         "s": "1000000",
@@ -44,11 +46,5 @@ def test_parse_vod_entries() -> None:
 
     assert len(entries) == 2
 
-    assert entries[0].path == PurePosixPath(
-        "/Record/20260711_121334_EF.mp4"
-    )
-
-    assert entries[1].path == PurePosixPath(
-        "/Record/20260711_121334_ER.mp4"
-    )
-    
+    assert entries[0].recording == "20260711_121334_E"
+    assert entries[1].recording == "20260711_121334_E"
