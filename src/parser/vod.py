@@ -54,7 +54,7 @@ def parse_vod_entries(text: str) -> list[VodEntry]:
     entries: list[VodEntry] = []
 
     for line in text.splitlines():
-        if not line:
+        if not line or line.startswith("v:"):
             continue
 
         entries.append(parse_vod_entry(line))
@@ -65,4 +65,17 @@ def parse_vod_entries(text: str) -> list[VodEntry]:
 def parse_vod(text: str) -> list[Recording]:
     """Parse a BlackVue VOD response."""
 
-    raise NotImplementedError
+    recordings: dict[str, Recording] = {}
+
+    for entry in parse_vod_entries(text):
+        recording = recordings.setdefault(
+            entry.recording,
+            Recording(
+                recording=entry.recording,
+                entries=[],
+            ),
+        )
+
+        recording.entries.append(entry)
+
+    return list(recordings.values())
