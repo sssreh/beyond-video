@@ -1,4 +1,4 @@
-"""
+﻿"""
 BlackVue VOD parser.
 
 Copyright (C) 2026 Christer R. (sssreh)
@@ -71,11 +71,15 @@ def parse_vod(text: str) -> list[Recording]:
         recording = recordings.setdefault(
             entry.recording,
             Recording(
-                recording=entry.recording,
+                id=entry.recording,
                 entries=[],
             ),
         )
 
         recording.entries.append(entry)
 
-    return list(recordings.values())
+    return sorted(
+        recordings.values(),
+        key=lambda recording: recording.id,
+        reverse=True,
+    )
