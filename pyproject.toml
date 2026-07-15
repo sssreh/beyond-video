@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blackvue-tools"
+version = "0.1.0"
+description = "Open, private, cross-platform dashcam automation."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "GPL-3.0-or-later"
+
+authors = [
+    { name = "Christer R. (sssreh)" }
+]
+
+keywords = [
+    "blackvue",
+    "dashcam",
+    "automation",
+    "synology",
+    "python"
+]
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3.13",
+]
