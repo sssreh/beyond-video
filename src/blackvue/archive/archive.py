@@ -1,6 +1,4 @@
-"""
-BlackVue archive.
-"""
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -15,6 +13,7 @@ class Archive:
         self._path = Path(path)
         self._recordings = ArchiveReader(self._path).read()
 
+    @property
     def recordings(self) -> list[Recording]:
         """Return all recordings."""
         return self._recordings
@@ -27,3 +26,4 @@ class Archive:
 
     def __getitem__(self, index):
         return self._recordings[index]
+    

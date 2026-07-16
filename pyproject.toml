@@ -26,3 +26,6 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python :: 3.13",
 ]
+
+[project.scripts]
+bv-ls = "blackvue.cli.bv_ls:main"

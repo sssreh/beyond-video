@@ -1,77 +1,76 @@
-"""
-List recordings in a BlackVue archive.
-"""
+from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 from blackvue.archive import Archive, Asset
 
 
-_COLUMNS = (
-    ("Front", Asset.FRONT),
-    ("Rear", Asset.REAR),
-    ("GPS", Asset.GPS),
-    ("3G", Asset.GSENSOR),
-    ("Front_Thm", Asset.FRONT_THUMBNAIL),
-    ("Rear_Thm", Asset.REAR_THUMBNAIL),
-    ("Audio", Asset.AUDIO),
-    ("GPX", Asset.GPX),
-    ("Transcript", Asset.TRANSCRIPT),
-    ("Translate", Asset.TRANSLATION),
-    ("Summary", Asset.SUMMARY),
-)
-
-
 def bv_ls(path: str | Path = ".") -> int:
-    """List recordings."""
-
     archive = Archive(path)
+
+    assets = Asset.display_order()
 
     recording_width = max(
         len("Recording"),
         *(len(str(recording.id)) for recording in archive),
     )
 
-    column_widths = [
-        len(header)
-        for header, _ in _COLUMNS
-    ]
+    widths = {
+        asset: max(len(asset.value), 3)
+        for asset in assets
+    }
 
     #
     # Header
     #
-
     print(f'{"Recording":<{recording_width}}', end="  ")
 
-    for (header, _), width in zip(_COLUMNS, column_widths):
-        print(f"{header:<{width}}", end=" ")
+    for asset in assets:
+        print(f"{asset.value:^{widths[asset]}}", end=" ")
 
     print()
 
-    total_width = (
-        recording_width
-        + 2
-        + sum(column_widths)
-        + len(column_widths)
+    print(
+        "-" * (
+            recording_width
+            + 2
+            + sum(widths.values())
+            + len(widths)
+        )
     )
-
-    print("-" * total_width)
 
     #
     # Rows
     #
-
     for recording in archive:
+        print(f"{str(recording.id):<{recording_width}}", end="  ")
 
-        print(f"{recording.id:<{recording_width}}", end="  ")
-
-        for (_, asset), width in zip(_COLUMNS, column_widths):
-
+        for asset in assets:
             mark = "✔" if recording.has(asset) else ""
-
-            # Center the mark within the column.
-            print(f"{mark:^{width}}", end=" ")
+            print(f"{mark:^{widths[asset]}}", end=" ")
 
         print()
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="bv-ls",
+        description="List recordings in a BlackVue archive.",
+    )
+
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Archive directory.",
+    )
+
+    args = parser.parse_args(argv)
+    return bv_ls(args.path)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
