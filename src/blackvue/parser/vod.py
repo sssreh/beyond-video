@@ -78,8 +78,8 @@ def parse_vod(text: str) -> list[Recording]:
 
         recording.entries.append(entry)
 
-    return sorted(
-        recordings.values(),
-        key=lambda recording: recording.id,
-        reverse=True,
-    )
+    #
+    # Preserve the camera's chronological order.
+    # Oldest recording first, newest recording last.
+    #
+    return list(recordings.values())
