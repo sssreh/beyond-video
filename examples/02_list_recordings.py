@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 
-from blackvue import BlackVue
+"""
+List recordings available on the camera.
+"""
+
+from blackvue import BlackVueCamera
+from blackvue import BlackVueClient
 
 from config import CAMERA_IP
 
 
-def main():
+def main() -> None:
 
-    camera = BlackVue(CAMERA_IP)
-
-    camera.connect()
+    client = BlackVueClient(f"http://{CAMERA_IP}")
+    camera = BlackVueCamera(client)
 
     recordings = camera.recordings()
 
-    print(f"Recordings : {len(recordings)}")
+    print(f"{len(recordings)} recording(s)\n")
 
-    if recordings:
+    for recording in recordings:
 
-        print(f"First : {recordings[0]}")
-        print(f"Last  : {recordings[-1]}")
+        print(recording.id)
 
-    camera.disconnect()
+        if recording.front is not None:
+            print(f"  Front : {recording.front.path}")
+
+        if recording.rear is not None:
+            print(f"  Rear  : {recording.rear.path}")
+
+        print()
 
 
 if __name__ == "__main__":

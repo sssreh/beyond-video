@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 
-from blackvue import BlackVue
+"""
+Verify communication with a BlackVue camera.
+"""
+
+from blackvue import BlackVueCamera
+from blackvue import BlackVueClient
 
 from config import CAMERA_IP
 
 
-def main():
+def main() -> None:
 
-    print("Connecting...")
+    print("Creating client...")
 
-    camera = BlackVue(CAMERA_IP)
+    client = BlackVueClient(f"http://{CAMERA_IP}")
 
-    camera.connect()
+    print("Creating camera...")
 
-    print("Connected.")
+    camera = BlackVueCamera(client)
 
-    camera.disconnect()
+    print("Fetching recordings...")
 
-    print("Disconnected.")
+    recordings = camera.recordings()
+
+    print(f"Connected successfully ({len(recordings)} recordings).")
 
 
 if __name__ == "__main__":
     main()
+    

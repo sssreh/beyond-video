@@ -1,25 +1,52 @@
 #!/usr/bin/env python3
 
-from blackvue import BlackVue
+"""
+Download the latest recording from the camera.
+"""
+
+from pathlib import Path
+
+from blackvue import BlackVueCamera
+from blackvue import BlackVueClient
 
 from config import CAMERA_IP
+from config import DOWNLOAD_DIRECTORY
 
 
-def main():
+def main() -> None:
 
-    camera = BlackVue(CAMERA_IP)
-
-    camera.connect()
+    client = BlackVueClient(f"http://{CAMERA_IP}")
+    camera = BlackVueCamera(client)
 
     recordings = camera.recordings()
 
-    latest = recordings[-1]
+    if not recordings:
+        print("No recordings found.")
+        return
 
-    print(f"Downloading {latest}")
+    recording = recordings[-1]
 
-    camera.download(latest)
+    destination = Path(DOWNLOAD_DIRECTORY)
 
-    camera.disconnect()
+    print(f"Latest recording : {recording.id}")
+    print(f"Destination      : {destination}")
+    print()
+
+    changed = camera.download(
+        recording=recording,
+        destination=destination,
+    )
+
+    if changed:
+        print("Download completed.")
+    else:
+        print("Recording already up to date.")
+
+    print()
+    print("Files:")
+
+    for entry in recording.entries:
+        print(f"  {entry.path.name}")
 
 
 if __name__ == "__main__":
