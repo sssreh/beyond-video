@@ -2,6 +2,7 @@
 BlackVue archive reader.
 """
 
+from os import scandir
 from pathlib import Path
 
 from .asset import Asset
@@ -25,35 +26,38 @@ class ArchiveReader:
     )
 
     def __init__(self, path: Path):
-        self._path = path
+        self._path = Path(path)
 
     def read(self) -> list[Recording]:
         """Read the archive."""
 
         recordings: dict[RecordingId, Recording] = {}
 
-        for path in sorted(self._path.iterdir()):
+        with scandir(self._path) as entries:
+            for entry in entries:
 
-            if not path.is_file():
-                continue
+                if not entry.is_file():
+                    continue
 
-            recording_id = RecordingId.parse(path.name)
-            if recording_id is None:
-                continue
+                recording_id = RecordingId.parse(entry.name)
+                if recording_id is None:
+                    continue
 
-            asset = self._detect_asset(path.name)
-            if asset is None:
-                continue
+                asset = self._detect_asset(entry.name)
+                if asset is None:
+                    continue
 
-            recording = recordings.setdefault(
-                recording_id,
-                Recording(recording_id),
-            )
+                recording = recordings.setdefault(
+                    recording_id,
+                    Recording(recording_id),
+                )
 
-            recording.assets[asset] = AssetFile(
-                asset=asset,
-                path=path,
-            )
+                recording.size += entry.stat().st_size
+
+                recording.assets[asset] = AssetFile(
+                    asset=asset,
+                    path=Path(entry.path),
+                )
 
         return sorted(recordings.values(), key=lambda r: r.id)
 
@@ -66,3 +70,4 @@ class ArchiveReader:
                 return asset
 
         return None
+    

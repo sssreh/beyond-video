@@ -6,6 +6,23 @@ from pathlib import Path
 from blackvue.archive import Archive, Asset
 
 
+def format_size(size: int) -> str:
+    """Format a size in bytes."""
+
+    units = ("B", "K", "M", "G", "T")
+
+    value = float(size)
+
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)}{unit}"
+            return f"{value:.2f}{unit}"
+        value /= 1024
+
+    raise AssertionError
+
+
 def bv_ls(path: str | Path = ".") -> int:
     archive = Archive(path)
 
@@ -17,40 +34,42 @@ def bv_ls(path: str | Path = ".") -> int:
     )
 
     widths = {
-        asset: max(len(asset.value), 3)
+        asset: max(len(asset.label), 3)
         for asset in assets
     }
 
-    #
-    # Header
-    #
+    size_width = max(
+        len("Size"),
+        *(len(format_size(r.size)) for r in archive),
+    )
+
     print(f'{"Recording":<{recording_width}}', end="  ")
 
     for asset in assets:
-        print(f"{asset.value:^{widths[asset]}}", end=" ")
+        print(f"{asset.label:^{widths[asset]}}", end=" ")
 
-    print()
+    print(f'{"Size":>{size_width}}')
 
     print(
-        "-" * (
+        "-"
+        * (
             recording_width
             + 2
             + sum(widths.values())
             + len(widths)
+            + size_width
+            + 1
         )
     )
 
-    #
-    # Rows
-    #
     for recording in archive:
-        print(f"{str(recording.id):<{recording_width}}", end="  ")
+        print(f"{recording.id!s:<{recording_width}}", end="  ")
 
         for asset in assets:
-            mark = "✔" if recording.has(asset) else ""
+            mark = "X" if recording.has(asset) else ""
             print(f"{mark:^{widths[asset]}}", end=" ")
 
-        print()
+        print(f"{format_size(recording.size):>{size_width}}")
 
     return 0
 
