@@ -15,6 +15,7 @@ class Recording:
 
     id: RecordingId
     assets: dict[Asset, AssetFile] = field(default_factory=dict)
+    size: int = 0
 
     def has(self, asset: Asset) -> bool:
         """Return True if the recording contains the asset."""
@@ -30,6 +31,10 @@ class Recording:
             if asset in self.assets:
                 yield self.assets[asset]
 
+    def add_size(self, size: int) -> None:
+        """Accumulate asset size."""
+        self.size += size
+
     def __contains__(self, asset: Asset) -> bool:
         return asset in self.assets
 
@@ -38,3 +43,4 @@ class Recording:
 
     def __str__(self) -> str:
         return str(self.id)
+    

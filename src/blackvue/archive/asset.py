@@ -10,38 +10,34 @@ class Asset(Enum):
 
     # Downloaded from the camera
 
-    FRONT = "Front"
-    REAR = "Rear"
+    FRONT = ("Front",)
+    REAR = ("Rear",)
 
-    GPS = "GPS"
-    GSENSOR = "3G"
+    GPS = ("GPS",)
+    GSENSOR = ("3G",)
 
-    FRONT_THUMBNAIL = "Front_Thm"
-    REAR_THUMBNAIL = "Rear_Thm"
+    FRONT_THUMBNAIL = ("Front_Thm",)
+    REAR_THUMBNAIL = ("Rear_Thm",)
 
     # Generated assets
 
-    AUDIO = "Audio"
-    GPX = "GPX"
+    AUDIO = ("Audio",)
+    GPX = ("GPX",)
 
-    TRANSCRIPT = "Transcript"
-    TRANSLATION = "Translation"
-    SUMMARY = "Summary"
+    TRANSCRIPT = ("Transcript",)
+    TRANSLATION = ("Translation",)
+    SUMMARY = ("Summary",)
+
+    def __init__(self, label: str):
+        self._label = label
+
+    @property
+    def label(self) -> str:
+        """Return the display label."""
+        return self._label
 
     @classmethod
     def display_order(cls) -> tuple["Asset", ...]:
         """Return assets in display order."""
-
-        return (
-            cls.FRONT,
-            cls.REAR,
-            cls.GPS,
-            cls.GSENSOR,
-            cls.FRONT_THUMBNAIL,
-            cls.REAR_THUMBNAIL,
-            cls.AUDIO,
-            cls.GPX,
-            cls.TRANSCRIPT,
-            cls.TRANSLATION,
-            cls.SUMMARY,
-        )
+        return tuple(cls)
+    
