@@ -25,6 +25,23 @@ class Archive:
         """Return all configuration snapshots."""
         return self._configurations
 
+    def configuration(self, recording: Recording) -> Configuration:
+        """Return the configuration active for a recording."""
+        configuration = None
+
+        for candidate in self._configurations:
+            if candidate.recording_id <= recording.id:
+                configuration = candidate
+            else:
+                break
+
+        if configuration is None:
+            raise LookupError(
+                f"No configuration found for recording {recording.id}."
+            )
+
+        return configuration
+
     def __iter__(self):
         return iter(self._recordings)
 
@@ -38,6 +55,6 @@ class Archive:
         """Read all configuration snapshots."""
         return sorted(
             (Configuration(path) for path in self._path.glob("*.config.ini")),
-            key=lambda configuration: configuration.path.name,
+            key=lambda configuration: configuration.recording_id,
         )
     
