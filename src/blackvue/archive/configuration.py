@@ -9,11 +9,34 @@ from .recording_id import RecordingId
 class Configuration:
     """Camera configuration loaded from a config.ini snapshot."""
 
-    def __init__(self, path: str | Path):
+    TOLERANCE = 10
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        record_time: int | None = None,
+    ):
         self._path = Path(path)
 
-        self._parser = ConfigParser()
-        self._parser.read(self._path, encoding="utf-8")
+        if record_time is None:
+            parser = ConfigParser()
+            parser.read(self._path, encoding="utf-8")
+
+            self._record_time = (
+                int(parser["Tab1"]["RecordTime"]) * 60
+            )
+        else:
+            self._record_time = record_time
+
+    @classmethod
+    def fallback(cls) -> "Configuration":
+        """Return a fallback configuration."""
+
+        return cls(
+            "<fallback>",
+            record_time=300,
+        )
 
     @property
     def path(self) -> Path:
@@ -28,11 +51,11 @@ class Configuration:
 
     @property
     def record_time(self) -> int:
-        """Return the recording duration in seconds."""
-        try:
-            return int(self._parser["System"]["RecordTime"])
-        except KeyError as ex:
-            raise KeyError(
-                f"{self._path}: missing System/RecordTime"
-            ) from ex
-        
+        """Return the nominal recording duration in seconds."""
+        return self._record_time
+
+    @property
+    def maximum_gap(self) -> int:
+        """Return the maximum allowed gap to the next recording."""
+        return self.record_time + self.TOLERANCE
+    
