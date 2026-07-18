@@ -3,6 +3,8 @@ from __future__ import annotations
 from configparser import ConfigParser
 from pathlib import Path
 
+from .recording_id import RecordingId
+
 
 class Configuration:
     """Camera configuration loaded from a config.ini snapshot."""
@@ -19,20 +21,18 @@ class Configuration:
         return self._path
 
     @property
-    def record_time(self) -> int:
-        """
-        Return the recording duration in seconds.
+    def recording_id(self) -> RecordingId:
+        """Return the recording at which this configuration became active."""
+        stem = self._path.name.removesuffix(".config.ini")
+        return RecordingId(stem)
 
-        Raises
-        ------
-        KeyError
-            If RecordTime is missing.
-        ValueError
-            If RecordTime is not an integer.
-        """
+    @property
+    def record_time(self) -> int:
+        """Return the recording duration in seconds."""
         try:
             return int(self._parser["System"]["RecordTime"])
         except KeyError as ex:
             raise KeyError(
                 f"{self._path}: missing System/RecordTime"
             ) from ex
+        
