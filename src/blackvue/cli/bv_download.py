@@ -42,7 +42,7 @@ EXIT_ABORTED = 3
 
 ALL_KINDS = frozenset({"N", "E", "M", "P"})
 
-TRACE_INTERVAL_BYTES = 50 * 1024 * 1024
+TRACE_INTERVAL_BYTES = 10 * 1024 * 1024
 
 
 class DotProgress:

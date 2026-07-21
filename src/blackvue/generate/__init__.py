@@ -26,8 +26,11 @@ from .speech import Transcript
 from .speech import detect_language
 from .speech import diarize
 from .speech import format_diarized_transcript
+from .speech import speaker_for
 from .speech import transcribe
 from .speech import translate
+from .subtitles import format_lrc
+from .subtitles import format_srt
 
 __all__ = [
     "DEPENDENT_MODELS",
@@ -44,12 +47,15 @@ __all__ = [
     "diarize",
     "extract_audio",
     "format_diarized_transcript",
+    "format_lrc",
+    "format_srt",
     "get_span",
     "normalize_language",
     "probe",
     "read_mp4_info",
     "select_source",
     "short_code",
+    "speaker_for",
     "transcribe",
     "translate",
 ]

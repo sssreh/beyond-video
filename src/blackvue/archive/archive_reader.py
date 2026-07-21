@@ -32,6 +32,8 @@ class ArchiveReader:
         (".diarized.translation.txt", Asset.TRANSLATION_DIARIZED),
         (".transcript.txt", Asset.TRANSCRIPT),
         (".translation.txt", Asset.TRANSLATION),
+        (".srt", Asset.SUBTITLES),
+        (".lrc", Asset.LYRICS),
     )
 
     def __init__(self, path: Path):
