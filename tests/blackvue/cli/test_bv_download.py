@@ -2,6 +2,7 @@ import argparse
 
 import pytest
 
+from blackvue.cli.bv_download import DotProgress
 from blackvue.cli.bv_download import parse_mode
 from blackvue.cli.bv_download import select_by_context
 from blackvue.cli.bv_download import select_by_mode
@@ -94,3 +95,49 @@ def test_select_by_context_trailing_normal_gets_metadata_only():
     result = list(select_by_context(recordings))
 
     assert result == [(recordings[0], False)]
+
+
+def test_dot_progress_prints_nothing_below_the_interval(capsys):
+    progress = DotProgress(interval_bytes=1000)
+
+    progress(999)
+
+    assert capsys.readouterr().out == ""
+
+
+def test_dot_progress_prints_one_dot_per_interval_crossed(capsys):
+    progress = DotProgress(interval_bytes=1000)
+
+    progress(600)
+    progress(600)  # crosses 1000 once (accumulated 1200)
+
+    assert capsys.readouterr().out == "."
+
+
+def test_dot_progress_prints_multiple_dots_for_a_big_jump(capsys):
+    progress = DotProgress(interval_bytes=1000)
+
+    progress(3500)  # crosses 1000, 2000, and 3000
+
+    assert capsys.readouterr().out == "..."
+
+
+def test_dot_progress_accumulates_across_many_small_calls(capsys):
+    progress = DotProgress(interval_bytes=1000)
+
+    for _ in range(10):
+        progress(150)  # 1500 total after 10 calls
+
+    assert capsys.readouterr().out == "."
+
+
+def test_dot_progress_finish_adds_newline_only_if_a_dot_was_printed(capsys):
+    quiet = DotProgress(interval_bytes=1000)
+    quiet.finish()
+    assert capsys.readouterr().out == ""
+
+    active = DotProgress(interval_bytes=1000)
+    active(1000)
+    capsys.readouterr()  # discard the dot itself
+    active.finish()
+    assert capsys.readouterr().out == "\n"

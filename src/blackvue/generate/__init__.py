@@ -17,6 +17,7 @@ from .media import probe
 from .media import select_source
 from .mp4_box_reader import Mp4Info
 from .mp4_box_reader import read_mp4_info
+from .speech import DEPENDENT_MODELS
 from .speech import DIARIZATION_MODEL
 from .speech import SEGMENTATION_MODEL
 from .speech import SpeakerTurn
@@ -29,6 +30,7 @@ from .speech import transcribe
 from .speech import translate
 
 __all__ = [
+    "DEPENDENT_MODELS",
     "DIARIZATION_MODEL",
     "SEGMENTATION_MODEL",
     "MediaInfo",

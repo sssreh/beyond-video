@@ -16,6 +16,7 @@ from pathlib import Path
 from ..archive import Archive
 from ..archive import Asset
 from ..archive.recording import Recording
+from .errors import run_cli
 from ..generate import MediaToolError
 from ..generate import detect_language
 from ..generate import diarize
@@ -159,11 +160,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "HuggingFace access token for --diarize's speaker "
             "diarization model. Create one at "
             "https://huggingface.co/settings/tokens, then accept the "
-            "model license at "
-            "https://huggingface.co/pyannote/speaker-diarization-3.1 "
-            "(and https://huggingface.co/pyannote/segmentation-3.0, "
-            "which it depends on). Falls back to the HF_TOKEN "
-            "environment variable if omitted."
+            "model license at https://huggingface.co/pyannote/"
+            "speaker-diarization-community-1 - if you still get a 403 "
+            "for some other repo after that, accept its license too, "
+            "pyannote names the exact repo each time. Falls back to "
+            "the HF_TOKEN environment variable if omitted."
         ),
     )
 
@@ -865,7 +866,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run bv-generate."""
 
     args = parse_args(argv)
-    return run(args)
+    return run_cli("bv-generate", lambda: run(args))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from blackvue.timeparser import parse_from, parse_until
+from blackvue.lexicaltimeparser import parse_from, parse_until
 
 
 @pytest.mark.parametrize(

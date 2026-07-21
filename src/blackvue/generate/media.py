@@ -149,6 +149,33 @@ def _estimate_span_from_boxes(recording_id: RecordingId, path: Path) -> int:
     return round(info.duration_seconds)
 
 
+def read_duration_seconds(recording: Recording) -> int | None:
+    """Return a recording's previously-computed real-world span in
+    seconds, read from its .duration.txt file (see get_span(), which
+    is what computes and writes the value bv-generate --get-duration
+    persists there).
+
+    Returns None if bv-generate --get-duration hasn't been run for
+    this recording yet (no Asset.DURATION file), or if the file can't
+    be read/parsed.
+
+    Unlike get_span(), this never touches ffprobe/ffmpeg - it just
+    reads whatever's already on disk, so it's safe to call from code
+    (like TripBuilder) that shouldn't carry a hard ffmpeg dependency
+    or the cost of probing video files for every recording.
+    """
+
+    duration_file = recording.file(Asset.DURATION)
+    if duration_file is None:
+        return None
+
+    try:
+        text = duration_file.path.read_text(encoding="utf-8").strip()
+        return int(text)
+    except (OSError, ValueError):
+        return None
+
+
 def extract_audio(source: Path, destination: Path) -> None:
     """Extract the audio track from source into destination via ffmpeg.
 

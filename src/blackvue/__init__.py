@@ -1,6 +1,7 @@
 """
-blackvue-tools
+blackvue
 
+BlackVue camera support for Beyond Video.
 Public package API.
 """
 

@@ -6,7 +6,7 @@ Copyright (C) 2026 Christer R (sssreh).
 
 
 
-blackvue-tools is an open-source project for understanding,
+Beyond Video is an open-source project for understanding,
 
 documenting and automating dashcams, beginning with BlackVue devices.
 

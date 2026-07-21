@@ -12,6 +12,7 @@ from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import compute_span
 from blackvue.generate.media import get_span
+from blackvue.generate.media import read_duration_seconds
 from blackvue.generate.media import select_source
 from blackvue.generate.mp4_box_reader import Mp4Info
 from test_mp4_box_reader import _audio_trak_with_garbage
@@ -80,6 +81,45 @@ def test_compute_span_event_recording_is_not_treated_as_timelapse():
     info = MediaInfo(duration_seconds=60.0, frame_rate=30.0)
 
     assert compute_span(recording_id, info) == 60
+
+
+def test_read_duration_seconds_reads_a_valid_file(tmp_path):
+    duration_path = tmp_path / "20260715_133255_N.duration.txt"
+    duration_path.write_text("125\n", encoding="utf-8")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.DURATION] = AssetFile(
+        asset=Asset.DURATION, path=duration_path
+    )
+
+    assert read_duration_seconds(recording) == 125
+
+
+def test_read_duration_seconds_returns_none_without_the_asset():
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+
+    assert read_duration_seconds(recording) is None
+
+
+def test_read_duration_seconds_returns_none_for_unreadable_file(tmp_path):
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.DURATION] = AssetFile(
+        asset=Asset.DURATION, path=tmp_path / "missing.duration.txt"
+    )
+
+    assert read_duration_seconds(recording) is None
+
+
+def test_read_duration_seconds_returns_none_for_malformed_content(tmp_path):
+    duration_path = tmp_path / "20260715_133255_N.duration.txt"
+    duration_path.write_text("not-a-number\n", encoding="utf-8")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.DURATION] = AssetFile(
+        asset=Asset.DURATION, path=duration_path
+    )
+
+    assert read_duration_seconds(recording) is None
 
 
 def test_get_span_uses_ffprobe_result_when_probe_succeeds(

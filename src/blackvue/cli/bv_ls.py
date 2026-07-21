@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+from datetime import timedelta
 from pathlib import Path
 
 from blackvue.archive import Archive, Asset
 from blackvue.cli.display_group import DisplayGroup
+from blackvue.cli.errors import run_cli
+from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
+from blackvue.telemetry.movement import movement_bridges_gap
+from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
+from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
+from blackvue.trip.trip_builder import TripBuilder
 
 
 def format_size(size: int) -> str:
@@ -72,6 +79,73 @@ def display_groups(
     )
 
 
+def print_trips(
+    recordings,
+    *,
+    max_gap: timedelta,
+    use_movement: bool = True,
+    use_duration: bool = True,
+    gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
+) -> None:
+    """Print one row per detected trip instead of one row per
+    recording/group.
+
+    Trip detection's primary rule is a time-gap heuristic (see
+    TripBuilder) - consecutive recordings less than max_gap (plus
+    gap_tolerance, a small fixed noise margin) apart belong to the
+    same trip. When use_duration is True (the default), a recording's
+    real .duration.txt span (if bv-generate --get-duration has been
+    run for it) is folded in before that gap is compared to max_gap,
+    so a long recording isn't mistaken for a gap to the one after it.
+    When use_movement is True (the default), a gap that still exceeds
+    max_gap after that can be bridged into one trip if GPS or
+    g-sensor data shows the vehicle was still moving at the edge of
+    the gap (see blackvue.telemetry.movement) - e.g. the camera
+    briefly stopped recording at a long light or in a tunnel.
+    """
+
+    bridge = movement_bridges_gap if use_movement else None
+    recording_duration = read_duration_seconds if use_duration else None
+    trips = TripBuilder(
+        max_gap=max_gap,
+        bridge=bridge,
+        recording_duration=recording_duration,
+        gap_tolerance=gap_tolerance,
+    ).build(recordings)
+
+    trip_width = max(
+        [len("Trip")] + [len(trip.label) for trip in trips],
+        default=len("Trip"),
+    )
+
+    size_width = max(
+        [len("Size")]
+        + [
+            len(format_size(sum(r.size for r in trip)))
+            for trip in trips
+        ],
+        default=len("Size"),
+    )
+
+    header = (
+        f'{"Trip":<{trip_width}}  {"Start":<19}  {"End":<19}  '
+        f'{"Duration":>8}  {"Recs":>4}  {"Size":>{size_width}}'
+    )
+    print(header)
+    print("-" * len(header))
+
+    for trip in trips:
+        size = format_size(sum(r.size for r in trip))
+        print(
+            f"{trip.label:<{trip_width}}  "
+            f"{trip.start_timestamp:%Y-%m-%d %H:%M:%S}  "
+            f"{trip.end_timestamp:%Y-%m-%d %H:%M:%S}  "
+            f"{str(trip.duration):>8}  "
+            f"{len(trip):>4}  "
+            f"{size:>{size_width}}"
+        )
+
+
 def bv_ls(
     path: str | Path = ".",
     *,
@@ -79,6 +153,11 @@ def bv_ls(
     from_: str | None = None,
     until: str | None = None,
     timestamp: str | None = None,
+    trips: bool = False,
+    max_gap_minutes: int | None = None,
+    movement: bool = True,
+    duration: bool = True,
+    gap_tolerance_seconds: int | None = None,
 ) -> int:
     """List recordings."""
 
@@ -100,9 +179,28 @@ def bv_ls(
         recording
         for recording in archive.recordings
         if recording.id.value in interval
-        
+
     ]
-    
+
+    if trips:
+        max_gap = (
+            timedelta(minutes=max_gap_minutes)
+            if max_gap_minutes is not None
+            else DEFAULT_MAX_GAP
+        )
+        gap_tolerance = (
+            timedelta(seconds=gap_tolerance_seconds)
+            if gap_tolerance_seconds is not None
+            else DEFAULT_GAP_TOLERANCE
+        )
+        print_trips(
+            recordings,
+            max_gap=max_gap,
+            use_movement=movement,
+            use_duration=duration,
+            gap_tolerance=gap_tolerance,
+        )
+        return 0
 
     groups = display_groups(
         archive,
@@ -206,15 +304,87 @@ def main(argv: list[str] | None = None) -> int:
         help="Show recordings matching this timestamp or timestamp prefix.",
     )
 
+    parser.add_argument(
+        "--trips",
+        action="store_true",
+        help=(
+            "List detected trips (one row per trip: start, end, "
+            "duration, recording count) instead of individual "
+            "recordings. A trip is a run of recordings with no gap "
+            "longer than --max-gap between them."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-gap",
+        dest="max_gap_minutes",
+        type=int,
+        metavar="MINUTES",
+        default=None,
+        help=(
+            "With --trips, the largest gap (in minutes) between two "
+            "recordings that still counts as the same trip. "
+            f"Default: {int(DEFAULT_MAX_GAP.total_seconds() // 60)}."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-movement",
+        dest="movement",
+        action="store_false",
+        help=(
+            "With --trips, ignore GPS/g-sensor data and use the pure "
+            "--max-gap time rule only. By default, a gap over "
+            "--max-gap is still bridged into one trip if GPS speed "
+            "or g-sensor variance shows the vehicle was still moving "
+            "at the edge of the gap."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-duration",
+        dest="duration",
+        action="store_false",
+        help=(
+            "With --trips, ignore .duration.txt files and measure "
+            "gaps from each recording's start timestamp only. By "
+            "default, a recording's real span (from bv-generate "
+            "--get-duration, if it's been run) is added to its start "
+            "before comparing the gap to the next recording against "
+            "--max-gap, so a long recording isn't mistaken for a gap."
+        ),
+    )
+
+    parser.add_argument(
+        "--gap-tolerance",
+        dest="gap_tolerance_seconds",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help=(
+            "With --trips, a small fixed margin (in seconds) added on "
+            "top of --max-gap before a gap counts as a split - "
+            "absorbs measurement noise (duration/timestamp rounding, "
+            "brief file-rotation overhead), not a detection setting "
+            f"like --max-gap. Default: "
+            f"{int(DEFAULT_GAP_TOLERANCE.total_seconds())}."
+        ),
+    )
+
     args = parser.parse_args(argv)
 
-    return bv_ls(
+    return run_cli("bv-ls", lambda: bv_ls(
         path=args.path,
         all=args.all,
         from_=args.from_,
         until=args.until,
         timestamp=args.timestamp,
-    )
+        trips=args.trips,
+        max_gap_minutes=args.max_gap_minutes,
+        movement=args.movement,
+        duration=args.duration,
+        gap_tolerance_seconds=args.gap_tolerance_seconds,
+    ))
 
 
 if __name__ == "__main__":
