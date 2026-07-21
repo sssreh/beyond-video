@@ -5,7 +5,7 @@ from pathlib import Path
 
 from blackvue.archive import Archive, Asset
 from blackvue.cli.display_group import DisplayGroup
-from blackvue.timeparser import TimeParser
+from blackvue.lexicaltimeparser import LexicalTimeParser
 
 
 def format_size(size: int) -> str:
@@ -23,6 +23,32 @@ def format_size(size: int) -> str:
         value /= 1024
 
     raise AssertionError
+
+
+def _asset_group_spans(
+    assets: list[Asset],
+) -> list[tuple[str | None, list[Asset]]]:
+    """Group consecutive assets that share the same header group label
+    (e.g. TRANSCRIPT and TRANSCRIPT_DIARIZED both under "Transcript"),
+    so bv-ls can print one label spanning both of their columns.
+
+    Assets with no group (group is None) each get their own
+    single-asset span.
+    """
+
+    spans: list[tuple[str | None, list[Asset]]] = []
+
+    for asset in assets:
+        if (
+            asset.group is not None
+            and spans
+            and spans[-1][0] == asset.group
+        ):
+            spans[-1][1].append(asset)
+        else:
+            spans.append((asset.group, [asset]))
+
+    return spans
 
 
 def display_groups(
@@ -59,7 +85,7 @@ def bv_ls(
     archive = Archive(path)
 
     try:
-        interval = TimeParser(
+        interval = LexicalTimeParser(
             timestamp=timestamp,
             from_=from_,
             until=until,
@@ -67,8 +93,8 @@ def bv_ls(
     except ValueError as exc:
         raise SystemExit(str(exc))
 
-    print(interval.first)
-    print(interval.last)
+#    print(interval.first)
+#    print(interval.last)
 
     recordings = [
         recording
@@ -102,6 +128,14 @@ def bv_ls(
         + [len(format_size(group.size)) for group in groups],
         default=len("Size"),
     )
+
+    print(f'{"":<{recording_width}}', end="  ")
+
+    for group_label, span in _asset_group_spans(assets):
+        width = sum(widths[asset] for asset in span) + (len(span) - 1)
+        print(f"{group_label or '':^{width}}", end=" ")
+
+    print()
 
     print(f'{"Recording":<{recording_width}}', end="  ")
 

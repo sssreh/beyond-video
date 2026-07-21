@@ -23,6 +23,15 @@ class ArchiveReader:
         ("R.thm", Asset.REAR_THUMBNAIL),
         (".aac", Asset.AUDIO),
         (".gpx", Asset.GPX),
+        (".duration.txt", Asset.DURATION),
+        # The diarized suffixes must be checked before the plain
+        # ones below - ".diarized.transcript.txt" also ends with
+        # ".transcript.txt", so the plain check would wrongly match
+        # it first if it came before this.
+        (".diarized.transcript.txt", Asset.TRANSCRIPT_DIARIZED),
+        (".diarized.translation.txt", Asset.TRANSLATION_DIARIZED),
+        (".transcript.txt", Asset.TRANSCRIPT),
+        (".translation.txt", Asset.TRANSLATION),
     )
 
     def __init__(self, path: Path):

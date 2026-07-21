@@ -3,7 +3,7 @@ requires = ["setuptools>=80"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "blackvue-tools"
+name = "beyond-video"
 version = "0.1.0"
 description = "Open, private, cross-platform dashcam automation."
 readme = "README.md"
@@ -27,5 +27,15 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+dependencies = [
+    "faster-whisper>=1.0",
+    "argostranslate>=1.9",
+    "pyannote.audio>=3.1",
+]
+
 [project.scripts]
 bv-ls = "blackvue.cli.bv_ls:main"
+bv-download = "blackvue.cli.bv_download:main"
+bv-config = "blackvue.cli.bv_config:main"
+bv-generate = "blackvue.cli.bv_generate:main"
+bv-lang = "blackvue.cli.bv_lang:main"
