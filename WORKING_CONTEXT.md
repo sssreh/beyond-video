@@ -85,6 +85,7 @@ When modifying code:
 - src/blackvue/generate/media.py
 - src/blackvue/generate/mp4_box_reader.py
 - src/blackvue/generate/speech.py
+- src/blackvue/generate/subtitles.py
 - src/blackvue/generate/language_codes.py
 - src/blackvue/generate/__init__.py
 - src/blackvue/archive/asset.py
@@ -148,6 +149,11 @@ Selection options match bv-ls: `PATH --from --until --timestamp`.
   (`TRANSCRIPT_DIARIZED` / `TRANSLATION_DIARIZED`), tracked separately from
   the plain versions rather than overwriting them.
 
+- `--srt` / `--lrc`: also write `<id>.srt` / `<id>.lrc` sidecar files with
+  per-segment timestamps from the transcript. Requires `--transcribe` or
+  `--translate`. See "SRT/LRC subtitle export" below for details and the
+  cache-reuse caveat with bare `--translate`.
+
 - `--overwrite` / interactive prompt / silent batch-skip policy for existing
   outputs (same style as bv-download's confirm()).
 
@@ -199,9 +205,14 @@ narrow enough to read on one screen.
 ## bv-download --trace (done, this session)
 
 Christer asked for a progress indicator on long downloads: a `.` printed for
-every 50MB (`TRACE_INTERVAL_BYTES`) downloaded, across the whole run (not
-reset per file) - a "still alive" signal, not a percentage, since the total
-size of a run isn't known upfront. New `DotProgress` class in
+every 10MB (`TRACE_INTERVAL_BYTES`; started at 50MB, tightened to 10MB the
+same session after Christer asked whether it should instead be percentage-
+based - kept byte-based: a percentage needs the whole run's total size
+upfront, meaning HEAD-requesting every candidate file before the first dot
+can print, and the dot spacing would vary a lot with run size, e.g. 5% of
+10GB is a 500MB wait between dots - byte-based avoids both problems)
+downloaded, across the whole run (not reset per file) - a "still alive"
+signal, not a percentage. New `DotProgress` class in
 `blackvue.cli.bv_download`, used as the `on_bytes` callback (see below);
 `finish()` closes the line with a trailing newline, but only if at least one
 dot was ever printed, so a `--trace` run that downloads nothing doesn't emit
@@ -215,6 +226,53 @@ None] | None` parameter - called with the size of each chunk actually
 written (video files download in 64KB chunks and report per chunk; metadata
 files download in one shot and report once). Backward compatible:
 `on_bytes=None` (the default) changes nothing for existing callers.
+
+---
+
+## SRT/LRC subtitle export (done, this session)
+
+Christer asked "any way to get timestamps in transcribe" - `SpeechSegment`
+(faster-whisper) and `SpeakerTurn` (pyannote) already carry start/end timing
+internally, but it was being discarded when transcripts were written to disk
+(only the flattened `.text` string was ever persisted). Rather than inventing
+a bespoke timestamp notation, exports to two standard, widely-supported
+formats instead:
+
+- `--srt`: numbered cues with `HH:MM:SS,mmm --> HH:MM:SS,mmm` per line -
+  the common video-subtitle format almost every player understands. Saved
+  as `<id>.srt`.
+- `--lrc`: one `[mm:ss.xx] text` line per segment (start time only, no
+  explicit end) - the karaoke/lyrics-sync convention, a lighter-weight
+  option when you just want to scrub through a conversation. Saved as
+  `<id>.lrc`.
+
+Both require `--transcribe` or `--translate` (same validation pattern as
+`--diarize`), and both prefix each line with `[SPEAKER_XX]` when `--diarize`
+is also given, matching `format_diarized_transcript`'s convention. New
+`blackvue.generate.subtitles` module (`format_srt`, `format_lrc`); renamed
+`speech._speaker_for` to the now-public `speech.speaker_for` so subtitles.py
+can reuse the same segment-to-speaker matching. New `Asset.SUBTITLES` /
+`Asset.LYRICS` (`.srt`/`.lrc` suffixes registered in `ArchiveReader.ASSETS`)
+- picked up by `bv-ls` automatically, no bv-ls changes needed.
+
+Filenames are always `<id>.srt`/`<id>.lrc` - no language-suffix variants,
+and scoped to the transcript only (not translations) for this first
+version. In `_do_transcribe_with_optional_translate` (the `--transcribe`
+path), a missing `.srt`/`.lrc` now counts toward the "does this recording
+need any work" check even if the transcript/translation files themselves
+are already up to date, so `--srt`/`--lrc` alone against an already-
+transcribed archive still triggers a fresh Whisper run to get segment
+timing. In `_do_translate_only` (bare `--translate`, no `--transcribe`),
+which cache-first reuses an existing plain-text transcript when one exists,
+`--srt`/`--lrc` are silently skipped when that cache-hit path is taken -
+a cached `.transcript.txt` has no segment timing to draw from, and forcing
+a re-transcription would defeat the whole point of that path's caching.
+Only generates them on the fresh-transcribe branch, where segment timing is
+actually available. No warning is printed for the skip case; revisit if
+this proves confusing in practice.
+
+Not yet confirmed against Christer's real archive - only unit-tested
+against fakes so far, same as `--translate`.
 
 ---
 

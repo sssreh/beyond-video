@@ -22,6 +22,8 @@ from ..generate import detect_language
 from ..generate import diarize
 from ..generate import extract_audio
 from ..generate import format_diarized_transcript
+from ..generate import format_lrc
+from ..generate import format_srt
 from ..generate import get_span
 from ..generate import normalize_language
 from ..generate import select_source
@@ -169,6 +171,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--srt",
+        action="store_true",
+        help=(
+            "Also write an SRT subtitle file (<recording>.srt) with "
+            "per-segment start/end timestamps from the transcript. "
+            "Requires --transcribe or --translate."
+        ),
+    )
+
+    parser.add_argument(
+        "--lrc",
+        action="store_true",
+        help=(
+            "Also write an LRC timestamp file (<recording>.lrc), one "
+            "[mm:ss.xx] line per transcript segment. Requires "
+            "--transcribe or --translate."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -202,6 +224,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.diarize and not (args.transcribe or args.translate is not None):
         parser.error("--diarize requires --transcribe or --translate")
+
+    if (args.srt or args.lrc) and not (
+        args.transcribe or args.translate is not None
+    ):
+        parser.error("--srt/--lrc require --transcribe or --translate")
 
     # --language/--translate accept either the 2-letter code Whisper
     # and argos-translate use, or the 3-letter code generated
@@ -498,6 +525,7 @@ def _do_translate_only(
     transcript_text: str | None = None
     transcript_language: str | None = None
     segments: tuple = ()
+    turns: tuple = ()
 
     # 1. An existing transcript already has everything translation
     #    needs, so reuse it instead of re-running Whisper. Diarized
@@ -597,6 +625,36 @@ def _do_translate_only(
                 f"{recording.id}: wrote {transcript_destination.name}",
             )
 
+        # SRT/LRC need per-segment timing, which only exists right
+        # after a fresh transcribe() call (this branch) - a reused
+        # cached transcript (above) has no segments to draw from, so
+        # this is deliberately skipped in that case.
+        if args.srt:
+            srt_destination = archive_path / f"{recording.id}.srt"
+            if _should_write(
+                srt_destination, overwrite=args.overwrite, dry_run=args.dry_run
+            ):
+                srt_destination.write_text(
+                    format_srt(segments, turns) + "\n", encoding="utf-8"
+                )
+                _report(
+                    args.verbose,
+                    f"{recording.id}: wrote {srt_destination.name}",
+                )
+
+        if args.lrc:
+            lrc_destination = archive_path / f"{recording.id}.lrc"
+            if _should_write(
+                lrc_destination, overwrite=args.overwrite, dry_run=args.dry_run
+            ):
+                lrc_destination.write_text(
+                    format_lrc(segments, turns) + "\n", encoding="utf-8"
+                )
+                _report(
+                    args.verbose,
+                    f"{recording.id}: wrote {lrc_destination.name}",
+                )
+
     translate_fn = _translate_diarized if args.diarize else translate
 
     try:
@@ -652,6 +710,26 @@ def _do_transcribe_with_optional_translate(
             translation_destination,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
+        )
+
+    # SRT/LRC filenames don't depend on language, so - like the
+    # translation destination above - they can be checked up front.
+    srt_destination = None
+    need_srt_write = False
+
+    if args.srt:
+        srt_destination = archive_path / f"{recording.id}.srt"
+        need_srt_write = _should_write(
+            srt_destination, overwrite=args.overwrite, dry_run=args.dry_run
+        )
+
+    lrc_destination = None
+    need_lrc_write = False
+
+    if args.lrc:
+        lrc_destination = archive_path / f"{recording.id}.lrc"
+        need_lrc_write = _should_write(
+            lrc_destination, overwrite=args.overwrite, dry_run=args.dry_run
         )
 
     # The transcript filename depends on the *spoken* language. If
@@ -729,9 +807,18 @@ def _do_transcribe_with_optional_translate(
                 f"{recording.id}: would translate -> "
                 f"{translation_destination.name}"
             )
+        if need_srt_write:
+            print(f"{recording.id}: would write {srt_destination.name}")
+        if need_lrc_write:
+            print(f"{recording.id}: would write {lrc_destination.name}")
         return False
 
-    if not need_transcript_write and not need_translation_write:
+    if not (
+        need_transcript_write
+        or need_translation_write
+        or need_srt_write
+        or need_lrc_write
+    ):
         return False
 
     if source_file is None:
@@ -777,6 +864,7 @@ def _do_transcribe_with_optional_translate(
 
     had_error = False
     transcript_text = transcript.text
+    turns: tuple = ()
 
     if args.diarize:
         try:
@@ -796,6 +884,18 @@ def _do_transcribe_with_optional_translate(
             args.verbose,
             f"{recording.id}: wrote {transcript_destination.name}",
         )
+
+    if need_srt_write:
+        srt_destination.write_text(
+            format_srt(transcript.segments, turns) + "\n", encoding="utf-8"
+        )
+        _report(args.verbose, f"{recording.id}: wrote {srt_destination.name}")
+
+    if need_lrc_write:
+        lrc_destination.write_text(
+            format_lrc(transcript.segments, turns) + "\n", encoding="utf-8"
+        )
+        _report(args.verbose, f"{recording.id}: wrote {lrc_destination.name}")
 
     if need_translation_write:
         translate_fn = (

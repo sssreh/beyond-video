@@ -29,6 +29,8 @@ class Asset(Enum):
     TRANSCRIPT_DIARIZED = ("Diar", "Transcript")
     TRANSLATION = ("Plain", "Translate")
     TRANSLATION_DIARIZED = ("Diar", "Translate")
+    SUBTITLES = ("SRT",)
+    LYRICS = ("LRC",)
     SUMMARY = ("Summ",)
 
     def __init__(self, label: str, group: str | None = None):

@@ -337,7 +337,7 @@ def diarize(
     )
 
 
-def _speaker_for(
+def speaker_for(
     segment: SpeechSegment,
     turns: tuple[SpeakerTurn, ...],
 ) -> str | None:
@@ -388,7 +388,7 @@ def format_diarized_transcript(
             lines.append(f"[{label}] {' '.join(current_words).strip()}")
 
     for segment in segments:
-        speaker = _speaker_for(segment, turns)
+        speaker = speaker_for(segment, turns)
 
         if speaker != current_speaker:
             _flush()

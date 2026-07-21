@@ -27,6 +27,8 @@ def _base_args(**overrides):
         model_size="small",
         diarize=False,
         hf_token=None,
+        srt=False,
+        lrc=False,
         overwrite=False,
         dry_run=False,
         verbose=False,
@@ -761,3 +763,154 @@ def test_transcribe_and_translate_together_still_works(
     assert had_error is False
     assert (tmp_path / "20260715_133255_N_swe.transcript.txt").exists()
     assert (tmp_path / "20260715_133255_N_spa.translation.txt").exists()
+
+
+def test_parse_args_srt_requires_transcribe_or_translate():
+    with pytest.raises(SystemExit):
+        parse_args(["/some/path", "--extract-audio", "--srt"])
+
+
+def test_parse_args_lrc_requires_transcribe_or_translate():
+    with pytest.raises(SystemExit):
+        parse_args(["/some/path", "--extract-audio", "--lrc"])
+
+
+def test_parse_args_srt_lrc_allowed_with_transcribe():
+    args = parse_args(["/some/path", "--transcribe", "--srt", "--lrc"])
+
+    assert args.srt is True
+    assert args.lrc is True
+
+
+def test_transcribe_writes_srt_and_lrc_when_requested(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"audio"),
+    )
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory([], "sv")
+    )
+    monkeypatch.setattr(
+        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+    )
+
+    recording = Recording(id=RecordingId("20260715_200000_N"))
+    video_path = tmp_path / "20260715_200000_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True, srt=True, lrc=True)
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    srt_text = (tmp_path / "20260715_200000_N.srt").read_text()
+    assert "00:00:00,000 --> 00:00:01,000" in srt_text
+    assert "hello world" in srt_text
+    lrc_text = (tmp_path / "20260715_200000_N.lrc").read_text()
+    assert "[00:00.00] hello world" in lrc_text
+
+
+def test_transcribe_srt_only_still_transcribes_when_transcript_up_to_date(
+    tmp_path, monkeypatch
+):
+    # Even if the transcript file itself is already there and doesn't
+    # need rewriting, a missing .srt still has to trigger a fresh
+    # transcribe() call - there's nowhere else to get segment timing.
+    transcribed = []
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory(transcribed, "sv")
+    )
+    monkeypatch.setattr(
+        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+    )
+
+    recording = Recording(id=RecordingId("20260715_210000_N"))
+    audio_path = tmp_path / "20260715_210000_N.aac"
+    audio_path.write_bytes(b"a")
+    recording.assets[Asset.AUDIO] = AssetFile(
+        asset=Asset.AUDIO, path=audio_path
+    )
+    transcript_path = tmp_path / "20260715_210000_N_swe.transcript.txt"
+    transcript_path.write_text("already here")
+    recording.assets[Asset.TRANSCRIPT] = AssetFile(
+        asset=Asset.TRANSCRIPT, path=transcript_path
+    )
+
+    args = _base_args(transcribe=True, srt=True, language="sv")
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert transcribed == [audio_path]
+    assert (tmp_path / "20260715_210000_N.srt").exists()
+    # The already-current transcript file itself is left untouched.
+    assert transcript_path.read_text() == "already here"
+
+
+def test_translate_only_writes_srt_lrc_on_fresh_transcribe(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory([], "th")
+    )
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: text.upper(),
+    )
+
+    recording = Recording(id=RecordingId("20260715_220000_N"))
+    audio_path = tmp_path / "20260715_220000_N.aac"
+    audio_path.write_bytes(b"a")
+    recording.assets[Asset.AUDIO] = AssetFile(
+        asset=Asset.AUDIO, path=audio_path
+    )
+
+    args = _base_args(translate="sv", srt=True, lrc=True)
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    assert (tmp_path / "20260715_220000_N.srt").exists()
+    assert (tmp_path / "20260715_220000_N.lrc").exists()
+
+
+def test_translate_only_skips_srt_lrc_when_reusing_cached_transcript(
+    tmp_path, monkeypatch
+):
+    # A cached plain-text transcript has no segment timing, so --srt/
+    # --lrc can't be satisfied without a real transcribe() call. This
+    # first version simply skips them rather than forcing a
+    # re-transcription cache-first --translate would otherwise avoid.
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: text.upper(),
+    )
+
+    recording = Recording(id=RecordingId("20260715_230000_N"))
+    transcript_path = tmp_path / "20260715_230000_N_tha.transcript.txt"
+    transcript_path.write_text("hej da")
+    recording.assets[Asset.TRANSCRIPT] = AssetFile(
+        asset=Asset.TRANSCRIPT, path=transcript_path
+    )
+
+    args = _base_args(translate="sv", srt=True, lrc=True)
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_230000_N.srt").exists()
+    assert not (tmp_path / "20260715_230000_N.lrc").exists()
