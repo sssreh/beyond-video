@@ -12,21 +12,42 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
 from .media import MediaToolError
 
+# pyannote.audio's own audio loading (source given as a path/string)
+# resamples to this rate internally too, so decoding straight to it
+# ourselves means no extra resampling work happens on pyannote's side
+# either.
+_DIARIZATION_SAMPLE_RATE = 16000
+
 _WHISPER_MODEL_CACHE: dict[str, object] = {}
 _DIARIZATION_PIPELINE_CACHE: dict[str, object] = {}
 
-DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
+#  pyannote.audio 4.0 (released Sep 2025) replaced the legacy
+# speaker-diarization-3.1 pipeline with this one as its recommended
+# default: better accuracy per pyannote's own benchmarks, and - unlike
+# 3.1 under 4.0, which reached into speaker-diarization-community-1's
+# repo for a shared file - it packages its own underlying models in
+# one repo, so (as far as observed) it only needs its own license
+# accepted, not a chain of separate gated dependencies.
+DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 
-# The diarization pipeline above pulls this model in as a dependency
-# at load time - its license needs accepting too, separately from the
-# diarization model's own license, or Pipeline.from_pretrained() fails
-# even with a valid, license-accepted token.
+# Other gated repos a diarization pipeline might reach into at load
+# time, whose licenses would need accepting too - not documented
+# anywhere in one place, so this is "known so far" from hitting real
+# 403s in practice, not exhaustive. Empty for DIARIZATION_MODEL as of
+# this writing (see comment above); kept around in case a future
+# pyannote.audio version reintroduces a cross-repo dependency.
+DEPENDENT_MODELS: tuple[str, ...] = ()
+
+# Legacy pipeline beyond-video originally targeted, kept only for
+# reference/backwards compatibility with anything importing this name
+# directly - no longer used as a dependency of DIARIZATION_MODEL.
 SEGMENTATION_MODEL = "pyannote/segmentation-3.0"
 
 _MISSING_TOKEN_MESSAGE = (
@@ -35,9 +56,16 @@ _MISSING_TOKEN_MESSAGE = (
     "(read access is enough)\n"
     f"  2. Accept the model license at "
     f"https://huggingface.co/{DIARIZATION_MODEL}\n"
-    f"  3. Also accept https://huggingface.co/{SEGMENTATION_MODEL} "
-    "(the diarization model depends on it)\n"
-    "  4. Pass --hf-token TOKEN, or set the HF_TOKEN environment variable"
+    + "".join(
+        f"  {step}. Also accept https://huggingface.co/{model} "
+        "(a model it depends on)\n"
+        for step, model in enumerate(DEPENDENT_MODELS, start=3)
+    )
+    + "  If you still get a 403 for some other gated repo after that, "
+    "accept its license too - the error names the exact repo each "
+    "time.\n"
+    f"  {len(DEPENDENT_MODELS) + 3}. Pass --hf-token TOKEN, or set the "
+    "HF_TOKEN environment variable"
 )
 
 
@@ -151,6 +179,27 @@ def transcribe(
     )
 
 
+def _load_pipeline(pipeline_class, token: str):
+    """Call Pipeline.from_pretrained() with whichever token keyword
+    the installed pyannote.audio/huggingface_hub version accepts.
+
+    huggingface_hub renamed `use_auth_token` to `token` a while back,
+    and newer pyannote.audio releases (installed via
+    `pip install pyannote.audio` today) only accept the new name -
+    passing the old one raises `TypeError: unexpected keyword argument
+    'use_auth_token'`. Try the current name first and fall back to the
+    old one, so this works whichever version ends up installed instead
+    of pinning one exactly.
+    """
+
+    try:
+        return pipeline_class.from_pretrained(DIARIZATION_MODEL, token=token)
+    except TypeError:
+        return pipeline_class.from_pretrained(
+            DIARIZATION_MODEL, use_auth_token=token
+        )
+
+
 def _get_diarization_pipeline(hf_token: str | None):
     """Return a cached pyannote.audio diarization pipeline."""
 
@@ -175,21 +224,80 @@ def _get_diarization_pipeline(hf_token: str | None):
             raise MediaToolError(_MISSING_TOKEN_MESSAGE)
 
         try:
-            pipeline = Pipeline.from_pretrained(
-                DIARIZATION_MODEL,
-                use_auth_token=token,
-            )
+            pipeline = _load_pipeline(Pipeline, token)
         except Exception as exc:
+            known_models = ", ".join(
+                f"https://huggingface.co/{model}"
+                for model in (DIARIZATION_MODEL,) + DEPENDENT_MODELS
+            )
             raise MediaToolError(
-                f"could not load diarization model: {exc} - if you have a "
-                "token but haven't accepted both model licenses yet, "
-                f"visit https://huggingface.co/{DIARIZATION_MODEL} and "
-                f"https://huggingface.co/{SEGMENTATION_MODEL}"
+                f"could not load diarization model: {exc} - if this "
+                "mentions a gated/restricted repo, visit the URL it "
+                "names and accept its access conditions (pyannote "
+                "pipelines can depend on more than one gated model - "
+                f"known ones so far: {known_models})"
             ) from exc
 
         _DIARIZATION_PIPELINE_CACHE[cache_key] = pipeline
 
     return _DIARIZATION_PIPELINE_CACHE[cache_key]
+
+
+def _load_waveform_via_ffmpeg(source: Path) -> dict:
+    """Decode source to a mono waveform at _DIARIZATION_SAMPLE_RATE
+    using ffmpeg directly, and return it in the in-memory
+    {'waveform', 'sample_rate'} form pyannote.audio's pipelines accept.
+
+    pyannote.audio 4.x normally reads audio itself via torchcodec,
+    which needs its native DLL built against the exact installed
+    ffmpeg/torch version combination - a fragile pairing that's easy
+    to get wrong (particularly on Windows) and outside beyond-video's
+    control. Since this project already shells out to ffmpeg directly
+    everywhere else (extract_audio, probe), decoding here the same way
+    sidesteps torchcodec's DLL matching entirely rather than depending
+    on it working.
+    """
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise MediaToolError(
+            "numpy is not installed (pip install numpy)"
+        ) from exc
+
+    try:
+        import torch
+    except ImportError as exc:
+        raise MediaToolError(
+            "torch is not installed (pip install torch)"
+        ) from exc
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-v", "error",
+                "-i", str(source),
+                "-f", "f32le",
+                "-ac", "1",
+                "-ar", str(_DIARIZATION_SAMPLE_RATE),
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg failed to decode {source.name} for diarization: "
+            f"{exc.stderr.decode(errors='replace').strip()}"
+        ) from exc
+
+    samples = np.frombuffer(result.stdout, dtype=np.float32)
+    waveform = torch.from_numpy(samples.copy()).unsqueeze(0)  # (channel, time)
+
+    return {"waveform": waveform, "sample_rate": _DIARIZATION_SAMPLE_RATE}
 
 
 def diarize(
@@ -201,17 +309,27 @@ def diarize(
 
     If source is a container format pyannote.audio's loader cannot
     read directly, extract audio first (--extract-audio) and
-    diarize the .aac file instead.
+    diarize the .aac file instead. Audio is decoded via ffmpeg
+    directly (see _load_waveform_via_ffmpeg) rather than handed to
+    pyannote.audio as a path, to avoid depending on torchcodec.
     """
 
     pipeline = _get_diarization_pipeline(hf_token)
+    audio_input = _load_waveform_via_ffmpeg(source)
 
     try:
-        annotation = pipeline(str(source))
+        output = pipeline(audio_input)
     except Exception as exc:
         raise MediaToolError(
             f"diarization failed for {source.name}: {exc}"
         ) from exc
+
+    # The legacy speaker-diarization-3.1 pipeline returns the
+    # Annotation directly. DIARIZATION_MODEL (speaker-diarization-
+    # community-1) instead returns a wrapper object exposing it as
+    # .speaker_diarization. Support both, so this keeps working
+    # whichever pipeline is actually configured.
+    annotation = getattr(output, "speaker_diarization", output)
 
     return tuple(
         SpeakerTurn(start=turn.start, end=turn.end, speaker=speaker)

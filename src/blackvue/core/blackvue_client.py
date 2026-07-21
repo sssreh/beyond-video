@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -76,8 +77,16 @@ class BlackVueClient:
         self,
         entry: VodEntry,
         destination: Path,
+        *,
+        on_bytes: Callable[[int], None] | None = None,
     ) -> bool:
         """Download one file.
+
+        If on_bytes is given, it's called with the number of bytes
+        written for each chunk actually downloaded (video files
+        download in 64KB chunks; metadata files download in one
+        shot) - used by bv-download --trace for a simple progress
+        indicator on long downloads.
 
         Returns True if bytes were downloaded.
         """
@@ -96,6 +105,9 @@ class BlackVueClient:
 
             data = self._get(entry.path.as_posix())
             destination.write_bytes(data)
+
+            if on_bytes is not None:
+                on_bytes(len(data))
 
             return True
 
@@ -135,6 +147,9 @@ class BlackVueClient:
         ):
             while chunk := response.read(64 * 1024):
                 file.write(chunk)
+
+                if on_bytes is not None:
+                    on_bytes(len(chunk))
 
         return True
     

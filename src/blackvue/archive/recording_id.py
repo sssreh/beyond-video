@@ -3,6 +3,8 @@ BlackVue recording identifier.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
+from typing import ClassVar
 
 
 @dataclass(frozen=True, order=True)
@@ -10,6 +12,9 @@ class RecordingId:
     """A BlackVue recording identifier."""
 
     value: str
+
+    MIN: ClassVar["RecordingId"]
+    MAX: ClassVar["RecordingId"]
 
     @classmethod
     def parse(cls, filename: str) -> "RecordingId | None":
@@ -33,6 +38,34 @@ class RecordingId:
 
         return cls(filename[:17])
 
+    @property
+    def timestamp(self) -> datetime:
+        """Return the recording's start timestamp."""
+
+        return datetime.strptime(self.value[:15], "%Y%m%d_%H%M%S")
+
+    @property
+    def kind(self) -> str:
+        """Return the recording kind (N, E, M, or P)."""
+
+        return self.value[16]
+
+    @property
+    def is_normal(self) -> bool:
+        return self.kind == "N"
+
+    @property
+    def is_event(self) -> bool:
+        return self.kind == "E"
+
+    @property
+    def is_manual(self) -> bool:
+        return self.kind == "M"
+
+    @property
+    def is_parking(self) -> bool:
+        return self.kind == "P"
+
     def __str__(self) -> str:
         return self.value
 
@@ -41,3 +74,7 @@ class RecordingId:
 
     def __repr__(self) -> str:
         return self.value
+
+
+RecordingId.MIN = RecordingId("00010101_000000")
+RecordingId.MAX = RecordingId("99991231_235959")

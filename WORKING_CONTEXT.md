@@ -2,13 +2,61 @@
 
 ## Current Goal
 
-`bv-generate` is feature-complete and has been exercised against real dashcam
-data on Christer's machine (real ffmpeg, real faster-whisper output seen,
+`bv-generate` is feature-complete and confirmed working against real dashcam
+data on Christer's machine: `--extract-audio`, `--transcribe`, and now
+`--diarize` have all completed successfully for real (real ffmpeg, real
+faster-whisper output, real diarized transcript produced end-to-end),
 including a real corrupted-header Parking-mode file that led to the MP4
-box-reader fallback). `--translate` and `--diarize` are built and unit-tested
-but not yet confirmed run end-to-end for real (need an argos-translate
-language pack installed, and a HuggingFace token + accepted model license,
-respectively).
+box-reader fallback. Only `--translate` remains unconfirmed for real (see
+below). `--diarize` in particular took five real issues, all fixed:
+
+1. pyannote.audio's installed version renamed `use_auth_token` to `token` in
+   `Pipeline.from_pretrained()` - fixed with a try-the-new-name-then-fall-
+   back-to-the-old-one helper (`_load_pipeline` in speech.py).
+2. `Pipeline.from_pretrained(DIARIZATION_MODEL)` (then still
+   `pyannote/speaker-diarization-3.1`) reached into a second, undocumented
+   gated repo (`pyannote/speaker-diarization-community-1`) for a shared
+   file. Root cause turned out to be a pyannote.audio major version jump:
+   `pyproject.toml` only pinned `pyannote.audio>=3.1`, so pip installed the
+   latest 4.0.x (released Sep 2025) - a version built around a *new*
+   default pipeline, `pyannote/speaker-diarization-community-1`, which
+   replaces the legacy 3.1 one. Running 3.1 under 4.0 pulled in community-1
+   assets as a side effect.
+3. Decision (confirmed with Christer): switch `DIARIZATION_MODEL` to
+   `pyannote/speaker-diarization-community-1` itself rather than keep
+   fighting the legacy pipeline's cross-repo dependency under 4.0. It's
+   also pyannote's own recommended default now, with better accuracy per
+   their published benchmarks. `pyproject.toml`'s pin bumped to
+   `pyannote.audio>=4.0` to match. `DEPENDENT_MODELS` is now empty (as far
+   as observed, community-1 packages its own underlying models in one
+   repo), but the error messages still generalize to "accept whatever repo
+   a 403 names" rather than hardcoding an assumed-complete list, since that
+   assumption already proved wrong once.
+4. community-1's pipeline call also returns a different shape than 3.1 -
+   `pipeline(path)` returns a wrapper object exposing the Annotation as
+   `.speaker_diarization`, instead of returning the Annotation directly.
+   `diarize()` now unwraps `getattr(output, "speaker_diarization", output)`
+   so it supports either shape without knowing in advance which pipeline is
+   configured.
+5. Even with the model switch, the license accepted, and the token working,
+   the actual audio decode step failed: pyannote.audio 4.x reads audio via
+   `torchcodec`, which needs a native DLL built against the exact installed
+   ffmpeg/torch version pair - on Christer's Windows machine (ffmpeg 8,
+   torch 2.13.0+cpu) that DLL wouldn't load, so passing a bare file path to
+   the pipeline failed with "torchcodec is not available." Fixed by not
+   depending on pyannote's audio loader at all: `diarize()` now decodes
+   audio itself via a direct `ffmpeg` subprocess call
+   (`_load_waveform_via_ffmpeg` in speech.py, reusing the same tool this
+   project already shells out to elsewhere) straight to the
+   `{'waveform': tensor, 'sample_rate': 16000}` in-memory form pyannote's
+   own docs say is supported, sidestepping torchcodec's DLL matching
+   entirely rather than trying to fix it on Christer's machine.
+
+Confirmed: `bv-generate --transcribe --diarize` produced a real diarized
+transcript against Christer's actual archive after all five fixes above.
+`--translate` is still only unit-tested, not yet confirmed end-to-end for
+real (needs an argos-translate language pack installed via
+`bv-lang install`).
 
 ---
 
@@ -80,16 +128,21 @@ Selection options match bv-ls: `PATH --from --until --timestamp`.
   as `<id>.translation.txt` / `<id>_<lang>.translation.txt`. Works without
   `--transcribe`.
 
-- `--diarize`: pyannote.audio speaker labels (`[SPEAKER_00] ...`). Requires
-  `--transcribe` or `--translate`, plus a HuggingFace token (`--hf-token` or
-  `HF_TOKEN`/`HUGGINGFACE_TOKEN` env var) and accepting the
-  `pyannote/speaker-diarization-3.1` license *and* the
-  `pyannote/segmentation-3.0` license it depends on, once each on
-  huggingface.co. A missing token raises a step-by-step MediaToolError
-  (create a token at huggingface.co/settings/tokens, accept both model
-  licenses, pass --hf-token/HF_TOKEN); a pipeline-load failure after a
-  token is supplied points at both license URLs too, since "token present
-  but license not accepted" is a common real-world gotcha with this model.
+- `--diarize`: pyannote.audio speaker labels (`[SPEAKER_00] ...`), using the
+  `pyannote/speaker-diarization-community-1` pipeline (pyannote's current
+  recommended default, replacing the legacy speaker-diarization-3.1 - see
+  "Current Goal" above for why). Requires `--transcribe` or `--translate`,
+  plus a HuggingFace token (`--hf-token` or `HF_TOKEN`/`HUGGINGFACE_TOKEN`
+  env var) and accepting that model's license on huggingface.co. A missing
+  token raises a step-by-step MediaToolError (create a token at
+  huggingface.co/settings/tokens, accept the model license, pass
+  --hf-token/HF_TOKEN); a pipeline-load failure after a token is supplied
+  tells you to accept whatever repo the underlying 403 names, since
+  pyannote.audio's own exception text always names the exact one - don't
+  assume the known-dependency list is complete, it's proven wrong before.
+  Audio is decoded via a direct `ffmpeg` subprocess call
+  (`_load_waveform_via_ffmpeg`) rather than handed to pyannote.audio as a
+  file path, to avoid depending on `torchcodec` - see "Current Goal" #5.
   Diarized transcripts/translations get their own filename marker
   (`<id>.diarized.transcript.txt`) and their own Asset type
   (`TRANSCRIPT_DIARIZED` / `TRANSLATION_DIARIZED`), tracked separately from
@@ -143,6 +196,28 @@ narrow enough to read on one screen.
 
 ---
 
+## bv-download --trace (done, this session)
+
+Christer asked for a progress indicator on long downloads: a `.` printed for
+every 50MB (`TRACE_INTERVAL_BYTES`) downloaded, across the whole run (not
+reset per file) - a "still alive" signal, not a percentage, since the total
+size of a run isn't known upfront. New `DotProgress` class in
+`blackvue.cli.bv_download`, used as the `on_bytes` callback (see below);
+`finish()` closes the line with a trailing newline, but only if at least one
+dot was ever printed, so a `--trace` run that downloads nothing doesn't emit
+a stray blank line. Wired with a `try/finally` around the download loop so
+`finish()` still runs (closing the dot line cleanly) even if Ctrl-C fires
+mid-download - pairs naturally with this session's earlier clean-Ctrl-C fix.
+
+To get byte counts up to the CLI layer, `BlackVueClient.download()` and
+`BlackVueCamera.download()` both gained an optional `on_bytes: Callable[[int],
+None] | None` parameter - called with the size of each chunk actually
+written (video files download in 64KB chunks and report per chunk; metadata
+files download in one shot and report once). Backward compatible:
+`on_bytes=None` (the default) changes nothing for existing callers.
+
+---
+
 ## Tested vs not tested
 
 Confirmed against real data on Christer's machine:
@@ -150,6 +225,9 @@ Confirmed against real data on Christer's machine:
 - `--extract-audio` and `--transcribe` (real ffmpeg, real faster-whisper
   output, including hitting and fixing the Parking-mode "no audio track"
   and "corrupted header" cases for real).
+- `--diarize` (real pyannote.audio, real HuggingFace token/license flow,
+  real ffmpeg-decoded audio, a real diarized transcript produced) - see
+  "Current Goal" for the five issues hit and fixed along the way.
 
 Verified in a network-less sandbox (real ffmpeg/ffprobe available there,
 faster-whisper/argostranslate/pyannote.audio not installed - those three are
@@ -178,7 +256,6 @@ exercised with hand-written fakes standing in for the real libraries):
 NOT yet confirmed for real:
 
 - `--translate` against a real argos-translate language pack.
-- `--diarize` against a real pyannote.audio pipeline with a real HF token.
 - `bv-lang install` against the real argos-translate package index (only
   the missing-dependency error path was confirmed for real, via
   argostranslate genuinely not being installed in this sandbox).
@@ -186,14 +263,26 @@ NOT yet confirmed for real:
   validated against a synthetic reproduction of the same corruption
   pattern).
 
+Sandbox limitation discovered this session: this sandbox's `python3` is 3.10,
+but the project targets `>=3.13` (pyproject.toml) and `camera_config.py` uses
+stdlib `tomllib`, which doesn't exist before 3.11. `bv_download.py`,
+`bv_config.py`, and `camera_config.py` (and their test files) simply can't
+be imported here at all - that's why `run_harness.py` never registered
+`test_bv_download`/`test_bv_config`/`test_camera_config`, going all the way
+back to whenever those files were first written, not something broken this
+session. New tests added to `test_bv_download.py` this session (see
+`--trace` below) were verified by copying the exact same logic into a
+throwaway standalone script and running the same assertions against it
+outside the broken import chain - not a substitute for actually running
+`test_bv_download.py`, which still needs a real run on Christer's machine
+(Python 3.13) to be fully confirmed.
+
 ---
 
 ## Next Task
 
 - Run `bv-lang install SOURCE TARGET` for real to install a language pack,
   then run `--translate` for real using it.
-- Run `--diarize` for real once a HuggingFace token is set and the
-  pyannote license is accepted.
 - Re-run `--get-duration` against the actual Parking-mode file that
   originally failed, to confirm the box-reader fallback fixes it for real
   (not just against the synthetic reproduction).
@@ -201,3 +290,253 @@ NOT yet confirmed for real:
 After that: decide whether docs/CLI.md and docs/GLOSSARY.md (which describe
 an aspirational `--type`/`--latest`/`--match` interface that no command
 actually implements) should be reconciled with what's really there.
+
+---
+
+## Clean CLI error handling (done, this session)
+
+Christer noticed a bad archive path (missing, or a file instead of a
+folder) and Ctrl-C mid-run both dumped a raw Python traceback instead of a
+short message - across every bv-* command, since none of them caught
+`OSError` (what `os.scandir()` raises from inside `Archive()`/
+`ArchiveReader.read()`) or `KeyboardInterrupt` anywhere.
+
+New `blackvue.cli.errors.run_cli(prog, main)` wraps a command's body,
+catching just those two failure modes and printing one `<prog>: <message>`
+line on stderr instead: `OSError` -> exit 1 (`str(exc)` built from
+`exc.strerror`/`exc.filename` when available, which is already a clean
+"No such file or directory: /path" - no `[Errno N]` noise), Ctrl-C -> exit
+130 (`"interrupted"`). Anything else (including `SystemExit`, so argparse's
+own `--bad-flag` handling is untouched) propagates as before - this is
+deliberately narrow, not a catch-all.
+
+Has to live inside `main()` itself, not behind `if __name__ == "__main__":`
+- the installed console-script entry points (pyproject.toml) call
+`blackvue.cli.bv_ls:main` etc. directly, so that guard never runs for a
+real install.
+
+Wired into all six commands (`bv-ls`, `bv-export`, `bv-generate`,
+`bv-download`, `bv-config`, `bv-lang`) by wrapping each `main()`'s call into
+its own body - `bv-download`/`bv-config`/`bv-lang`, whose `main()` did
+argument parsing and the actual work in one function, got that work split
+into a `_run(args)` so parsing (which should still raise `SystemExit`
+normally) stays outside the wrapped call. `bv-lang`'s `_run()` also fixed a
+latent bug surfaced by that split: its unreachable "unknown command"
+fallback referenced `parser`, which no longer exists in that scope now
+that parsing and dispatch are separate functions - replaced with a plain
+`print()`.
+
+---
+
+## Trip support / future bv-export (roadmap)
+
+Christer's vision, captured for continuity across sessions:
+
+**Duration-aware gap calculation (done, this session, cuts across items 1
+and 3 below).** Christer noticed `Asset.DURATION`/`.duration.txt` (the real
+elapsed-time span `bv-generate --get-duration` computes and persists,
+important because a Parking-mode timelapse's played-back file length can be
+nothing like its real duration) was written but never actually read by
+anything - `TripBuilder`'s gap check and `Trip.duration` were both pure
+start-to-start timestamp math, so a recording that's itself longer than
+`max_gap` could get wrongly split from the one after it. Fixed the gap
+side: `TripBuilder` gained an optional `recording_duration: Callable[
+[Recording], int | None] | None` constructor param - when it returns a
+value for a recording, that recording's real end (`start + duration`) is
+used instead of its bare start when computing the gap to the *next*
+recording, before that gap is ever compared to `max_gap` (a recording with
+no known duration falls back to its start timestamp, so this degrades one
+recording at a time, not all-or-nothing). `recording_duration=None` (the
+default) reproduces the old behaviour exactly, matching the same
+backward-compatible pattern as the `bridge` param added earlier. New
+`blackvue.generate.media.read_duration_seconds(recording)` reads a
+recording's `.duration.txt` without touching ffprobe/ffmpeg (returns None
+if the file's missing or unparseable). Wired into both `bv-ls --trips` and
+`bv-export` as the default, with a `--no-duration` opt-out flag mirroring
+`--no-movement`. Still open: `Trip.duration`/`Trip.label` (the identifier
+used in bv-export folder names) still use the *last* recording's raw start
+timestamp as the trip's "end", so the reported/displayed trip duration
+still undercounts by that last recording's own real length - deliberately
+left alone since changing it would also change already-shipped folder
+naming, and hasn't been asked for yet.
+
+**Fuzzy gap tolerance (done, this session).** Christer asked about a small
+buffer (~10s) on top of `max_gap`, to absorb measurement noise that has
+nothing to do with whether the vehicle actually stopped: `.duration.txt` is
+rounded to the nearest second, recording timestamps only have 1-second
+resolution (from the filename), and real dashcams take a moment to close
+one file and open the next even mid-recording. `TripBuilder` gained
+`gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE` (10s), added on top of
+`max_gap` before a gap counts as a split (`gap > max_gap + gap_tolerance`).
+Unlike `bridge`/`recording_duration`, this defaults *on* rather than being
+opt-in, since it's noise-absorption rather than a detection feature -
+`gap_tolerance=timedelta(0)` recovers the exact old boundary if ever
+needed. Wired into both commands as `--gap-tolerance SECONDS`.
+
+Also worth recording here since Christer asked directly: of the three
+signals now feeding trip detection, they're not peers - duration is a
+correction applied to the gap itself before anything is compared to
+`max_gap` (folded in unconditionally, since it's a measured fact, not a
+guess); `max_gap` (plus the tolerance above) is the actual decision
+threshold; movement bridging is consulted last, only when the
+duration-corrected gap still exceeds that threshold, since it's the most
+speculative of the three (GPS speed at the recording edges is fairly
+direct when a fix exists but only sees ~15s at each edge with nothing from
+inside the gap itself; g-sensor variance is weaker still, self-calibrated
+because the raw unit is unconfirmed). Within the movement check itself, GPS
+and g-sensor aren't a strict fallback chain - both are checked and either
+one returning true is enough - deliberately, since bridging only ever
+prevents a split and never causes one, so a false-positive bridge is a
+cheap mistake while a false-negative (an over-eager split) is the more
+annoying failure for "assemble one holiday video."
+
+1. **bv-ls --trips (done, this session).** Detect trips - runs of recordings
+   with no gap longer than `--max-gap` (default 10 min) between them - and
+   list one row per trip instead of one row per recording. Built on
+   `blackvue.trip.{Trip,TripBuilder}`, which already existed but were
+   completely unused and had a real bug (referenced `recording.recording_id`,
+   which doesn't exist - the real field is `Recording.id` - hidden until now
+   because both existing test files used a `FakeRecording` with the same
+   wrong attribute name). Fixed, and a real-`Recording` test added to each
+   so that class of drift can't hide again. Added `Trip.label` (
+   `trip_<start>_<end>`, e.g. `trip_20260715_133458_20260715_141235`) -
+   this is also the exact suffix bv-export's folder names will use.
+
+2. **GPS-aware trip heuristic (done, this session).** Christer supplied two
+   real files (`20260720_135524_E.gps`, `20260720_135824_N.3gf`), which let
+   the raw formats be reverse-engineered against real data instead of
+   guessed:
+   - `.gps` is NMEA-0183 text, each sentence prefixed with a bracketed
+     Unix-epoch-ms timestamp; only `$GPRMC` is parsed (has fix
+     validity/position/speed/course in one line). The bracket timestamp
+     matches `RecordingId.timestamp` to the second in the real sample, so no
+     timezone conversion is needed. Built as `blackvue.telemetry.gps_reader`
+     (`GpsFix`, `read_gps()`).
+   - `.3gf` is a headerless binary stream of fixed 10-byte records
+     (`>Ihhh` - 4-byte big-endian ms offset + signed X/Y/Z). Verified the ms
+     field is a genuine 4-byte counter (doesn't wrap at the 16-bit/65536ms
+     boundary) against the real sample, which ran ~2m49s. Built as
+     `blackvue.telemetry.gsensor_reader` (`GSensorSample`, `read_gsensor()`).
+     The physical unit of X/Y/Z isn't confirmed, so nothing here assumes a
+     calibrated g-force threshold.
+
+   Policy (confirmed with Christer via AskUserQuestion): time-gap stays the
+   *primary* trip-split rule; movement only ever *bridges* a gap that would
+   otherwise split a trip, never splits one the time-gap rule would have
+   kept together. The g-sensor movement signal is self-calibrating relative
+   variance against the recording's own quietest window, not a fixed
+   threshold (since the unit is unconfirmed).
+
+   Implemented in `blackvue.telemetry.movement`
+   (`movement_bridges_gap(previous, current)`, plus the underlying
+   `gps_shows_movement_at_{start,end}()` /
+   `gsensor_shows_movement_at_{start,end}()` checks). `TripBuilder` gained an
+   optional `bridge: Callable[[Recording, Recording], bool] | None`
+   constructor param - only consulted when the time-gap rule would split,
+   `bridge=None` (the default) reproduces the old pure-time-gap behaviour
+   exactly, so this is fully backward compatible. `bv-ls --trips` passes
+   `movement_bridges_gap` as the bridge by default; `--no-movement` falls
+   back to the pure `--max-gap` rule. Missing/unreadable GPS/g-sensor files
+   are treated as "no evidence", never as "stationary" - they can't force a
+   split on their own.
+
+3. **bv-export command, plus most of the "hard work" (done, this session).**
+   Christer's answer when asked how much bv-export's first version should do
+   was, in effect, "the hard work too" - so items 3 and 4 landed together
+   rather than as separate passes.
+
+   New `bv-export PATH --target DIR [--prefix PREFIX] [--from --until
+   --timestamp] [--max-gap MINUTES] [--no-movement] [--dry-run]` command
+   (`blackvue.cli.bv_export`). Scans the archive over the standard
+   `PATH --from --until --timestamp` range, detects trips the same way
+   `bv-ls --trips` does (same `TripBuilder` + GPS/g-sensor movement
+   bridging, same `--max-gap`/`--no-movement` flags), and for each trip
+   creates/refreshes a subfolder under `--target` named
+   `<PREFIX_>trip_<start>_<end>` (e.g. `--prefix Holiday` ->
+   `Holiday_trip_20260715_133458_20260715_141235`). If a trip's folder
+   already exists from a previous run it's wiped and rebuilt from scratch
+   (confirmed with Christer: overwrite/refresh, not skip-if-exists).
+
+   The per-trip assembly itself lives in the new `blackvue.export` package
+   (`export_trip(trip, destination) -> ExportResult`, kept separate from the
+   CLI so it's independently testable):
+   - `export/media.py`: `concatenate_media(sources, destination)` joins
+     video or audio files via ffmpeg's concat demuxer (stream copy, no
+     re-encode). Front and rear video are concatenated separately into
+     `front.mp4`/`rear.mp4`; audio into `audio.aac` - each only written if
+     at least one recording in the trip has that asset.
+   - `export/text.py`: `merge_text_assets(trip, asset)` concatenates
+     transcript/translation text across the trip's recordings (plain and
+     diarized, translated or not - all four `Asset` variants), each block
+     headed by `# <recording_id>`, into `transcript.txt` /
+     `transcript.diarized.txt` / `translation.txt` /
+     `translation.diarized.txt`.
+   - `export/gpx_writer.py`: `write_gpx(fixes, path)` turns merged
+     `GpsFix`es (from `blackvue.telemetry.gps_reader`, item 2) into a real
+     GPX 1.1 track file (`trip.gpx`) - the first thing in this codebase
+     that actually generates a `.gpx` rather than just detecting one that's
+     already there. Invalid fixes are skipped; speed/course go in a
+     `<extensions>` block (speed converted km/h -> m/s, the GPX
+     convention).
+   - G-sensor: `gsensor_reader.py` gained a symmetric `write_gsensor()`
+     (round-trips through the same 10-byte binary format as `read_gsensor`)
+     so `trip_export.py` can merge every recording's `.3gf` samples into one
+     `trip.3gf`, rebasing each recording's offsets from
+     per-recording-relative to per-trip-relative (recording N's samples get
+     shifted forward by `recording_N.timestamp - trip.start_timestamp`).
+
+   Not done yet: rendering an actual map-overlay video. That's tracked
+   separately below (item 4) since it's a genuinely different kind of work
+   (picking a mapping/tile approach, image/video generation) rather than
+   more file merging.
+
+4. **Map-overlay video rendering (future, scoped but not started).** Render
+   a video overlaying position/speed/other telemetry on a map, to be
+   composited into each trip's export folder alongside the concatenated
+   front/rear video. Nothing built yet - only the data it would consume
+   exists (`trip.gpx`: lat/lon/timestamp/speed/course per fix, merged
+   across a trip by `bv-export`). Scoping notes from a design discussion
+   this session, for whenever this gets picked up:
+
+   - **Mechanics (low-risk, not the hard part).** GPS fixes land roughly
+     once a second, so frames need interpolated position/speed between
+     consecutive fixes for smooth motion, not a jump once a second. Natural
+     approach given how much this project already leans on ffmpeg: render
+     each frame as an image (route line, moving position dot, a
+     speed/name/timestamp text overlay) with something like Pillow or
+     matplotlib, then hand the frame sequence to ffmpeg to encode into
+     `map.mp4`. Frame timestamps need to line up with the trip's real
+     timeline so the result can later sit next to the front/rear footage in
+     `--stitch` (item 5).
+   - **The real fork: what "map" means here.** Two live options, not yet
+     decided:
+     - *No basemap* - just plot the GPS route as an abstract line with a
+       moving dot and text overlay. Zero external data, zero network
+       dependency ever, fits the offline/private philosophy perfectly.
+       Doesn't look like an actual map - no roads or place context, just a
+       shape.
+     - *Real street-level basemap* - what "map" probably means for a
+       driving trip. Needs real map tile imagery from somewhere - either a
+       one-time cached fetch per region (similar in spirit to how
+       `bv-lang install` caches a translation model once, then works
+       offline after) or bundling something. This is the option in tension
+       with "not silently calling a cloud maps API" - it wouldn't be
+       silent, but it would need at least one moment of reaching out for
+       tiles, unless Christer supplies map data himself.
+     - *Ruled out*: a bundled low-detail vector basemap (coastlines/country
+       borders, no tile server, fully offline) was considered and rejected
+       - at driving-trip zoom it only shows "somewhere in Sweden," not
+       useful context for a dashcam trip.
+   - Decision needed before implementation starts: abstract route-line
+     (simple, fully local, could ship today) vs. real street map (needs a
+     tile-source decision first).
+
+5. **--stitch option (future).** Compose the front and rear video
+   side-by-side (`left_right`) or stacked (`top_down`), and optionally
+   stitch the map-overlay video in too, at a chosen position. This is
+   essentially an ffmpeg `filter_complex` composition step
+   (`hstack`/`vstack`/`overlay`) once item 4 produces the map video to
+   combine.
+
+Immediate next step is item 2: waiting on a real `.gps`/`.3gf` file sample
+from Christer.

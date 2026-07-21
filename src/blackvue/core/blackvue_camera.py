@@ -8,10 +8,12 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from .blackvue_client import BlackVueClient
 from ..domain.recording import Recording
+from ..domain.vod_entry import VodEntry
 from ..parser.vod import parse_vod
 
 
@@ -32,8 +34,18 @@ class BlackVueCamera:
         self,
         recording: Recording,
         destination: Path,
+        *,
+        select: Callable[[VodEntry], bool] | None = None,
+        on_bytes: Callable[[int], None] | None = None,
     ) -> bool:
         """Download a recording.
+
+        If select is given, only entries for which it returns True are
+        downloaded (e.g. ``lambda entry: entry.is_video``). By default
+        every entry is downloaded.
+
+        If on_bytes is given, it's passed straight through to
+        BlackVueClient.download() for every entry - see its docstring.
 
         Returns True if any file was downloaded or resumed.
         """
@@ -46,11 +58,15 @@ class BlackVueCamera:
         changed = False
 
         for entry in recording.entries:
+            if select is not None and not select(entry):
+                continue
+
             filename = destination / entry.path.name
 
             if self._client.download(
                 entry,
                 filename,
+                on_bytes=on_bytes,
             ):
                 changed = True
 

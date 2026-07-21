@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .errors import run_cli
 from ..generate import MediaToolError
 from ..generate import normalize_language
 from ..generate import short_code
@@ -172,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    return run_cli("bv-lang", lambda: _run(args))
+
+
+def _run(args: argparse.Namespace) -> int:
     if args.command == "list":
         try:
             pairs = list_available() if args.available else list_installed()
@@ -205,7 +210,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    parser.error(f"unknown command: {args.command}")
+    # Unreachable in practice - add_subparsers(required=True) already
+    # rejects anything but "list"/"install" before _run() is called.
+    print(f"bv-lang: unknown command: {args.command}", file=sys.stderr)
     return 2
 
 

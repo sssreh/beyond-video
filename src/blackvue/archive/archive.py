@@ -14,6 +14,7 @@ class Archive:
         self._path = Path(path)
         self._recordings = ArchiveReader(self._path).read()
         self._configurations = self._read_configurations()
+        self._warned_missing_configuration = False
 
     @property
     def recordings(self) -> list[Recording]:
@@ -27,6 +28,7 @@ class Archive:
 
     def configuration(self, recording: Recording) -> Configuration:
         """Return the configuration active for a recording."""
+
         configuration = None
 
         for candidate in self._configurations:
@@ -36,9 +38,14 @@ class Archive:
                 break
 
         if configuration is None:
-            raise LookupError(
-                f"No configuration found for recording {recording.id}."
-            )
+            if not self._warned_missing_configuration:
+                print(
+                    "Warning: archive contains no configuration snapshot. "
+                    "Using fallback RecordTime of 300 seconds."
+                )
+                self._warned_missing_configuration = True
+
+            return Configuration.fallback()
 
         return configuration
 
@@ -51,10 +58,13 @@ class Archive:
     def __getitem__(self, index):
         return self._recordings[index]
 
+#    def _read_configurations(self) -> list[Configuration]:
+#       """Read all configuration snapshots."""
+#        return sorted(
+#            (Configuration(path) for path in self._path.glob("*.config.ini")),
+#            key=lambda configuration: configuration.recording_id,
+#        )
+
     def _read_configurations(self) -> list[Configuration]:
-        """Read all configuration snapshots."""
-        return sorted(
-            (Configuration(path) for path in self._path.glob("*.config.ini")),
-            key=lambda configuration: configuration.recording_id,
-        )
+        return []
     
