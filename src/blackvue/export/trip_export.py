@@ -210,6 +210,8 @@ def export_trip(
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
     stitch_layout: str | None = None,
+    stitch_resolution: tuple[int, int] | None = None,
+    stitch_bitrate: str | None = None,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -255,10 +257,18 @@ def export_trip(
     stitch.py), additionally renders stitch.mp4: the trip's front and
     rear footage composed into one video via ffmpeg hstack/vstack. A
     trip with only one camera falls back to a plain copy of whichever
-    one exists, ignoring `stitch_layout`. This is the first --stitch
-    building block (see WORKING_CONTEXT.md for the full spec) - no
-    map panel, g-sensor overlay, subtitle burn-in, rearview_mirror
-    layout, or auto-picking a layout from the trip's geometry yet.
+    one exists, ignoring `stitch_layout` (unless `stitch_resolution`/
+    `stitch_bitrate` are also given, which force a re-encode even for
+    a single camera). This is the first --stitch building block (see
+    WORKING_CONTEXT.md for the full spec) - no map panel, g-sensor
+    overlay, subtitle burn-in, rearview_mirror layout, or auto-picking
+    a layout from the trip's geometry yet.
+
+    `stitch_resolution` (a (width, height) pixel pair) and
+    `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)
+    scale/constrain stitch.mp4 - handy for a fast, small test render
+    instead of waiting on a full-resolution encode. Both only apply
+    when `stitch_layout` is also given.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -358,6 +368,8 @@ def export_trip(
             stitch_path = stitch_cameras(
                 front_video, rear_video, destination / "stitch.mp4",
                 layout=stitch_layout,
+                resolution=stitch_resolution,
+                bitrate=stitch_bitrate,
             )
         except MediaToolError as exc:
             warnings.append(f"stitch: {exc}")

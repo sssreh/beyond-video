@@ -42,6 +42,8 @@ def stitch_cameras(
     destination: Path,
     *,
     layout: str,
+    resolution: tuple[int, int] | None = None,
+    bitrate: str | None = None,
 ) -> Path | None:
     """Compose a trip's front/rear footage into one video at
     `destination`.
@@ -52,8 +54,18 @@ def stitch_cameras(
     (the common single-front-camera case) falls back to a plain copy
     of whichever one is available, ignoring `layout` entirely - the
     same "don't fail, just do the sensible thing" convention the rest
-    of bv-export follows for a missing optional input. Returns None if
-    neither exists.
+    of bv-export follows for a missing optional input - unless
+    `resolution`/`bitrate` are given too, in which case the single
+    camera still gets re-encoded to honor them (a plain stream copy
+    can't resize or re-bitrate). Returns None if neither exists.
+
+    `resolution`, if given, is an (width, height) pixel pair the final
+    output is scaled to - handy for a fast, small test render (e.g.
+    (320, 240)) instead of waiting on a full-resolution encode.
+    `bitrate`, if given, is passed straight to ffmpeg as `-b:v` (plus
+    matching `-maxrate`/`-bufsize` to actually constrain it - e.g.
+    "256k", "2M"), on top of whichever encoder
+    (encode_with_nvenc_fallback()) ends up handling the encode.
 
     No audio track is carried into the stitched video yet - trip-level
     audio already lives in its own audio.aac (see trip_export.py),
@@ -61,13 +73,20 @@ def stitch_cameras(
     """
 
     if front is not None and rear is not None:
-        return _stack(front, rear, destination, layout=layout)
+        return _stack(
+            front, rear, destination,
+            layout=layout, resolution=resolution, bitrate=bitrate,
+        )
 
     only = front or rear
     if only is None:
         return None
 
-    concatenate_media([only], destination)
+    if resolution is None and bitrate is None:
+        concatenate_media([only], destination)
+        return destination
+
+    _reencode_single(only, destination, resolution=resolution, bitrate=bitrate)
     return destination
 
 
@@ -101,7 +120,49 @@ def _video_dimensions(path: Path) -> tuple[int, int]:
         ) from exc
 
 
-def _stack(front: Path, rear: Path, destination: Path, *, layout: str) -> Path:
+def _bitrate_args(bitrate: str | None) -> list[str]:
+    """ffmpeg codec args constraining the encode to `bitrate` (e.g.
+    "256k") - -b:v alone is only a target/average for most encoders,
+    so -maxrate/-bufsize are set to the same value to actually cap it,
+    which matters for a deliberately-small test render."""
+
+    if bitrate is None:
+        return []
+    return ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bitrate]
+
+
+def _reencode_single(
+    source: Path,
+    destination: Path,
+    *,
+    resolution: tuple[int, int] | None,
+    bitrate: str | None,
+) -> None:
+    input_args = ["-i", str(source)]
+
+    if resolution is not None:
+        width, height = resolution
+        input_args += [
+            "-filter_complex", f"[0:v]scale={width}:{height}[v]",
+            "-map", "[v]",
+        ]
+    else:
+        input_args += ["-map", "0:v"]
+
+    encode_with_nvenc_fallback(
+        input_args, destination, extra_codec_args=_bitrate_args(bitrate)
+    )
+
+
+def _stack(
+    front: Path,
+    rear: Path,
+    destination: Path,
+    *,
+    layout: str,
+    resolution: tuple[int, int] | None,
+    bitrate: str | None,
+) -> Path:
     if layout not in STACK_LAYOUTS:
         raise ValueError(
             f"unknown stitch layout: {layout!r} "
@@ -121,18 +182,29 @@ def _stack(front: Path, rear: Path, destination: Path, *, layout: str) -> Path:
     # than a letterboxed fit: simpler, and worth revisiting only if it
     # actually looks wrong on a real mismatched front/rear pair.
     front_width, front_height = _video_dimensions(front)
-    filter_complex = (
-        f"[1:v]scale={front_width}:{front_height}[rear_scaled];"
-        f"[0:v][rear_scaled]{filter_name}=inputs=2[v]"
-    )
+    clauses = [
+        f"[1:v]scale={front_width}:{front_height}[rear_scaled]",
+        f"[0:v][rear_scaled]{filter_name}=inputs=2[stacked]",
+    ]
+    output_label = "stacked"
+
+    # A second scale pass on the finished composite, if a specific
+    # output resolution was requested (e.g. a fast small test render)
+    # - independent of the front/rear-matching scale above, which
+    # exists purely so hstack/vstack don't refuse mismatched inputs.
+    if resolution is not None:
+        out_width, out_height = resolution
+        clauses.append(f"[stacked]scale={out_width}:{out_height}[final]")
+        output_label = "final"
 
     encode_with_nvenc_fallback(
         [
             "-i", str(front),
             "-i", str(rear),
-            "-filter_complex", filter_complex,
-            "-map", "[v]",
+            "-filter_complex", ";".join(clauses),
+            "-map", f"[{output_label}]",
         ],
         destination,
+        extra_codec_args=_bitrate_args(bitrate),
     )
     return destination

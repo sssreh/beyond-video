@@ -3,6 +3,7 @@ import subprocess
 
 import pytest
 
+from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import STACK_LAYOUTS
 from blackvue.export.stitch import stitch_cameras
 from blackvue.generate.media import MediaToolError
@@ -133,6 +134,68 @@ def test_stitch_cameras_rejects_an_unknown_layout(tmp_path):
 
 def test_stack_layouts_has_the_two_currently_supported_layouts():
     assert set(STACK_LAYOUTS) == {"side_by_side", "top_down"}
+
+
+def test_stitch_cameras_scales_the_stacked_output_to_a_requested_resolution(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 640, 480)
+    _make_video(rear, 640, 480)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination,
+        layout="side_by_side", resolution=(320, 240),
+    )
+
+    # Without resolution this would come out 1280x480 (double front's
+    # width) - the resolution override replaces that entirely, not
+    # scaling relative to it.
+    assert _video_size(destination) == (320, 240)
+
+
+def test_stitch_cameras_scales_a_single_camera_when_resolution_given(tmp_path):
+    front = tmp_path / "front.mp4"
+    _make_video(front, 640, 480)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, None, destination,
+        layout="side_by_side", resolution=(320, 240),
+    )
+
+    assert _video_size(destination) == (320, 240)
+
+
+def test_stitch_cameras_passes_bitrate_through_to_the_encoder(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured["extra_codec_args"] = extra_codec_args
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(
+        stitch_module, "encode_with_nvenc_fallback", fake_encode
+    )
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", bitrate="256k",
+    )
+
+    assert captured["extra_codec_args"] == [
+        "-b:v", "256k", "-maxrate", "256k", "-bufsize", "256k",
+    ]
 
 
 def test_stitch_cameras_raises_media_tool_error_on_a_bad_source(tmp_path):

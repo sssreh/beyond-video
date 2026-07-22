@@ -36,6 +36,17 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _parse_resolution(value: str) -> tuple[int, int]:
+    try:
+        width_str, height_str = value.lower().split("x")
+        return int(width_str), int(height_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid resolution {value!r} (expected WIDTHxHEIGHT, "
+            "e.g. 320x240)"
+        )
+
+
 def _ask_wipe_existing(folder: Path) -> bool:
     answer = input(
         f"{folder.name} already exists. Wipe and rebuild trip folders "
@@ -62,6 +73,8 @@ def bv_export(
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
     stitch_layout: str | None = None,
+    stitch_resolution: tuple[int, int] | None = None,
+    stitch_bitrate: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
 ) -> int:
@@ -169,6 +182,8 @@ def bv_export(
                 map_zoom_meters=map_zoom_meters,
                 render_gsensor=render_gsensor,
                 stitch_layout=stitch_layout,
+                stitch_resolution=stitch_resolution,
+                stitch_bitrate=stitch_bitrate,
             )
         except MediaToolError as exc:
             print(f"bv-export: {trip.label}: {exc}", file=sys.stderr)
@@ -395,6 +410,31 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-resolution",
+        type=_parse_resolution,
+        default=None,
+        metavar="WIDTHxHEIGHT",
+        help=(
+            "Scale stitch.mp4 to this resolution (e.g. 320x240) "
+            "instead of leaving it at front's own resolution - a fast "
+            "small test render instead of waiting on a full-size "
+            "encode. Only used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-bitrate",
+        default=None,
+        metavar="RATE",
+        help=(
+            "Target video bitrate for stitch.mp4 (e.g. 256k, 2M), "
+            "passed straight to ffmpeg and capped there (-b:v/"
+            "-maxrate/-bufsize all set to RATE). Only used together "
+            "with --stitch."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -433,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
         map_zoom_meters=args.map_zoom_meters,
         render_gsensor=args.render_gsensor,
         stitch_layout=args.stitch_layout if args.stitch else None,
+        stitch_resolution=args.stitch_resolution,
+        stitch_bitrate=args.stitch_bitrate,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
     ))
