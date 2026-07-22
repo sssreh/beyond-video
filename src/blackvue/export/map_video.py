@@ -1,8 +1,9 @@
 """
 Map-overlay video encoding for bv-export: turns a trip's merged GPS
 fixes into map.mp4 - rendering one frame per interval (route driven
-so far, current position, speed, timestamp) against a locally-drawn
-OSM-road basemap, then handing the frame sequence to ffmpeg.
+so far, current position/heading, speed, timestamp) against a
+locally-drawn OSM-road basemap, then handing the frame sequence to
+ffmpeg.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -11,11 +12,15 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import math
 import tempfile
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
+from PIL import Image
+
+from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
 from .map_render import render_frame
 from .media import encode_frame_sequence
@@ -38,11 +43,48 @@ def _valid_positioned_fixes(fixes: tuple[GpsFix, ...]) -> tuple[GpsFix, ...]:
     )
 
 
+def _interpolate_course(
+    a: float | None, b: float | None, t: float
+) -> float | None:
+    """Interpolate between two compass courses (degrees, 0-360),
+    correctly handling the 0/360 wraparound a plain linear
+    interpolation would get wrong (e.g. 350 degrees -> 10 degrees
+    should pass through 0/360, not swing back down through 180).
+
+    Falls back to whichever course is given if only one is (a fix's
+    course field can be empty in the raw NMEA data).
+    """
+
+    if a is None:
+        return b
+    if b is None:
+        return a
+
+    a_rad, b_rad = math.radians(a), math.radians(b)
+    x = (1 - t) * math.cos(a_rad) + t * math.cos(b_rad)
+    y = (1 - t) * math.sin(a_rad) + t * math.sin(b_rad)
+
+    if x == 0.0 and y == 0.0:
+        # Exactly opposite courses (e.g. interpolating across a
+        # U-turn) - no single "average" direction is more correct
+        # than the other; picking `a` is an arbitrary but stable
+        # choice rather than an error.
+        return a
+
+    result = math.degrees(math.atan2(y, x)) % 360
+    # A result that should mathematically be a hair below 0 (e.g.
+    # -1e-15) can round to exactly 360.0 in floating point rather than
+    # landing in [0, 360) - fold that edge case back to 0.0 so callers
+    # never have to special-case 360 meaning the same thing as 0.
+    return 0.0 if result == 360.0 else result
+
+
 def interpolate_position(
     fixes: tuple[GpsFix, ...], timestamp: datetime
-) -> tuple[float, float, float | None]:
-    """Linearly interpolate (lat, lon, speed_kmh) at `timestamp`
-    between the two fixes bracketing it.
+) -> tuple[float, float, float | None, float | None]:
+    """Linearly interpolate (lat, lon, speed_kmh, course) at
+    `timestamp` between the two fixes bracketing it (course uses
+    circular interpolation - see _interpolate_course()).
 
     `fixes` must be sorted by timestamp and non-empty. A timestamp
     outside the fixes' own range clamps to the nearest end fix rather
@@ -51,18 +93,21 @@ def interpolate_position(
 
     if timestamp <= fixes[0].timestamp:
         first = fixes[0]
-        return first.latitude, first.longitude, first.speed_kmh
+        return first.latitude, first.longitude, first.speed_kmh, first.course
 
     if timestamp >= fixes[-1].timestamp:
         last = fixes[-1]
-        return last.latitude, last.longitude, last.speed_kmh
+        return last.latitude, last.longitude, last.speed_kmh, last.course
 
     for previous, current in zip(fixes, fixes[1:]):
         if previous.timestamp <= timestamp <= current.timestamp:
             span = (current.timestamp - previous.timestamp).total_seconds()
 
             if span <= 0:
-                return previous.latitude, previous.longitude, previous.speed_kmh
+                return (
+                    previous.latitude, previous.longitude,
+                    previous.speed_kmh, previous.course,
+                )
 
             t = (timestamp - previous.timestamp).total_seconds() / span
             lat = previous.latitude + (current.latitude - previous.latitude) * t
@@ -76,12 +121,14 @@ def interpolate_position(
             else:
                 speed = previous.speed_kmh or current.speed_kmh
 
-            return lat, lon, speed
+            course = _interpolate_course(previous.course, current.course, t)
+
+            return lat, lon, speed, course
 
     # Unreachable given the clamp checks above, but keeps the return
     # type honest if it's ever reached.
     last = fixes[-1]
-    return last.latitude, last.longitude, last.speed_kmh
+    return last.latitude, last.longitude, last.speed_kmh, last.course
 
 
 def render_map_video(
@@ -91,10 +138,17 @@ def render_map_video(
     destination: Path,
     *,
     fps: int = DEFAULT_FPS,
+    marker_image_path: Path | None = None,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
-    `destination`: the route driven so far, current position, speed,
-    and timestamp, drawn against `roads` (see osm_roads.py).
+    `destination`: the route driven so far, current position/heading,
+    speed, and timestamp, drawn against `roads` (see osm_roads.py).
+
+    The position marker is an arrow rotated to the GPS course over
+    ground by default. `marker_image_path`, if given, is used as a
+    custom marker instead (also rotated to match course) - a PNG with
+    transparency is recommended, drawn pointing "up"/north in its own
+    file. Raises MediaToolError if the image can't be loaded.
 
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - the same "nothing
@@ -111,6 +165,15 @@ def render_map_video(
 
     if total_seconds <= 0:
         return None
+
+    marker_image = None
+    if marker_image_path is not None:
+        try:
+            marker_image = Image.open(marker_image_path).convert("RGBA")
+        except (FileNotFoundError, OSError) as exc:
+            raise MediaToolError(
+                f"could not load marker image {marker_image_path}: {exc}"
+            ) from exc
 
     frame_count = max(2, int(total_seconds * fps) + 1)
 
@@ -137,7 +200,7 @@ def render_map_video(
                 route_so_far.append((fix.latitude, fix.longitude))
                 fix_index += 1
 
-            lat, lon, speed = interpolate_position(positioned, timestamp)
+            lat, lon, speed, course = interpolate_position(positioned, timestamp)
             position = (lat, lon)
 
             frame = render_frame(
@@ -146,6 +209,8 @@ def render_map_video(
                 tuple(route_so_far) + (position,),
                 position,
                 speed_kmh=speed,
+                heading=course,
+                marker_image=marker_image,
                 timestamp_text=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")

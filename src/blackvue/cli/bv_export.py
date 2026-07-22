@@ -57,6 +57,7 @@ def bv_export(
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     render_map: bool = False,
+    map_icon: str | Path | None = None,
     render_gsensor: bool = False,
     overwrite: bool = False,
     dry_run: bool = False,
@@ -122,6 +123,7 @@ def bv_export(
     # even a --overwrite wipe of an individual trip folder - see
     # export_trip()'s map_cache_dir docstring.
     map_cache_dir = target_path / ".osm_cache"
+    map_icon_path = Path(map_icon) if map_icon else None
     exit_code = 0
     # Cached on the first existing trip folder this run encounters,
     # then reused for every other one - so an interactive run only
@@ -160,6 +162,7 @@ def bv_export(
                 folder,
                 render_map=render_map,
                 map_cache_dir=map_cache_dir,
+                map_icon=map_icon_path,
                 render_gsensor=render_gsensor,
             )
         except MediaToolError as exc:
@@ -302,7 +305,23 @@ def main(argv: list[str] | None = None) -> int:
             "default - the first trip through a given area needs a "
             "one-time network fetch of that area's road data (cached "
             "under --target/.osm_cache afterward, then fully "
-            "offline), and rendering adds real time per trip."
+            "offline), and rendering adds real time per trip. The "
+            "current-position marker is an arrow rotated to match "
+            "the GPS course over ground by default - see --map-icon "
+            "to use a custom image instead."
+        ),
+    )
+
+    parser.add_argument(
+        "--map-icon",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Use a custom image as --map's position marker instead "
+            "of the default arrow, rotated each frame to match the "
+            "GPS course over ground. A PNG with transparency, drawn "
+            "pointing 'up'/north in its own file, works best. Only "
+            "used together with --map."
         ),
     )
 
@@ -355,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         render_map=args.render_map,
+        map_icon=args.map_icon,
         render_gsensor=args.render_gsensor,
         overwrite=args.overwrite,
         dry_run=args.dry_run,

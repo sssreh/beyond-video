@@ -3,20 +3,24 @@ import subprocess
 from datetime import datetime
 from datetime import timedelta
 
+import pytest
+from PIL import Image
+
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
+from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gps_reader import GpsFix
 
 
-def _fix(offset_seconds, lat, lon, speed_kmh=50.0, *, valid=True):
+def _fix(offset_seconds, lat, lon, speed_kmh=50.0, course=0.0, *, valid=True):
     return GpsFix(
         timestamp=datetime(2026, 7, 15, 13, 0, 0) + timedelta(seconds=offset_seconds),
         valid=valid,
         latitude=lat,
         longitude=lon,
         speed_kmh=speed_kmh,
-        course=0.0,
+        course=course,
     )
 
 
@@ -36,46 +40,76 @@ def _video_duration_seconds(path) -> float:
 
 
 def test_interpolate_position_returns_exact_fix_at_its_own_timestamp():
-    fixes = (_fix(0, 59.30, 18.00), _fix(10, 59.31, 18.02))
+    fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
 
-    lat, lon, speed = interpolate_position(fixes, fixes[0].timestamp)
+    lat, lon, speed, course = interpolate_position(fixes, fixes[0].timestamp)
 
-    assert (lat, lon, speed) == (59.30, 18.00, 50.0)
+    assert (lat, lon, speed, course) == (59.30, 18.00, 50.0, 45.0)
 
 
 def test_interpolate_position_interpolates_midpoint():
     fixes = (
-        _fix(0, 59.30, 18.00, speed_kmh=40.0),
-        _fix(10, 59.32, 18.02, speed_kmh=60.0),
+        _fix(0, 59.30, 18.00, speed_kmh=40.0, course=0.0),
+        _fix(10, 59.32, 18.02, speed_kmh=60.0, course=90.0),
     )
 
-    lat, lon, speed = interpolate_position(
+    lat, lon, speed, course = interpolate_position(
         fixes, fixes[0].timestamp + timedelta(seconds=5)
     )
 
     assert round(lat, 5) == 59.31
     assert round(lon, 5) == 18.01
     assert speed == 50.0
+    assert round(course, 5) == 45.0
 
 
 def test_interpolate_position_clamps_before_first_fix():
-    fixes = (_fix(0, 59.30, 18.00), _fix(10, 59.31, 18.02))
+    fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
 
-    lat, lon, speed = interpolate_position(
+    lat, lon, speed, course = interpolate_position(
         fixes, fixes[0].timestamp - timedelta(seconds=5)
     )
 
-    assert (lat, lon, speed) == (59.30, 18.00, 50.0)
+    assert (lat, lon, speed, course) == (59.30, 18.00, 50.0, 45.0)
 
 
 def test_interpolate_position_clamps_after_last_fix():
-    fixes = (_fix(0, 59.30, 18.00), _fix(10, 59.31, 18.02))
+    fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
 
-    lat, lon, speed = interpolate_position(
+    lat, lon, speed, course = interpolate_position(
         fixes, fixes[-1].timestamp + timedelta(seconds=5)
     )
 
-    assert (lat, lon, speed) == (59.31, 18.02, 50.0)
+    assert (lat, lon, speed, course) == (59.31, 18.02, 50.0, 90.0)
+
+
+def test_interpolate_position_wraps_course_the_short_way_across_north():
+    # 350 -> 10 degrees is a 20-degree turn through north (0/360), not
+    # a 340-degree turn back down through 180 - a plain linear
+    # interpolation of the raw numbers would get this wrong.
+    fixes = (
+        _fix(0, 59.30, 18.00, course=350.0),
+        _fix(10, 59.31, 18.02, course=10.0),
+    )
+
+    _lat, _lon, _speed, course = interpolate_position(
+        fixes, fixes[0].timestamp + timedelta(seconds=5)
+    )
+
+    assert round(course, 5) == 0.0
+
+
+def test_interpolate_position_falls_back_to_whichever_course_is_present():
+    fixes = (
+        _fix(0, 59.30, 18.00, course=None),
+        _fix(10, 59.31, 18.02, course=123.0),
+    )
+
+    _lat, _lon, _speed, course = interpolate_position(
+        fixes, fixes[0].timestamp + timedelta(seconds=5)
+    )
+
+    assert course == 123.0
 
 
 def test_render_map_video_returns_none_for_fewer_than_two_fixes(tmp_path):
@@ -129,3 +163,38 @@ def test_render_map_video_produces_a_real_video_end_to_end(tmp_path):
     assert destination.exists()
     # 2 seconds of GPS data at 2fps -> roughly 2 seconds of video.
     assert round(_video_duration_seconds(destination)) == 2
+
+
+def test_render_map_video_uses_a_custom_marker_image_when_given(tmp_path):
+    icon_path = tmp_path / "car.png"
+    Image.new("RGBA", (16, 16), (255, 0, 0, 255)).save(icon_path)
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+    destination = tmp_path / "map.mp4"
+
+    result = render_map_video(
+        fixes,
+        roads=(),
+        bbox=bbox,
+        destination=destination,
+        fps=2,
+        marker_image_path=icon_path,
+    )
+
+    assert result == destination
+    assert destination.exists()
+
+
+def test_render_map_video_raises_for_a_missing_marker_image(tmp_path):
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+
+    with pytest.raises(MediaToolError):
+        render_map_video(
+            fixes,
+            roads=(),
+            bbox=bbox,
+            destination=tmp_path / "map.mp4",
+            marker_image_path=tmp_path / "does-not-exist.png",
+        )

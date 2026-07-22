@@ -1,3 +1,7 @@
+from PIL import Image
+
+from blackvue.export.map_render import _arrow_points
+from blackvue.export.map_render import _project
 from blackvue.export.map_render import render_frame
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
@@ -45,6 +49,65 @@ def test_render_frame_handles_a_single_route_point_without_crashing():
     )
 
     assert image.size == (640, 640)
+
+
+def test_arrow_points_noses_toward_north_for_heading_zero():
+    nose, _right, _left = _arrow_points((100.0, 100.0), 0.0, length=10, half_width=5)
+
+    # Heading 0 = north = screen "up" = smaller y, same x as center.
+    assert round(nose[0], 5) == 100.0
+    assert round(nose[1], 5) == 90.0
+
+
+def test_arrow_points_noses_toward_east_for_heading_90():
+    nose, _right, _left = _arrow_points((100.0, 100.0), 90.0, length=10, half_width=5)
+
+    # Heading 90 = east = screen right = larger x, same y as center.
+    assert round(nose[0], 5) == 110.0
+    assert round(nose[1], 5) == 100.0
+
+
+def test_arrow_points_back_corners_are_symmetric_and_behind_the_nose():
+    center = (100.0, 100.0)
+    nose, right, left = _arrow_points(center, 0.0, length=10, half_width=5)
+
+    # Both back corners are further "south" (larger y) than the nose,
+    # and mirror each other around the heading axis (same y, x
+    # equidistant from center).
+    assert right[1] > nose[1]
+    assert left[1] > nose[1]
+    assert round(right[1], 5) == round(left[1], 5)
+    assert round(right[0] - center[0], 5) == round(center[0] - left[0], 5)
+
+
+def test_render_frame_draws_an_arrow_when_heading_is_given():
+    dot = render_frame(_BBOX, roads=(), route_points=(), position=(59.31, 18.02))
+    arrow = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02), heading=45.0
+    )
+
+    # Different marker shapes should produce a visibly different frame.
+    assert list(dot.getdata()) != list(arrow.getdata())
+
+
+def test_render_frame_uses_a_custom_marker_image_when_given():
+    icon = Image.new("RGBA", (20, 20), (0, 0, 255, 255))
+
+    background = render_frame(_BBOX, roads=(), route_points=(), position=None)
+    with_icon = render_frame(
+        _BBOX,
+        roads=(),
+        route_points=(),
+        position=(59.31, 18.02),
+        heading=0.0,
+        marker_image=icon,
+    )
+
+    assert list(background.getdata()) != list(with_icon.getdata())
+    # A heading of 0 means no rotation, so the icon's own solid color
+    # should land, unmodified, at the projected center pixel.
+    x, y = _project(59.31, 18.02, _BBOX, 640, 640, 24)
+    assert with_icon.getpixel((int(x), int(y))) == (0, 0, 255)
 
 
 def test_render_frame_handles_a_degenerate_bounding_box():

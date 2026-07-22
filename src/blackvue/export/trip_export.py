@@ -141,11 +141,13 @@ def _render_map(
     destination: Path,
     map_cache_dir: Path,
     warnings: list[str],
+    *,
+    map_icon: Path | None = None,
 ) -> Path | None:
     """Render map.mp4 for a trip's merged GPS fixes, degrading to a
-    warning (not a failed export) on any network or ffmpeg problem -
-    the rest of the trip's export is still worth having even if the
-    map couldn't be built.
+    warning (not a failed export) on any network, image-loading, or
+    ffmpeg problem - the rest of the trip's export is still worth
+    having even if the map couldn't be built.
     """
 
     bbox = bounding_box_for_fixes(fixes)
@@ -159,7 +161,10 @@ def _render_map(
         return None
 
     try:
-        return render_map_video(fixes, roads, bbox, destination / "map.mp4")
+        return render_map_video(
+            fixes, roads, bbox, destination / "map.mp4",
+            marker_image_path=map_icon,
+        )
     except MediaToolError as exc:
         warnings.append(f"map: {exc}")
         return None
@@ -171,6 +176,7 @@ def export_trip(
     *,
     render_map: bool = False,
     map_cache_dir: Path | None = None,
+    map_icon: Path | None = None,
     render_gsensor: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
@@ -183,13 +189,16 @@ def export_trip(
 
     `render_map=True` additionally renders map.mp4 - a route/position/
     speed overlay on an OSM-road basemap (see osm_roads.py/map_video.py
-    for why this uses Overpass data rather than live map tiles).
-    `map_cache_dir` is where fetched OSM road data is cached between
-    trips/runs (defaults to a `.osm_cache` folder next to `destination`
-    - bv-export's CLI points this at --target so it's shared across
-    every trip in one export run, not wiped when a trip folder is
-    refreshed). Off by default: it needs network the first time a
-    region is exported, and adds real render time.
+    for why this uses Overpass data rather than live map tiles). The
+    position marker is an arrow rotated to the GPS course over ground,
+    or a custom image given via `map_icon` (also rotated to match
+    course - see map_render.py). `map_cache_dir` is where fetched OSM
+    road data is cached between trips/runs (defaults to a `.osm_cache`
+    folder next to `destination` - bv-export's CLI points this at
+    --target so it's shared across every trip in one export run, not
+    wiped when a trip folder is refreshed). Off by default: it needs
+    network the first time a region is exported, and adds real render
+    time.
 
     `render_gsensor=True` additionally renders gsensor.mp4 - a dot
     moving around a gauge, tracking the trip's g-sensor (x, y)
@@ -258,7 +267,9 @@ def export_trip(
     map_path = None
     if render_map and fixes:
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
-        map_path = _render_map(fixes, destination, cache_dir, warnings)
+        map_path = _render_map(
+            fixes, destination, cache_dir, warnings, map_icon=map_icon
+        )
 
     gsensor_path = None
     samples = _merge_gsensor(trip)
