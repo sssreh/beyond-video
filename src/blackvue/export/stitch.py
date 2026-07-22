@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from ..generate.media import MediaToolError
@@ -223,6 +225,28 @@ def _hw_predecode_filter(hw_decode: bool) -> str:
     return "hwdownload,format=nv12," if hw_decode else ""
 
 
+def _report_decode_timing(label: str, method: str, seconds: float, *, failed: bool) -> None:
+    """A one-line stderr timing report for a decode attempt - not
+    warnings (nothing went wrong from the user's point of view if a
+    GPU attempt fails and falls back), just diagnostic breadcrumbs so
+    "the whole run got slower/faster" can be traced back to which
+    decode path was actually used and how long ffmpeg itself spent on
+    it. See WORKING_CONTEXT.md's NVDEC follow-up for why this was
+    added - the first real-archive run showed NVDEC decode succeeding
+    but the overall stitch step still coming out slower than plain CPU
+    decode, and there was no way to tell from the outside whether that
+    was hwdownload's GPU->CPU copy cost, two simultaneous NVDEC
+    sessions contending for one decoder engine, or something else
+    without this breakdown.
+    """
+
+    outcome = "failed" if failed else "succeeded"
+    print(
+        f"stitch: {label} decode={method} {outcome} in {seconds:.1f}s",
+        file=sys.stderr,
+    )
+
+
 def _reencode_single(
     source: Path,
     destination: Path,
@@ -231,18 +255,30 @@ def _reencode_single(
     bitrate: str | None,
 ) -> None:
     if _nvdec_available():
+        start = time.monotonic()
         try:
             _run_reencode_single(
                 source, destination,
                 resolution=resolution, bitrate=bitrate, hw_decode=True,
             )
-            return
         except MediaToolError:
-            pass  # fall through to plain CPU decode below
+            _report_decode_timing(
+                destination.name, "nvdec", time.monotonic() - start, failed=True
+            )
+            # fall through to plain CPU decode below
+        else:
+            _report_decode_timing(
+                destination.name, "nvdec", time.monotonic() - start, failed=False
+            )
+            return
 
+    start = time.monotonic()
     _run_reencode_single(
         source, destination,
         resolution=resolution, bitrate=bitrate, hw_decode=False,
+    )
+    _report_decode_timing(
+        destination.name, "cpu", time.monotonic() - start, failed=False
     )
 
 
@@ -295,6 +331,7 @@ def _stack(
     front_width, front_height = _video_dimensions(front)
 
     if _nvdec_available():
+        start = time.monotonic()
         try:
             _run_stack(
                 front, rear, destination,
@@ -302,15 +339,26 @@ def _stack(
                 front_width=front_width, front_height=front_height,
                 resolution=resolution, bitrate=bitrate, hw_decode=True,
             )
-            return destination
         except MediaToolError:
-            pass  # fall through to plain CPU decode below
+            _report_decode_timing(
+                destination.name, "nvdec", time.monotonic() - start, failed=True
+            )
+            # fall through to plain CPU decode below
+        else:
+            _report_decode_timing(
+                destination.name, "nvdec", time.monotonic() - start, failed=False
+            )
+            return destination
 
+    start = time.monotonic()
     _run_stack(
         front, rear, destination,
         filter_name=filter_name,
         front_width=front_width, front_height=front_height,
         resolution=resolution, bitrate=bitrate, hw_decode=False,
+    )
+    _report_decode_timing(
+        destination.name, "cpu", time.monotonic() - start, failed=False
     )
     return destination
 
