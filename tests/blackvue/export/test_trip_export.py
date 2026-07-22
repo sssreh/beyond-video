@@ -124,6 +124,63 @@ def test_export_trip_writes_everything_available(tmp_path):
     assert result.warnings == ()
 
 
+def test_export_trip_concatenates_front_rear_audio_independently(
+    tmp_path, monkeypatch
+):
+    # front/rear/audio concatenation now run concurrently (see
+    # export_trip()'s comment) - the property that actually matters
+    # for correctness, not the threading itself, is that one of them
+    # failing doesn't block or lose the other two.
+    def _selective_concat(sources, destination):
+        if destination.name == "front.mp4":
+            raise MediaToolError("simulated front failure")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.suffix == ".mp4":
+            # A real (tiny) video, not just placeholder bytes - rear
+            # ends up the sole video export_trip() probes for subtitle
+            # padding once front fails, and a fake file would fail
+            # that probe too, adding an unrelated second warning this
+            # test isn't about.
+            _make_video(destination, 1.0)
+        else:
+            destination.write_bytes(b"fake-audio")
+
+    monkeypatch.setattr(
+        trip_export_module, "concatenate_media", _selective_concat
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    audio_a = source_dir / "audio_a.aac"
+    front_a.write_bytes(b"x")
+    rear_a.write_bytes(b"x")
+    audio_a.write_bytes(b"x")
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.AUDIO: AssetFile(Asset.AUDIO, audio_a),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.front_video is None
+    assert result.rear_video == dest_dir / "rear.mp4"
+    assert result.audio == dest_dir / "audio.aac"
+    assert result.rear_video.exists()
+    assert result.audio.exists()
+    assert len(result.warnings) == 1
+
+
 def test_export_trip_skips_missing_assets_cleanly(tmp_path):
     dest_dir = tmp_path / "export"
     trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))
