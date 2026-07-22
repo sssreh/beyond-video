@@ -498,6 +498,36 @@ sanity-checked (dot, trail, rings, timestamp all present as expected). Not
 yet confirmed against Christer's real archive - only unit-tested with
 synthetic g-sensor data so far.
 
+**Follow-up: center the gauge on the trip's own baseline (done, this
+session).** Christer tried it against his real archive - worked, but asked
+why the dot wasn't in the center. Cause: the gauge always drew raw (0, 0)
+at its center, but a real accelerometer (mounted at even a slight angle,
+or with its own bias) rarely reads exactly zero at rest, so the dot sat
+off to one side the whole trip. Asked how to pick a center; Christer chose
+the trip's own median reading over an alternative (average the first few
+seconds, assuming the trip starts stationary/level).
+
+- `gsensor_render.baseline_for_samples(samples) -> (x, y)`: median x and
+  median y across the trip (median, not mean, so a stretch of hard
+  turns/braking doesn't pull the baseline off to one side).
+- `scale_for_samples()` gained a `baseline` keyword-only param (default
+  `(0.0, 0.0)`, so old callers/tests are unaffected): measures peak
+  deviation from `baseline` instead of from raw (0, 0).
+- `render_gsensor_video()` computes the baseline once per trip and
+  subtracts it from every interpolated (x, y) before it reaches
+  `render_frame()` - the gauge itself (`render_frame()`) didn't need to
+  change at all, it was already just drawing whatever (x, y) it's handed
+  relative to the image center.
+
+Tested: 5 new tests (baseline median calculation - odd/even sample counts,
+empty input; scale-with-baseline; and a `render_gsensor_video()` wiring
+test that monkeypatches `render_frame` to capture the position it's
+called with, confirming a sample exactly matching the baseline renders at
+the gauge's center). Full suite green (269 passed). Re-rendered a
+synthetic frame with a constant offset baked into every sample (like a
+tilted mount) and visually confirmed the trail now wobbles around the
+center instead of sitting off to one side.
+
 ---
 
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
