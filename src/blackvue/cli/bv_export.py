@@ -98,6 +98,24 @@ def bv_export(
     or cpu) --stitch actually used and how long it took - diagnostic
     breadcrumbs for tracking down where time went on a slow run, off
     by default since most runs don't need them.
+
+    `--timestamp`/`--from`/`--until` select *trips*, not recordings:
+    trips are detected across the whole archive first, and a trip is
+    included if any of its own recordings fall inside the requested
+    range - the whole trip is then exported, including whatever
+    recordings pushed it before or after the range's own boundaries.
+    Filtering recordings by the range *before* detecting trips (the
+    original approach) could silently truncate a trip that merely
+    overlaps the requested window - e.g. a long continuous drive that
+    started a few minutes before a `--timestamp` window opens would
+    lose its earlier recordings entirely, since they'd never even
+    reach TripBuilder, and the exported "trip" would be missing real
+    footage that belongs to it. The trade-off: trip detection (and
+    anything it reads per recording, like `.duration.txt` for
+    `--no-duration`'s opposite, or GPS/g-sensor data for movement
+    bridging) now runs across the *entire* archive on every run, not
+    just the requested range - a real cost on a very large archive,
+    accepted here in favor of never silently truncating a trip.
     """
 
     archive = Archive(path)
@@ -111,12 +129,6 @@ def bv_export(
     except ValueError as exc:
         raise SystemExit(str(exc))
 
-    recordings = [
-        recording
-        for recording in archive.recordings
-        if recording.id.value in interval
-    ]
-
     max_gap = (
         timedelta(minutes=max_gap_minutes)
         if max_gap_minutes is not None
@@ -129,12 +141,18 @@ def bv_export(
     )
     bridge = movement_bridges_gap if movement else None
     recording_duration = read_duration_seconds if duration else None
-    trips = TripBuilder(
+    all_trips = TripBuilder(
         max_gap=max_gap,
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
-    ).build(recordings)
+    ).build(archive.recordings)
+
+    trips = [
+        trip
+        for trip in all_trips
+        if any(recording.id.value in interval for recording in trip)
+    ]
 
     if not trips:
         print("bv-export: no recordings found in range - nothing to export.")
@@ -255,19 +273,31 @@ def main(argv: list[str] | None = None) -> int:
         "--from",
         dest="from_",
         metavar="TIMESTAMP",
-        help="Export recordings from this timestamp.",
+        help=(
+            "Export every trip that has at least one recording from "
+            "this timestamp onward, in full - including any of that "
+            "trip's own recordings that fall before it."
+        ),
     )
 
     parser.add_argument(
         "--until",
         metavar="TIMESTAMP",
-        help="Export recordings up to this timestamp.",
+        help=(
+            "Export every trip that has at least one recording up to "
+            "this timestamp, in full - including any of that trip's "
+            "own recordings that fall after it."
+        ),
     )
 
     parser.add_argument(
         "--timestamp",
         metavar="TIMESTAMP",
-        help="Export recordings matching this timestamp or prefix.",
+        help=(
+            "Export every trip that has at least one recording "
+            "matching this timestamp or prefix, in full - including "
+            "any of that trip's own recordings that fall outside it."
+        ),
     )
 
     parser.add_argument(

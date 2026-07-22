@@ -250,6 +250,51 @@ def test_bv_export_gap_tolerance_can_be_tightened(tmp_path):
     assert (target / "trip_20260720_101005_20260720_101005").is_dir()
 
 
+def test_bv_export_timestamp_filter_exports_the_whole_trip_it_overlaps(
+    tmp_path
+):
+    # A --timestamp narrow enough to match only the *middle* recording
+    # of a 3-recording trip must still export the trip in full - not
+    # just the one matching recording. Trips are detected across the
+    # whole archive first, then kept if any of their own recordings
+    # fall in the requested range; filtering recordings by the range
+    # *before* trip detection (the original approach) would have
+    # silently truncated this trip to just its middle recording.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100200_NF.mp4")
+    _make_video(archive / "20260720_100400_NF.mp4")
+
+    # Exact match on the middle recording's own timestamp - as narrow
+    # a --timestamp as this archive allows.
+    bv_export(str(archive), target=str(target), timestamp="20260720_100200")
+
+    assert (target / "trip_20260720_100000_20260720_100400").is_dir()
+    assert not (target / "trip_20260720_100200_20260720_100200").exists()
+
+
+def test_bv_export_timestamp_filter_excludes_trips_that_dont_overlap(
+    tmp_path
+):
+    # A trip entirely outside the requested range is still excluded -
+    # exporting the whole overlapping trip doesn't mean exporting
+    # everything.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_120000_NF.mp4")
+
+    bv_export(str(archive), target=str(target), timestamp="20260720_1000")
+
+    assert (target / "trip_20260720_100000_20260720_100000").is_dir()
+    assert not (target / "trip_20260720_120000_20260720_120000").exists()
+
+
 def test_bv_export_reports_nothing_to_export_for_empty_range(tmp_path, capsys):
     archive = tmp_path / "archive"
     archive.mkdir()
