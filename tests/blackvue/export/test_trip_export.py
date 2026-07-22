@@ -200,17 +200,17 @@ def test_export_trip_render_map_produces_a_video(tmp_path, monkeypatch):
     assert result.warnings == ()
 
 
-def test_export_trip_render_map_passes_map_zoom_meters_through(
+def test_export_trip_render_map_zoom_produces_a_separate_file_alongside_map(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
 
-    captured = {}
+    calls = []
 
     def _capture_zoom(fixes, roads, bbox, destination, **kwargs):
-        captured.update(kwargs)
+        calls.append((destination, kwargs))
         return destination
 
     monkeypatch.setattr(
@@ -222,9 +222,66 @@ def test_export_trip_render_map_passes_map_zoom_meters_through(
     dest_dir = tmp_path / "export"
     trip = _trip_with_two_gps_fixes(source_dir)
 
-    export_trip(trip, dest_dir, render_map=True, map_zoom_meters=75.0)
+    result = export_trip(trip, dest_dir, render_map=True, map_zoom_meters=75.0)
 
-    assert captured["zoom_meters"] == 75.0
+    # Two separate renders: the static map.mp4 (no zoom_meters) and its
+    # own map_zoom_75m.mp4 (zoom_meters=75.0) - not one video reused
+    # for both.
+    assert len(calls) == 2
+    destinations = {destination for destination, _kwargs in calls}
+    assert destinations == {
+        dest_dir / "map.mp4", dest_dir / "map_zoom_75m.mp4",
+    }
+    zoom_kwargs = next(
+        kwargs for destination, kwargs in calls
+        if destination == dest_dir / "map_zoom_75m.mp4"
+    )
+    assert zoom_kwargs["zoom_meters"] == 75.0
+    static_kwargs = next(
+        kwargs for destination, kwargs in calls
+        if destination == dest_dir / "map.mp4"
+    )
+    assert static_kwargs["zoom_meters"] is None
+
+    assert result.map == dest_dir / "map.mp4"
+    assert result.map_zoom == dest_dir / "map_zoom_75m.mp4"
+
+
+def test_export_trip_render_map_zoom_alone_skips_the_static_map(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    result = export_trip(trip, dest_dir, map_zoom_meters=120.0)
+
+    assert result.map is None
+    assert not (dest_dir / "map.mp4").exists()
+    assert result.map_zoom == dest_dir / "map_zoom_120m.mp4"
+    assert result.map_zoom.exists()
+
+
+def test_export_trip_formats_the_map_zoom_filename_without_a_trailing_zero(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    result = export_trip(trip, dest_dir, map_zoom_meters=75.5)
+
+    assert result.map_zoom == dest_dir / "map_zoom_75.5m.mp4"
 
 
 def test_export_trip_render_map_defaults_cache_dir_next_to_destination(

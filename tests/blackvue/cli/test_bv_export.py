@@ -392,7 +392,42 @@ def test_bv_export_map_zoom_flag_produces_a_scrolling_video(tmp_path, monkeypatc
 
     assert exit_code == 0
     folder = target / "trip_20260720_100000_20260720_100010"
+    # --map and --map-zoom together produce two separate files: the
+    # static whole-trip overview, and its own zoomed follow-camera
+    # video, named after its own zoom radius.
     assert (folder / "map.mp4").exists()
+    assert (folder / "map_zoom_75m.mp4").exists()
+
+
+def test_bv_export_map_zoom_flag_works_without_the_map_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    _write_gps(
+        archive / "20260720_100010_N.gps",
+        1784555911000, "5918.94615", "N", "01806.17070", "E",
+    )
+
+    exit_code = bv_export(
+        str(archive), target=str(target), map_zoom_meters=120.0,
+    )
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100010"
+    assert (folder / "map_zoom_120m.mp4").exists()
+    # --map itself was never given, so no static overview.
+    assert not (folder / "map.mp4").exists()
 
 
 def test_main_uses_the_default_zoom_when_map_zoom_given_with_no_value(

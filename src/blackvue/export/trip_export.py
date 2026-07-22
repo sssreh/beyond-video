@@ -53,6 +53,7 @@ class ExportResult:
     gpx: Path | None = None
     gsensor: Path | None = None
     map: Path | None = None
+    map_zoom: Path | None = None
     gsensor_video: Path | None = None
     srt: Path | None = None
     lrc: Path | None = None
@@ -136,43 +137,64 @@ def _merge_gsensor(trip: Trip) -> tuple[GSensorSample, ...]:
     return tuple(sorted(samples, key=lambda sample: sample.offset))
 
 
-def _render_map(
-    fixes: tuple,
-    destination: Path,
-    map_cache_dir: Path,
-    warnings: list[str],
-    *,
-    map_icon: Path | None = None,
-    map_zoom_meters: float | None = None,
-) -> Path | None:
-    """Render map.mp4 for a trip's merged GPS fixes, degrading to a
-    warning (not a failed export) on any network, image-loading, or
-    ffmpeg problem - the rest of the trip's export is still worth
-    having even if the map couldn't be built.
+def _load_trip_roads(
+    fixes: tuple, map_cache_dir: Path, warnings: list[str]
+) -> tuple:
+    """Fetch/cache OSM road geometry for a trip's whole bounding box -
+    shared by both the static map.mp4 render and any zoomed
+    map_zoom_*m.mp4 render, so a network/cache failure produces one
+    "map" warning rather than one per map output requested. Returns
+    (bbox, roads); both None if there's no bbox to fetch for (no
+    positioned fixes) or the fetch itself failed.
+
+    Always fetched for the *whole* trip's bounding box, even for a
+    zoomed "follow camera" render - the camera only frames a small
+    area at once, but which small area varies every frame, so road
+    data has to be available anywhere along the route.
     """
 
     bbox = bounding_box_for_fixes(fixes)
     if bbox is None:
-        return None
+        return None, None
 
     try:
-        # Always fetched for the *whole* trip's bounding box, even in
-        # --map-zoom "follow camera" mode - the camera only frames a
-        # small area at once, but which small area varies every frame,
-        # so road data has to be available anywhere along the route.
         roads = load_or_fetch_roads(bbox, map_cache_dir)
     except MediaToolError as exc:
-        warnings.append(f"map: {exc}")
-        return None
+        # Shared by both map.mp4 and any map_zoom_*m.mp4 - "map data"
+        # rather than "map" specifically, since this failure isn't
+        # about either one output file over the other.
+        warnings.append(f"map data: {exc}")
+        return None, None
+
+    return bbox, roads
+
+
+def _render_map_variant(
+    fixes: tuple,
+    bbox,
+    roads,
+    destination: Path,
+    warnings: list[str],
+    *,
+    warning_label: str,
+    map_icon: Path | None = None,
+    zoom_meters: float | None = None,
+) -> Path | None:
+    """Render one map video (either the static map.mp4 or a zoomed
+    map_zoom_*m.mp4) at `destination`, degrading to a warning (not a
+    failed export) on any image-loading or ffmpeg problem - the rest
+    of the trip's export is still worth having even if this one
+    output couldn't be built.
+    """
 
     try:
         return render_map_video(
-            fixes, roads, bbox, destination / "map.mp4",
+            fixes, roads, bbox, destination,
             marker_image_path=map_icon,
-            zoom_meters=map_zoom_meters,
+            zoom_meters=zoom_meters,
         )
     except MediaToolError as exc:
-        warnings.append(f"map: {exc}")
+        warnings.append(f"{warning_label}: {exc}")
         return None
 
 
@@ -196,14 +218,20 @@ def export_trip(
 
     `render_map=True` additionally renders map.mp4 - a route/position/
     speed overlay on an OSM-road basemap (see osm_roads.py/map_video.py
-    for why this uses Overpass data rather than live map tiles). The
-    position marker is an arrow rotated to the GPS course over ground,
-    or a custom image given via `map_icon` (also rotated to match
-    course - see map_render.py). By default the map frames the whole
-    trip at once (a static overview); `map_zoom_meters`, if given,
-    switches to a "follow camera" instead - a tight, scrolling view of
+    for why this uses Overpass data rather than live map tiles), always
+    framing the whole trip at once (a static overview). The position
+    marker is an arrow rotated to the GPS course over ground, or a
+    custom image given via `map_icon` (also rotated to match course -
+    see map_render.py).
+
+    `map_zoom_meters`, if given, is independent of `render_map` and
+    additionally renders its own map_zoom_{METERS}m.mp4 - a "follow
+    camera" instead of a static overview: a tight, scrolling view of
     real-world half-width `map_zoom_meters`, centered on the vehicle's
     current position every frame (see map_video.render_map_video()).
+    `render_map` and `map_zoom_meters` can be used separately or
+    together - together, both files get rendered.
+
     `map_cache_dir` is where fetched OSM road data is cached between
     trips/runs (defaults to a `.osm_cache`
     folder next to `destination` - bv-export's CLI points this at
@@ -277,12 +305,25 @@ def export_trip(
         write_gpx(fixes, gpx_path, name=trip.label)
 
     map_path = None
-    if render_map and fixes:
+    map_zoom_path = None
+    if (render_map or map_zoom_meters is not None) and fixes:
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
-        map_path = _render_map(
-            fixes, destination, cache_dir, warnings,
-            map_icon=map_icon, map_zoom_meters=map_zoom_meters,
-        )
+        bbox, roads = _load_trip_roads(fixes, cache_dir, warnings)
+
+        if bbox is not None and roads is not None:
+            if render_map:
+                map_path = _render_map_variant(
+                    fixes, bbox, roads, destination / "map.mp4", warnings,
+                    warning_label="map", map_icon=map_icon,
+                )
+
+            if map_zoom_meters is not None:
+                zoom_filename = f"map_zoom_{map_zoom_meters:g}m.mp4"
+                map_zoom_path = _render_map_variant(
+                    fixes, bbox, roads, destination / zoom_filename, warnings,
+                    warning_label="map_zoom", map_icon=map_icon,
+                    zoom_meters=map_zoom_meters,
+                )
 
     gsensor_path = None
     samples = _merge_gsensor(trip)
@@ -306,6 +347,7 @@ def export_trip(
         gpx=gpx_path,
         gsensor=gsensor_path,
         map=map_path,
+        map_zoom=map_zoom_path,
         gsensor_video=gsensor_video_path,
         srt=srt_path,
         lrc=lrc_path,
