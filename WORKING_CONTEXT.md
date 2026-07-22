@@ -699,6 +699,25 @@ look nearly identical, which is the *correct* follow-camera behavior
 
 ---
 
+## gsensor.mp4: black target rings (done, this session)
+
+Christer asked for "a well defined target in black" on the g-sensor gauge -
+ambiguous enough (by his own admission) that guessing risked a redo.
+Rendered three real mockups against the actual green background - (A)
+today's rings/crosshair recolored black, red dot/trail unchanged, (B) a
+full bullseye with alternating black/white rings, (C) rings left white but
+the marker itself turned into a black crosshair reticle - and asked him to
+pick. He chose (A).
+
+`gsensor_render.py`: `RING_COLOR`/`AXIS_COLOR` changed from white
+`(255, 255, 255)` to black `(0, 0, 0)`. `TRAIL_COLOR`/`DOT_COLOR` (red)
+and `DOT_OUTLINE` (white) unchanged. No test changes needed - nothing
+asserted on the specific ring/axis color values, only that rendering
+without error still produces the expected non-background pixels;
+confirmed by re-running the full suite (still 301 passed).
+
+---
+
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
 
 Christer noticed on his real archive: the merged `trip.srt` ran a couple of
