@@ -26,6 +26,8 @@ from .map_video import render_map_video
 from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_roads
+from .subtitles import merge_lrc
+from .subtitles import merge_srt
 from .text import merge_text_assets
 
 # (asset, output filename) pairs for every text asset bv-export knows
@@ -49,6 +51,8 @@ class ExportResult:
     gpx: Path | None = None
     gsensor: Path | None = None
     map: Path | None = None
+    srt: Path | None = None
+    lrc: Path | None = None
     text: tuple[Path, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -206,6 +210,18 @@ def export_trip(
         out.write_text(merged, encoding="utf-8")
         text_paths.append(out)
 
+    srt_path = None
+    merged_srt = merge_srt(trip)
+    if merged_srt is not None:
+        srt_path = destination / "trip.srt"
+        srt_path.write_text(merged_srt + "\n", encoding="utf-8")
+
+    lrc_path = None
+    merged_lrc = merge_lrc(trip)
+    if merged_lrc is not None:
+        lrc_path = destination / "trip.lrc"
+        lrc_path.write_text(merged_lrc + "\n", encoding="utf-8")
+
     gpx_path = None
     fixes = _merge_gps(trip)
     if fixes:
@@ -230,6 +246,8 @@ def export_trip(
         gpx=gpx_path,
         gsensor=gsensor_path,
         map=map_path,
+        srt=srt_path,
+        lrc=lrc_path,
         text=tuple(text_paths),
         warnings=tuple(warnings),
     )

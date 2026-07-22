@@ -124,6 +124,7 @@ def bv_export(
             for written_path in (
                 result.front_video, result.rear_video, result.audio,
                 result.gpx, result.gsensor, result.map,
+                result.srt, result.lrc,
             )
             if written_path is not None
         ] + list(result.text)

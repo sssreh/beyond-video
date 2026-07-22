@@ -4,6 +4,8 @@ from blackvue.generate.subtitles import _lrc_timestamp
 from blackvue.generate.subtitles import _srt_timestamp
 from blackvue.generate.subtitles import format_lrc
 from blackvue.generate.subtitles import format_srt
+from blackvue.generate.subtitles import parse_lrc
+from blackvue.generate.subtitles import parse_srt
 
 
 def _segment(start, end, text):
@@ -86,3 +88,77 @@ def test_format_lrc_prefixes_speaker_label_when_turns_given():
 
 def test_format_lrc_handles_no_segments():
     assert format_lrc(()) == ""
+
+
+def test_parse_srt_round_trips_through_format_srt():
+    segments = (
+        _segment(0.0, 2.0, "Hello there."),
+        _segment(2.0, 4.5, "How's it going?"),
+    )
+
+    parsed = parse_srt(format_srt(segments))
+
+    assert len(parsed) == 2
+    assert parsed[0].start == 0.0
+    assert parsed[0].end == 2.0
+    assert parsed[0].text == "Hello there."
+    assert parsed[1].start == 2.0
+    assert parsed[1].end == 4.5
+    assert parsed[1].text == "How's it going?"
+
+
+def test_parse_srt_preserves_a_baked_in_speaker_prefix():
+    segments = (_segment(0.0, 2.0, "Hello there."),)
+    turns = (SpeakerTurn(start=0.0, end=2.0, speaker="SPEAKER_00"),)
+
+    parsed = parse_srt(format_srt(segments, turns))
+
+    assert parsed[0].text == "[SPEAKER_00] Hello there."
+
+
+def test_parse_srt_ignores_cue_index_numbers():
+    text = (
+        "7\n"
+        "00:00:00,000 --> 00:00:01,000\n"
+        "first\n"
+        "\n"
+        "8\n"
+        "00:00:01,000 --> 00:00:02,000\n"
+        "second\n"
+    )
+
+    parsed = parse_srt(text)
+
+    assert [segment.text for segment in parsed] == ["first", "second"]
+
+
+def test_parse_srt_handles_empty_string():
+    assert parse_srt("") == ()
+
+
+def test_parse_lrc_round_trips_through_format_lrc():
+    segments = (
+        _segment(0.0, 0.0, "Hello there."),
+        _segment(65.0, 65.0, "How's it going?"),
+    )
+
+    parsed = parse_lrc(format_lrc(segments))
+
+    assert len(parsed) == 2
+    assert parsed[0].start == 0.0
+    assert parsed[0].text == "Hello there."
+    assert parsed[1].start == 65.0
+    assert parsed[1].text == "How's it going?"
+
+
+def test_parse_lrc_preserves_a_baked_in_speaker_prefix():
+    segments = (_segment(0.0, 0.0, "Hello there."),)
+    turns = (SpeakerTurn(start=0.0, end=2.0, speaker="SPEAKER_01"),)
+
+    parsed = parse_lrc(format_lrc(segments, turns))
+
+    assert parsed[0].text == "[SPEAKER_01] Hello there."
+
+
+def test_parse_lrc_handles_empty_string():
+    assert parse_lrc("") == ()

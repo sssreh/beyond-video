@@ -24,9 +24,16 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import re
+
 from .speech import SpeakerTurn
 from .speech import SpeechSegment
 from .speech import speaker_for
+
+_SRT_TIME_PATTERN = re.compile(
+    r"(\d+):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2}),(\d{3})"
+)
+_LRC_TIME_PATTERN = re.compile(r"^\[(\d+):(\d{2})\.(\d{2})\]\s?(.*)$")
 
 
 def _cue_text(segment: SpeechSegment, turns: tuple[SpeakerTurn, ...] | None) -> str:
@@ -99,3 +106,68 @@ def format_lrc(
     ]
 
     return "\n".join(lines)
+
+
+def _seconds_from_srt_match(match: re.Match) -> tuple[float, float]:
+    h1, m1, s1, ms1, h2, m2, s2, ms2 = match.groups()
+    start = int(h1) * 3600 + int(m1) * 60 + int(s1) + int(ms1) / 1000
+    end = int(h2) * 3600 + int(m2) * 60 + int(s2) + int(ms2) / 1000
+    return start, end
+
+
+def parse_srt(text: str) -> tuple[SpeechSegment, ...]:
+    """Parse an SRT file's cues back into SpeechSegments.
+
+    The inverse of format_srt() - any "[SPEAKER_XX] " prefix baked
+    into a cue's text by a diarized export is left as part of
+    segment.text rather than parsed back out, since format_srt()
+    treats it as opaque text too (turns=None). Cue index numbers are
+    discarded on read; format_srt() renumbers sequentially anyway, so
+    they carry no information worth keeping.
+    """
+
+    segments = []
+
+    for block in re.split(r"\r?\n\r?\n+", text.strip()):
+        if not block.strip():
+            continue
+
+        lines = block.splitlines()
+        timing_index = next(
+            (i for i, line in enumerate(lines) if _SRT_TIME_PATTERN.search(line)),
+            None,
+        )
+        if timing_index is None:
+            continue
+
+        match = _SRT_TIME_PATTERN.search(lines[timing_index])
+        start, end = _seconds_from_srt_match(match)
+        cue_text = "\n".join(lines[timing_index + 1:]).strip()
+
+        segments.append(SpeechSegment(start=start, end=end, text=cue_text))
+
+    return tuple(segments)
+
+
+def parse_lrc(text: str) -> tuple[SpeechSegment, ...]:
+    """Parse an LRC file's lines back into SpeechSegments.
+
+    The inverse of format_lrc(). LRC has no explicit end time, so
+    each segment's end is set equal to its start - format_lrc() only
+    ever reads segment.start, so this round-trips cleanly; anything
+    that does care about a duration should use SRT instead.
+    """
+
+    segments = []
+
+    for line in text.splitlines():
+        match = _LRC_TIME_PATTERN.match(line)
+        if match is None:
+            continue
+
+        minutes, secs, hundredths, cue_text = match.groups()
+        start = int(minutes) * 60 + int(secs) + int(hundredths) / 100
+
+        segments.append(SpeechSegment(start=start, end=start, text=cue_text))
+
+    return tuple(segments)
