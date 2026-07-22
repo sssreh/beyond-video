@@ -650,6 +650,55 @@ fakes here, since this sandbox has neither.
 
 ---
 
+## map.mp4: zoomed-in "follow camera" mode (done, this session)
+
+Christer asked for an option to make the map more zoomed in and scroll as
+the vehicle moves - the existing map framed the whole trip at once (a
+static overview, same every frame), which is fine for seeing the whole
+route but too small-scale to read individual streets/turns.
+
+New `bv-export --map-zoom [METERS]`:
+
+- `osm_roads.bounding_box_around_point(lat, lon, radius_meters)`: a
+  square-ish bounding box of real-world half-width `radius_meters`,
+  centered on a point - widens the longitude delta by `1/cos(latitude)`
+  so the box is the same real-world size in both directions regardless of
+  latitude (the same correction `map_render._project()` already applies
+  the other way, when converting lat/lon into pixels). Floors at
+  `MIN_ZOOM_RADIUS_METERS` (5m) so a `--map-zoom 0` or negative value
+  can't produce a degenerate box.
+- `render_map_video()` gained `zoom_meters`: when given, every frame gets
+  its own bounding box from `bounding_box_around_point()` centered on
+  that frame's own interpolated position, instead of reusing the single
+  whole-trip `bbox` passed in - this is what makes the rendered map
+  scroll/pan as the vehicle moves, since the position marker always
+  lands center-frame (the box is centered on it every time) while the
+  roads/route around it shift frame to frame.
+- Road data is still fetched/cached for the *whole trip's* bounding box
+  as before (unrelated to per-frame camera framing) - the follow camera
+  only needs a small area on screen at once, but which small area varies
+  every frame, so all of the trip's road context has to already be
+  available.
+- `--map-zoom` takes an optional value in meters (`DEFAULT_ZOOM_RADIUS_METERS
+  = 120.0` if given with no value - roughly a 240m-wide street-level
+  view); omitted entirely, `--map` keeps its original static-overview
+  behavior unchanged.
+
+Tested: 3 new tests on `bounding_box_around_point` (equator vs. higher-
+latitude widening, floor at the minimum radius), 2 on `render_map_video`
+(static bbox unchanged by default; per-frame bbox actually differs
+frame-to-frame and is smaller than the trip-wide box when zoomed), plus
+wiring tests in `test_trip_export`/`test_bv_export` (including the
+`--map-zoom`-with-no-value-uses-the-default and value-omitted-stays-None
+argparse cases). Full suite green (301 passed). Also visually confirmed
+with three rendered frames along a straight route: the position marker
+stays centered while a cross-street scrolls into view as the vehicle
+approaches it - along a perfectly straight stretch, consecutive frames
+look nearly identical, which is the *correct* follow-camera behavior
+(same as a real nav app), not a bug.
+
+---
+
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
 
 Christer noticed on his real archive: the merged `trip.srt` ran a couple of

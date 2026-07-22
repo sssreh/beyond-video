@@ -29,6 +29,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import URLError
@@ -50,6 +51,22 @@ USER_AGENT = "beyond-video/0.1 (+https://github.com/sssreh/beyond-video)"
 # route, without ballooning the query area.
 DEFAULT_MARGIN_DEGREES = 0.01
 DEFAULT_TIMEOUT_SECONDS = 60.0
+
+# Mean Earth radius in meters, used to convert a real-world distance
+# into degrees of latitude/longitude for bounding_box_around_point().
+_EARTH_RADIUS_METERS = 6_371_000.0
+_METERS_PER_DEGREE_LATITUDE = _EARTH_RADIUS_METERS * math.pi / 180
+
+# A street-level "follow camera" default for bv-export --map-zoom:
+# half-width of the view, so the full frame covers roughly this
+# distance x2 - close enough to read individual streets/turns, not so
+# close the route runs off-frame between GPS fixes.
+DEFAULT_ZOOM_RADIUS_METERS = 120.0
+
+# Floors bounding_box_around_point()'s radius so a caller-supplied
+# --map-zoom of 0 (or a negative/tiny value) can't produce a
+# degenerate, near-zero-area view.
+MIN_ZOOM_RADIUS_METERS = 5.0
 
 
 @dataclass(frozen=True)
@@ -96,6 +113,43 @@ def bounding_box_for_fixes(
         min_lon=min(lons) - margin_degrees,
         max_lat=max(lats) + margin_degrees,
         max_lon=max(lons) + margin_degrees,
+    )
+
+
+def bounding_box_around_point(
+    lat: float, lon: float, radius_meters: float
+) -> BoundingBox:
+    """Compute a square-ish bounding box of real-world half-width
+    `radius_meters`, centered on (lat, lon).
+
+    Used for map.mp4's optional "follow camera" mode (bv-export
+    --map-zoom): a fresh bounding box like this, centered on the
+    current interpolated position, computed fresh for every frame,
+    makes the rendered map scroll/pan as the vehicle moves - unlike
+    the single whole-trip bounding box (bounding_box_for_fixes())
+    used for the default static-overview map.
+
+    Longitude degrees cover less real-world distance than latitude
+    degrees away from the equator (they converge at the poles), so
+    the longitude delta is widened by 1/cos(latitude) to keep the box
+    the same real-world width/height in both directions - the same
+    correction map_render.py's own projection applies. `radius_meters`
+    is floored at MIN_ZOOM_RADIUS_METERS to avoid a degenerate
+    near-zero-area box.
+    """
+
+    radius_meters = max(radius_meters, MIN_ZOOM_RADIUS_METERS)
+
+    delta_lat = radius_meters / _METERS_PER_DEGREE_LATITUDE
+
+    lon_scale = math.cos(math.radians(lat)) or 1e-9
+    delta_lon = radius_meters / (_METERS_PER_DEGREE_LATITUDE * lon_scale)
+
+    return BoundingBox(
+        min_lat=lat - delta_lat,
+        min_lon=lon - delta_lon,
+        max_lat=lat + delta_lat,
+        max_lon=lon + delta_lon,
     )
 
 

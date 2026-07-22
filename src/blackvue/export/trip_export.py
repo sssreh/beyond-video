@@ -143,6 +143,7 @@ def _render_map(
     warnings: list[str],
     *,
     map_icon: Path | None = None,
+    map_zoom_meters: float | None = None,
 ) -> Path | None:
     """Render map.mp4 for a trip's merged GPS fixes, degrading to a
     warning (not a failed export) on any network, image-loading, or
@@ -155,6 +156,10 @@ def _render_map(
         return None
 
     try:
+        # Always fetched for the *whole* trip's bounding box, even in
+        # --map-zoom "follow camera" mode - the camera only frames a
+        # small area at once, but which small area varies every frame,
+        # so road data has to be available anywhere along the route.
         roads = load_or_fetch_roads(bbox, map_cache_dir)
     except MediaToolError as exc:
         warnings.append(f"map: {exc}")
@@ -164,6 +169,7 @@ def _render_map(
         return render_map_video(
             fixes, roads, bbox, destination / "map.mp4",
             marker_image_path=map_icon,
+            zoom_meters=map_zoom_meters,
         )
     except MediaToolError as exc:
         warnings.append(f"map: {exc}")
@@ -177,6 +183,7 @@ def export_trip(
     render_map: bool = False,
     map_cache_dir: Path | None = None,
     map_icon: Path | None = None,
+    map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
@@ -192,8 +199,13 @@ def export_trip(
     for why this uses Overpass data rather than live map tiles). The
     position marker is an arrow rotated to the GPS course over ground,
     or a custom image given via `map_icon` (also rotated to match
-    course - see map_render.py). `map_cache_dir` is where fetched OSM
-    road data is cached between trips/runs (defaults to a `.osm_cache`
+    course - see map_render.py). By default the map frames the whole
+    trip at once (a static overview); `map_zoom_meters`, if given,
+    switches to a "follow camera" instead - a tight, scrolling view of
+    real-world half-width `map_zoom_meters`, centered on the vehicle's
+    current position every frame (see map_video.render_map_video()).
+    `map_cache_dir` is where fetched OSM road data is cached between
+    trips/runs (defaults to a `.osm_cache`
     folder next to `destination` - bv-export's CLI points this at
     --target so it's shared across every trip in one export run, not
     wiped when a trip folder is refreshed). Off by default: it needs
@@ -268,7 +280,8 @@ def export_trip(
     if render_map and fixes:
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
         map_path = _render_map(
-            fixes, destination, cache_dir, warnings, map_icon=map_icon
+            fixes, destination, cache_dir, warnings,
+            map_icon=map_icon, map_zoom_meters=map_zoom_meters,
         )
 
     gsensor_path = None

@@ -26,6 +26,7 @@ from .map_render import render_frame
 from .media import encode_frame_sequence
 from .osm_roads import BoundingBox
 from .osm_roads import Road
+from .osm_roads import bounding_box_around_point
 
 # 5 frames/second is enough for the position dot to read as smooth
 # motion without generating an excessive number of frames for a long
@@ -139,10 +140,21 @@ def render_map_video(
     *,
     fps: int = DEFAULT_FPS,
     marker_image_path: Path | None = None,
+    zoom_meters: float | None = None,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
     speed, and timestamp, drawn against `roads` (see osm_roads.py).
+
+    `bbox` frames the whole trip at once by default (a static
+    overview, the same every frame). `zoom_meters`, if given, switches
+    to a "follow camera" instead: every frame is framed by a fresh
+    bounding box of that real-world half-width, centered on the
+    frame's own interpolated position (see
+    osm_roads.bounding_box_around_point()) - `bbox` itself is then
+    unused, since every frame gets its own. This is what makes the map
+    scroll/pan as the vehicle moves rather than sitting in a fixed
+    static view.
 
     The position marker is an arrow rotated to the GPS course over
     ground by default. `marker_image_path`, if given, is used as a
@@ -203,8 +215,14 @@ def render_map_video(
             lat, lon, speed, course = interpolate_position(positioned, timestamp)
             position = (lat, lon)
 
+            frame_bbox = (
+                bounding_box_around_point(lat, lon, zoom_meters)
+                if zoom_meters is not None
+                else bbox
+            )
+
             frame = render_frame(
-                bbox,
+                frame_bbox,
                 roads,
                 tuple(route_so_far) + (position,),
                 position,

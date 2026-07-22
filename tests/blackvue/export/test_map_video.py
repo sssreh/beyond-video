@@ -6,6 +6,7 @@ from datetime import timedelta
 import pytest
 from PIL import Image
 
+from blackvue.export import map_video as map_video_module
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
@@ -110,6 +111,77 @@ def test_interpolate_position_falls_back_to_whichever_course_is_present():
     )
 
     assert course == 123.0
+
+
+class _FakeFrameImage:
+    def save(self, _path):
+        pass
+
+
+def test_render_map_video_uses_the_static_bbox_for_every_frame_by_default(
+    tmp_path, monkeypatch
+):
+    captured = []
+
+    def fake_render_frame(bbox, *_args, **_kwargs):
+        captured.append(bbox)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert len(captured) >= 2
+    assert all(bbox == static_bbox for bbox in captured)
+
+
+def test_render_map_video_recenters_the_bbox_on_each_frame_when_zoomed(
+    tmp_path, monkeypatch
+):
+    captured = []
+
+    def fake_render_frame(bbox, *_args, **_kwargs):
+        captured.append(bbox)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.320, 18.040))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.33, max_lon=18.05
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2, zoom_meters=100.0,
+    )
+
+    assert len(captured) >= 2
+    # Every frame gets its own box, none of them the static whole-trip
+    # box passed in - and the first/last frames' boxes differ from
+    # each other, proving the view actually moves.
+    assert all(bbox != static_bbox for bbox in captured)
+    assert captured[0] != captured[-1]
+    # Each per-frame box should be much smaller (street-level) than
+    # the whole-trip static box above.
+    first = captured[0]
+    assert (first.max_lat - first.min_lat) < (
+        static_bbox.max_lat - static_bbox.min_lat
+    )
 
 
 def test_render_map_video_returns_none_for_fewer_than_two_fixes(tmp_path):

@@ -366,6 +366,95 @@ def test_bv_export_map_icon_flag_uses_a_custom_marker_image(tmp_path, monkeypatc
     assert (folder / "map.mp4").exists()
 
 
+def test_bv_export_map_zoom_flag_produces_a_scrolling_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    _write_gps(
+        archive / "20260720_100010_N.gps",
+        1784555911000, "5918.94615", "N", "01806.17070", "E",
+    )
+
+    exit_code = bv_export(
+        str(archive), target=str(target), render_map=True, map_zoom_meters=75.0,
+    )
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100010"
+    assert (folder / "map.mp4").exists()
+
+
+def test_main_uses_the_default_zoom_when_map_zoom_given_with_no_value(
+    tmp_path, monkeypatch
+):
+    from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
+
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--map", "--map-zoom"])
+
+    assert captured["map_zoom_meters"] == DEFAULT_ZOOM_RADIUS_METERS
+
+
+def test_main_uses_an_explicit_map_zoom_value_when_given(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--map", "--map-zoom", "50"])
+
+    assert captured["map_zoom_meters"] == 50.0
+
+
+def test_main_leaves_map_zoom_as_none_when_the_flag_is_absent(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--map"])
+
+    assert captured["map_zoom_meters"] is None
+
+
 def test_bv_export_a_later_plain_export_keeps_an_earlier_maps_map_video(
     tmp_path, monkeypatch
 ):

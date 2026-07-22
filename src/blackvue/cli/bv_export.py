@@ -20,6 +20,7 @@ from blackvue.archive import Archive
 from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
+from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
@@ -58,6 +59,7 @@ def bv_export(
     gap_tolerance_seconds: int | None = None,
     render_map: bool = False,
     map_icon: str | Path | None = None,
+    map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
     overwrite: bool = False,
     dry_run: bool = False,
@@ -163,6 +165,7 @@ def bv_export(
                 render_map=render_map,
                 map_cache_dir=map_cache_dir,
                 map_icon=map_icon_path,
+                map_zoom_meters=map_zoom_meters,
                 render_gsensor=render_gsensor,
             )
         except MediaToolError as exc:
@@ -305,7 +308,9 @@ def main(argv: list[str] | None = None) -> int:
             "default - the first trip through a given area needs a "
             "one-time network fetch of that area's road data (cached "
             "under --target/.osm_cache afterward, then fully "
-            "offline), and rendering adds real time per trip. The "
+            "offline), and rendering adds real time per trip. Frames "
+            "the whole trip at once by default - see --map-zoom for a "
+            "closer, scrolling 'follow camera' view instead. The "
             "current-position marker is an arrow rotated to match "
             "the GPS course over ground by default - see --map-icon "
             "to use a custom image instead."
@@ -322,6 +327,25 @@ def main(argv: list[str] | None = None) -> int:
             "GPS course over ground. A PNG with transparency, drawn "
             "pointing 'up'/north in its own file, works best. Only "
             "used together with --map."
+        ),
+    )
+
+    parser.add_argument(
+        "--map-zoom",
+        dest="map_zoom_meters",
+        type=float,
+        nargs="?",
+        const=DEFAULT_ZOOM_RADIUS_METERS,
+        default=None,
+        metavar="METERS",
+        help=(
+            "Switch --map from a static whole-trip overview to a "
+            "'follow camera': a tight view of real-world half-width "
+            "METERS, centered on the vehicle's current position every "
+            "frame, scrolling/panning as it moves rather than sitting "
+            "still. Defaults to "
+            f"{DEFAULT_ZOOM_RADIUS_METERS:g}m if given with no value. "
+            "Only used together with --map."
         ),
     )
 
@@ -375,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         render_map=args.render_map,
         map_icon=args.map_icon,
+        map_zoom_meters=args.map_zoom_meters,
         render_gsensor=args.render_gsensor,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
