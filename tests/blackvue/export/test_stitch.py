@@ -368,6 +368,52 @@ def test_stitch_cameras_prints_decode_timing_when_debug_is_true(
     assert "succeeded in" in err
 
 
+def test_fit_and_pad_places_the_prefix_after_the_input_label(tmp_path):
+    # A regression test for a real bug: an earlier version built
+    # `predecode + _fit_and_pad(...)`, which put "hwdownload,
+    # format=nv12," *before* the "[0:v]" label instead of after it -
+    # ffmpeg requires the label first in a filter-chain link, so that
+    # produced a malformed filter_complex string ffmpeg rejected
+    # instantly (looked like "NVDEC unavailable", but was actually a
+    # syntax error - real NVDEC decode was never attempted). The fix
+    # was a `prefix` parameter inserted *inside* the bracketed label
+    # reference, asserted here directly on the string this function
+    # builds.
+    result = stitch_module._fit_and_pad(
+        "0:v", "v", 320, 240, prefix="hwdownload,format=nv12,"
+    )
+
+    assert result.startswith("[0:v]hwdownload,format=nv12,scale=")
+
+
+def test_run_reencode_single_with_hw_decode_builds_a_valid_filter_string(
+    tmp_path, monkeypatch
+):
+    # Exercises the actual call site (_run_reencode_single) rather
+    # than just _fit_and_pad in isolation - the earlier bug was in how
+    # the two were combined at the call site, not in either function
+    # alone. Fakes the encoder so this doesn't need a real source
+    # file or real ffmpeg - it only checks the filter_complex string
+    # handed to the encoder is well-formed.
+    captured = {}
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured["input_args"] = input_args
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    stitch_module._run_reencode_single(
+        tmp_path / "front.mp4", tmp_path / "out.mp4",
+        resolution=(320, 240), bitrate=None, hw_decode=True,
+    )
+
+    input_args = captured["input_args"]
+    filter_complex = input_args[input_args.index("-filter_complex") + 1]
+    assert filter_complex.startswith("[0:v]hwdownload,format=nv12,scale=")
+
+
 def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", None)
 
