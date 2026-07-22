@@ -1717,18 +1717,72 @@ annoying failure for "assemble one holiday video."
    `decode=nvdec` stitch-phase time against the old 276.2s. Full suite
    green (373 passed, up from 371).
 
+   The shared-device fix landed (276.2s -> 230.8s, ~16% faster) but fell
+   far short of closing the gap to the ~55.5s sum of the two solo
+   decodes - so unshared CUDA contexts were only part of the story, not
+   the dominant cause. That result, plus Christer independently finding
+   similar "context switching overhead" language in an online guide
+   (whose specific proposed fixes - avoid all CPU-side copying, or run
+   two separate processes - didn't fully match this module's
+   compositing needs or what had already been tried), pointed at
+   something more fundamental: ffmpeg's filter graph engine appears to
+   serialize frame handling across simultaneous hardware-decoded inputs
+   within a single process, no matter how the CUDA device is shared.
+   Only genuine OS-level process parallelism (confirmed by Christer's
+   own two-separate-PowerShell-windows test earlier: front 44.8s, rear
+   19.0s, both close to solo) sidesteps that.
+
+   **Follow-up: redesigned `_stack()` to decode front/rear as two
+   separate ffmpeg processes (done, this session).** Given the above,
+   rather than trying further single-process mitigations, `_stack()`
+   was restructured around the one pattern already proven fast:
+
+   - `_decode_camera()`/`_run_decode_camera()`: decode one camera
+     (trying NVDEC first, falling back to CPU on a real failure - same
+     per-camera fallback granularity as the single-camera path) into a
+     plain intermediate video, applying the front/rear-matching scale
+     (previously done inside the combined filter graph) along the way
+     for rear.
+   - `_stack()` now runs front's and rear's `_decode_camera()` calls
+     concurrently via `concurrent.futures.ThreadPoolExecutor` (same
+     safe-with-plain-threads reasoning as the front/rear/audio
+     concatenation parallelization earlier), writing to a
+     `tempfile.TemporaryDirectory()`, then does one final CPU-only pass
+     (hstack/vstack the two now-already-decoded intermediates, plus the
+     optional resolution fit-and-pad) - deliberately no hwaccel on this
+     final pass, since there's nothing left to gain and it would just
+     reintroduce the problem being avoided.
+   - The old `_run_stack()` (single ffmpeg process, two hwaccel inputs,
+     the `null`-filter front-labeling trick) is gone entirely - no
+     longer needed once decode moved to separate processes.
+
+   Tested: `_run_decode_camera()`'s single-input shared-device args
+   (same assertion style as the single-camera path), a test confirming
+   exactly 3 `encode_with_nvenc_fallback` calls happen (front decode,
+   rear decode, final combine) with the two decode calls each having
+   exactly one `-i` and the final combine legitimately having two (no
+   hwaccel on either, so no contention), and a test confirming a
+   requested `bitrate` lands only on the final combine call, not the
+   two intermediate decodes. All existing `_stack()`-level tests
+   (layout dimensions, mismatched-aspect-ratio scaling, letterboxing,
+   NVDEC-fails-for-real fallback) needed no changes - same observable
+   behavior, different internal architecture. Full suite green (375
+   passed, up from 373).
+
 Immediate next step: get a fresh two-camera `--debug` run from Christer
-with this fix in place - if the shared-device theory is right, the
-combined stitch-phase time should land much closer to the ~55.5s sum of
-the two solo decodes (maybe a bit more for the actual hstack/pad/encode
-work) instead of 276.2s. If it does, NVDEC becomes a clear win on both
-paths and this investigation (item 58 in the task list) is closed. If it
-doesn't fully close the gap, there's still more contention than the
-shared-device fix accounts for, and reverting NVDEC for the two-camera
-path specifically becomes the fallback plan. Separately, confirm `--map`
-against a real archive (real Overpass query, real GPS data, see item 4's
-caveat above) - then continue `--stitch` per the spec above, in order: the
-map-panel aspect-ratio work, then g-sensor overlay placement, then
-subtitle burn-in, then `rearview_mirror`, then the
-auto-pick-from-trip-geometry layer on top once the individual pieces work
-with explicit flags.
+with this redesign in place - if the "single-process filtergraph
+serializes hardware-decoded inputs" theory is right, the stitch phase
+should land close to max(front, rear) decode time plus the final combine
+pass (each camera's decode now genuinely overlaps the other, rather than
+sharing one process), landing well under the old 230.8s/276.2s numbers.
+If it does, NVDEC becomes a clear win across the board and this
+investigation (item 58 in the task list) is closed. If it still doesn't
+land near expectations, there's some other bottleneck not yet identified,
+and reverting NVDEC for --stitch specifically (keeping it only for
+non-stitch single-file re-encodes, if any exist) becomes the fallback
+plan. Separately, confirm `--map` against a real archive (real Overpass
+query, real GPS data, see item 4's caveat above) - then continue `--stitch`
+per the spec above, in order: the map-panel aspect-ratio work, then
+g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
+then the auto-pick-from-trip-geometry layer on top once the individual
+pieces work with explicit flags.

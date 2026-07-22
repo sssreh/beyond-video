@@ -16,9 +16,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -113,6 +115,20 @@ def stitch_cameras(
     length regardless of how small the requested output is, so it was
     the dominant cost of a --stitch run on a real (especially 4K)
     front camera.
+
+    When both front and rear exist, each is decoded (and, for rear,
+    scaled to match front on the one axis hstack/vstack requires) in
+    its own separate ffmpeg process, run concurrently, before a final
+    CPU-only pass combines the two results - not one ffmpeg process
+    handling both hardware-decoded inputs at once. That's a deliberate
+    choice, not an implementation detail: a controlled test on a real
+    archive found one process with two unshared -hwaccel cuda inputs
+    cost ~5x the sum of decoding each alone, and even pinning both to
+    one shared CUDA device only recovered a small fraction of that -
+    ffmpeg's filter graph engine appears to serialize hardware-decoded
+    frame handling across simultaneous inputs within a single process.
+    See _decode_camera()'s docstring and WORKING_CONTEXT.md's --stitch
+    NVDEC follow-ups for the full investigation.
 
     No audio track is carried into the stitched video yet - trip-level
     audio already lives in its own audio.aac (see trip_export.py),
@@ -398,6 +414,92 @@ def _run_reencode_single(
     )
 
 
+def _decode_camera(
+    source: Path,
+    destination: Path,
+    *,
+    scale_filter: str | None,
+    debug: bool = False,
+) -> None:
+    """Decode `source` (trying NVDEC first when available, falling
+    back to plain CPU decode on a real failure - see
+    _nvdec_available()) into a normal, CPU-readable intermediate video
+    at `destination`, applying `scale_filter` (a raw ffmpeg
+    "scale=..." expression) along the way if given, or leaving frame
+    size untouched if not.
+
+    Always its own ffmpeg process/call - by design, not an
+    implementation detail. A controlled test on Christer's real
+    archive (RTX 5090 laptop GPU) found decoding front and rear as two
+    genuinely separate ffmpeg processes, run concurrently, cost barely
+    more than decoding each alone. But combining both into ONE ffmpeg
+    process - even after pinning both to a single shared CUDA device
+    (see _shared_hw_device_args(), which helped only marginally, ~16%)
+    - still cost roughly 4x the sum of the two solo decode times.
+    ffmpeg's filter graph engine appears to serialize frame handling
+    across simultaneous hardware-decoded inputs within one process;
+    only real OS-level process parallelism avoided that. See
+    WORKING_CONTEXT.md's --stitch NVDEC follow-ups for the full
+    investigation this conclusion is based on.
+    """
+
+    if _nvdec_available():
+        start = time.monotonic()
+        try:
+            _run_decode_camera(
+                source, destination, scale_filter=scale_filter, hw_decode=True
+            )
+        except MediaToolError:
+            _report_decode_timing(
+                destination.name, "nvdec", time.monotonic() - start,
+                failed=True, debug=debug,
+            )
+            # fall through to plain CPU decode below
+        else:
+            _report_decode_timing(
+                destination.name, "nvdec", time.monotonic() - start,
+                failed=False, debug=debug,
+            )
+            return
+
+    start = time.monotonic()
+    _run_decode_camera(
+        source, destination, scale_filter=scale_filter, hw_decode=False
+    )
+    _report_decode_timing(
+        destination.name, "cpu", time.monotonic() - start,
+        failed=False, debug=debug,
+    )
+
+
+def _run_decode_camera(
+    source: Path,
+    destination: Path,
+    *,
+    scale_filter: str | None,
+    hw_decode: bool,
+) -> None:
+    input_args = _shared_hw_device_args(hw_decode) + _hwaccel_input_args(
+        source, hw_decode=hw_decode
+    )
+    predecode = _hw_predecode_filter(hw_decode)
+
+    if scale_filter is not None:
+        input_args += [
+            "-filter_complex", f"[0:v]{predecode}{scale_filter}[v]",
+            "-map", "[v]",
+        ]
+    elif hw_decode:
+        input_args += [
+            "-filter_complex", f"[0:v]{predecode}[v]",
+            "-map", "[v]",
+        ]
+    else:
+        input_args += ["-map", "0:v"]
+
+    encode_with_nvenc_fallback(input_args, destination)
+
+
 def _stack(
     front: Path,
     rear: Path,
@@ -417,100 +519,69 @@ def _stack(
     filter_name = STACK_LAYOUTS[layout]
     front_width, front_height = _video_dimensions(front)
 
-    if _nvdec_available():
-        start = time.monotonic()
-        try:
-            _run_stack(
-                front, rear, destination,
-                filter_name=filter_name,
-                front_width=front_width, front_height=front_height,
-                resolution=resolution, bitrate=bitrate, hw_decode=True,
-            )
-        except MediaToolError:
-            _report_decode_timing(
-                destination.name, "nvdec", time.monotonic() - start,
-                failed=True, debug=debug,
-            )
-            # fall through to plain CPU decode below
-        else:
-            _report_decode_timing(
-                destination.name, "nvdec", time.monotonic() - start,
-                failed=False, debug=debug,
-            )
-            return destination
-
-    start = time.monotonic()
-    _run_stack(
-        front, rear, destination,
-        filter_name=filter_name,
-        front_width=front_width, front_height=front_height,
-        resolution=resolution, bitrate=bitrate, hw_decode=False,
-    )
-    _report_decode_timing(
-        destination.name, "cpu", time.monotonic() - start,
-        failed=False, debug=debug,
-    )
-    return destination
-
-
-def _run_stack(
-    front: Path,
-    rear: Path,
-    destination: Path,
-    *,
-    filter_name: str,
-    front_width: int,
-    front_height: int,
-    resolution: tuple[int, int] | None,
-    bitrate: str | None,
-    hw_decode: bool,
-) -> None:
-    predecode = _hw_predecode_filter(hw_decode)
-
     # hstack only requires matching *heights* (it concatenates
     # horizontally, combined width is whatever the two widths sum to);
     # vstack only requires matching *widths*. Only scale rear on the
     # one dimension that actually needs to match front (probed
-    # directly - see _video_dimensions()), leaving the other free via
-    # ffmpeg's "-2" (auto-computed, rounded to an even number for H.264)
-    # so rear's own aspect ratio is preserved rather than forced to
-    # front's. (An earlier version scaled rear to front's exact width
-    # *and* height, which happened to look fine only because a real
-    # front/rear pair tested had the same aspect ratio as each other -
-    # not a safe assumption in general.)
+    # directly above), leaving the other free via ffmpeg's "-2"
+    # (auto-computed, rounded to an even number for H.264) so rear's
+    # own aspect ratio is preserved rather than forced to front's.
     if filter_name == "hstack":
-        rear_scale = f"scale=-2:{front_height}"
+        rear_scale_filter = f"scale=-2:{front_height}"
     else:
-        rear_scale = f"scale={front_width}:-2"
+        rear_scale_filter = f"scale={front_width}:-2"
 
-    clauses = [f"[1:v]{predecode}{rear_scale}[rear_scaled]"]
-    front_label = "0:v"
-    if predecode:
-        clauses.insert(0, f"[0:v]{predecode}null[front_predecoded]")
-        front_label = "front_predecoded"
+    with tempfile.TemporaryDirectory(prefix="bv-stitch-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        front_decoded = tmp_path / "front.mp4"
+        rear_decoded = tmp_path / "rear.mp4"
 
-    clauses.append(f"[{front_label}][rear_scaled]{filter_name}=inputs=2[stacked]")
-    output_label = "stacked"
+        # Decode front and rear as two genuinely separate ffmpeg
+        # processes, run concurrently via threads - safe for the same
+        # reason front/rear/audio concatenation already is in
+        # trip_export.py (each worker mostly blocks in
+        # subprocess.run(), which releases the GIL while ffmpeg runs).
+        # See _decode_camera()'s docstring for why this - rather than
+        # one ffmpeg process handling both hardware-decoded inputs -
+        # turned out to matter so much on real footage.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            front_future = executor.submit(
+                _decode_camera, front, front_decoded,
+                scale_filter=None, debug=debug,
+            )
+            rear_future = executor.submit(
+                _decode_camera, rear, rear_decoded,
+                scale_filter=rear_scale_filter, debug=debug,
+            )
+            front_future.result()
+            rear_future.result()
 
-    # A second pass on the finished composite, if a specific output
-    # resolution was requested (e.g. a fast small test render) -
-    # independent of the front/rear-matching scale above, and using
-    # the aspect-preserving fit-then-pad idiom rather than a plain
-    # stretch, since the composite's own shape (e.g. ultra-wide for
-    # side_by_side) rarely matches an arbitrary requested resolution.
-    if resolution is not None:
-        out_width, out_height = resolution
-        clauses.append(_fit_and_pad("stacked", "final", out_width, out_height))
-        output_label = "final"
+        # The expensive part - decoding the original source footage -
+        # is already done above. Both intermediates are already
+        # CPU-readable and already matched on the one axis
+        # hstack/vstack needs, so this final pass is a plain CPU
+        # decode + stack + (optional) resolution fit-and-pad + encode.
+        # Deliberately no hwaccel here: there's nothing left to gain
+        # from it on these much-smaller intermediates, and using it
+        # would just reintroduce the two-hwaccel-input cost this
+        # whole redesign exists to avoid.
+        clauses = [f"[0:v][1:v]{filter_name}=inputs=2[stacked]"]
+        output_label = "stacked"
 
-    encode_with_nvenc_fallback(
-        [
-            *_shared_hw_device_args(hw_decode),
-            *_hwaccel_input_args(front, hw_decode=hw_decode),
-            *_hwaccel_input_args(rear, hw_decode=hw_decode),
-            "-filter_complex", ";".join(clauses),
-            "-map", f"[{output_label}]",
-        ],
-        destination,
-        extra_codec_args=_bitrate_args(bitrate),
-    )
+        if resolution is not None:
+            out_width, out_height = resolution
+            clauses.append(_fit_and_pad("stacked", "final", out_width, out_height))
+            output_label = "final"
+
+        encode_with_nvenc_fallback(
+            [
+                "-i", str(front_decoded),
+                "-i", str(rear_decoded),
+                "-filter_complex", ";".join(clauses),
+                "-map", f"[{output_label}]",
+            ],
+            destination,
+            extra_codec_args=_bitrate_args(bitrate),
+        )
+
+    return destination
