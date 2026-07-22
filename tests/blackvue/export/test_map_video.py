@@ -10,6 +10,7 @@ from blackvue.export import map_video as map_video_module
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
+from blackvue.export.osm_roads import Road
 from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gps_reader import GpsFix
 
@@ -182,6 +183,75 @@ def test_render_map_video_recenters_the_bbox_on_each_frame_when_zoomed(
     assert (first.max_lat - first.min_lat) < (
         static_bbox.max_lat - static_bbox.min_lat
     )
+
+
+def test_render_map_video_filters_roads_to_each_frames_bbox_when_zoomed(
+    tmp_path, monkeypatch
+):
+    captured_roads = []
+
+    def fake_render_frame(_bbox, roads, *_args, **_kwargs):
+        captured_roads.append(roads)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    # One road right on the route, one far away - only the near one
+    # should survive the per-frame filter.
+    near_road = Road(points=((59.300, 18.000), (59.302, 18.004)))
+    far_road = Road(points=((10.0, 10.0), (10.1, 10.1)))
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.302, 18.004))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01
+    )
+
+    render_map_video(
+        fixes,
+        roads=(near_road, far_road),
+        bbox=static_bbox,
+        destination=tmp_path / "map.mp4",
+        fps=2,
+        zoom_meters=100.0,
+    )
+
+    assert len(captured_roads) >= 2
+    assert all(far_road not in roads for roads in captured_roads)
+    assert all(near_road in roads for roads in captured_roads)
+
+
+def test_render_map_video_passes_all_roads_unfiltered_when_not_zoomed(
+    tmp_path, monkeypatch
+):
+    captured_roads = []
+
+    def fake_render_frame(_bbox, roads, *_args, **_kwargs):
+        captured_roads.append(roads)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    far_road = Road(points=((10.0, 10.0), (10.1, 10.1)))
+    all_roads = (far_road,)
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.302, 18.004))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01
+    )
+
+    render_map_video(
+        fixes, roads=all_roads, bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert len(captured_roads) >= 2
+    assert all(roads == all_roads for roads in captured_roads)
 
 
 def test_render_map_video_returns_none_for_fewer_than_two_fixes(tmp_path):

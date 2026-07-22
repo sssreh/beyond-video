@@ -1,6 +1,9 @@
 from PIL import Image
+from PIL import ImageFont
 
+from blackvue.export import map_render as map_render_module
 from blackvue.export.map_render import _arrow_points
+from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
 from blackvue.export.map_render import render_frame
 from blackvue.export.osm_roads import BoundingBox
@@ -122,3 +125,25 @@ def test_render_frame_handles_a_degenerate_bounding_box():
     )
 
     assert image.size == (640, 640)
+
+
+def test_load_font_only_opens_the_font_file_once(monkeypatch):
+    monkeypatch.setattr(map_render_module, "_CACHED_FONT", None)
+
+    calls = []
+    # A plain sentinel, not a real font - load_default() itself calls
+    # truetype() internally on modern Pillow to load its bundled font,
+    # which would recurse into this same fake if called here.
+    fake_font = object()
+
+    def fake_truetype(path, size, *args, **kwargs):
+        calls.append(path)
+        return fake_font
+
+    monkeypatch.setattr(ImageFont, "truetype", fake_truetype)
+
+    first = _load_font()
+    second = _load_font()
+
+    assert first is second
+    assert len(calls) == 1

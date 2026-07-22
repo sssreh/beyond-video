@@ -51,14 +51,28 @@ _FONT_CANDIDATES = (
     "DejaVuSans-Bold.ttf",
 )
 
+# Cached after the first render_frame() call - a map.mp4 export calls
+# this once per frame (every frame draws its speed/timestamp text),
+# and re-opening and re-parsing the same TTF file from disk that many
+# times over was a real, measured chunk of render time for no benefit
+# (the font never changes mid-export).
+_CACHED_FONT: ImageFont.ImageFont | None = None
+
 
 def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    for candidate in _FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(candidate, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+    global _CACHED_FONT
+
+    if _CACHED_FONT is None:
+        for candidate in _FONT_CANDIDATES:
+            try:
+                _CACHED_FONT = ImageFont.truetype(candidate, size)
+                break
+            except OSError:
+                continue
+        else:
+            _CACHED_FONT = ImageFont.load_default()
+
+    return _CACHED_FONT
 
 
 def _project(

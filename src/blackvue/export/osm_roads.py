@@ -153,6 +153,52 @@ def bounding_box_around_point(
     )
 
 
+def index_roads(roads: tuple[Road, ...]) -> tuple[tuple[Road, BoundingBox], ...]:
+    """Precompute each road's own (min/max lat/lon) bounding box once.
+
+    Used by roads_within_bbox() to filter down to only the roads
+    visible in a given frame - map.mp4's "follow camera" mode
+    (--map-zoom) calls that once per frame, so doing this rescan of
+    every road's points up front (rather than inside the per-frame
+    filter) is what keeps that filtering itself cheap.
+    """
+
+    indexed = []
+    for road in roads:
+        lats = [lat for lat, _lon in road.points]
+        lons = [lon for _lat, lon in road.points]
+        indexed.append((
+            road,
+            BoundingBox(min(lats), min(lons), max(lats), max(lons)),
+        ))
+    return tuple(indexed)
+
+
+def roads_within_bbox(
+    indexed_roads: tuple[tuple[Road, BoundingBox], ...], bbox: BoundingBox
+) -> tuple[Road, ...]:
+    """Return the subset of `indexed_roads` (see index_roads()) whose
+    own bounding box overlaps `bbox` at all.
+
+    A cheap rectangle-overlap test per road, not a real geometric
+    intersection - a road that merely passes near a corner of `bbox`
+    without actually crossing it can pass this check too, but that
+    just means a road frame_bbox happens to be drawn one frame that
+    turns out to be just off-screen once its points are projected,
+    which is harmless (map_render.py still just draws its (possibly
+    off-canvas) line) and far cheaper than checking properly.
+    """
+
+    return tuple(
+        road
+        for road, road_bbox in indexed_roads
+        if road_bbox.min_lat <= bbox.max_lat
+        and road_bbox.max_lat >= bbox.min_lat
+        and road_bbox.min_lon <= bbox.max_lon
+        and road_bbox.max_lon >= bbox.min_lon
+    )
+
+
 def _overpass_query(bbox: BoundingBox) -> str:
     return (
         "[out:json][timeout:60];"
