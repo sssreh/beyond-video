@@ -1,13 +1,28 @@
 import json
 import subprocess
+from datetime import datetime
+from datetime import timedelta
 
 import pytest
 from PIL import Image
 
 from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import STACK_LAYOUTS
+from blackvue.export.stitch import _map_panel_dimensions
 from blackvue.export.stitch import stitch_cameras
 from blackvue.generate.media import MediaToolError
+from blackvue.telemetry.gps_reader import GpsFix
+
+
+def _fix(offset_seconds, lat, lon):
+    return GpsFix(
+        timestamp=datetime(2026, 7, 15, 13, 0, 0) + timedelta(seconds=offset_seconds),
+        valid=True,
+        latitude=lat,
+        longitude=lon,
+        speed_kmh=50.0,
+        course=45.0,
+    )
 
 
 def _make_video(path, width, height, duration_seconds=1.0):
@@ -899,3 +914,231 @@ def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
     captured.clear()
     assert stitch_module._nvdec_available() is True
     assert captured == {}
+
+
+# --- --stitch-map panel tests ---
+
+
+def test_map_panel_dimensions_matches_shared_axis_for_left_right():
+    # A north-south trip (tall real-world shape) placed left/right -
+    # panel height must match the composite exactly.
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))
+
+    size = _map_panel_dimensions(1000, 400, side="left", fixes=fixes)
+
+    assert size is not None
+    width, height = size
+    assert height == 400
+    assert 0 < width <= 1000
+
+
+def test_map_panel_dimensions_matches_shared_axis_for_top_down():
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))
+
+    size = _map_panel_dimensions(1000, 400, side="down", fixes=fixes)
+
+    assert size is not None
+    width, height = size
+    assert width == 1000
+    assert 0 < height <= 400
+
+
+def test_map_panel_dimensions_clamps_the_free_dimension_to_the_fraction_range():
+    # An extremely tall, near-straight-line trip would otherwise ask
+    # for a razor-thin (or huge) panel - clamped to
+    # [_MIN_MAP_PANEL_FRACTION, _MAX_MAP_PANEL_FRACTION] of the
+    # composite's own corresponding dimension instead.
+    fixes = (_fix(0, 0.0, 0.0), _fix(10, 10.0, 0.0001))
+
+    width, _height = _map_panel_dimensions(1000, 400, side="left", fixes=fixes)
+
+    assert round(width / 1000, 2) >= stitch_module._MIN_MAP_PANEL_FRACTION
+    assert round(width / 1000, 2) <= stitch_module._MAX_MAP_PANEL_FRACTION
+
+
+def test_map_panel_dimensions_returns_none_for_no_gps_data():
+    assert _map_panel_dimensions(1000, 400, side="left", fixes=()) is None
+
+
+def test_stitch_cameras_map_panel_defaults_to_down_for_side_by_side(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # side_by_side alone would be 320x120 (two 160x120 hstacked) - the
+    # default 'down' side vstacks the panel below, so width is
+    # unchanged and height grows.
+    assert width == 320
+    assert height > 120
+
+
+def test_stitch_cameras_map_panel_defaults_to_left_for_top_down(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="top_down",
+        map_mode="map", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # top_down alone would be 160x240 (two 160x120 vstacked) - the
+    # default 'left' side hstacks the panel on the left, so height is
+    # unchanged and width grows.
+    assert height == 240
+    assert width > 160
+
+
+def test_stitch_cameras_map_panel_side_can_be_overridden(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_side="right",
+        map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    assert height == 120
+    assert width > 320
+
+
+def test_stitch_cameras_map_panel_zoom_requires_a_radius(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="zoom", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    # No radius given - the panel is skipped, camera composite alone
+    # comes through untouched, and the warning names the missing flag.
+    width, height = _video_size(destination)
+    assert (width, height) == (320, 120)
+    assert len(warnings) == 1
+    assert "zoom requires" in warnings[0]
+
+
+def test_stitch_cameras_map_panel_zoom_with_a_radius_adds_the_panel(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="zoom", map_zoom_meters=50.0,
+        map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    assert width == 320
+    assert height > 120
+
+
+def test_stitch_cameras_map_panel_skipped_without_gps_data(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_fixes=(), map_roads=(), warnings=warnings,
+    )
+
+    # map_fixes is empty - map_mode is a documented no-op in that
+    # case, not a failure worth a warning (there's simply nothing to
+    # draw a map from, e.g. a trip with no GPS at all).
+    width, height = _video_size(destination)
+    assert (width, height) == (320, 120)
+    assert warnings == []
+
+
+def test_stitch_cameras_map_panel_combines_with_a_requested_resolution(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        resolution=(240, 135),
+        map_mode="map", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # The camera portion is fit-and-padded to exactly the requested
+    # resolution first; the map panel then adds to that - so the
+    # composite's own width (240) is preserved, and total height grows
+    # past the requested 135.
+    assert width == 240
+    assert height > 135
+
+
+def test_stitch_cameras_map_panel_ignored_for_single_camera_fallback(tmp_path):
+    front = tmp_path / "front.mp4"
+    _make_video(front, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, None, destination, layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    # Single-camera fallback doesn't support a map panel yet (see
+    # stitch_cameras()'s docstring) - it's silently ignored, same as
+    # `layout` is for this path, not a warning-worthy failure.
+    width, height = _video_size(destination)
+    assert (width, height) == (160, 120)
+    assert warnings == []

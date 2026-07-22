@@ -215,6 +215,8 @@ def export_trip(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    stitch_map: str | None = None,
+    stitch_map_side: str | None = None,
     debug: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
@@ -273,6 +275,23 @@ def export_trip(
     scale/constrain stitch.mp4 - handy for a fast, small test render
     instead of waiting on a full-resolution encode. Both only apply
     when `stitch_layout` is also given.
+
+    `stitch_map` ('map' or 'zoom'), if given (also requires
+    `stitch_layout`), additionally composes a map panel alongside the
+    camera composite in stitch.mp4 - a dedicated render, sized to fit
+    the composite exactly (see stitch.py's _map_panel_dimensions()/
+    _render_map_panel()), separate from any general-purpose map.mp4/
+    map_zoom_*m.mp4 `render_map`/`map_zoom_meters` may also produce in
+    this same run. 'zoom' reuses `map_zoom_meters` as the panel's
+    follow-camera radius - it must also be given, or the panel is
+    skipped with a warning. `stitch_map_side` ('left', 'right', 'top',
+    or 'down') overrides the panel's default side, which is otherwise
+    picked from `stitch_layout` (left for top_down, down for
+    side_by_side). Needs the trip's own GPS fixes (and, for roads to
+    draw, a successful OSM fetch/cache) the same way `render_map`/
+    `map_zoom_meters` do - degrades to a warning and no panel (not a
+    failed stitch) if there's no GPS data, no default side, or a
+    missing zoom radius.
 
     `debug=True` prints wall-clock timing to stderr for the
     concatenation/map/stitch phases below, plus (from stitch.py)
@@ -360,12 +379,17 @@ def export_trip(
 
     map_path = None
     map_zoom_path = None
-    if (render_map or map_zoom_meters is not None) and fixes:
+    # Also loaded for --stitch-map, not just --map/--map-zoom - the
+    # panel it renders needs the same fixes/roads, just at its own
+    # dedicated size (see the stitch_cameras() call below).
+    stitch_map_roads: tuple = ()
+    if (render_map or map_zoom_meters is not None or stitch_map is not None) and fixes:
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
         bbox, roads = _load_trip_roads(fixes, cache_dir, warnings)
 
         if bbox is not None and roads is not None:
+            stitch_map_roads = roads
             if render_map:
                 map_path = _render_map_variant(
                     fixes, bbox, roads, destination / "map.mp4", warnings,
@@ -409,6 +433,12 @@ def export_trip(
                 layout=stitch_layout,
                 resolution=stitch_resolution,
                 bitrate=stitch_bitrate,
+                map_mode=stitch_map,
+                map_side=stitch_map_side,
+                map_zoom_meters=map_zoom_meters,
+                map_fixes=fixes if stitch_map is not None else (),
+                map_roads=stitch_map_roads,
+                map_icon=map_icon,
                 debug=debug,
                 warnings=warnings,
             )

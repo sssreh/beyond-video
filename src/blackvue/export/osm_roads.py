@@ -140,6 +140,42 @@ def bounding_box_for_fixes(
     )
 
 
+def aspect_ratio_of(bbox: BoundingBox) -> float:
+    """`bbox`'s own real-world width/height ratio (cos(latitude)
+    -corrected, same convention render_frame()/bounding_box_around_point()
+    use) - measures whatever ratio a box already has, without changing
+    it. Distinct from bounding_box_for_fixes()'s `aspect_ratio` param,
+    which *grows* a box to reach a chosen target ratio instead.
+
+    Used by stitch.py to size the --stitch-map panel from a trip's own
+    natural GPS shape (a north-south trip wants a tall panel, an
+    east-west trip a wide one) - a coarser, "just the ratio" cousin of
+    the aspect_ratio-growing machinery above.
+    """
+
+    width_units, height_units = _real_world_dimensions(
+        bbox.min_lat, bbox.max_lat, bbox.min_lon, bbox.max_lon
+    )
+    return width_units / height_units
+
+
+def _real_world_dimensions(
+    min_lat: float, max_lat: float, min_lon: float, max_lon: float
+) -> tuple[float, float]:
+    """(width_units, height_units): a box's real-world width and
+    height in the same "lat-degree-equivalent" units, directly
+    comparable to each other (longitude widened by cos(latitude), the
+    same correction render_frame()'s own projection applies)."""
+
+    mean_lat_rad = math.radians((min_lat + max_lat) / 2)
+    lon_scale = math.cos(mean_lat_rad) or 1e-9
+
+    height_units = (max_lat - min_lat) or 1e-9
+    width_units = (max_lon - min_lon) * lon_scale
+
+    return width_units, height_units
+
+
 def _grow_to_aspect_ratio(
     min_lat: float,
     max_lat: float,
@@ -157,10 +193,9 @@ def _grow_to_aspect_ratio(
     mean_lat_rad = math.radians((min_lat + max_lat) / 2)
     lon_scale = math.cos(mean_lat_rad) or 1e-9
 
-    # Both spans expressed in the same "lat-degree-equivalent" real
-    # -world units, so they're directly comparable.
-    height_units = max_lat - min_lat
-    width_units = (max_lon - min_lon) * lon_scale
+    width_units, height_units = _real_world_dimensions(
+        min_lat, max_lat, min_lon, max_lon
+    )
 
     desired_width_units = height_units * aspect_ratio
 

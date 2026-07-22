@@ -25,8 +25,13 @@ import time
 from pathlib import Path
 
 from ..generate.media import MediaToolError
+from ..telemetry.gps_reader import GpsFix
+from .map_video import render_map_video
 from .media import concatenate_media
 from .media import encode_with_nvenc_fallback
+from .osm_roads import Road
+from .osm_roads import aspect_ratio_of
+from .osm_roads import bounding_box_for_fixes
 
 # side_by_side places front and rear next to each other (ffmpeg
 # hstack) - per the agreed --stitch spec, this is the layout a trip
@@ -38,6 +43,30 @@ STACK_LAYOUTS = {
     "side_by_side": "hstack",
     "top_down": "vstack",
 }
+
+# --stitch-map's default panel side when --stitch-map-side isn't given
+# explicitly, keyed by camera `layout` - per the agreed spec: a
+# top_down (tall) camera column gets its map panel on the left (itself
+# free to be any height, camera column stays the tall piece); a
+# side_by_side (wide) camera row gets its map panel on the bottom -
+# nested perpendicular to the camera arrangement so the final frame
+# doesn't turn into a long thin ribbon in either direction.
+# rearview_mirror isn't in STACK_LAYOUTS yet (not implemented), so it
+# has no entry here either.
+_DEFAULT_MAP_SIDE_FOR_LAYOUT = {
+    "side_by_side": "down",
+    "top_down": "left",
+}
+
+# The map panel's free dimension (the one not forced to match the
+# camera composite - see _map_panel_dimensions()) is clamped to this
+# fraction range of the composite's own corresponding dimension, so a
+# near-straight-line trip (real-world aspect ratio close to 0 or
+# infinite) can't produce a degenerate sliver or an oversized panel
+# that dominates the frame - the camera footage is meant to stay the
+# primary content.
+_MIN_MAP_PANEL_FRACTION = 0.2
+_MAX_MAP_PANEL_FRACTION = 0.5
 
 # Cached after the first check, same pattern as media.py's
 # _NVENC_AVAILABLE - which hwaccels this machine's ffmpeg build has is
@@ -81,6 +110,12 @@ def stitch_cameras(
     layout: str,
     resolution: tuple[int, int] | None = None,
     bitrate: str | None = None,
+    map_mode: str | None = None,
+    map_side: str | None = None,
+    map_zoom_meters: float | None = None,
+    map_fixes: tuple[GpsFix, ...] = (),
+    map_roads: tuple[Road, ...] = (),
+    map_icon: Path | None = None,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path | None:
@@ -152,12 +187,34 @@ def stitch_cameras(
     given) explaining the cap. Skipped entirely (no probing, no
     warning) if `bitrate` is None, or if either intermediate's own
     bitrate can't be determined.
+
+    `map_mode` ('map' or 'zoom', matching --stitch-map's values),
+    if given, additionally composes a map panel alongside the camera
+    composite - see _map_panel_dimensions()/_render_map_panel(). Only
+    meaningful when both front and rear exist (the single-camera
+    fallback below ignores it entirely, same as `layout` - not yet
+    built for that simpler path). `map_side` overrides the panel's
+    default side (see _DEFAULT_MAP_SIDE_FOR_LAYOUT); `map_zoom_meters`
+    is required when `map_mode == "zoom"` (reused as the panel's
+    follow-camera radius - normally whatever --map-zoom METERS was
+    also given). `map_fixes`/`map_roads` are the trip's already-loaded
+    GPS fixes/OSM road geometry (see trip_export.py's
+    _load_trip_roads()) - `map_mode` is a no-op if `map_fixes` is
+    empty. `map_icon` is the same custom position-marker image
+    --map/--map-zoom accept. Any map-panel problem (no GPS data, no
+    default side for an unrecognized layout, a missing zoom radius, an
+    image-load failure) degrades to a `warnings` entry and no panel,
+    never a failed stitch - the camera composite alone is still worth
+    having.
     """
 
     if front is not None and rear is not None:
         return _stack(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
+            map_mode=map_mode, map_side=map_side,
+            map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
+            map_roads=map_roads, map_icon=map_icon,
             debug=debug, warnings=warnings,
         )
 
@@ -587,6 +644,114 @@ def _run_decode_camera(
     encode_with_nvenc_fallback(input_args, destination)
 
 
+def _map_panel_dimensions(
+    comp_width: int,
+    comp_height: int,
+    *,
+    side: str,
+    fixes: tuple[GpsFix, ...],
+) -> tuple[int, int] | None:
+    """The (width, height) --stitch-map's panel should render at so it
+    slots onto `side` of a comp_width x comp_height camera composite
+    via a plain hstack ('left'/'right') or vstack ('top'/'down').
+
+    The axis matching the composite is matched exactly (panel height
+    == comp_height for hstack, panel width == comp_width for vstack -
+    hstack/vstack both require that shared axis to line up). The other,
+    *free* axis is sized from the trip's own real-world aspect ratio
+    (see osm_roads.aspect_ratio_of()) - a north-south trip wants a
+    taller panel, an east-west trip a wider one - clamped to between
+    _MIN_MAP_PANEL_FRACTION and _MAX_MAP_PANEL_FRACTION of the
+    composite's own corresponding dimension, so a near-straight-line
+    trip can't ask for a degenerate sliver or an oversized panel.
+
+    That clamp is relative to the camera composite alone, not the
+    eventual composite+panel total (which would make this circular) -
+    a deliberate simplification: when a map panel is also requested,
+    --stitch-resolution bounds the camera portion, not necessarily the
+    final file's own total dimensions, since the panel adds to it.
+
+    Returns None if there isn't enough GPS data to compute a real
+    -world bounding box at all (mirrors bounding_box_for_fixes()'s own
+    "nothing to bound" convention).
+    """
+
+    bbox = bounding_box_for_fixes(fixes)
+    if bbox is None:
+        return None
+
+    trip_ratio = aspect_ratio_of(bbox)
+
+    if side in ("left", "right"):
+        low = comp_width * _MIN_MAP_PANEL_FRACTION
+        high = comp_width * _MAX_MAP_PANEL_FRACTION
+        free_dimension = max(low, min(comp_height * trip_ratio, high))
+        width, height = free_dimension, comp_height
+    else:
+        low = comp_height * _MIN_MAP_PANEL_FRACTION
+        high = comp_height * _MAX_MAP_PANEL_FRACTION
+        free_dimension = max(low, min(comp_width / trip_ratio, high))
+        width, height = comp_width, free_dimension
+
+    # Even dimensions for yuv420p encoding - same rounding convention
+    # as _ideal_shared_dimension().
+    return max(2, round(width / 2) * 2), max(2, round(height / 2) * 2)
+
+
+def _render_map_panel(
+    mode: str,
+    fixes: tuple[GpsFix, ...],
+    roads: tuple[Road, ...],
+    destination: Path,
+    *,
+    width: int,
+    height: int,
+    zoom_meters: float | None,
+    marker_image_path: Path | None,
+) -> Path | None:
+    """Render --stitch-map's panel (mode 'map' or 'zoom') at exactly
+    width x height, shaped so combining it with the camera composite
+    doesn't distort it - see osm_roads.bounding_box_for_fixes()'s
+    `aspect_ratio` param. Returns None (writes nothing) if there isn't
+    enough GPS data to draw a route from - the same convention
+    render_map_video() itself uses.
+
+    This is a dedicated render, separate from any general-purpose
+    map.mp4/map_zoom_*m.mp4 --map/--map-zoom may also produce in the
+    same run - those stay whatever shape/size they've always been
+    (square by default); this one is sized specifically to fit the
+    stitch composite.
+    """
+
+    if mode == "zoom":
+        if zoom_meters is None:
+            return None
+        # bbox is a required render_map_video() param but unused
+        # whenever zoom_meters is given (a fresh one is built every
+        # frame instead) - any non-None placeholder works; reuse the
+        # trip's own unshaped whole-trip box, same as
+        # trip_export.py's _render_map_variant() does for the general
+        # -purpose map_zoom_*m.mp4.
+        bbox = bounding_box_for_fixes(fixes)
+        if bbox is None:
+            return None
+        return render_map_video(
+            fixes, roads, bbox, destination,
+            marker_image_path=marker_image_path,
+            zoom_meters=zoom_meters,
+            width=width, height=height,
+        )
+
+    bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
+    if bbox is None:
+        return None
+    return render_map_video(
+        fixes, roads, bbox, destination,
+        marker_image_path=marker_image_path,
+        width=width, height=height,
+    )
+
+
 def _ideal_shared_dimension(
     front_width: int,
     front_height: int,
@@ -645,6 +810,12 @@ def _stack(
     layout: str,
     resolution: tuple[int, int] | None,
     bitrate: str | None,
+    map_mode: str | None = None,
+    map_side: str | None = None,
+    map_zoom_meters: float | None = None,
+    map_fixes: tuple[GpsFix, ...] = (),
+    map_roads: tuple[Road, ...] = (),
+    map_icon: Path | None = None,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path:
@@ -769,17 +940,96 @@ def _stack(
         # would just reintroduce the two-hwaccel-input cost this
         # whole redesign exists to avoid.
         clauses = [f"[0:v][1:v]{filter_name}=inputs=2[stacked]"]
-        output_label = "stacked"
+        camera_label = "stacked"
 
         if resolution is not None:
             out_width, out_height = resolution
-            clauses.append(_fit_and_pad("stacked", "final", out_width, out_height))
-            output_label = "final"
+            clauses.append(_fit_and_pad("stacked", "camera", out_width, out_height))
+            camera_label = "camera"
+
+        output_label = camera_label
+        extra_inputs: list[str] = []
+
+        if map_mode is not None and map_fixes:
+            # The camera composite's own pixel dimensions are only
+            # knowable *now*, and only worth computing when a map
+            # panel is actually requested (an extra ffprobe call
+            # otherwise, on top of everything already probed above) -
+            # either exactly `resolution` (the fit-and-pad above
+            # guarantees that), or, with no `resolution` given, front's
+            # own decoded size plus whatever rear contributed on the
+            # stacking axis (both already probed/matched above).
+            if resolution is not None:
+                comp_width, comp_height = resolution
+            else:
+                comp_width, comp_height = front_width, front_height
+                rear_decoded_width, rear_decoded_height = _video_dimensions(
+                    rear_decoded
+                )
+                if filter_name == "hstack":
+                    comp_width += rear_decoded_width
+                else:
+                    comp_height += rear_decoded_height
+
+            panel_side = map_side or _DEFAULT_MAP_SIDE_FOR_LAYOUT.get(layout)
+
+            if panel_side is None:
+                if warnings is not None:
+                    warnings.append(
+                        f"stitch map panel: no default side for layout "
+                        f"{layout!r} - pass --stitch-map-side explicitly - "
+                        "skipped"
+                    )
+            elif map_mode == "zoom" and map_zoom_meters is None:
+                if warnings is not None:
+                    warnings.append(
+                        "stitch map panel: --stitch-map zoom requires "
+                        "--map-zoom METERS to also be given (reused as the "
+                        "panel's follow-camera radius) - skipped"
+                    )
+            else:
+                panel_size = _map_panel_dimensions(
+                    comp_width, comp_height, side=panel_side, fixes=map_fixes,
+                )
+                panel_path = tmp_path / "map_panel.mp4"
+                rendered = None
+                try:
+                    rendered = _render_map_panel(
+                        map_mode, map_fixes, map_roads, panel_path,
+                        width=panel_size[0], height=panel_size[1],
+                        zoom_meters=map_zoom_meters,
+                        marker_image_path=map_icon,
+                    ) if panel_size is not None else None
+                except MediaToolError as exc:
+                    if warnings is not None:
+                        warnings.append(f"stitch map panel: {exc}")
+
+                if rendered is None:
+                    if warnings is not None and panel_size is None:
+                        warnings.append(
+                            "stitch map panel: no GPS data for this trip - "
+                            "skipped"
+                        )
+                else:
+                    panel_filter_name = (
+                        "hstack" if panel_side in ("left", "right") else "vstack"
+                    )
+                    combine_inputs = (
+                        f"[2:v][{camera_label}]"
+                        if panel_side in ("left", "top")
+                        else f"[{camera_label}][2:v]"
+                    )
+                    clauses.append(
+                        f"{combine_inputs}{panel_filter_name}=inputs=2[withmap]"
+                    )
+                    output_label = "withmap"
+                    extra_inputs = ["-i", str(rendered)]
 
         encode_with_nvenc_fallback(
             [
                 "-i", str(front_decoded),
                 "-i", str(rear_decoded),
+                *extra_inputs,
                 "-filter_complex", ";".join(clauses),
                 "-map", f"[{output_label}]",
             ],
