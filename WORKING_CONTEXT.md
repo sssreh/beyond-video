@@ -371,7 +371,42 @@ local text processing, no network, negligible cost). New
 `ExportResult.srt`/`ExportResult.lrc` fields, included in `bv-export`'s
 written-file count.
 
-Not yet confirmed against Christer's real archive - only unit-tested.
+Confirmed against Christer's real archive (this is what surfaced both
+`--translate --srt --lrc` bugs above, and the padding gap below).
+
+---
+
+## Pad merged subtitles to the real video length (done, this session)
+
+Christer noticed, using his real archive: the last ~2 minutes of a trip had
+no speech, so Whisper (correctly) emitted no segments for that silence -
+but that meant the merged `trip.srt`/`trip.lrc` ended ~2 minutes before the
+video actually did. Not a bug, just how Whisper works, but he wanted the
+subtitle file's timeline to match the video's real length.
+
+`_pad_to_duration()` (new, in `blackvue.export.subtitles`) appends one
+empty trailing cue when the merged cues end before a given
+`total_duration_seconds`, no-op otherwise (nothing to pad to, no real
+content, or content already reaches the end). The padding cue starts
+within the final second before `total_duration_seconds` (not exactly at
+the last real cue's end, and never earlier than it) - avoids a
+zero-duration SRT cue some players might reject, and for LRC (which only
+has a start time, no end) puts the empty marker near the actual end of the
+video rather than redundantly at the same spot as the last real line.
+`merge_srt()`/`merge_lrc()` both gained an optional
+`total_duration_seconds` keyword-only param that's threaded through to
+this.
+
+`export_trip()` gets that duration by probing (`generate.media.probe()`)
+the concatenated `front.mp4`/`rear.mp4` it just wrote - not by summing
+recordings' own `.duration.txt` files, which may not all exist (needs
+`bv-generate --get-duration` to have been run) and wouldn't necessarily
+match the actual concatenated output anyway. A probe failure degrades to
+a warning (`ExportResult.warnings`), same resilience pattern as the rest
+of `export_trip`'s optional outputs - the trip's other files are still
+worth having even if duration probing fails. If there's no front/rear
+video in the trip at all, padding is silently skipped (nothing to match
+subtitle length to).
 
 ---
 
