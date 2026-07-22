@@ -635,6 +635,38 @@ annoying failure for "assemble one holiday video."
    monkeypatched `load_or_fetch_roads`/`urlopen`, never hit for real in
    tests).
 
+   **Satellite imagery instead of the road-line basemap (considered,
+   deferred).** Christer asked about this right after `--map` shipped.
+   Unlike roads, satellite imagery doesn't split into "open data +
+   self-rendered" the way OSM does - the imagery itself is the licensed
+   asset, so the same clean pattern doesn't carry over:
+   - *NASA GIBS* - free, public-domain-ish, explicitly built for tile
+     access (no offline-use prohibition). But ~250-500m/pixel resolution
+     - a blurry color patch at driving-trip zoom, not a recognizable
+     street. Not useful for this.
+   - *Esri World Imagery (for Export)* - sub-meter, actually usable
+     resolution, but a separate product from Esri's normal tile layer
+     specifically because the normal one prohibits offline/export use.
+     Needs an ArcGIS account, likely consumes paid export credits - exact
+     terms/pricing not researched yet.
+   - *Google Maps Platform / Mapbox Satellite* - Christer initially
+     assumed "Google Earth supports this" would sidestep the licensing
+     question; clarified that Google Earth (the app) and Google's actual
+     imagery API are different things - the API needs a billing-enabled
+     Google Cloud account, and its terms have the same "live display, not
+     permanent offline storage" restriction as MapTiler/Mapbox found for
+     street tiles.
+   - *Sentinel-2 (Copernicus)* - genuinely free/open, but only 10m
+     resolution (better than GIBS, still coarse) and would need an actual
+     image-processing pipeline (cloud-free mosaicking, color correction)
+     built from scratch, not just fetching ready-made tiles - a much
+     bigger lift than the road renderer was.
+
+   Decision: skip for now, keep the road-line basemap. Revisit if
+   Christer wants to pursue a specific paid provider (would need real
+   terms/pricing research first) or if a cleaner open high-resolution
+   source turns up later.
+
 5. **--stitch option (future).** Compose the front and rear video
    side-by-side (`left_right`) or stacked (`top_down`), and optionally
    stitch the map-overlay video in too, at a chosen position. This is
