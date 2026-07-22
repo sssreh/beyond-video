@@ -32,8 +32,12 @@ from PIL import ImageDraw
 # to account for) since PIL's ImageDraw fills solid shapes with no
 # anti-aliasing of its own.
 BACKGROUND_COLOR = (0, 255, 0)
-RING_COLOR = (255, 255, 255)
-AXIS_COLOR = (255, 255, 255)
+# Black rather than white: reads as a well-defined "target" (rings +
+# crosshair) against the green background - Christer's call, picked
+# from three rendered mockups (plain recolor vs. a full bullseye vs.
+# a black marker instead).
+RING_COLOR = (0, 0, 0)
+AXIS_COLOR = (0, 0, 0)
 TRAIL_COLOR = (230, 57, 70)
 DOT_COLOR = (230, 57, 70)
 DOT_OUTLINE = (255, 255, 255)
