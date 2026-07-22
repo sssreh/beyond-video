@@ -1962,3 +1962,72 @@ as exporting everything). Full suite green (383 passed, up from 381).
 The "refer to a trip by name" feature itself (the reason this came up) is
 still just an idea for later, not implemented - noted here for whenever
 it's picked up.
+
+## --stitch: cap --stitch-bitrate to the intermediates' own combined bitrate (done, this session)
+
+Christer worked through this one himself, correctly, in two steps. First:
+"if you have two input files with a bitrate of X each, would it be a waste
+to allow the output bitrate to be greater than 2X?" - yes, roughly:
+a side-by-side composite doesn't contain any information beyond what's in
+the two source frames, so bits requested well beyond what the sources
+actually carry mostly can't recover detail that isn't there. Then the
+sharper refinement: "since we lower resolution and bitrate of each file
+before merge, maybe output bitrate should be limited to the highest
+bitrate of one of the two input files" - meaning the two *intermediates*
+`_stack()` produces (front.mp4/rear.mp4 in the temp dir), not the
+original cameras' native bitrates, since the final combine pass never
+sees the originals again. Corrected one detail: **sum**, not the higher
+of the two - both intermediates are now scaled to roughly the same size
+(see `_ideal_shared_dimension()`), so the composite has roughly double
+the pixel area of either alone; capping at just one intermediate's
+bitrate would spread that same budget over twice the pixels, likely
+looking *worse* than either intermediate on its own.
+
+Implemented in `_stack()`, after both intermediates are decoded and
+before the final combine encode:
+
+- `_video_bitrate(path)`: ffprobe's `format.bit_rate` for a file, or
+  `None` if it can't be determined (never worth failing the export
+  over - just skips the cap check).
+- `_parse_bitrate_bps(value)`: parses an ffmpeg-style bitrate string
+  ("256k", "2M", "1500000") into plain bits/second, mirroring ffmpeg's
+  own k/M suffix convention.
+- If a `bitrate` was requested and both intermediates' own bitrates can
+  be determined, the requested value is compared against their sum; if
+  it exceeds that sum, the *effective* bitrate used for the final
+  encode is clamped down to the sum, and a message is appended to a new
+  `warnings: list[str] | None` parameter threaded through
+  `stitch_cameras()` -> `_stack()` (and from `trip_export.py`, the same
+  `warnings` list already used for map/gsensor/subtitle-padding
+  warnings - so this surfaces through the exact same
+  `bv-export: {trip.label}: warning: ...` mechanism, visible by
+  default, not gated behind `--debug`).
+- Skipped entirely (no probing, no warning) when `bitrate` is `None` -
+  nothing to compare against.
+
+Tested: unit tests for both new helpers (suffix parsing, real-file
+bitrate reading, unreadable-file returns `None`), and four `_stack()`
+-level tests with `_video_bitrate` monkeypatched to fixed values -
+cap actually triggers and produces the right warning text, cap doesn't
+trigger when the request is already under the ceiling, cap is skipped
+gracefully when bitrate can't be determined, and probing never happens
+at all when no `bitrate` was requested. Confirmed via a real (non-mocked)
+`ffprobe`/`ffmpeg` check first that the two existing bitrate tests
+(which fully mock `encode_with_nvenc_fallback`, writing empty
+intermediate files) wouldn't be affected - `_video_bitrate()` on an
+empty file returns `None` for real (ffprobe fails on it), so the cap
+correctly no-ops there without needing to touch those tests. Full suite
+green (391 passed, up from 383).
+
+Separately, Christer asked why `stitch.mp4` comes out at 29.97fps
+instead of 30fps like the source appears to be. Answer given (not a code
+change): none of the ffmpeg calls in this pipeline set an explicit `-r`/
+output-framerate anywhere, so whatever comes out is whatever the source
+declares - and `generate/media.py`'s own `_parse_frame_rate()` docstring
+already documents `'30000/1001'` (exactly 29.97) as an example format it
+has had to handle, strongly suggesting the BlackVue source recordings
+themselves report that NTSC-legacy fractional rate rather than a true
+30.000, and the pipeline is just passing it through untouched. Not
+independently confirmed against Christer's actual files - `ffprobe
+-show_entries stream=r_frame_rate` on a raw front.mp4 would confirm it
+for certain, if it's ever worth pinning down further.

@@ -410,6 +410,7 @@ def export_trip(
                 resolution=stitch_resolution,
                 bitrate=stitch_bitrate,
                 debug=debug,
+                warnings=warnings,
             )
         except MediaToolError as exc:
             warnings.append(f"stitch: {exc}")
