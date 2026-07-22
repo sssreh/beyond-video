@@ -41,6 +41,23 @@ def _video_duration_seconds(path) -> float:
     return float(json.loads(result.stdout)["format"]["duration"])
 
 
+def _video_dimensions(path) -> tuple[int, int]:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    return stream["width"], stream["height"]
+
+
 def test_interpolate_position_returns_exact_fix_at_its_own_timestamp():
     fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
 
@@ -252,6 +269,121 @@ def test_render_map_video_passes_all_roads_unfiltered_when_not_zoomed(
 
     assert len(captured_roads) >= 2
     assert all(roads == all_roads for roads in captured_roads)
+
+
+def test_render_map_video_passes_width_and_height_to_render_frame(
+    tmp_path, monkeypatch
+):
+    captured_kwargs = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+        width=1280, height=480,
+    )
+
+    assert len(captured_kwargs) >= 2
+    assert all(
+        kwargs["width"] == 1280 and kwargs["height"] == 480
+        for kwargs in captured_kwargs
+    )
+
+
+def test_render_map_video_defaults_width_and_height_to_map_render_defaults(
+    tmp_path, monkeypatch
+):
+    captured_kwargs = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert captured_kwargs[0]["width"] == map_video_module.DEFAULT_WIDTH
+    assert captured_kwargs[0]["height"] == map_video_module.DEFAULT_HEIGHT
+
+
+def test_render_map_video_derives_zoom_aspect_ratio_from_width_and_height(
+    tmp_path, monkeypatch
+):
+    captured_ratios = []
+
+    def fake_bounding_box_around_point(lat, lon, radius_meters, *, aspect_ratio=None):
+        captured_ratios.append(aspect_ratio)
+        return BoundingBox(
+            min_lat=lat - 0.001, min_lon=lon - 0.001,
+            max_lat=lat + 0.001, max_lon=lon + 0.001,
+        )
+
+    monkeypatch.setattr(
+        map_video_module, "bounding_box_around_point", fake_bounding_box_around_point
+    )
+    monkeypatch.setattr(
+        map_video_module, "render_frame", lambda *_a, **_k: _FakeFrameImage()
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.33, max_lon=18.05
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+        zoom_meters=100.0, width=1280, height=640,
+    )
+
+    assert len(captured_ratios) >= 2
+    assert all(round(ratio, 6) == 2.0 for ratio in captured_ratios)
+
+
+def test_render_map_video_produces_a_video_at_the_requested_size(tmp_path):
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(1, 59.302, 18.004),
+        _fix(2, 59.304, 18.008),
+    )
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+    destination = tmp_path / "map.mp4"
+
+    result = render_map_video(
+        fixes, roads=(), bbox=bbox, destination=destination, fps=2,
+        width=320, height=180,
+    )
+
+    assert result == destination
+    assert _video_dimensions(destination) == (320, 180)
 
 
 def test_render_map_video_returns_none_for_fewer_than_two_fixes(tmp_path):

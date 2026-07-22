@@ -2031,3 +2031,96 @@ themselves report that NTSC-legacy fractional rate rather than a true
 independently confirmed against Christer's actual files - `ffprobe
 -show_entries stream=r_frame_rate` on a raw front.mp4 would confirm it
 for certain, if it's ever worth pinning down further.
+
+Update: Christer ran `ffprobe -show_entries stream=r_frame_rate` against
+a real front camera file and it came back `r_frame_rate=30/1` (nominal
+30, not an NTSC 30000/1001), while ffmpeg's own human-readable summary
+line for the same stream reported the true average as `29.99 fps, 30
+tbr`. So the original hypothesis was wrong: the source doesn't declare
+a fractional NTSC rate at all - it declares a clean 30 but its actual
+frame delivery drifts slightly off that nominal rate (real-world
+capture jitter, not a declared rate). Since nothing in this pipeline
+forces CFR (no `-r`/`-vsync cfr` anywhere), that real drifting cadence
+flows through decode -> scale -> concat -> re-encode untouched, picking
+up a little more rounding noise along the way - landing at 29.97 in
+stitch.mp4 rather than matching the source's measured 29.99 exactly.
+Net effect on Christer's original question is the same either way (the
+pipeline inherits it, doesn't introduce it), just the actual mechanism
+is timestamp drift, not an NTSC-legacy rate label. No code change from
+this - noted here in case exact-30fps output is ever wanted later (an
+explicit `-r 30 -vsync cfr` on the final combine pass would force it,
+at the cost of the encoder duplicating/dropping frames to hit that
+rate).
+
+## --stitch: map-panel aspect-ratio plumbing (done, this session)
+
+First piece of the "map panel" item from the roadmap above - not the
+full `--stitch-map` wiring yet (still needs the actual panel-placement
+logic in stitch.py, `--stitch-map`/`--stitch-map-side` CLI flags, and
+the auto-pick side/size logic), just the prerequisite math the spec
+above already flagged as missing: `bounding_box_for_fixes()`'s bbox is
+shaped by whatever the trip's real GPS extent happens to be, not by
+any target canvas - rendering it directly onto a non-square panel would
+come out visibly stretched, since `map_render.render_frame()` scales
+longitude span to the canvas width and latitude span to the canvas
+height *independently*.
+
+`bounding_box_for_fixes()` gained `aspect_ratio: float | None = None`
+(width/height). When given, whichever of the box's two real-world
+dimensions is shorter gets grown symmetrically around the box's own
+center until the ratio matches - real-world units compared via the
+same `cos(latitude)` correction `render_frame()`/
+`bounding_box_around_point()` already use, not raw degrees (a degree of
+longitude is narrower than a degree of latitude away from the
+equator). Only ever adds margin, never crops - the already-longer
+dimension, and the box's center, are left untouched. `aspect_ratio=None`
+(the default, and every existing caller today) is a no-op, unchanged
+from before.
+
+`bounding_box_around_point()` (the `--map-zoom` follow-camera box,
+rebuilt fresh every frame) also gained `aspect_ratio`, but a simpler
+version: since a follow-camera view has no pre-existing real-world
+shape to preserve (it's freely chosen each frame, not derived from
+actual GPS extent), it just builds the box already shaped to the ratio
+directly - `radius_meters` keeps meaning the vertical half-height,
+horizontal half-width becomes `radius_meters * aspect_ratio`. No
+"growing" needed, unlike the whole-trip case.
+
+`render_map_video()` gained `width`/`height` parameters (defaulting to
+`map_render.py`'s existing 640x640), threaded straight to
+`render_frame()`; in `zoom_meters` mode, `width / height` is computed
+once and passed as `bounding_box_around_point()`'s new `aspect_ratio`
+on every frame, so a non-square `--map-zoom` panel doesn't need its own
+separate aspect-ratio argument - it falls out of the requested canvas
+size automatically.
+
+Not yet wired into `bv-export`'s CLI or into `_load_trip_roads()`/
+`_render_map_variant()` in `trip_export.py` - both still call
+`bounding_box_for_fixes(fixes)`/`render_map_video(...)` with no
+aspect_ratio or width/height, so today's `--map`/`--map-zoom` output is
+completely unchanged. This is groundwork only; the actual `--stitch`
+map-panel increment (deciding panel width/height from the camera
+composite's own geometry, the `--stitch-map`/`--stitch-map-side` flags,
+the `rearview_mirror` 30% cap, choosing between `map.mp4` and
+`map_zoom_XXXm.mp4`) is still ahead.
+
+Tested: 5 new `osm_roads.py` tests (tall-trip widens longitude, wide-
+trip grows latitude, both checked via the real-world-unit ratio rather
+than hardcoded degrees since the trig doesn't reduce to round numbers,
+`aspect_ratio=None` is a no-op, `bounding_box_around_point`'s width-
+only scaling). 4 new `map_video.py` tests (`width`/`height` reach
+`render_frame()`, defaults match `map_render.py`'s constants, zoom
+mode's per-frame `aspect_ratio` is derived correctly, and a real
+(non-mocked) end-to-end render at 320x180 confirmed via `ffprobe` that
+the actual output video lands at exactly that size).
+
+Not run through the project's own pytest suite this session - this
+sandbox has neither `pytest` installed nor network access to fetch it
+(a change from earlier in this project, when it evidently was
+available; environment isn't persistent between sessions). Instead,
+every assertion each new test makes was hand-verified with equivalent
+plain-Python scripts run directly against the real modules (including
+one real `ffmpeg`/`ffprobe` end-to-end render, not just monkeypatched
+calls) - all passed. Still worth an actual `pytest` run on Christer's
+machine before trusting this fully; the tests themselves are written
+and committed either way.
