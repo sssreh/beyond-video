@@ -31,6 +31,7 @@ from .map_video import render_map_video
 from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_roads
+from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from .stitch import stitch_cameras
 from .subtitles import merge_lrc
 from .subtitles import merge_srt
@@ -217,6 +218,10 @@ def export_trip(
     stitch_bitrate: str | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
+    stitch_gsensor: bool = False,
+    stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
+    stitch_gsensor_pos: str | None = None,
+    stitch_gsensor_xy: tuple[float, float] | None = None,
     debug: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
@@ -265,10 +270,11 @@ def export_trip(
     trip with only one camera falls back to a plain copy of whichever
     one exists, ignoring `stitch_layout` (unless `stitch_resolution`/
     `stitch_bitrate` are also given, which force a re-encode even for
-    a single camera). This is the first --stitch building block (see
-    WORKING_CONTEXT.md for the full spec) - no map panel, g-sensor
-    overlay, subtitle burn-in, rearview_mirror layout, or auto-picking
-    a layout from the trip's geometry yet.
+    a single camera) - the map panel and g-sensor overlay below are
+    ignored for that single-camera path too. See WORKING_CONTEXT.md
+    for the full --stitch spec - subtitle burn-in, rearview_mirror
+    layout, and auto-picking a layout from the trip's geometry are
+    still ahead.
 
     `stitch_resolution` (a (width, height) pixel pair) and
     `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)
@@ -292,6 +298,23 @@ def export_trip(
     `map_zoom_meters` do - degrades to a warning and no panel (not a
     failed stitch) if there's no GPS data, no default side, or a
     missing zoom radius.
+
+    `stitch_gsensor=True` (also requires `stitch_layout`) composites
+    an *already-rendered* gsensor.mp4 as a transparent chroma-keyed
+    overlay on top of the camera footage - unlike the map panel,
+    --stitch never generates this itself; if `destination/gsensor.mp4`
+    doesn't already exist on disk (from `render_gsensor=True` earlier
+    in this same call, or a previous run that wasn't wiped), the
+    overlay is skipped with a warning telling Christer to run
+    `--gsensor-video` first. `stitch_gsensor_size` (percent of the
+    camera composite's width, 5-40, default
+    stitch.DEFAULT_GSENSOR_SIZE_PERCENT) and either
+    `stitch_gsensor_pos` (a named position like "top-right" - see
+    stitch.parse_gsensor_position(), defaults to
+    stitch.DEFAULT_GSENSOR_POSITION) or `stitch_gsensor_xy` (an
+    explicit (x_percent, y_percent) override, allowed to land anywhere
+    including on the map panel) control size/placement - see
+    stitch_cameras()'s own docstring for the full detail.
 
     `debug=True` prints wall-clock timing to stderr for the
     concatenation/map/stitch phases below, plus (from stitch.py)
@@ -424,6 +447,23 @@ def export_trip(
         except MediaToolError as exc:
             warnings.append(f"gsensor video: {exc}")
 
+    # --stitch-gsensor never generates gsensor.mp4 itself - it only
+    # checks whether one already exists on disk (this run's own
+    # render_gsensor=True, or a previous run's that wasn't wiped), the
+    # same "compose only what's already there" convention --stitch's
+    # camera/subtitle inputs already follow (unlike the map panel,
+    # which is a deliberate, confirmed exception to that rule).
+    stitch_gsensor_source = None
+    if stitch_gsensor and stitch_layout is not None:
+        candidate = destination / "gsensor.mp4"
+        if candidate.exists():
+            stitch_gsensor_source = candidate
+        else:
+            warnings.append(
+                "stitch gsensor overlay: gsensor.mp4 not found - run "
+                "bv-export --gsensor-video first"
+            )
+
     stitch_path = None
     if stitch_layout is not None:
         stitch_start = time.monotonic() if debug else None
@@ -439,6 +479,10 @@ def export_trip(
                 map_fixes=fixes if stitch_map is not None else (),
                 map_roads=stitch_map_roads,
                 map_icon=map_icon,
+                gsensor_video=stitch_gsensor_source,
+                gsensor_size=stitch_gsensor_size,
+                gsensor_pos=stitch_gsensor_pos,
+                gsensor_xy=stitch_gsensor_xy,
                 debug=debug,
                 warnings=warnings,
             )

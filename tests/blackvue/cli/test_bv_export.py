@@ -791,6 +791,143 @@ def test_main_parses_an_explicit_stitch_map_mode_and_side(tmp_path, monkeypatch)
     assert captured["stitch_map_side"] == "right"
 
 
+def test_main_leaves_stitch_gsensor_false_when_stitch_flag_is_absent(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch-gsensor"])
+
+    assert captured["stitch_gsensor"] is False
+
+
+def test_main_parses_stitch_gsensor_flags(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-gsensor", "--stitch-gsensor-size", "25",
+        "--stitch-gsensor-pos", "top-right",
+    ])
+
+    assert captured["stitch_gsensor"] is True
+    assert captured["stitch_gsensor_size"] == 25.0
+    assert captured["stitch_gsensor_pos"] == "top-right"
+    assert captured["stitch_gsensor_xy"] is None
+
+
+def test_main_parses_stitch_gsensor_xy(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-gsensor", "--stitch-gsensor-xy", "80,10",
+    ])
+
+    assert captured["stitch_gsensor_xy"] == (80.0, 10.0)
+    assert captured["stitch_gsensor_pos"] is None
+
+
+def test_main_rejects_stitch_gsensor_pos_and_xy_together(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-gsensor",
+            "--stitch-gsensor-pos", "top", "--stitch-gsensor-xy", "1,1",
+        ])
+
+
+def test_main_rejects_an_out_of_range_stitch_gsensor_size(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-gsensor", "--stitch-gsensor-size", "99",
+        ])
+
+
+def test_main_rejects_an_invalid_stitch_gsensor_position(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-gsensor",
+            "--stitch-gsensor-pos", "left-right",
+        ])
+
+
+def test_bv_export_stitch_gsensor_flag_produces_an_overlaid_video(tmp_path):
+    from datetime import timedelta
+
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+    from blackvue.telemetry.gsensor_reader import write_gsensor
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+    write_gsensor(
+        (
+            GSensorSample(offset=timedelta(seconds=0), x=0, y=0, z=900),
+            GSensorSample(offset=timedelta(seconds=1), x=200, y=-100, z=950),
+        ),
+        archive / "20260720_100000_N.3gf",
+    )
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="side_by_side", render_gsensor=True,
+        stitch_gsensor=True,
+    )
+
+    assert exit_code == 0
+    trip_folder = target / "trip_20260720_100000_20260720_100000"
+    assert (trip_folder / "stitch.mp4").exists()
+    assert (trip_folder / "gsensor.mp4").exists()
+
+
 def test_main_rejects_a_malformed_stitch_resolution(tmp_path, capsys):
     archive = tmp_path / "archive"
     archive.mkdir()

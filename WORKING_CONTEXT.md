@@ -2253,3 +2253,92 @@ Not confirmed against a real front+rear BlackVue archive with real GPS
 data - only against synthetic `testsrc` clips and hand-written GPS
 fixtures. Worth a real `bv-export --stitch --stitch-map` run on
 Christer's actual archive before calling this fully done.
+
+## --stitch: wire the g-sensor overlay into --stitch-gsensor/-size/-pos/-xy (done, this session)
+
+Third piece of the --stitch spec, after camera-layout composition and
+the map panel: an existing gsensor.mp4 (see --gsensor-video) composited
+as a transparent, chroma-keyed overlay on top of the camera footage.
+
+Unlike the map panel, this one *does* follow --stitch's original "only
+compose what already exists, never generate" rule - trip_export.py
+checks whether `destination/gsensor.mp4` already exists on disk (this
+run's own `render_gsensor=True`, or an earlier run's that wasn't wiped)
+before ever calling stitch_cameras(); missing means a warning ("run
+bv-export --gsensor-video first") and no overlay, not a fresh render.
+No design fork to resolve here the way the map panel had one - the spec
+was already unambiguous about gsensor.mp4 being a pure prerequisite.
+
+**Filter chain** (all in stitch.py's `_stack()`): the gsensor input is
+scaled to `gsensor_size` percent (5-40, default 15) of the camera
+composite's own width, preserving its own aspect ratio, then ffmpeg's
+`colorkey` filter removes the flat green background (gsensor_render.py's
+exact RGB(0,255,0), similarity 0.15/blend 0.05 to absorb a bit of h264
+compression bleed at the green/black-ring edges), then `overlay` composites
+the result onto the camera footage. Applied *before* any map panel is
+added alongside the composite - a named position is defined relative
+to the footage region alone, per the spec's explicit note that named
+positions must exclude the map panel/mirror-inset area.
+
+**Positioning**: named position (`parse_gsensor_position()` - any
+combination of left/right/top/down/center, e.g. "top-right", plain
+"center", each axis independently defaulting to "center" if not named -
+"top" alone means top-center, not an error) built into ffmpeg `overlay`
+x/y expressions using its own `main_w`/`main_h`/`overlay_w`/`overlay_h`
+runtime variables (only the small pixel margins are precomputed in
+Python) - or an explicit `--stitch-gsensor-xy X,Y` (percent of the
+footage region's top-left corner) with no margin at all, a deliberate
+raw override per the spec, allowed to land anywhere including on the
+map panel. Defaults to `DEFAULT_GSENSOR_POSITION = "top-right"` when
+neither is given - **not specified in the agreed spec, my own pick**,
+flagged here for Christer to override if a different corner reads
+better in practice. The 2%-of-footage-dimension margin around named
+positions is the same kind of unconfirmed default, purely visual
+polish.
+
+**Dynamic input indices**: with the map panel now also able to add a
+third ffmpeg input, the gsensor overlay's input index couldn't stay
+hardcoded - `_stack()` now tracks `next_input_index` (starting at 2,
+front=0/rear=1 always present) and claims whichever index is next,
+gsensor first if both are requested. Verified this actually works, not
+just compiles, with a real render combining both in one call.
+
+**CLI**: `--stitch-gsensor` (bool), `--stitch-gsensor-size PERCENT`
+(argparse-level range validation, not silent clamping - matches the
+spec's "range enforced" language), `--stitch-gsensor-pos POSITION`/
+`--stitch-gsensor-xy X,Y` as an argparse mutually-exclusive group (a
+typo or a contradictory position like "left-right" is a clear
+command-line error via `parse_gsensor_position()`'s own validation,
+reused for both CLI-time and _stack()'s own runtime parsing - not a
+silent no-op or a --debug-only warning).
+
+Tested: real end-to-end colorkey+overlay verification via a synthetic
+green-background/red-box fake gsensor clip (not gsensor.mp4's actual
+thin rings/dot - deliberately oversized so a scaled-down, re-encoded
+sample pixel reliably lands inside it) - confirmed the green background
+genuinely gets keyed out (footage shows through, not green) and the
+overlay's own content survives, at the exact computed pixel coordinates
+for both a named position and an explicit xy override. 21 new
+test_stitch.py tests (parse_gsensor_position unit tests including the
+match-style assertions rewritten as plain exception-message checks
+after this sandbox's harness turned out not to support pytest.raises'
+match= kwarg; default position; explicit xy; combined with a map panel,
+proving the dynamic index bookkeeping; ignored for the single-camera
+fallback; no-op when gsensor_video isn't given). 4 new
+test_trip_export.py tests (uses a freshly-rendered file, reuses an
+earlier run's file, warns when missing, options forwarded correctly -
+using write_gsensor()'s real .3gf format after an initial fixture built
+by hand with the wrong struct layout produced zero parsed samples and a
+silently-empty gsensor.mp4, caught immediately by the real test run).
+7 new test_bv_export.py CLI tests (flag gating, size/position parsing,
+mutual exclusivity, range/position validation, one real end-to-end
+render). All genuinely executed via the harness mentioned earlier this
+session, all green: test_stitch 62 passed, test_trip_export 30 passed,
+test_bv_export 48 passed, 0 failed.
+
+Not confirmed against a real archive - only synthetic clips and a
+fabricated gauge stand-in. The 5-40%/15% size range and 20-50% map
+-panel clamp range both came from matching the mirror inset's own
+range stylistically, not from anything measured on real footage -
+worth a look together once there's a real side-by-side to compare
+against.
