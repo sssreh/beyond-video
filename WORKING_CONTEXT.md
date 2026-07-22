@@ -1260,13 +1260,85 @@ annoying failure for "assemble one holiday video."
    terms/pricing research first) or if a cleaner open high-resolution
    source turns up later.
 
-5. **--stitch option (future).** Compose the front and rear video
-   side-by-side (`left_right`) or stacked (`top_down`), and optionally
-   stitch the map-overlay video in too, at a chosen position. This is
-   essentially an ffmpeg `filter_complex` composition step
-   (`hstack`/`vstack`/`overlay`) now that item 4 produces the map video to
-   combine.
+5. **--stitch option (future) - design spec agreed with Christer, not yet
+   implemented.** Composes whatever's already in a trip folder into one
+   video via ffmpeg `filter_complex` (`hstack`/`vstack`/`overlay`). Scope:
+   `--stitch` only works with files that already exist - it never
+   generates anything itself. A requested element with no source file
+   (e.g. gsensor overlay asked for but `--gsensor-video` was never run, or
+   subtitles asked for but no transcript exists) is silently skipped, same
+   warning-and-continue pattern the rest of `bv-export` already uses. If
+   something's missing, the fix is re-running `bv-generate`/`bv-export`
+   with the right flags first, not `--stitch` doing it implicitly.
+
+   **Camera layout** - one selected per run, auto-picked from the trip's
+   own geometry when not given, always overridable:
+   - `side_by_side` (`left_right`): front | rear, `hstack`.
+   - `top_down`: front / rear, `vstack`.
+   - `rearview_mirror`: front full-frame, rear flipped horizontally
+     (mirror image, not raw footage - a real rearview mirror shows things
+     reversed) and shrunk, overlaid top-center. Size 10-50% of front
+     width, default 25% (a later `--rearview-size` flag, range enforced).
+
+   **Auto-pick logic**: compare the trip's real-world north-south extent
+   vs. east-west extent (same lat/lon-bbox math `--map-zoom` already has,
+   via `bounding_box_for_fixes`/the `cos(latitude)` correction). A
+   north-south trip (taller than wide) picks `top_down` cameras (front/rear
+   stacked - itself a tall column) with the map panel placed on the left,
+   itself tall - two tall pieces side by side stays roughly rectangular
+   overall. An east-west trip (wider than tall) picks `side_by_side`
+   cameras (a wide row) with the map panel on the bottom, itself wide -
+   same logic, perpendicular. Camera arrangement and map placement are
+   nested perpendicular to each other specifically so the final frame
+   doesn't turn into a long thin ribbon in either direction.
+
+   **Map panel** (optional, a third stacked panel alongside the camera
+   composite - not an overlay on top of footage): shape (tall vs wide, how
+   tall/wide) comes from the trip's own real-world lat/lon extent for the
+   static `map.mp4` - this needs new work in `map_render.py`/`osm_roads.py`
+   beyond what `--map-zoom` already does, since today's bbox math produces
+   a *square* real-world area (`bounding_box_around_point`/
+   `bounding_box_for_fixes`'s margin), not one shaped to an arbitrary
+   target aspect ratio; rendering a non-square `render_frame()` today would
+   just stretch a square-computed bbox unevenly. `map_zoom_XXXm.mp4`
+   doesn't need this - it's a small local follow-camera view with no
+   inherent "shape" the way the whole trip has, so it can render at
+   whatever aspect ratio the panel needs directly. Selectable between the
+   two (`map.mp4` vs `map_zoom_XXXm.mp4`) when both exist, defaults to the
+   static one. In `rearview_mirror` mode specifically, the map panel (left
+   or down) is capped at 30% of width/height, since most of that frame
+   still needs to stay the primary front view.
+
+   **G-sensor overlay** (optional, always a transparent chroma-keyed
+   overlay on top of footage, never a panel - this is exactly why
+   `gsensor.mp4` was built on a chroma-key green background rather than an
+   opaque one): size 5-40%, default 15% (its own range, separate from the
+   rearview mirror's 10-50%/25%). Placement is either a named position -
+   any combination of left/right/top/down/center (e.g. "top-right", plain
+   "center") - or an explicit x-y coordinate for full manual control.
+   Named positions are defined relative to the visible *footage* region
+   only (front/rear video, excluding whatever space the map panel or the
+   rearview-mirror inset occupies) - so a named position can never
+   accidentally land on top of the map or the mirror inset, both of which
+   are their own distinct content worth keeping readable, not something to
+   layer a gauge over. An explicit x-y coordinate is a deliberate
+   override, though: it's allowed to land anywhere, including on the map
+   or the mirror inset, even if that looks bad - the user asked for that
+   exact pixel, so it goes there.
+
+   **Subtitles** (optional): burned into the frame (not left as a sidecar
+   `.srt`/`.lrc`, which already exist today with zero extra work) -
+   standard placement, centered, near the bottom, with a dark
+   semi-transparent background bar behind the text for readability
+   (ffmpeg's `subtitles`/`drawtext` filter with a box, or burning
+   `trip.srt` in directly via the `subtitles` filter - exact mechanism
+   still to be decided at implementation time).
 
 Immediate next step: confirm `--map` against a real archive (real Overpass
-query, real GPS data) - see item 4's caveat above - then item 5 (`--stitch`)
-is unblocked.
+query, real GPS data) - see item 4's caveat above - then start implementing
+`--stitch` per the spec above, in roughly this order: camera-layout
+composition (the two `stack` modes first, they're simpler than
+`rearview_mirror`'s flip+scale+overlay), then the map-panel aspect-ratio
+work, then g-sensor overlay placement, then subtitle burn-in, then the
+auto-pick-from-trip-geometry layer on top once the individual pieces work
+with explicit flags.
