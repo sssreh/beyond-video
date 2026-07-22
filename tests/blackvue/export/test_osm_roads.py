@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import datetime
 
 import pytest
@@ -117,6 +118,54 @@ def test_bounding_box_for_fixes_returns_none_for_empty_input():
     assert bounding_box_for_fixes(()) is None
 
 
+def test_bounding_box_for_fixes_widens_longitude_for_a_tall_trip():
+    # Pure north-south (zero lon span) - a wide (aspect_ratio > 1)
+    # target should grow only the longitude span, symmetrically around
+    # the original center, until the box's real-world width:height
+    # ratio equals the requested aspect_ratio. The latitude span (the
+    # already-longer dimension) must be left untouched.
+    fixes = (_fix(59.30, 18.05), _fix(59.32, 18.05))
+
+    bbox = bounding_box_for_fixes(fixes, margin_degrees=0.0, aspect_ratio=2.0)
+
+    assert bbox.min_lat == 59.30
+    assert bbox.max_lat == 59.32
+    assert round((bbox.min_lon + bbox.max_lon) / 2, 6) == 18.05
+
+    mean_lat_rad = math.radians((bbox.min_lat + bbox.max_lat) / 2)
+    lon_scale = math.cos(mean_lat_rad)
+    height_units = bbox.max_lat - bbox.min_lat
+    width_units = (bbox.max_lon - bbox.min_lon) * lon_scale
+    assert round(width_units / height_units, 3) == 2.0
+
+
+def test_bounding_box_for_fixes_grows_latitude_for_a_wide_trip():
+    # Pure east-west (zero lat span) - a tall (aspect_ratio < 1) target
+    # should grow only the latitude span instead, symmetrically around
+    # the original center. The longitude span stays untouched.
+    fixes = (_fix(59.30, 18.00), _fix(59.30, 18.10))
+
+    bbox = bounding_box_for_fixes(fixes, margin_degrees=0.0, aspect_ratio=0.5)
+
+    assert bbox.min_lon == 18.00
+    assert bbox.max_lon == 18.10
+    assert round((bbox.min_lat + bbox.max_lat) / 2, 6) == 59.30
+
+    mean_lat_rad = math.radians((bbox.min_lat + bbox.max_lat) / 2)
+    lon_scale = math.cos(mean_lat_rad)
+    height_units = bbox.max_lat - bbox.min_lat
+    width_units = (bbox.max_lon - bbox.min_lon) * lon_scale
+    assert round(width_units / height_units, 3) == 0.5
+
+
+def test_bounding_box_for_fixes_without_aspect_ratio_is_unaffected():
+    fixes = (_fix(59.30, 18.05), _fix(59.32, 18.05))
+
+    assert bounding_box_for_fixes(
+        fixes, margin_degrees=0.0
+    ) == bounding_box_for_fixes(fixes, margin_degrees=0.0, aspect_ratio=None)
+
+
 def test_bounding_box_around_point_is_square_at_the_equator():
     # At the equator, cos(latitude) == 1, so a degree of longitude
     # covers the same real-world distance as a degree of latitude -
@@ -149,6 +198,19 @@ def test_bounding_box_around_point_floors_at_the_minimum_radius():
     )
 
     assert tiny == floored
+
+
+def test_bounding_box_around_point_aspect_ratio_scales_width_not_height():
+    square = bounding_box_around_point(0.0, 0.0, radius_meters=1000.0)
+    wide = bounding_box_around_point(0.0, 0.0, radius_meters=1000.0, aspect_ratio=2.0)
+
+    # radius_meters always sets the vertical half-height - aspect_ratio
+    # only changes how wide the box is relative to that.
+    assert (wide.max_lat - wide.min_lat) == (square.max_lat - square.min_lat)
+
+    wide_lon_delta = wide.max_lon - wide.min_lon
+    square_lon_delta = square.max_lon - square.min_lon
+    assert round(wide_lon_delta / square_lon_delta, 6) == 2.0
 
 
 def test_roads_within_bbox_keeps_roads_that_overlap():

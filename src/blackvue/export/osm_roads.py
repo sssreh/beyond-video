@@ -91,10 +91,27 @@ def bounding_box_for_fixes(
     fixes: tuple[GpsFix, ...],
     *,
     margin_degrees: float = DEFAULT_MARGIN_DEGREES,
+    aspect_ratio: float | None = None,
 ) -> BoundingBox | None:
     """Compute a padded bounding box covering every valid, positioned
     fix. Returns None if there's nothing to bound (no fixes, or none
-    of them have a valid fix with a position)."""
+    of them have a valid fix with a position).
+
+    `aspect_ratio` (width/height), if given, grows the box's *shorter*
+    real-world dimension outward from its own center so the box's real
+    -world shape matches that ratio - e.g. a north-south trip (tall)
+    gets wider, an east-west trip (wide) gets taller. Without this, a
+    caller rendering the box onto a non-square canvas (map_render.py's
+    render_frame(), which scales longitude and latitude span to the
+    canvas width/height independently) would get an unevenly stretched
+    map, since a route's own real-world bounding box is essentially
+    never already shaped like the requested panel. Longitude degrees
+    are narrower than latitude degrees away from the equator, so the
+    comparison is done in real-world units via the same cos(latitude)
+    correction render_frame()/bounding_box_around_point() already use,
+    not raw degrees. `aspect_ratio` must be positive if given; omitted
+    (None) keeps the previous margin-only behavior unchanged.
+    """
 
     positions = [
         (fix.latitude, fix.longitude)
@@ -108,18 +125,62 @@ def bounding_box_for_fixes(
     lats = [lat for lat, _ in positions]
     lons = [lon for _, lon in positions]
 
+    min_lat = min(lats) - margin_degrees
+    max_lat = max(lats) + margin_degrees
+    min_lon = min(lons) - margin_degrees
+    max_lon = max(lons) + margin_degrees
+
+    if aspect_ratio is not None:
+        min_lat, max_lat, min_lon, max_lon = _grow_to_aspect_ratio(
+            min_lat, max_lat, min_lon, max_lon, aspect_ratio
+        )
+
     return BoundingBox(
-        min_lat=min(lats) - margin_degrees,
-        min_lon=min(lons) - margin_degrees,
-        max_lat=max(lats) + margin_degrees,
-        max_lon=max(lons) + margin_degrees,
+        min_lat=min_lat, min_lon=min_lon, max_lat=max_lat, max_lon=max_lon
     )
 
 
+def _grow_to_aspect_ratio(
+    min_lat: float,
+    max_lat: float,
+    min_lon: float,
+    max_lon: float,
+    aspect_ratio: float,
+) -> tuple[float, float, float, float]:
+    """Symmetrically expand whichever of (min_lat, max_lat, min_lon,
+    max_lon) is the shorter real-world dimension, so the box's
+    real-world width/height ratio becomes `aspect_ratio`. The longer
+    dimension, and the box's center, are left unchanged - this only
+    ever adds margin, never crops anything already inside the box.
+    """
+
+    mean_lat_rad = math.radians((min_lat + max_lat) / 2)
+    lon_scale = math.cos(mean_lat_rad) or 1e-9
+
+    # Both spans expressed in the same "lat-degree-equivalent" real
+    # -world units, so they're directly comparable.
+    height_units = max_lat - min_lat
+    width_units = (max_lon - min_lon) * lon_scale
+
+    desired_width_units = height_units * aspect_ratio
+
+    if width_units < desired_width_units:
+        delta_lon = (desired_width_units - width_units) / lon_scale / 2
+        min_lon -= delta_lon
+        max_lon += delta_lon
+    else:
+        desired_height_units = width_units / aspect_ratio
+        delta_lat = (desired_height_units - height_units) / 2
+        min_lat -= delta_lat
+        max_lat += delta_lat
+
+    return min_lat, max_lat, min_lon, max_lon
+
+
 def bounding_box_around_point(
-    lat: float, lon: float, radius_meters: float
+    lat: float, lon: float, radius_meters: float, *, aspect_ratio: float | None = None
 ) -> BoundingBox:
-    """Compute a square-ish bounding box of real-world half-width
+    """Compute a bounding box of real-world vertical half-height
     `radius_meters`, centered on (lat, lon).
 
     Used for map.mp4's optional "follow camera" mode (bv-export
@@ -129,21 +190,32 @@ def bounding_box_around_point(
     the single whole-trip bounding box (bounding_box_for_fixes())
     used for the default static-overview map.
 
+    By default (`aspect_ratio=None`) the box is square-ish: the same
+    real-world half-width as half-height. If `aspect_ratio` (width/
+    height) is given instead, the horizontal half-width becomes
+    `radius_meters * aspect_ratio` - unlike bounding_box_for_fixes(),
+    which has to *grow* a fixed real-world extent to avoid cropping
+    anything, a follow-camera view has no pre-existing "real" extent to
+    preserve (it's freely chosen every frame), so it can just be built
+    already shaped to the target panel directly.
+
     Longitude degrees cover less real-world distance than latitude
     degrees away from the equator (they converge at the poles), so
-    the longitude delta is widened by 1/cos(latitude) to keep the box
-    the same real-world width/height in both directions - the same
-    correction map_render.py's own projection applies. `radius_meters`
-    is floored at MIN_ZOOM_RADIUS_METERS to avoid a degenerate
-    near-zero-area box.
+    the longitude delta is widened by 1/cos(latitude) to keep the
+    intended real-world width - the same correction map_render.py's
+    own projection applies. `radius_meters` is floored at
+    MIN_ZOOM_RADIUS_METERS to avoid a degenerate near-zero-area box.
     """
 
     radius_meters = max(radius_meters, MIN_ZOOM_RADIUS_METERS)
 
     delta_lat = radius_meters / _METERS_PER_DEGREE_LATITUDE
 
+    width_radius_meters = (
+        radius_meters * aspect_ratio if aspect_ratio is not None else radius_meters
+    )
     lon_scale = math.cos(math.radians(lat)) or 1e-9
-    delta_lon = radius_meters / (_METERS_PER_DEGREE_LATITUDE * lon_scale)
+    delta_lon = width_radius_meters / (_METERS_PER_DEGREE_LATITUDE * lon_scale)
 
     return BoundingBox(
         min_lat=lat - delta_lat,

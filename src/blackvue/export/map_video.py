@@ -22,6 +22,8 @@ from PIL import Image
 
 from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
+from .map_render import DEFAULT_HEIGHT
+from .map_render import DEFAULT_WIDTH
 from .map_render import render_frame
 from .media import encode_frame_sequence
 from .osm_roads import BoundingBox
@@ -143,6 +145,8 @@ def render_map_video(
     fps: int = DEFAULT_FPS,
     marker_image_path: Path | None = None,
     zoom_meters: float | None = None,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
@@ -157,6 +161,17 @@ def render_map_video(
     unused, since every frame gets its own. This is what makes the map
     scroll/pan as the vehicle moves rather than sitting in a fixed
     static view.
+
+    `width`/`height` set the rendered frame size (defaults to
+    map_render.py's square 640x640). For a non-square panel, `bbox`
+    should already be shaped to match (see bounding_box_for_fixes()'s
+    `aspect_ratio` parameter) - render_frame() scales longitude and
+    latitude span to the canvas independently, so an unshaped bbox on
+    a non-square canvas comes out visibly stretched. In `zoom_meters`
+    mode there's no pre-existing bbox to shape ahead of time (a fresh
+    one is built every frame), so this derives `width / height` as an
+    aspect ratio and passes it straight to
+    bounding_box_around_point() instead.
 
     The position marker is an arrow rotated to the GPS course over
     ground by default. `marker_image_path`, if given, is used as a
@@ -200,6 +215,7 @@ def render_map_video(
     # (non-zoomed) mode every road is already relevant to the one
     # whole-trip bbox, so there's nothing to filter.
     indexed_roads = index_roads(roads) if zoom_meters is not None else None
+    zoom_aspect_ratio = width / height
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -228,7 +244,9 @@ def render_map_video(
             position = (lat, lon)
 
             frame_bbox = (
-                bounding_box_around_point(lat, lon, zoom_meters)
+                bounding_box_around_point(
+                    lat, lon, zoom_meters, aspect_ratio=zoom_aspect_ratio
+                )
                 if zoom_meters is not None
                 else bbox
             )
@@ -247,6 +265,8 @@ def render_map_video(
                 heading=course,
                 marker_image=marker_image,
                 timestamp_text=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                width=width,
+                height=height,
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 
