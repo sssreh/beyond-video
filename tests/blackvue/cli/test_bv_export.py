@@ -544,6 +544,42 @@ def test_main_leaves_stitch_layout_as_none_when_stitch_flag_is_absent(
     assert captured["stitch_layout"] is None
 
 
+def test_main_leaves_debug_false_by_default(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["debug"] is False
+
+
+def test_main_sets_debug_true_when_debug_flag_given(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--debug"])
+
+    assert captured["debug"] is True
+
+
 def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(
     tmp_path, monkeypatch
 ):

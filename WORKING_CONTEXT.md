@@ -1582,11 +1582,66 @@ annoying failure for "assemble one holiday video."
    `_nvdec_available()` itself parses `ffmpeg -hwaccels` output and
    caches the result. Full suite green (365 passed, up from 354).
 
-Immediate next step: confirm `--map` against a real archive (real Overpass
-query, real GPS data) - see item 4's caveat above - and confirm both
-`--stitch` and the new NVDEC decode path against a real front+rear archive
-(the 5m20s/58%-CPU run that prompted this) - then continue `--stitch` per
-the spec above, in order: the map-panel aspect-ratio work, then g-sensor
-overlay placement, then subtitle burn-in, then `rearview_mirror`, then the
+   **Follow-up: NVDEC turned out to be a real regression on Christer's
+   hardware, not a win (done, this session).** First real-archive test
+   of the NVDEC path (RTX 5090 laptop GPU, real front 4K + rear 1080p
+   footage, same `--map --stitch --stitch-layout side_by_side
+   --stitch-resolution 1280x720 --stitch-bitrate 256k` command as the
+   original 5m20s CPU-decode baseline): 7m11s, then 7m29s on a repeat
+   run - both slower than CPU decode, even though Task Manager's Video
+   Decode graph climbed for real, confirming NVDEC genuinely engaged
+   rather than silently falling back.
+
+   To find out *why* rather than guess, added always-diagnostic-only
+   timing (see the `--debug` follow-up right below - this was built
+   before `--debug` existed, then moved behind it) breaking the run
+   into concatenation/map/stitch phases in `trip_export.py`, plus
+   per-decode-attempt timing in `stitch.py` reporting which method
+   (nvdec/cpu) was used, success/failure, and wall time for that
+   specific ffmpeg call. With `--debug` on, the isolated numbers came
+   back: map phase 171.8s, stitch phase 276.2s (all NVDEC, no
+   fallback). Comparing against the original 5m20s (320.5s) full-run
+   baseline with roughly the same map cost, CPU-decode stitch was
+   doing the same two-camera compose in roughly half the time NVDEC
+   just took.
+
+   Two credible causes, not yet distinguished further: `hwdownload`
+   copying every decoded frame back from GPU to CPU memory before the
+   CPU-only `hstack`/`pad` filters touch it is real per-frame PCIe
+   traffic for a 4K stream; and/or front+rear each opening their own
+   NVDEC decode session competes for what's typically a single
+   hardware decoder engine, serializing work that used to run as two
+   independent CPU threads. Left as-is for now rather than reverting
+   outright or scoping to single-camera-only, since the diagnostic
+   `--debug` output (see below) is now in place to keep investigating
+   without needing another full round-trip - this is an open item, not
+   closed.
+
+   **Follow-up: --debug flag for phase/decode timing (done, this
+   session).** The instrumentation above was originally always-on
+   stderr output; Christer asked for it to live behind a `--debug`
+   flag instead of printing unconditionally on every run. Added
+   `--debug` to `bv_export.py`'s CLI, threaded a `debug: bool = False`
+   parameter through `bv_export()` -> `export_trip()` -> the map/
+   stitch print sites -> `stitch_cameras()` -> `_stack()`/
+   `_reencode_single()` -> `_report_decode_timing()`, which now no-ops
+   unless `debug=True`. Silent by default, matching every other
+   diagnostic-only knob in this codebase.
+
+   Tested: 2 new tests in `test_stitch.py` (silent by default, prints
+   `decode=cpu ... succeeded in ...` to stderr when `debug=True`), 2
+   new tests in `test_bv_export.py` (`--debug` defaults to False,
+   `--debug` flag sets it True). Full suite green (369 passed, up from
+   365).
+
+Immediate next step: get a `--debug` run from Christer isolating whether
+the NVDEC slowdown is the `hwdownload` copy cost or the two-camera decode
+contention (e.g. a --debug run stitching just one camera at a time would
+separate the two), then decide revert vs. scope-to-single-camera vs. a
+different filter-graph approach - and separately, confirm `--map` against
+a real archive (real Overpass query, real GPS data, see item 4's caveat
+above) - then continue `--stitch` per the spec above, in order: the
+map-panel aspect-ratio work, then g-sensor overlay placement, then
+subtitle burn-in, then `rearview_mirror`, then the
 auto-pick-from-trip-geometry layer on top once the individual pieces work
 with explicit flags.

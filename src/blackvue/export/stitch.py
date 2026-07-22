@@ -79,6 +79,7 @@ def stitch_cameras(
     layout: str,
     resolution: tuple[int, int] | None = None,
     bitrate: str | None = None,
+    debug: bool = False,
 ) -> Path | None:
     """Compose a trip's front/rear footage into one video at
     `destination`.
@@ -116,12 +117,17 @@ def stitch_cameras(
     No audio track is carried into the stitched video yet - trip-level
     audio already lives in its own audio.aac (see trip_export.py),
     muxing that back in is a later --stitch pass, not this one.
+
+    `debug=True` prints which decode method (nvdec or cpu) was
+    attempted, whether it succeeded or fell back, and how long that
+    ffmpeg call took, to stderr - see bv_export.py's --debug flag.
     """
 
     if front is not None and rear is not None:
         return _stack(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
+            debug=debug,
         )
 
     only = front or rear
@@ -132,7 +138,10 @@ def stitch_cameras(
         concatenate_media([only], destination)
         return destination
 
-    _reencode_single(only, destination, resolution=resolution, bitrate=bitrate)
+    _reencode_single(
+        only, destination,
+        resolution=resolution, bitrate=bitrate, debug=debug,
+    )
     return destination
 
 
@@ -225,7 +234,9 @@ def _hw_predecode_filter(hw_decode: bool) -> str:
     return "hwdownload,format=nv12," if hw_decode else ""
 
 
-def _report_decode_timing(label: str, method: str, seconds: float, *, failed: bool) -> None:
+def _report_decode_timing(
+    label: str, method: str, seconds: float, *, failed: bool, debug: bool
+) -> None:
     """A one-line stderr timing report for a decode attempt - not
     warnings (nothing went wrong from the user's point of view if a
     GPU attempt fails and falls back), just diagnostic breadcrumbs so
@@ -238,7 +249,13 @@ def _report_decode_timing(label: str, method: str, seconds: float, *, failed: bo
     was hwdownload's GPU->CPU copy cost, two simultaneous NVDEC
     sessions contending for one decoder engine, or something else
     without this breakdown.
+
+    Silent unless `debug` is True (bv_export.py's --debug flag) - most
+    runs don't want this on stderr.
     """
+
+    if not debug:
+        return
 
     outcome = "failed" if failed else "succeeded"
     print(
@@ -253,6 +270,7 @@ def _reencode_single(
     *,
     resolution: tuple[int, int] | None,
     bitrate: str | None,
+    debug: bool = False,
 ) -> None:
     if _nvdec_available():
         start = time.monotonic()
@@ -263,12 +281,14 @@ def _reencode_single(
             )
         except MediaToolError:
             _report_decode_timing(
-                destination.name, "nvdec", time.monotonic() - start, failed=True
+                destination.name, "nvdec", time.monotonic() - start,
+                failed=True, debug=debug,
             )
             # fall through to plain CPU decode below
         else:
             _report_decode_timing(
-                destination.name, "nvdec", time.monotonic() - start, failed=False
+                destination.name, "nvdec", time.monotonic() - start,
+                failed=False, debug=debug,
             )
             return
 
@@ -278,7 +298,8 @@ def _reencode_single(
         resolution=resolution, bitrate=bitrate, hw_decode=False,
     )
     _report_decode_timing(
-        destination.name, "cpu", time.monotonic() - start, failed=False
+        destination.name, "cpu", time.monotonic() - start,
+        failed=False, debug=debug,
     )
 
 
@@ -320,6 +341,7 @@ def _stack(
     layout: str,
     resolution: tuple[int, int] | None,
     bitrate: str | None,
+    debug: bool = False,
 ) -> Path:
     if layout not in STACK_LAYOUTS:
         raise ValueError(
@@ -341,12 +363,14 @@ def _stack(
             )
         except MediaToolError:
             _report_decode_timing(
-                destination.name, "nvdec", time.monotonic() - start, failed=True
+                destination.name, "nvdec", time.monotonic() - start,
+                failed=True, debug=debug,
             )
             # fall through to plain CPU decode below
         else:
             _report_decode_timing(
-                destination.name, "nvdec", time.monotonic() - start, failed=False
+                destination.name, "nvdec", time.monotonic() - start,
+                failed=False, debug=debug,
             )
             return destination
 
@@ -358,7 +382,8 @@ def _stack(
         resolution=resolution, bitrate=bitrate, hw_decode=False,
     )
     _report_decode_timing(
-        destination.name, "cpu", time.monotonic() - start, failed=False
+        destination.name, "cpu", time.monotonic() - start,
+        failed=False, debug=debug,
     )
     return destination
 
