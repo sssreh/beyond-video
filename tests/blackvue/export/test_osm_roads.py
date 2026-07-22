@@ -4,7 +4,9 @@ from datetime import datetime
 import pytest
 
 from blackvue.export import osm_roads as osm_roads_module
+from blackvue.export.osm_roads import MIN_ZOOM_RADIUS_METERS
 from blackvue.export.osm_roads import BoundingBox
+from blackvue.export.osm_roads import bounding_box_around_point
 from blackvue.export.osm_roads import fetch_roads
 from blackvue.export.osm_roads import bounding_box_for_fixes
 from blackvue.export.osm_roads import load_or_fetch_roads
@@ -110,6 +112,40 @@ def test_bounding_box_for_fixes_returns_none_for_no_valid_fixes():
 
 def test_bounding_box_for_fixes_returns_none_for_empty_input():
     assert bounding_box_for_fixes(()) is None
+
+
+def test_bounding_box_around_point_is_square_at_the_equator():
+    # At the equator, cos(latitude) == 1, so a degree of longitude
+    # covers the same real-world distance as a degree of latitude -
+    # no widening needed, both deltas should come out equal.
+    bbox = bounding_box_around_point(0.0, 0.0, radius_meters=1000.0)
+
+    lat_delta = bbox.max_lat - bbox.min_lat
+    lon_delta = bbox.max_lon - bbox.min_lon
+    assert round(lat_delta, 6) == round(lon_delta, 6)
+    assert bbox.min_lat < 0.0 < bbox.max_lat
+    assert bbox.min_lon < 0.0 < bbox.max_lon
+
+
+def test_bounding_box_around_point_widens_longitude_away_from_the_equator():
+    # At 60 degrees latitude, cos(60) = 0.5, so a degree of longitude
+    # covers half the real-world distance a degree of latitude does -
+    # the longitude span needs to be roughly twice as many degrees to
+    # cover the same real-world width.
+    bbox = bounding_box_around_point(60.0, 10.0, radius_meters=1000.0)
+
+    lat_delta = bbox.max_lat - bbox.min_lat
+    lon_delta = bbox.max_lon - bbox.min_lon
+    assert round(lon_delta / lat_delta, 3) == 2.0
+
+
+def test_bounding_box_around_point_floors_at_the_minimum_radius():
+    tiny = bounding_box_around_point(59.30, 18.00, radius_meters=0.0)
+    floored = bounding_box_around_point(
+        59.30, 18.00, radius_meters=MIN_ZOOM_RADIUS_METERS
+    )
+
+    assert tiny == floored
 
 
 def test_fetch_roads_parses_ways_with_geometry(monkeypatch):

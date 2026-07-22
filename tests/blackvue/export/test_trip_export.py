@@ -200,6 +200,33 @@ def test_export_trip_render_map_produces_a_video(tmp_path, monkeypatch):
     assert result.warnings == ()
 
 
+def test_export_trip_render_map_passes_map_zoom_meters_through(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    captured = {}
+
+    def _capture_zoom(fixes, roads, bbox, destination, **kwargs):
+        captured.update(kwargs)
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_map_video", _capture_zoom
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    export_trip(trip, dest_dir, render_map=True, map_zoom_meters=75.0)
+
+    assert captured["zoom_meters"] == 75.0
+
+
 def test_export_trip_render_map_defaults_cache_dir_next_to_destination(
     tmp_path, monkeypatch
 ):
