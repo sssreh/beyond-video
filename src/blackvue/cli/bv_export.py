@@ -41,6 +41,7 @@ def bv_export(
     movement: bool = True,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
+    render_map: bool = False,
     dry_run: bool = False,
 ) -> int:
     """Export every detected trip in `path` to its own folder under
@@ -87,6 +88,11 @@ def bv_export(
         return 0
 
     target_path = Path(target)
+    # Shared across every trip in this run (and across runs) rather
+    # than living inside any one trip's own folder, since that folder
+    # gets wiped and rebuilt from scratch on every refresh - see
+    # export_trip()'s map_cache_dir docstring.
+    map_cache_dir = target_path / ".osm_cache"
     exit_code = 0
 
     for trip in trips:
@@ -102,7 +108,12 @@ def bv_export(
             shutil.rmtree(folder)
 
         try:
-            result = export_trip(trip, folder)
+            result = export_trip(
+                trip,
+                folder,
+                render_map=render_map,
+                map_cache_dir=map_cache_dir,
+            )
         except MediaToolError as exc:
             print(f"bv-export: {trip.label}: {exc}", file=sys.stderr)
             exit_code = 1
@@ -112,7 +123,7 @@ def bv_export(
             written_path
             for written_path in (
                 result.front_video, result.rear_video, result.audio,
-                result.gpx, result.gsensor,
+                result.gpx, result.gsensor, result.map,
             )
             if written_path is not None
         ] + list(result.text)
@@ -233,6 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--map",
+        dest="render_map",
+        action="store_true",
+        help=(
+            "Also render map.mp4: a route/position/speed overlay on "
+            "an OpenStreetMap road basemap for each trip. Off by "
+            "default - the first trip through a given area needs a "
+            "one-time network fetch of that area's road data (cached "
+            "under --target/.osm_cache afterward, then fully "
+            "offline), and rendering adds real time per trip."
+        ),
+    )
+
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show which trip folders would be created/refreshed "
@@ -252,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         movement=args.movement,
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
+        render_map=args.render_map,
         dry_run=args.dry_run,
     ))
 

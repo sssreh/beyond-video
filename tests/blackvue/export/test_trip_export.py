@@ -6,8 +6,11 @@ from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
+from blackvue.export import trip_export as trip_export_module
+from blackvue.export.osm_roads import Road
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
+from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gsensor_reader import read_gsensor
 from blackvue.trip.trip import Trip
 
@@ -131,3 +134,109 @@ def test_export_trip_skips_missing_assets_cleanly(tmp_path):
     assert result.gsensor is None
     assert result.text == ()
     assert dest_dir.exists()
+
+
+def _trip_with_two_gps_fixes(source_dir):
+    gps_a = source_dir / "a.gps"
+    gps_a.write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    gps_b = source_dir / "b.gps"
+    gps_b.write_text(
+        "[1700000010000]$GPRMC,120010.00,A,4808.038,N,01132.000,E,"
+        "12.00,45.00,010124,,,A*6D\n"
+    )
+
+    first = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.GPS: AssetFile(Asset.GPS, gps_a)},
+    )
+    second = Recording(
+        id=RecordingId("20260720_100010_N"),
+        assets={Asset.GPS: AssetFile(Asset.GPS, gps_b)},
+    )
+    return Trip((first, second))
+
+
+def _fake_roads(*_args, **_kwargs):
+    return (Road(points=((48.07, 11.31), (48.08, 11.32))),)
+
+
+def test_export_trip_skips_map_by_default(tmp_path, monkeypatch):
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("should not fetch roads when render_map=False")
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _refuse)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.map is None
+    assert not (dest_dir / "map.mp4").exists()
+
+
+def test_export_trip_render_map_produces_a_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    result = export_trip(trip, dest_dir, render_map=True)
+
+    assert result.map == dest_dir / "map.mp4"
+    assert result.map.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_render_map_defaults_cache_dir_next_to_destination(
+    tmp_path, monkeypatch
+):
+    captured = []
+
+    def _capture_cache_dir(bbox, cache_dir, **_kwargs):
+        captured.append(cache_dir)
+        return _fake_roads()
+
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _capture_cache_dir
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "target" / "trip_folder"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    export_trip(trip, dest_dir, render_map=True)
+
+    assert captured == [dest_dir.parent / ".osm_cache"]
+
+
+def test_export_trip_render_map_warns_instead_of_failing_on_fetch_error(
+    tmp_path, monkeypatch
+):
+    def _broken(*_args, **_kwargs):
+        raise MediaToolError("could not reach the Overpass API")
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _broken)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    result = export_trip(trip, dest_dir, render_map=True)
+
+    assert result.map is None
+    assert len(result.warnings) == 1
+    assert "map" in result.warnings[0]
+    # The rest of the export still succeeded despite the map failure.
+    assert result.gpx is not None
