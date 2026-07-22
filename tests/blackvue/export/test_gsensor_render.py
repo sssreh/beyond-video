@@ -1,3 +1,4 @@
+from blackvue.export.gsensor_render import baseline_for_samples
 from blackvue.export.gsensor_render import render_frame
 from blackvue.export.gsensor_render import scale_for_samples
 from blackvue.telemetry.gsensor_reader import GSensorSample
@@ -54,3 +55,41 @@ def test_scale_for_samples_scales_to_the_observed_peak_with_padding():
 
     # Largest |x| or |y| across both samples is 300 (from x=-300).
     assert scale_for_samples(samples, padding=1.2, minimum=1.0) == 360.0
+
+
+def test_scale_for_samples_measures_deviation_from_a_given_baseline():
+    # Same samples as above, but now centered on a baseline of
+    # (500, 500): deviations are (-400, -550) and (-800, -300), so the
+    # largest is 800, not 300 (what raw (0, 0)-relative would give).
+    samples = (_sample(0, 100, -50), _sample(100, -300, 200))
+
+    scale = scale_for_samples(
+        samples, baseline=(500.0, 500.0), padding=1.0, minimum=1.0
+    )
+
+    assert scale == 800.0
+
+
+def test_baseline_for_samples_is_the_median_x_and_median_y():
+    samples = (
+        _sample(0, 10, 100),
+        _sample(100, 20, 300),
+        _sample(200, 30, 200),
+    )
+
+    assert baseline_for_samples(samples) == (20.0, 200.0)
+
+
+def test_baseline_for_samples_averages_the_two_middle_values_for_even_counts():
+    samples = (
+        _sample(0, 0, 0),
+        _sample(100, 10, 10),
+        _sample(200, 20, 20),
+        _sample(300, 30, 30),
+    )
+
+    assert baseline_for_samples(samples) == (15.0, 15.0)
+
+
+def test_baseline_for_samples_returns_origin_for_no_samples():
+    assert baseline_for_samples(()) == (0.0, 0.0)

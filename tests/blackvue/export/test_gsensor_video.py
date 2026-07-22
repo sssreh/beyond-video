@@ -3,6 +3,7 @@ import subprocess
 from datetime import datetime
 from datetime import timedelta
 
+from blackvue.export import gsensor_video as gsensor_video_module
 from blackvue.export.gsensor_video import interpolate_sample
 from blackvue.export.gsensor_video import render_gsensor_video
 from blackvue.telemetry.gsensor_reader import GSensorSample
@@ -108,3 +109,38 @@ def test_render_gsensor_video_includes_a_wall_clock_caption_when_given(
 
     assert result == destination
     assert destination.exists()
+
+
+def test_render_gsensor_video_centers_positions_on_the_trips_median_reading(
+    tmp_path, monkeypatch
+):
+    positions = []
+
+    class _FakeImage:
+        def save(self, _path):
+            pass
+
+    def _fake_render_frame(_scale, _trail, position, **_kwargs):
+        positions.append(position)
+        return _FakeImage()
+
+    monkeypatch.setattr(gsensor_video_module, "render_frame", _fake_render_frame)
+    monkeypatch.setattr(
+        gsensor_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    # A constant offset baked into every sample - a dashcam mounted at
+    # an angle, say. Median x/y across these three samples is
+    # (500, -300).
+    samples = (
+        _sample(0, 500, -300),
+        _sample(500, 700, -100),
+        _sample(1000, 300, -500),
+    )
+
+    render_gsensor_video(samples, tmp_path / "gsensor.mp4", fps=2)
+
+    # The first sample is an exact match for the median baseline, so
+    # it should render at the gauge's center (0, 0) - not at its raw
+    # (500, -300) reading.
+    assert positions[0] == (0.0, 0.0)

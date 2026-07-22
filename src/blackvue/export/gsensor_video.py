@@ -1,8 +1,9 @@
 """
 G-sensor dot-gauge video encoding for bv-export: turns a trip's merged
 g-sensor samples into gsensor.mp4 - rendering one frame per interval
-(a dot moving around a gauge, with a short fading trail) and handing
-the frame sequence to ffmpeg.
+(a dot moving around a gauge, centered on the trip's own median
+reading rather than raw (0, 0), with a short fading trail) and
+handing the frame sequence to ffmpeg.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -17,6 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from ..telemetry.gsensor_reader import GSensorSample
+from .gsensor_render import baseline_for_samples
 from .gsensor_render import render_frame
 from .gsensor_render import scale_for_samples
 from .media import encode_frame_sequence
@@ -81,9 +83,10 @@ def render_gsensor_video(
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into an overlay video
     at `destination`: a dot moving around a gauge (see
-    gsensor_render.py), with a fading trail and an optional
-    wall-clock caption when `start_timestamp` (the trip's own start)
-    is given.
+    gsensor_render.py), centered on the trip's own median (x, y)
+    reading rather than raw (0, 0) (see baseline_for_samples()), with
+    a fading trail and an optional wall-clock caption when
+    `start_timestamp` (the trip's own start) is given.
 
     Returns None (and writes nothing) if there aren't at least two
     samples, or they span zero time - the same "nothing to work with"
@@ -97,7 +100,13 @@ def render_gsensor_video(
     if total_seconds <= 0:
         return None
 
-    scale = scale_for_samples(samples)
+    # Center the gauge on the trip's own median reading, not raw
+    # (0, 0) - a dashcam mounted at even a slight angle (or the
+    # sensor's own bias) means "level, driving straight" rarely reads
+    # exactly zero, so drawing around literal (0, 0) leaves the dot
+    # sitting off-center the whole trip. See baseline_for_samples().
+    baseline_x, baseline_y = baseline_for_samples(samples)
+    scale = scale_for_samples(samples, baseline=(baseline_x, baseline_y))
     frame_count = max(2, int(total_seconds * fps) + 1)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +120,7 @@ def render_gsensor_video(
             elapsed = timedelta(seconds=elapsed_seconds)
 
             x, y, _z = interpolate_sample(samples, elapsed)
-            position = (x, y)
+            position = (x - baseline_x, y - baseline_y)
 
             trail.append(position)
             if len(trail) > DEFAULT_TRAIL_LENGTH:
