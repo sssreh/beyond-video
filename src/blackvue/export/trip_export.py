@@ -31,8 +31,10 @@ from .map_video import render_map_video
 from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_roads
+from .stitch import AUTO_LAYOUT
 from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from .stitch import DEFAULT_MIRROR_SIZE_PERCENT
+from .stitch import pick_stitch_layout
 from .stitch import stitch_cameras
 from .subtitles import merge_lrc
 from .subtitles import merge_srt
@@ -268,20 +270,25 @@ def export_trip(
     involved, but off by default since it's extra render time most
     exports won't want.
 
-    `stitch_layout`, if given ('side_by_side', 'top_down', or
-    'rearview_mirror' - see stitch.py), additionally renders
-    stitch.mp4: the trip's front and rear footage composed into one
-    video. The first two are a plain ffmpeg hstack/vstack of both full
-    -size cameras; 'rearview_mirror' is different in kind - front stays
-    full-frame and rear becomes a small flipped (a real mirror shows
-    things reversed), scaled inset overlaid top-center, sized via
-    `stitch_mirror_size`. A trip with only one camera falls back to a
-    plain copy of whichever one exists, ignoring `stitch_layout`
-    (unless `stitch_resolution`/`stitch_bitrate` are also given, which
-    force a re-encode even for a single camera) - the map panel and
-    g-sensor overlay below are ignored for that single-camera path too.
-    See WORKING_CONTEXT.md for the full --stitch spec - auto-picking a
-    layout from the trip's geometry is still ahead.
+    `stitch_layout`, if given ('side_by_side', 'top_down',
+    'rearview_mirror', or stitch.AUTO_LAYOUT - see stitch.py),
+    additionally renders stitch.mp4: the trip's front and rear footage
+    composed into one video. The first two are a plain ffmpeg hstack/
+    vstack of both full-size cameras; 'rearview_mirror' is different in
+    kind - front stays full-frame and rear becomes a small flipped (a
+    real mirror shows things reversed), scaled inset overlaid top
+    -center, sized via `stitch_mirror_size`. stitch.AUTO_LAYOUT picks
+    between 'side_by_side'/'top_down' from this trip's own north-south
+    vs. east-west GPS extent (see stitch.pick_stitch_layout()) -
+    'rearview_mirror' is never auto-picked, only ever chosen by name.
+    No GPS data to pick from degrades to a warning and a
+    'side_by_side' default, not a failed stitch. A trip with only one
+    camera falls back to a plain copy of whichever one exists, ignoring
+    `stitch_layout` entirely (unless `stitch_resolution`/
+    `stitch_bitrate` are also given, which force a re-encode even for a
+    single camera) - the map panel and g-sensor overlay below are
+    ignored for that single-camera path too. See WORKING_CONTEXT.md for
+    the full --stitch spec.
 
     `stitch_mirror_size` (percent of the composite's own width, 10-50,
     default stitch.DEFAULT_MIRROR_SIZE_PERCENT) controls the mirror
@@ -510,13 +517,33 @@ def export_trip(
                 "trip.srt was not written - skipped"
             )
 
+    # AUTO_LAYOUT ("auto" - --stitch-layout's own default when not
+    # given explicitly) never reaches stitch_cameras() itself - it's
+    # resolved to a concrete side_by_side/top_down right here, from
+    # this trip's own already-loaded GPS fixes (see
+    # pick_stitch_layout()). rearview_mirror is never auto-picked -
+    # someone has to ask for it by name. No GPS data to pick from
+    # degrades to a warning and the same side_by_side default the CLI
+    # used before auto-pick existed, not a failed stitch.
+    resolved_stitch_layout = stitch_layout
+    if stitch_layout == AUTO_LAYOUT:
+        picked_layout = pick_stitch_layout(fixes)
+        if picked_layout is None:
+            resolved_stitch_layout = "side_by_side"
+            warnings.append(
+                "stitch: no GPS data to auto-pick a layout from - "
+                "defaulting to side_by_side"
+            )
+        else:
+            resolved_stitch_layout = picked_layout
+
     stitch_path = None
     if stitch_layout is not None:
         stitch_start = time.monotonic() if debug else None
         try:
             stitch_path = stitch_cameras(
                 front_video, rear_video, destination / "stitch.mp4",
-                layout=stitch_layout,
+                layout=resolved_stitch_layout,
                 resolution=stitch_resolution,
                 bitrate=stitch_bitrate,
                 mirror_size=stitch_mirror_size,

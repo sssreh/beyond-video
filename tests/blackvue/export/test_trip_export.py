@@ -602,6 +602,120 @@ def test_export_trip_stitch_mirror_size_is_forwarded(tmp_path, monkeypatch):
     assert captured["mirror_size"] == 40.0
 
 
+def _trip_with_front_rear_and_gps_shape(source_dir, *, east_west: bool):
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    gps_a = source_dir / "a.gps"
+    gps_a.write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    gps_b = source_dir / "b.gps"
+    # A large step on the axis this trip should run along, a tiny one
+    # on the other - same real-world-shape idea test_stitch.py's own
+    # pick_stitch_layout() tests use, just expressed as raw NMEA
+    # sentences here since export_trip() reads GPS from recordings,
+    # not from pre-built GpsFix objects.
+    if east_west:
+        gps_b.write_text(
+            "[1700000010000]$GPRMC,120010.00,A,4807.238,N,01141.000,E,"
+            "12.00,45.00,010124,,,A*6D\n"
+        )
+    else:
+        gps_b.write_text(
+            "[1700000010000]$GPRMC,120010.00,A,4907.038,N,01131.010,E,"
+            "12.00,45.00,010124,,,A*6D\n"
+        )
+
+    return Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.GPS: AssetFile(Asset.GPS, gps_a),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100010_N"),
+            assets={Asset.GPS: AssetFile(Asset.GPS, gps_b)},
+        ),
+    ))
+
+
+def test_export_trip_stitch_auto_layout_picks_side_by_side_for_east_west(
+    tmp_path
+):
+    from blackvue.export.stitch import AUTO_LAYOUT
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps_shape(source_dir, east_west=True)
+
+    result = export_trip(trip, dest_dir, stitch_layout=AUTO_LAYOUT)
+
+    assert result.warnings == ()
+    # side_by_side hstacks - combined width doubles, height unchanged.
+    assert _video_size(result.stitch) == (128, 64)
+
+
+def test_export_trip_stitch_auto_layout_picks_top_down_for_north_south(
+    tmp_path
+):
+    from blackvue.export.stitch import AUTO_LAYOUT
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps_shape(source_dir, east_west=False)
+
+    result = export_trip(trip, dest_dir, stitch_layout=AUTO_LAYOUT)
+
+    assert result.warnings == ()
+    # top_down vstacks - combined height doubles, width unchanged.
+    assert _video_size(result.stitch) == (64, 128)
+
+
+def test_export_trip_stitch_auto_layout_falls_back_without_gps_data(
+    tmp_path
+):
+    from blackvue.export.stitch import AUTO_LAYOUT
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(trip, dest_dir, stitch_layout=AUTO_LAYOUT)
+
+    assert len(result.warnings) == 1
+    assert "no GPS data to auto-pick" in result.warnings[0]
+    # Falls back to side_by_side, same as the CLI's own pre-auto-pick
+    # default.
+    assert _video_size(result.stitch) == (128, 64)
+
+
+def test_export_trip_stitch_explicit_layout_is_never_overridden_by_auto_pick(
+    tmp_path
+):
+    # An east-west trip would auto-pick side_by_side - explicitly
+    # asking for top_down instead must still be honored exactly, since
+    # auto-pick only ever applies to AUTO_LAYOUT itself.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps_shape(source_dir, east_west=True)
+
+    result = export_trip(trip, dest_dir, stitch_layout="top_down")
+
+    assert result.warnings == ()
+    assert _video_size(result.stitch) == (64, 128)
+
+
 def test_export_trip_stitch_falls_back_to_front_only_with_no_rear(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()

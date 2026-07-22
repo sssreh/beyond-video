@@ -22,6 +22,7 @@ from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from blackvue.export.stitch import ALL_LAYOUTS
+from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
@@ -514,17 +515,19 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.add_argument(
         "--stitch-layout",
-        choices=list(ALL_LAYOUTS),
-        default="side_by_side",
+        choices=[*ALL_LAYOUTS, AUTO_LAYOUT],
+        default=AUTO_LAYOUT,
         help=(
             "Camera arrangement for --stitch: 'side_by_side' (front | "
             "rear), 'top_down' (front / rear), or 'rearview_mirror' "
             "(front full-frame, rear flipped horizontally and shrunk "
             "into a mirror-style inset overlaid top-center - see "
             "--stitch-mirror-size). Only used together with --stitch. "
-            "Default: side_by_side - the eventual plan is to auto-pick "
-            "between side_by_side/top_down from the trip's own "
-            "north-south/east-west shape, not implemented yet."
+            "Default: 'auto' - picks side_by_side or top_down from the "
+            "trip's own north-south/east-west GPS extent (falls back "
+            "to side_by_side with a warning if there's no GPS data). "
+            "rearview_mirror is never auto-picked - name it explicitly "
+            "to use it."
         ),
     )
 
