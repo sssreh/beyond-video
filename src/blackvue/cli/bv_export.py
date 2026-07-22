@@ -313,8 +313,10 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Also render gsensor.mp4: a dot moving around a gauge, "
             "tracking the trip's g-sensor (x, y) readings with a "
-            "short fading trail. No network involved, but off by "
-            "default - it adds real render time per trip."
+            "short fading trail, on a flat chroma-key green "
+            "background meant for compositing over the front/rear "
+            "footage later. No network involved, but off by default "
+            "- it adds real render time per trip."
         ),
     )
 

@@ -1,3 +1,4 @@
+from blackvue.export.gsensor_render import BACKGROUND_COLOR
 from blackvue.export.gsensor_render import baseline_for_samples
 from blackvue.export.gsensor_render import render_frame
 from blackvue.export.gsensor_render import scale_for_samples
@@ -31,6 +32,18 @@ def test_render_frame_draws_something_when_trail_and_position_given():
     # environments) - just confirms drawing actually changed pixels
     # relative to a blank background of the same size.
     assert list(background.getdata()) != list(with_content.getdata())
+
+
+def test_render_frame_background_is_a_flat_chroma_key_green():
+    # gsensor.mp4 is meant to be composited over the front/rear
+    # footage later (--stitch, future), so its background needs to be
+    # a single flat color a chroma-key filter can match exactly -
+    # confirmed here by checking a far corner (well outside the gauge
+    # circle) is exactly BACKGROUND_COLOR, not some other tone.
+    image = render_frame(1.0, trail_points=(), position=None)
+
+    assert image.getpixel((0, 0)) == BACKGROUND_COLOR
+    assert BACKGROUND_COLOR == (0, 255, 0)
 
 
 def test_render_frame_handles_a_single_trail_point_without_crashing():

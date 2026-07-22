@@ -528,6 +528,32 @@ synthetic frame with a constant offset baked into every sample (like a
 tilted mount) and visually confirmed the trail now wobbles around the
 center instead of sitting off to one side.
 
+**Follow-up: drop the timestamp, chroma-key green background (done, this
+session).** Two more requests once Christer had it running: remove the
+wall-clock caption, and make the video "transparent, like green screen" so
+it can be composited over the front/rear footage later (--stitch, still
+future). h264/mp4 has no alpha channel, so real transparency isn't an
+option in this container - a flat chroma-key background is the standard
+way to get the same effect via ffmpeg's `colorkey`/`chromakey` filters at
+composite time.
+
+- Removed the timestamp caption entirely: `render_frame()` lost its
+  `timestamp_text` param and the font-loading machinery that only existed
+  for it; `render_gsensor_video()` lost `start_timestamp`;
+  `export_trip()`'s call site no longer passes `trip.start_timestamp`.
+- `BACKGROUND_COLOR` changed from the cream tone shared with `map_render.py`
+  to pure `(0, 255, 0)` - a single flat RGB value with no anti-aliasing
+  blend to account for (Pillow's basic `ImageDraw` doesn't anti-alias),
+  the simplest possible target for a chroma-key filter to match exactly.
+  `RING_COLOR`/`AXIS_COLOR` changed from light grey to white for contrast
+  against the now-saturated green background (previously calibrated
+  against the cream background instead).
+
+Tested: 1 new test confirming the background is exactly `(0, 255, 0)`, the
+wall-clock-caption test removed (feature gone). Full suite green (269
+passed). Re-rendered a synthetic frame and visually confirmed a flat green
+background with no timestamp, dot/trail/rings still clearly legible.
+
 ---
 
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)

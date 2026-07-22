@@ -2,8 +2,12 @@
 G-sensor dot-gauge video encoding for bv-export: turns a trip's merged
 g-sensor samples into gsensor.mp4 - rendering one frame per interval
 (a dot moving around a gauge, centered on the trip's own median
-reading rather than raw (0, 0), with a short fading trail) and
-handing the frame sequence to ffmpeg.
+reading rather than raw (0, 0), with a short fading trail) on a flat
+chroma-key green background, then handing the frame sequence to
+ffmpeg. See gsensor_render.py for why the background is green rather
+than transparent - h264/mp4 has no alpha channel, so a chroma-key
+background is the way to make this compositable later (the future
+--stitch item), not a real transparent video file.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -13,7 +17,6 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import tempfile
-from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
@@ -79,14 +82,13 @@ def render_gsensor_video(
     destination: Path,
     *,
     fps: int = DEFAULT_FPS,
-    start_timestamp: datetime | None = None,
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into an overlay video
     at `destination`: a dot moving around a gauge (see
     gsensor_render.py), centered on the trip's own median (x, y)
     reading rather than raw (0, 0) (see baseline_for_samples()), with
-    a fading trail and an optional wall-clock caption when
-    `start_timestamp` (the trip's own start) is given.
+    a fading trail, on a flat chroma-key green background meant to be
+    keyed out when composited over the front/rear footage later.
 
     Returns None (and writes nothing) if there aren't at least two
     samples, or they span zero time - the same "nothing to work with"
@@ -126,18 +128,7 @@ def render_gsensor_video(
             if len(trail) > DEFAULT_TRAIL_LENGTH:
                 trail.pop(0)
 
-            timestamp_text = None
-            if start_timestamp is not None:
-                timestamp_text = (
-                    start_timestamp + elapsed
-                ).strftime("%Y-%m-%d %H:%M:%S")
-
-            frame = render_frame(
-                scale,
-                tuple(trail),
-                position,
-                timestamp_text=timestamp_text,
-            )
+            frame = render_frame(scale, tuple(trail), position)
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 
         encode_frame_sequence(frame_dir, destination, fps)

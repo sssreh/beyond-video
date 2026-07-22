@@ -1,6 +1,5 @@
 import json
 import subprocess
-from datetime import datetime
 from datetime import timedelta
 
 from blackvue.export import gsensor_video as gsensor_video_module
@@ -89,26 +88,6 @@ def test_render_gsensor_video_produces_a_real_video_end_to_end(tmp_path):
     assert destination.exists()
     # 2 seconds of g-sensor data at 2fps -> roughly 2 seconds of video.
     assert round(_video_duration_seconds(destination)) == 2
-
-
-def test_render_gsensor_video_includes_a_wall_clock_caption_when_given(
-    tmp_path,
-):
-    # Just confirms passing start_timestamp doesn't crash and still
-    # produces a video - the caption text itself isn't pixel-checked
-    # (see gsensor_render tests for that kind of assertion).
-    samples = (_sample(0, 0, 0), _sample(1000, 100, 100))
-    destination = tmp_path / "gsensor.mp4"
-
-    result = render_gsensor_video(
-        samples,
-        destination,
-        fps=2,
-        start_timestamp=datetime(2026, 7, 20, 10, 0, 0),
-    )
-
-    assert result == destination
-    assert destination.exists()
 
 
 def test_render_gsensor_video_centers_positions_on_the_trips_median_reading(
