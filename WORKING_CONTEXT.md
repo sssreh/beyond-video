@@ -1497,6 +1497,43 @@ annoying failure for "assemble one holiday video."
    without being caught until real footage exposed it. Full suite green
    (353 passed, up from 351).
 
+   Confirmed on Christer's real archive afterward at 1280x720 (a more
+   watchable test size than 320x240): aspect ratio holds correctly now,
+   both panels proportioned properly with clean letterboxing.
+
+   **Follow-up: parallelize front/rear/audio concatenation (done, this
+   session).** Christer noticed only ~50% CPU during a real export and
+   asked whether any of `bv-export` could run in parallel. Root cause:
+   `export_trip()` ran every step strictly sequentially even though
+   several don't depend on each other at all - whichever phase was
+   running used CPU differently (ffmpeg's own multithreading during
+   concatenation/stitch vs. a single Python thread doing PIL frame
+   drawing during map/gsensor rendering), so idle time in one phase
+   never overlapped with a busy period in another.
+
+   Scoped to the clear, safe win first (Christer's choice, offered a
+   broader map/gsensor/stitch scheduling option too but flagged it as
+   needing more care): `front.mp4`/`rear.mp4`/`audio.aac` concatenation
+   are three independent ffmpeg subprocess calls - none reads another's
+   output - now launched concurrently via
+   `concurrent.futures.ThreadPoolExecutor` instead of one after another.
+   Safe with plain threads despite the GIL: each worker mostly just
+   blocks in `subprocess.run()` waiting on ffmpeg (which releases the
+   GIL for the wait), and `list.append()` on the shared `warnings` list
+   is itself atomic in CPython. Deliberately not extended to map/gsensor
+   rendering in this pass - both do real CPU-bound Python work (PIL
+   frame-by-frame drawing) that would genuinely contend for the GIL if
+   threaded alongside each other, unlike the concatenation calls, which
+   are pure subprocess waits.
+
+   Tested: 1 new test confirming the actual correctness property that
+   matters here - one of the three failing (front, simulated) doesn't
+   block or lose the other two (rear/audio still produced, still
+   correct) - real concurrency timing isn't practical to assert in a
+   unit test, but independent failure handling is exactly what a naive
+   sequential-to-concurrent refactor could get wrong. Full suite green
+   (354 passed, up from 353).
+
 Immediate next step: confirm `--map` against a real archive (real Overpass
 query, real GPS data) - see item 4's caveat above - and confirm `--stitch`
 against a real front+rear archive - then continue `--stitch` per the spec

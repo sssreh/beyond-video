@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -274,15 +275,31 @@ def export_trip(
     destination.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
 
-    front_video = _concatenate_asset(
-        trip, Asset.FRONT, "front.mp4", destination, warnings
-    )
-    rear_video = _concatenate_asset(
-        trip, Asset.REAR, "rear.mp4", destination, warnings
-    )
-    audio = _concatenate_asset(
-        trip, Asset.AUDIO, "audio.aac", destination, warnings
-    )
+    # front/rear/audio concatenation are three independent ffmpeg
+    # subprocess calls - none reads another's output - so running them
+    # concurrently rather than one after another cuts real wall-clock
+    # time instead of leaving CPU idle while only one ffmpeg process
+    # runs at a time (Christer measured ~50% CPU on a real export).
+    # Safe with plain threads despite Python's GIL: each worker mostly
+    # just blocks in subprocess.run() waiting on ffmpeg, which releases
+    # the GIL for the wait, and list.append() (warnings, on a failure)
+    # is itself atomic in CPython. Deliberately scoped to just these
+    # three for now - map/gsensor rendering do real CPU-bound Python
+    # work (PIL frame drawing) that would contend for the GIL if also
+    # threaded alongside each other, a separate change if wanted later.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        front_future = executor.submit(
+            _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings
+        )
+        rear_future = executor.submit(
+            _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings
+        )
+        audio_future = executor.submit(
+            _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings
+        )
+        front_video = front_future.result()
+        rear_video = rear_future.result()
+        audio = audio_future.result()
 
     text_paths = []
     for asset, filename in TEXT_ASSETS:
