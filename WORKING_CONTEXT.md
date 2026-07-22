@@ -1634,14 +1634,55 @@ annoying failure for "assemble one holiday video."
    `--debug` flag sets it True). Full suite green (369 passed, up from
    365).
 
-Immediate next step: get a `--debug` run from Christer isolating whether
-the NVDEC slowdown is the `hwdownload` copy cost or the two-camera decode
-contention (e.g. a --debug run stitching just one camera at a time would
-separate the two), then decide revert vs. scope-to-single-camera vs. a
-different filter-graph approach - and separately, confirm `--map` against
-a real archive (real Overpass query, real GPS data, see item 4's caveat
-above) - then continue `--stitch` per the spec above, in order: the
-map-panel aspect-ratio work, then g-sensor overlay placement, then
-subtitle burn-in, then `rearview_mirror`, then the
-auto-pick-from-trip-geometry layer on top once the individual pieces work
-with explicit flags.
+   **Follow-up: real bug found via the --debug output itself - broken
+   filter syntax on the single-camera + resolution path (done, this
+   session).** The first single-camera `--debug` run (front-only trip,
+   `--stitch-resolution 1280x720`) reported `decode=nvdec failed in
+   0.6s` - far too fast to be a genuine decode attempt, and immediately
+   suspicious. Root cause: `_run_reencode_single()`'s resolution branch
+   built the filter_complex as `predecode + _fit_and_pad("0:v", "v",
+   width, height)`, where `_fit_and_pad()` already returns a string
+   starting with `[0:v]scale=...` - prepending `predecode`
+   ("hwdownload,format=nv12,") in front of that produced
+   `hwdownload,format=nv12,[0:v]scale=...`, putting the filter name
+   *before* the bracketed input label instead of after it. ffmpeg
+   requires the label first in a filter-chain link, so this was a
+   syntax error, not a real hwaccel failure - NVDEC was never actually
+   attempted on this path, silently masquerading as "NVDEC
+   unavailable/failed" the whole time. The two-camera `_stack()` path
+   didn't have this bug (it correctly builds `f"[1:v]{predecode}
+   {rear_scale}[rear_scaled]"`, predecode inside the label reference) -
+   only the single-camera resolution path was affected.
+
+   Notable: the existing test for this exact scenario
+   (`test_stitch_cameras_single_camera_falls_back_to_cpu_decode_when_nvdec_fails`)
+   still passed the whole time, because it only checks that a correct
+   video comes out the other end - true whether NVDEC failed for the
+   right reason (no GPU in the sandbox) or the wrong one (bad syntax).
+   Fixed `_fit_and_pad()` to take an optional `prefix` parameter
+   inserted *inside* the bracketed label reference
+   (`f"[{input_label}]{prefix}scale=..."`), and updated
+   `_run_reencode_single()` to pass `prefix=predecode` instead of
+   string-concatenating it on the outside.
+
+   Tested: 2 new tests that inspect the actual filter_complex string
+   rather than just the end-to-end outcome - one asserting
+   `_fit_and_pad()`'s prefix lands right after the label, one
+   exercising the real call site (`_run_reencode_single` with
+   `hw_decode=True`, encoder faked so no real ffmpeg/GPU needed)
+   confirming the string handed to the encoder is well-formed. Full
+   suite green (371 passed, up from 369).
+
+Immediate next step: get a fresh `--debug` run from Christer on the same
+single-camera trip now that this filter-syntax bug is fixed, to finally get
+the real signal - does single-camera NVDEC actually decode (and if so, is
+it fast or slow compared to CPU)? That result decides the hwdownload-
+copy-cost vs. two-camera-engine-contention question this was meant to
+answer in the first place, and from there whether to revert NVDEC, scope
+it to single-camera only, or try a different filter-graph approach -
+and separately, confirm `--map` against a real archive (real Overpass
+query, real GPS data, see item 4's caveat above) - then continue `--stitch`
+per the spec above, in order: the map-panel aspect-ratio work, then
+g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
+then the auto-pick-from-trip-geometry layer on top once the individual
+pieces work with explicit flags.

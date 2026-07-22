@@ -186,7 +186,9 @@ def _bitrate_args(bitrate: str | None) -> list[str]:
     return ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bitrate]
 
 
-def _fit_and_pad(input_label: str, output_label: str, width: int, height: int) -> str:
+def _fit_and_pad(
+    input_label: str, output_label: str, width: int, height: int, *, prefix: str = ""
+) -> str:
     """A filter-chain fragment scaling `input_label` to fit inside a
     width x height box without distorting its own aspect ratio
     (force_original_aspect_ratio=decrease - shrinks to fit, never
@@ -203,10 +205,22 @@ def _fit_and_pad(input_label: str, output_label: str, width: int, height: int) -
     like 320x240 (4:3) squeezed the width far more than the height.
     This fit-then-pad idiom keeps the file's own output dimensions
     exactly what was asked for, without warping the actual picture.
+
+    `prefix`, if given, is an extra comma-chained filter (or filters)
+    inserted right after the `[input_label]` reference and before
+    `scale=` - e.g. "hwdownload,format=nv12," to bring a hardware-
+    decoded stream back to CPU frames before scaling touches it. Must
+    go *inside* the bracketed label reference, not before it - ffmpeg
+    requires the input label first in a filter-chain link; putting a
+    filter name before "[input_label]" is a syntax error, which is
+    exactly the bug this parameter fixes (an earlier version built
+    `prefix + _fit_and_pad(...)`, landing "hwdownload,format=nv12,"
+    *before* "[0:v]" instead of after it - ffmpeg rejected that
+    instantly rather than actually attempting NVDEC decode).
     """
 
     return (
-        f"[{input_label}]scale=w={width}:h={height}:"
+        f"[{input_label}]{prefix}scale=w={width}:h={height}:"
         "force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[{output_label}]"
     )
@@ -317,7 +331,8 @@ def _run_reencode_single(
     if resolution is not None:
         width, height = resolution
         input_args += [
-            "-filter_complex", predecode + _fit_and_pad("0:v", "v", width, height),
+            "-filter_complex",
+            _fit_and_pad("0:v", "v", width, height, prefix=predecode),
             "-map", "[v]",
         ]
     elif hw_decode:
