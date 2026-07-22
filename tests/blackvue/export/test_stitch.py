@@ -2,12 +2,14 @@ import json
 import subprocess
 from datetime import datetime
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from PIL import Image
 
 from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import STACK_LAYOUTS
+from blackvue.export.stitch import _escape_subtitles_filename
 from blackvue.export.stitch import _map_panel_dimensions
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.export.stitch import stitch_cameras
@@ -1338,6 +1340,181 @@ def test_stitch_cameras_gsensor_overlay_ignored_for_single_camera_fallback(
 
 
 def test_stitch_cameras_without_gsensor_video_leaves_footage_untouched(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", warnings=warnings,
+    )
+
+    assert _video_size(destination) == (320, 120)
+    assert warnings == []
+
+
+def test_escape_subtitles_filename_converts_backslashes_and_escapes_colons():
+    # A Windows-style absolute path (the real shape of every path this
+    # project actually produces, since bv-export runs on Christer's
+    # Windows machine) - `\` becomes `/` (sidesteps its own meaning as
+    # an escape character rather than trying to double-escape it), and
+    # the drive-letter `:` is escaped as `\:` since ffmpeg's
+    # filtergraph parser would otherwise read it as the `subtitles`
+    # filter's own option separator and truncate the path at `C`.
+    windows_path = Path("C:\\Users\\christer\\trip\\trip.srt")
+    assert (
+        _escape_subtitles_filename(windows_path)
+        == "C\\:/Users/christer/trip/trip.srt"
+    )
+
+
+def _average_brightness(image, x_range, y_range):
+    pixels = [
+        image.getpixel((x, y))
+        for x in x_range
+        for y in y_range
+    ]
+    return sum(sum(p) / 3 for p in pixels) / len(pixels)
+
+
+def _dark_pixel_fraction(image, x_range, y_range, threshold=150):
+    pixels = [image.getpixel((x, y)) for x in x_range for y in y_range]
+    dark = sum(1 for p in pixels if sum(p) / 3 < threshold)
+    return dark / len(pixels)
+
+
+def test_stitch_cameras_subtitles_background_bar_darkens_more_than_without(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 320, 240, "0xdddddd")
+    _make_solid_video(rear, 320, 240, "0xdddddd")
+    srt = tmp_path / "trip.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nHello world subtitle test\n\n"
+    )
+
+    fractions = {}
+    for background in (True, False):
+        destination = tmp_path / f"stitch_{background}.mp4"
+        warnings = []
+        stitch_cameras(
+            front, rear, destination, layout="side_by_side",
+            subtitles_path=srt, subtitles_background=background,
+            warnings=warnings,
+        )
+        assert warnings == []
+
+        image = _extract_first_frame(
+            destination, tmp_path / f"frame_{background}.png"
+        )
+        width, height = image.size
+        fractions[background] = _dark_pixel_fraction(
+            image, range(0, width, 2), range(height - 60, height - 5, 2),
+        )
+
+    # Both variants have *some* dark pixels near the bottom (libass's
+    # default outline-only style already draws a thin dark outline
+    # around the glyphs even with no force_style override at all) -
+    # the real thing distinguishing "background bar on" is a solid box
+    # spanning the whole text line, which darkens a much bigger
+    # fraction of the sampled region than bare outlined text does.
+    assert fractions[True] > fractions[False] * 1.5
+
+
+def test_stitch_cameras_subtitles_leaves_the_top_of_the_frame_untouched(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 320, 240, "0xdddddd")
+    _make_solid_video(rear, 320, 240, "0xdddddd")
+    srt = tmp_path / "trip.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nHello world subtitle test\n\n"
+    )
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        subtitles_path=srt, warnings=warnings,
+    )
+    assert warnings == []
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    width, _ = image.size
+    # libass's default placement is centered, near the bottom - the
+    # top of the frame should still be the plain 0xdddddd (221,221,221)
+    # footage, completely unaffected by either the text or (if on) its
+    # background bar.
+    top_brightness = _average_brightness(
+        image, range(0, width, 4), range(5, 30, 2)
+    )
+    assert top_brightness > 210
+
+
+def test_stitch_cameras_subtitles_combines_with_gsensor_and_a_map_panel(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "blue")
+    _make_solid_video(rear, 160, 120, "blue")
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+    srt = tmp_path / "trip.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello\n\n")
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        gsensor_video=gsensor, gsensor_pos="top-right",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+        subtitles_path=srt,
+        warnings=warnings,
+    )
+
+    # Correct bookkeeping across all three extra pieces (gsensor input,
+    # map panel input, and the subtitle burn-in applied last onto
+    # whatever "withmap" ends up being) is the real thing being tested
+    # here - a wrong label/index anywhere in that chain would fail the
+    # ffmpeg call outright rather than silently produce a wrong image.
+    assert warnings == []
+    width, height = _video_size(destination)
+    assert width == 320
+    assert height > 120
+
+
+def test_stitch_cameras_subtitles_ignored_for_single_camera_fallback(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    _make_video(front, 160, 120)
+    srt = tmp_path / "trip.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello\n\n")
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, None, destination, layout="side_by_side",
+        subtitles_path=srt, warnings=warnings,
+    )
+
+    # Same "not built for the single-camera path yet" convention as
+    # the map panel/gsensor overlay.
+    assert _video_size(destination) == (160, 120)
+    assert warnings == []
+
+
+def test_stitch_cameras_without_subtitles_path_leaves_footage_untouched(
     tmp_path
 ):
     front = tmp_path / "front.mp4"

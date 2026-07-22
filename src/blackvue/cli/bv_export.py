@@ -121,6 +121,8 @@ def bv_export(
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
     stitch_gsensor_xy: tuple[float, float] | None = None,
+    stitch_subtitles: bool = False,
+    stitch_subtitles_background: bool = True,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -261,6 +263,8 @@ def bv_export(
                 stitch_gsensor_size=stitch_gsensor_size,
                 stitch_gsensor_pos=stitch_gsensor_pos,
                 stitch_gsensor_xy=stitch_gsensor_xy,
+                stitch_subtitles=stitch_subtitles,
+                stitch_subtitles_background=stitch_subtitles_background,
                 debug=debug,
             )
         except MediaToolError as exc:
@@ -478,12 +482,12 @@ def main(argv: list[str] | None = None) -> int:
             "Also render stitch.mp4: the trip's front and rear video "
             "composed into one, side by side or stacked (see "
             "--stitch-layout), optionally with a map panel (see "
-            "--stitch-map) and/or a g-sensor overlay (see "
-            "--stitch-gsensor). A trip with only one camera falls "
-            "back to a plain copy of whichever one exists, ignoring "
-            "--stitch-map/--stitch-gsensor too. Subtitle burn-in, "
-            "rearview-mirror layout, and auto-picking a layout from "
-            "the trip's own geometry are still planned for later."
+            "--stitch-map), a g-sensor overlay (see --stitch-gsensor), "
+            "and/or burned-in subtitles (see --stitch-subtitles). A "
+            "trip with only one camera falls back to a plain copy of "
+            "whichever one exists, ignoring all of those too. "
+            "Rearview-mirror layout and auto-picking a layout from the "
+            "trip's own geometry are still planned for later."
         ),
     )
 
@@ -609,6 +613,32 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-subtitles",
+        action="store_true",
+        help=(
+            "Also burn this trip's own trip.srt into stitch.mp4's "
+            "final frame (never trip.lrc, which has no real per-line "
+            "duration) - centered, near the bottom, after any "
+            "g-sensor overlay/map panel. Unlike --stitch-gsensor, "
+            "there's nothing to render first: trip.srt is written "
+            "automatically whenever the trip has any transcript data "
+            "at all. If it doesn't, the burn-in is skipped with a "
+            "warning. Only used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-subtitles-bg",
+        dest="subtitles_bg",
+        action="store_false",
+        help=(
+            "Disable the dark, semi-transparent background bar behind "
+            "burned-in subtitle text (on by default when "
+            "--stitch-subtitles is given)."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -667,6 +697,8 @@ def main(argv: list[str] | None = None) -> int:
         stitch_gsensor_size=args.stitch_gsensor_size,
         stitch_gsensor_pos=args.stitch_gsensor_pos,
         stitch_gsensor_xy=args.stitch_gsensor_xy,
+        stitch_subtitles=args.stitch_subtitles if args.stitch else False,
+        stitch_subtitles_background=args.subtitles_bg,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         debug=args.debug,

@@ -222,6 +222,8 @@ def export_trip(
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
     stitch_gsensor_xy: tuple[float, float] | None = None,
+    stitch_subtitles: bool = False,
+    stitch_subtitles_background: bool = True,
     debug: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
@@ -272,9 +274,8 @@ def export_trip(
     `stitch_bitrate` are also given, which force a re-encode even for
     a single camera) - the map panel and g-sensor overlay below are
     ignored for that single-camera path too. See WORKING_CONTEXT.md
-    for the full --stitch spec - subtitle burn-in, rearview_mirror
-    layout, and auto-picking a layout from the trip's geometry are
-    still ahead.
+    for the full --stitch spec - rearview_mirror layout and auto
+    -picking a layout from the trip's geometry are still ahead.
 
     `stitch_resolution` (a (width, height) pixel pair) and
     `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)
@@ -315,6 +316,21 @@ def export_trip(
     explicit (x_percent, y_percent) override, allowed to land anywhere
     including on the map panel) control size/placement - see
     stitch_cameras()'s own docstring for the full detail.
+
+    `stitch_subtitles=True` (also requires `stitch_layout`) burns this
+    same call's own trip.srt (see `srt_path` above) into stitch.mp4's
+    final frame, after any gsensor overlay/map panel - never
+    trip.lrc, which has no real per-line duration (merge_lrc() always
+    sets `end == start`). Unlike `stitch_gsensor`, there's no "go
+    render it first" step: trip.srt is written earlier in this same
+    call whenever the trip has any transcript data at all, not gated
+    behind its own flag, so it's always fresh for this run's
+    recordings by the time this check runs. If the trip has no
+    transcript data (srt_path stays None), the burn-in is skipped with
+    a warning rather than failing the stitch.
+    `stitch_subtitles_background` (default True) draws a solid, semi
+    -transparent bar behind the text for readability - see
+    stitch.py's _subtitles_filter().
 
     `debug=True` prints wall-clock timing to stderr for the
     concatenation/map/stitch phases below, plus (from stitch.py)
@@ -464,6 +480,22 @@ def export_trip(
                 "bv-export --gsensor-video first"
             )
 
+    # --stitch-subtitles reuses this same call's own srt_path - unlike
+    # --stitch-gsensor, trip.srt isn't gated behind its own render
+    # flag (merge_srt() above always writes one when the trip has any
+    # transcript data), so there's no "missing, go render it first"
+    # case the way there is for gsensor.mp4 - only "no transcript data
+    # for this trip at all".
+    stitch_subtitles_source = None
+    if stitch_subtitles and stitch_layout is not None:
+        if srt_path is not None:
+            stitch_subtitles_source = srt_path
+        else:
+            warnings.append(
+                "stitch subtitles: no transcript data for this trip - "
+                "trip.srt was not written - skipped"
+            )
+
     stitch_path = None
     if stitch_layout is not None:
         stitch_start = time.monotonic() if debug else None
@@ -483,6 +515,8 @@ def export_trip(
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,
                 gsensor_xy=stitch_gsensor_xy,
+                subtitles_path=stitch_subtitles_source,
+                subtitles_background=stitch_subtitles_background,
                 debug=debug,
                 warnings=warnings,
             )

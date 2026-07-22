@@ -856,6 +856,120 @@ def test_export_trip_stitch_gsensor_options_are_forwarded(tmp_path, monkeypatch)
     assert captured["gsensor_xy"] == (5.0, 5.0)
 
 
+def _trip_with_front_rear_and_subtitles(source_dir):
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    srt_a = source_dir / "a.srt"
+    srt_a.write_text(format_srt((SpeechSegment(0.0, 1.0, "hello there"),)))
+
+    return Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_a),
+            },
+        ),
+    ))
+
+
+def test_export_trip_stitch_subtitles_uses_this_runs_own_trip_srt(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_subtitles(source_dir)
+
+    result = export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_subtitles=True,
+    )
+
+    # No separate "render it first" step needed, unlike
+    # stitch_gsensor - trip.srt is always written earlier in this same
+    # call whenever the trip has transcript data at all.
+    assert result.srt == dest_dir / "trip.srt"
+    assert result.stitch.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_subtitles_options_are_forwarded(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_subtitles(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="side_by_side", stitch_subtitles=True,
+        stitch_subtitles_background=False,
+    )
+
+    assert captured["subtitles_path"] == dest_dir / "trip.srt"
+    assert captured["subtitles_background"] is False
+
+
+def test_export_trip_stitch_subtitles_skipped_without_the_flag(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_subtitles(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    # trip.srt still gets written (merge_srt() isn't gated behind
+    # stitch_subtitles at all), but it's not passed on to the stitch
+    # call without the flag.
+    assert result.srt == dest_dir / "trip.srt"
+    assert captured["subtitles_path"] is None
+
+
+def test_export_trip_stitch_subtitles_warns_when_no_transcript_data(
+    tmp_path
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_subtitles=True,
+    )
+
+    assert result.srt is None
+    assert result.stitch.exists()
+    assert len(result.warnings) == 1
+    assert "no transcript data" in result.warnings[0]
+
+
 def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
