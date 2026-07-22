@@ -1,5 +1,6 @@
 import subprocess
 
+from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli.bv_export import bv_export
 from blackvue.cli.bv_export import main
 from blackvue.export import trip_export as trip_export_module
@@ -67,7 +68,13 @@ def test_bv_export_applies_prefix(tmp_path):
     assert folder.is_dir()
 
 
-def test_bv_export_refreshes_an_existing_folder(tmp_path):
+def test_bv_export_keeps_existing_files_by_default_when_noninteractive(
+    tmp_path,
+):
+    # Non-interactive (no tty, which is how tests always run) and no
+    # --overwrite: existing trip folders are left alone except for
+    # whatever this run actually regenerates - e.g. an earlier --map
+    # run's map.mp4 should survive a later plain export.
     archive = tmp_path / "archive"
     archive.mkdir()
     target = tmp_path / "out"
@@ -82,8 +89,100 @@ def test_bv_export_refreshes_an_existing_folder(tmp_path):
     bv_export(str(archive), target=str(target))
 
     assert folder.is_dir()
+    assert stale_file.exists(), "should be left alone without --overwrite"
+    assert (folder / "front.mp4").exists()
+
+
+def test_bv_export_overwrite_flag_wipes_existing_folder(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    folder = target / "trip_20260720_100000_20260720_100000"
+    folder.mkdir(parents=True)
+    stale_file = folder / "stale.txt"
+    stale_file.write_text("leftover from a previous run")
+
+    bv_export(str(archive), target=str(target), overwrite=True)
+
+    assert folder.is_dir()
     assert not stale_file.exists()
     assert (folder / "front.mp4").exists()
+
+
+def test_bv_export_interactive_prompt_wipes_when_answered_yes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bv_export_module, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "w")
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    folder = target / "trip_20260720_100000_20260720_100000"
+    folder.mkdir(parents=True)
+    stale_file = folder / "stale.txt"
+    stale_file.write_text("leftover from a previous run")
+
+    bv_export(str(archive), target=str(target))
+
+    assert not stale_file.exists()
+
+
+def test_bv_export_interactive_prompt_keeps_on_default_answer(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bv_export_module, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    folder = target / "trip_20260720_100000_20260720_100000"
+    folder.mkdir(parents=True)
+    stale_file = folder / "stale.txt"
+    stale_file.write_text("leftover from a previous run")
+
+    bv_export(str(archive), target=str(target))
+
+    assert stale_file.exists()
+
+
+def test_bv_export_interactive_prompt_only_asked_once_per_run(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def fake_input(prompt):
+        calls.append(prompt)
+        return "w"
+
+    monkeypatch.setattr(bv_export_module, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100500_NF.mp4")
+
+    for suffix in ("100000", "100500"):
+        folder = target / f"trip_20260720_{suffix}_20260720_{suffix}"
+        folder.mkdir(parents=True)
+        (folder / "stale.txt").write_text("leftover")
+
+    bv_export(str(archive), target=str(target), max_gap_minutes=1)
+
+    assert len(calls) == 1, "should only prompt once for the whole run"
 
 
 def test_bv_export_dry_run_writes_nothing(tmp_path, capsys):
@@ -228,6 +327,47 @@ def test_bv_export_map_flag_renders_map_video_with_a_real_route(
     assert exit_code == 0
     folder = target / "trip_20260720_100000_20260720_100010"
     assert (folder / "map.mp4").exists()
+
+
+def test_bv_export_a_later_plain_export_keeps_an_earlier_maps_map_video(
+    tmp_path, monkeypatch
+):
+    # The exact scenario Christer asked about: export once with --map
+    # (expensive - builds map.mp4), then export the same trip again
+    # without --map, non-interactively. map.mp4 should survive.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    _write_gps(
+        archive / "20260720_100010_N.gps",
+        1784555911000, "5918.94615", "N", "01806.17070", "E",
+    )
+
+    bv_export(str(archive), target=str(target), render_map=True)
+
+    folder = target / "trip_20260720_100000_20260720_100010"
+    assert (folder / "map.mp4").exists()
+    map_mtime = (folder / "map.mp4").stat().st_mtime
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    assert (folder / "map.mp4").exists()
+    assert (folder / "map.mp4").stat().st_mtime == map_mtime, (
+        "plain re-export shouldn't touch the folder at all, let alone "
+        "rebuild the expensive map"
+    )
 
 
 def test_bv_export_merges_srt_across_a_trip(tmp_path):
