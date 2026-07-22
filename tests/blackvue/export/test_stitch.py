@@ -446,9 +446,14 @@ def test_run_reencode_single_with_hw_decode_pins_the_input_to_a_shared_device(
     assert input_args[input_args.index("-hwaccel_device") + 1] == "cu"
 
 
-def test_run_stack_with_hw_decode_shares_one_device_across_both_inputs(
+def test_run_decode_camera_with_hw_decode_pins_the_input_to_a_shared_device(
     tmp_path, monkeypatch
 ):
+    # _run_decode_camera() is the per-camera decode call the two-camera
+    # _stack() path now uses (one process per camera, run concurrently
+    # - see _decode_camera()'s docstring) - it still uses the shared
+    # CUDA device convention for its own single input, consistent with
+    # _run_reencode_single()'s single-camera path.
     captured = {}
 
     def fake_encode(input_args, destination, extra_codec_args=None):
@@ -458,23 +463,84 @@ def test_run_stack_with_hw_decode_shares_one_device_across_both_inputs(
 
     monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
 
-    stitch_module._run_stack(
-        tmp_path / "front.mp4", tmp_path / "rear.mp4", tmp_path / "out.mp4",
-        filter_name="hstack", front_width=640, front_height=480,
-        resolution=None, bitrate=None, hw_decode=True,
+    stitch_module._run_decode_camera(
+        tmp_path / "front.mp4", tmp_path / "out.mp4",
+        scale_filter=None, hw_decode=True,
     )
 
     input_args = captured["input_args"]
-    # Exactly one -init_hw_device, up front (not one per input), and
-    # both -i's reference it via the same -hwaccel_device value.
-    assert input_args.count("-init_hw_device") == 1
-    assert input_args[0] == "-init_hw_device"
-    assert input_args[1] == "cuda=cu:0"
-    hwaccel_device_indices = [
-        i for i, arg in enumerate(input_args) if arg == "-hwaccel_device"
-    ]
-    assert len(hwaccel_device_indices) == 2
-    assert all(input_args[i + 1] == "cu" for i in hwaccel_device_indices)
+    assert input_args[:3] == ["-init_hw_device", "cuda=cu:0", "-hwaccel"]
+    assert "-hwaccel_device" in input_args
+    assert input_args[input_args.index("-hwaccel_device") + 1] == "cu"
+
+
+def test_stack_decodes_front_and_rear_as_separate_ffmpeg_calls(
+    tmp_path, monkeypatch
+):
+    # The core of the two-process-decode redesign: front and rear must
+    # each get their own ffmpeg call (their own single -i) rather than
+    # one ffmpeg process handling both hardware-decoded inputs at once
+    # - see _decode_camera()'s docstring for why (a real, measured ~5x
+    # slowdown from combining them). Confirmed here by counting
+    # encode_with_nvenc_fallback calls (front decode, rear decode,
+    # final combine = 3): the two decode calls each have exactly one
+    # -i; the final combine call legitimately has two (it reads the
+    # two already-decoded, CPU-readable intermediates - no hwaccel on
+    # either, so no contention there).
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    calls = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        calls.append(input_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="side_by_side")
+
+    assert len(calls) == 3
+    i_counts = sorted(call.count("-i") for call in calls)
+    assert i_counts == [1, 1, 2]
+
+
+def test_stack_applies_bitrate_only_to_the_final_combine_call(
+    tmp_path, monkeypatch
+):
+    # The two decode calls produce intermediates, not the final
+    # output - a bitrate cap only makes sense on the last (combine)
+    # call, which is what the user actually asked to constrain.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", bitrate="256k",
+    )
+
+    assert captured_extra_codec_args.count(None) == 2
+    assert captured_extra_codec_args.count(
+        ["-b:v", "256k", "-maxrate", "256k", "-bufsize", "256k"]
+    ) == 1
 
 
 def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
