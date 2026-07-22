@@ -791,6 +791,49 @@ through unfiltered), 1 on `_load_font` (calls `ImageFont.truetype` only once
 across two calls). Full suite green (309 passed). Not yet re-timed against
 Christer's real archive to confirm the actual wall-clock improvement.
 
+Confirmed on Christer's real archive afterward: the same `--map --map-zoom 240`
+export dropped from 2m34s to 33s (~4.7x).
+
+---
+
+## --map-zoom made independent of --map (done, this session)
+
+Christer noticed `--map-zoom` did nothing unless `--map` was also given, and
+asked for it to work standalone, producing its own file named
+`map_zoom_XXXm.mp4` (XXX = the zoom radius in meters, as a suffix). Asked how
+`--map` + `--map-zoom` together should behave since that changes existing
+combined behavior - he picked two separate files over keeping the old
+single-video mode.
+
+`--map` and `--map-zoom` are now fully independent toggles:
+
+- `--map` always renders `map.mp4`, always the static whole-trip overview -
+  it no longer changes mode when `--map-zoom` is also given.
+- `--map-zoom METERS` (with or without `--map`) always renders its own
+  `map_zoom_{METERS:g}m.mp4` - the `:g` format drops a trailing `.0` for
+  whole numbers (`map_zoom_240m.mp4`) but keeps a fractional value as given
+  (`map_zoom_75.5m.mp4`).
+- Both together: two separate files, one static, one zoomed - not one video
+  reused for both.
+- `--map-icon` now applies to whichever of the two is rendered (previously
+  documented as "only used together with --map").
+
+`trip_export.py`: replaced the old single `_render_map()` with
+`_load_trip_roads()` (fetches/caches OSM road data once - shared by both
+possible outputs, so a network failure produces one "map data: ..." warning,
+not one per output) and `_render_map_variant()` (renders one video at a given
+destination/zoom_meters, called once for `map.mp4` when `render_map=True` and
+again for `map_zoom_*m.mp4` when `map_zoom_meters` is given). `ExportResult`
+gained a `map_zoom: Path | None` field alongside the existing `map` field.
+`bv_export.py`'s written-file count and CLI help text updated to match.
+
+Tested: `render_map`/`map_zoom_meters` combinations (zoom alone with no
+`--map`, both together producing two distinct files with the right
+`zoom_meters` passed to each, filename formatting for a fractional zoom
+value) at the `export_trip()` level, plus CLI-level tests confirming
+`map_zoom_75m.mp4` exists alongside `map.mp4` and that zoom-alone skips the
+static file entirely. Full suite green (312 passed).
+
 ---
 
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)

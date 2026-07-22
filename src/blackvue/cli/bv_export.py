@@ -177,8 +177,8 @@ def bv_export(
             written_path
             for written_path in (
                 result.front_video, result.rear_video, result.audio,
-                result.gpx, result.gsensor, result.map, result.gsensor_video,
-                result.srt, result.lrc,
+                result.gpx, result.gsensor, result.map, result.map_zoom,
+                result.gsensor_video, result.srt, result.lrc,
             )
             if written_path is not None
         ] + list(result.text)
@@ -304,13 +304,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Also render map.mp4: a route/position/speed overlay on "
-            "an OpenStreetMap road basemap for each trip. Off by "
-            "default - the first trip through a given area needs a "
-            "one-time network fetch of that area's road data (cached "
-            "under --target/.osm_cache afterward, then fully "
-            "offline), and rendering adds real time per trip. Frames "
-            "the whole trip at once by default - see --map-zoom for a "
-            "closer, scrolling 'follow camera' view instead. The "
+            "an OpenStreetMap road basemap for each trip, framing the "
+            "whole trip at once (a static overview). Off by default - "
+            "the first trip through a given area needs a one-time "
+            "network fetch of that area's road data (cached under "
+            "--target/.osm_cache afterward, then fully offline), and "
+            "rendering adds real time per trip. See --map-zoom for a "
+            "closer, scrolling 'follow camera' view instead (a "
+            "separate file, works with or without --map). The "
             "current-position marker is an arrow rotated to match "
             "the GPS course over ground by default - see --map-icon "
             "to use a custom image instead."
@@ -322,11 +323,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         default=None,
         help=(
-            "Use a custom image as --map's position marker instead "
-            "of the default arrow, rotated each frame to match the "
-            "GPS course over ground. A PNG with transparency, drawn "
-            "pointing 'up'/north in its own file, works best. Only "
-            "used together with --map."
+            "Use a custom image as the position marker on --map and/or "
+            "--map-zoom instead of the default arrow, rotated each "
+            "frame to match the GPS course over ground. A PNG with "
+            "transparency, drawn pointing 'up'/north in its own file, "
+            "works best."
         ),
     )
 
@@ -339,13 +340,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         metavar="METERS",
         help=(
-            "Switch --map from a static whole-trip overview to a "
-            "'follow camera': a tight view of real-world half-width "
-            "METERS, centered on the vehicle's current position every "
-            "frame, scrolling/panning as it moves rather than sitting "
-            "still. Defaults to "
-            f"{DEFAULT_ZOOM_RADIUS_METERS:g}m if given with no value. "
-            "Only used together with --map."
+            "Also render map_zoom_METERSm.mp4: a 'follow camera' view "
+            "of real-world half-width METERS, centered on the "
+            "vehicle's current position every frame, scrolling/panning "
+            "as it moves - a separate file from --map's static "
+            "whole-trip overview, and independent of it (works with or "
+            "without --map given too). Defaults to "
+            f"{DEFAULT_ZOOM_RADIUS_METERS:g}m if given with no value."
         ),
     )
 
