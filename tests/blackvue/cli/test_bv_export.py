@@ -1,5 +1,7 @@
 import subprocess
 
+import pytest
+
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli.bv_export import bv_export
 from blackvue.cli.bv_export import main
@@ -581,6 +583,84 @@ def test_main_uses_an_explicit_stitch_layout_when_given(tmp_path, monkeypatch):
     ])
 
     assert captured["stitch_layout"] == "top_down"
+
+
+def test_bv_export_stitch_resolution_flag_produces_a_scaled_down_video(
+    tmp_path
+):
+    import json
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="side_by_side", stitch_resolution=(320, 240),
+    )
+
+    assert exit_code == 0
+    stitch_path = (
+        target / "trip_20260720_100000_20260720_100000" / "stitch.mp4"
+    )
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(stitch_path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    assert (stream["width"], stream["height"]) == (320, 240)
+
+
+def test_main_parses_stitch_resolution_from_the_command_line(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-resolution", "320x240",
+        "--stitch-bitrate", "256k",
+    ])
+
+    assert captured["stitch_resolution"] == (320, 240)
+    assert captured["stitch_bitrate"] == "256k"
+
+
+def test_main_rejects_a_malformed_stitch_resolution(tmp_path, capsys):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    # argparse's own type= validation fails before run_cli() ever gets
+    # control, so this is a SystemExit(2) straight out of
+    # parser.parse_args(), not a normal int return.
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-resolution", "not-a-resolution",
+        ])
+
+    assert exc_info.value.code == 2
+    assert "invalid resolution" in capsys.readouterr().err
 
 
 def test_bv_export_a_later_plain_export_keeps_an_earlier_maps_map_video(

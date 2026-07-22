@@ -81,7 +81,11 @@ def _run_ffmpeg_encode(
     )
 
 
-def encode_with_nvenc_fallback(input_args: list[str], destination: Path) -> None:
+def encode_with_nvenc_fallback(
+    input_args: list[str],
+    destination: Path,
+    extra_codec_args: list[str] | None = None,
+) -> None:
     """Run ffmpeg with `input_args` (whatever inputs/filters/maps the
     caller needs - a frame-sequence input, a multi-video
     filter_complex composition, etc.), encoding video with NVIDIA's
@@ -93,18 +97,24 @@ def encode_with_nvenc_fallback(input_args: list[str], destination: Path) -> None
     present) - so this always produces a video either way, just faster
     when a real NVIDIA GPU is there to use.
 
+    `extra_codec_args`, if given, are appended after the base codec
+    args on *both* the NVENC and libx264 attempts (e.g. a bitrate cap)
+    - encoder-agnostic settings the caller wants regardless of which
+    of the two actually ends up encoding.
+
     Shared by every "encode a video via ffmpeg" caller in bv-export
     (map_video.py/gsensor_video.py's frame sequences via
     encode_frame_sequence() below, stitch.py's camera composition) so
     they all get the same NVENC-then-CPU fallback behavior for free.
     """
 
+    extra_codec_args = extra_codec_args or []
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     if _nvenc_available():
         try:
             _run_ffmpeg_encode(
-                ["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p"],
+                ["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", *extra_codec_args],
                 input_args, destination,
             )
             return
@@ -115,7 +125,7 @@ def encode_with_nvenc_fallback(input_args: list[str], destination: Path) -> None
 
     try:
         _run_ffmpeg_encode(
-            ["-c:v", "libx264", "-pix_fmt", "yuv420p"],
+            ["-c:v", "libx264", "-pix_fmt", "yuv420p", *extra_codec_args],
             input_args, destination,
         )
     except FileNotFoundError as exc:

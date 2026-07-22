@@ -1333,7 +1333,12 @@ annoying failure for "assemble one holiday video."
    semi-transparent background bar behind the text for readability
    (ffmpeg's `subtitles`/`drawtext` filter with a box, or burning
    `trip.srt` in directly via the `subtitles` filter - exact mechanism
-   still to be decided at implementation time).
+   still to be decided at implementation time). Source is always
+   `trip.srt`, never `trip.lrc` - Christer asked which one `--stitch-
+   subtitles` would use if both exist; `trip.lrc` has no real per-line
+   duration (`merge_lrc` always sets `end == start`), fine for a
+   karaoke-style display but not a standard subtitle cue, so there's no
+   actual choice to make here, not something that needs its own flag.
 
    **Argument list agreed with Christer:**
    - `--stitch` - master switch, produces the composed video.
@@ -1410,6 +1415,42 @@ annoying failure for "assemble one holiday video."
    Full suite green (342 passed, up from 312). Not yet confirmed against
    a real front+rear BlackVue archive - only unit-tested with synthetic
    ffmpeg testsrc clips.
+
+   **Follow-up: --stitch-resolution/--stitch-bitrate (done, this
+   session).** Christer's first real-archive `--stitch` run was slow
+   (stitching is a genuine re-encode, not a stream copy) and asked for a
+   way to force a small, fast test render - specifically wanted to try
+   320x240 at 256kbps.
+
+   `stitch_cameras()`/`_stack()` gained `resolution: tuple[int, int] |
+   None` and `bitrate: str | None`. `resolution` chains a second `scale=`
+   filter onto the finished hstack/vstack composite (independent of the
+   existing front/rear-matching scale, which stays there purely so
+   hstack/vstack don't refuse mismatched inputs) - `bitrate` (e.g.
+   "256k") is passed straight through as `-b:v`/`-maxrate`/`-bufsize` (all
+   three, since `-b:v` alone is only a target/average for most encoders,
+   not a hard cap). A single-camera trip's cheap stream-copy fallback is
+   skipped in favor of an actual re-encode whenever either is given,
+   since a stream copy can't resize or re-bitrate.
+
+   `media.py`'s `encode_with_nvenc_fallback()` gained `extra_codec_args:
+   list[str] | None` - appended to *both* the NVENC and libx264 attempts,
+   so bitrate capping applies regardless of which encoder actually runs.
+
+   CLI: `--stitch-resolution WIDTHxHEIGHT` (e.g. `320x240`, parsed via a
+   small `argparse.ArgumentTypeError`-raising type function) and
+   `--stitch-bitrate RATE` (e.g. `256k`, `2M` - passed straight through,
+   no parsing). Both only meaningful with `--stitch`.
+
+   Tested: 3 new on `stitch_cameras` (resolution scales the stacked
+   output, resolution forces a re-encode for a single camera, bitrate
+   reaches the encoder call with the maxrate/bufsize trio), 3 CLI-level
+   (`--stitch-resolution` produces an actually-scaled-down file, both
+   flags parse through `main()` correctly, a malformed resolution string
+   raises `SystemExit(2)` with a clean message rather than a traceback -
+   argparse's own `type=` validation runs before `run_cli()` gets
+   control, so this is a real `SystemExit` in the test, not a return
+   value). Full suite green (351 passed, up from 342).
 
 Immediate next step: confirm `--map` against a real archive (real Overpass
 query, real GPS data) - see item 4's caveat above - and confirm `--stitch`
