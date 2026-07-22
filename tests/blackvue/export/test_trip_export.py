@@ -245,6 +245,74 @@ def test_export_trip_render_map_warns_instead_of_failing_on_fetch_error(
     assert result.gpx is not None
 
 
+def _trip_with_gsensor_samples(source_dir):
+    gsensor_a = source_dir / "a.3gf"
+    gsensor_a.write_bytes(
+        _gsensor_bytes((0, 100, -200, 900), (500, -300, 400, 950))
+    )
+    gsensor_b = source_dir / "b.3gf"
+    gsensor_b.write_bytes(_gsensor_bytes((0, 200, 100, 980)))
+
+    first = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a)},
+    )
+    second = Recording(
+        id=RecordingId("20260720_100010_N"),
+        assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_b)},
+    )
+    return Trip((first, second))
+
+
+def test_export_trip_skips_gsensor_video_by_default(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.gsensor_video is None
+    assert not (dest_dir / "gsensor.mp4").exists()
+
+
+def test_export_trip_render_gsensor_produces_a_video(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    result = export_trip(trip, dest_dir, render_gsensor=True)
+
+    assert result.gsensor_video == dest_dir / "gsensor.mp4"
+    assert result.gsensor_video.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_render_gsensor_warns_instead_of_failing_on_encode_error(
+    tmp_path, monkeypatch
+):
+    def _broken(*_args, **_kwargs):
+        raise MediaToolError("ffmpeg not found on PATH")
+
+    monkeypatch.setattr(
+        trip_export_module, "render_gsensor_video", _broken
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    result = export_trip(trip, dest_dir, render_gsensor=True)
+
+    assert result.gsensor_video is None
+    assert len(result.warnings) == 1
+    assert "gsensor video" in result.warnings[0]
+    # The rest of the export still succeeded despite the failure.
+    assert result.gsensor is not None
+
+
 def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()

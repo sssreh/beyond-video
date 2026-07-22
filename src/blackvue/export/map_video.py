@@ -11,15 +11,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
-from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
 from .map_render import render_frame
+from .media import encode_frame_sequence
 from .osm_roads import BoundingBox
 from .osm_roads import Road
 
@@ -151,27 +150,6 @@ def render_map_video(
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-framerate", str(fps),
-                    "-i", str(frame_dir / "frame_%06d.png"),
-                    "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    str(destination),
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except FileNotFoundError as exc:
-            raise MediaToolError("ffmpeg not found on PATH") from exc
-        except subprocess.CalledProcessError as exc:
-            raise MediaToolError(
-                f"ffmpeg encode failed for {destination.name}: "
-                f"{exc.stderr.strip()}"
-            ) from exc
+        encode_frame_sequence(frame_dir, destination, fps)
 
     return destination

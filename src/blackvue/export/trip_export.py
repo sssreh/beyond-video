@@ -23,6 +23,7 @@ from ..telemetry.gsensor_reader import read_gsensor
 from ..telemetry.gsensor_reader import write_gsensor
 from ..trip.trip import Trip
 from .gpx_writer import write_gpx
+from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
 from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
@@ -52,6 +53,7 @@ class ExportResult:
     gpx: Path | None = None
     gsensor: Path | None = None
     map: Path | None = None
+    gsensor_video: Path | None = None
     srt: Path | None = None
     lrc: Path | None = None
     text: tuple[Path, ...] = field(default_factory=tuple)
@@ -169,6 +171,7 @@ def export_trip(
     *,
     render_map: bool = False,
     map_cache_dir: Path | None = None,
+    render_gsensor: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -187,6 +190,12 @@ def export_trip(
     every trip in one export run, not wiped when a trip folder is
     refreshed). Off by default: it needs network the first time a
     region is exported, and adds real render time.
+
+    `render_gsensor=True` additionally renders gsensor.mp4 - a dot
+    moving around a gauge, tracking the trip's g-sensor (x, y)
+    readings with a short fading trail (see gsensor_render.py/
+    gsensor_video.py). No network involved, but off by default since
+    it's extra render time most exports won't want.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -255,6 +264,17 @@ def export_trip(
         gsensor_path = destination / "trip.3gf"
         write_gsensor(samples, gsensor_path)
 
+    gsensor_video_path = None
+    if render_gsensor and samples:
+        try:
+            gsensor_video_path = render_gsensor_video(
+                samples,
+                destination / "gsensor.mp4",
+                start_timestamp=trip.start_timestamp,
+            )
+        except MediaToolError as exc:
+            warnings.append(f"gsensor video: {exc}")
+
     return ExportResult(
         front_video=front_video,
         rear_video=rear_video,
@@ -262,6 +282,7 @@ def export_trip(
         gpx=gpx_path,
         gsensor=gsensor_path,
         map=map_path,
+        gsensor_video=gsensor_video_path,
         srt=srt_path,
         lrc=lrc_path,
         text=tuple(text_paths),

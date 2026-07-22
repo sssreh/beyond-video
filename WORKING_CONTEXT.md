@@ -449,6 +449,57 @@ untouched (mtime unchanged).
 
 ---
 
+## G-sensor dot-gauge overlay video (done, this session)
+
+Christer asked for "some nice graphical video with the g-sensor data."
+Asked which style; he picked a racing-telemetry-style dot gauge (dial with
+a dot at the current x/y reading, short fading trail) over a scrolling
+line-graph alternative.
+
+New `gsensor.mp4`, off by default, opt in via `bv-export --gsensor-video`:
+
+- `blackvue.export.gsensor_render`: `render_frame(scale, trail_points,
+  position, *, timestamp_text=None, ...)` draws reference rings/axes, the
+  fading trail, the current dot, and an optional wall-clock caption -
+  same Pillow-drawing shape as `map_render.render_frame`.
+  `scale_for_samples(samples, *, padding=1.2, minimum=1.0)` sets the
+  gauge's outer-ring value from the trip's own observed peak |x|/|y|
+  (floored at `minimum` so a flat/parked trip doesn't divide by ~0) -
+  since the g-sensor's raw units aren't calibrated (see
+  `gsensor_reader.py`'s module docstring: could be milli-g, raw ADC
+  counts, or something else), this scales to the trip's own range rather
+  than claiming any absolute g-force value. Axes are labeled X/Y, not
+  "lateral"/"braking" - which physical direction each axis corresponds to
+  isn't confirmed either.
+- `blackvue.export.gsensor_video`: `interpolate_sample(samples, elapsed)`
+  (same linear-interpolate-between-two-bracketing-points shape as
+  `map_video.interpolate_position`, clamped at the ends) and
+  `render_gsensor_video(samples, destination, *, fps=10,
+  start_timestamp=None)`. `fps=10` matches the g-sensor's native ~100ms
+  sample spacing (see `gsensor_reader.py`) rather than inventing detail
+  interpolation doesn't have. A `DEFAULT_TRAIL_LENGTH = 8`-sample fading
+  trail shows the shape of a turn/braking event, not just an instantaneous
+  reading.
+- `export_trip(..., render_gsensor=True)` reuses the trip's already-merged
+  g-sensor samples (the same ones written to `trip.3gf`) - no extra file
+  I/O. Degrades to a warning (`ExportResult.warnings`), not a failed
+  export, on any ffmpeg problem - same resilience pattern as `--map`.
+- Small refactor along the way: extracted the "encode a directory of
+  frame_%06d.png into a video via ffmpeg" block (previously only inside
+  `map_video.render_map_video`) into a shared
+  `blackvue.export.media.encode_frame_sequence()`, since gsensor_video.py
+  needed the identical logic - `map_video.py` now calls it too, no
+  behavior change there (existing map tests still pass unmodified).
+
+Tested (23 new tests: 5 `test_gsensor_render`, 8 `test_gsensor_video`, 3
+wiring tests in `test_trip_export`, 2 CLI flag tests in `test_bv_export`) -
+real ffmpeg encoding exercised end-to-end, plus a rendered frame visually
+sanity-checked (dot, trail, rings, timestamp all present as expected). Not
+yet confirmed against Christer's real archive - only unit-tested with
+synthetic g-sensor data so far.
+
+---
+
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
 
 Christer noticed on his real archive: the merged `trip.srt` ran a couple of
