@@ -695,6 +695,188 @@ def test_stack_applies_bitrate_only_to_the_final_combine_call(
     ) == 1
 
 
+def test_parse_bitrate_bps_handles_k_and_m_suffixes():
+    assert stitch_module._parse_bitrate_bps("256k") == 256_000
+    assert stitch_module._parse_bitrate_bps("256K") == 256_000
+    assert stitch_module._parse_bitrate_bps("2M") == 2_000_000
+    assert stitch_module._parse_bitrate_bps("2m") == 2_000_000
+    assert stitch_module._parse_bitrate_bps("1500000") == 1_500_000
+
+
+def test_parse_bitrate_bps_returns_none_for_unparseable_values():
+    assert stitch_module._parse_bitrate_bps("not-a-number") is None
+    assert stitch_module._parse_bitrate_bps("") is None
+
+
+def test_video_bitrate_reads_a_real_files_container_bit_rate(tmp_path):
+    video = tmp_path / "video.mp4"
+    _make_video(video, 320, 240)
+
+    bit_rate = stitch_module._video_bitrate(video)
+
+    assert bit_rate is not None
+    assert bit_rate > 0
+
+
+def test_video_bitrate_returns_none_for_an_unreadable_file(tmp_path):
+    not_a_video = tmp_path / "not_a_video.mp4"
+    not_a_video.write_text("garbage")
+
+    assert stitch_module._video_bitrate(not_a_video) is None
+
+
+def _fake_intermediate_bitrates(front_bps, rear_bps):
+    def fake_video_bitrate(path):
+        return {"front.mp4": front_bps, "rear.mp4": rear_bps}[path.name]
+
+    return fake_video_bitrate
+
+
+def test_stack_caps_bitrate_to_the_sum_of_the_two_intermediates_bitrates(
+    tmp_path, monkeypatch
+):
+    # The whole point of the cap: a requested bitrate way above what
+    # the two (already resolution/bitrate-reduced) intermediates
+    # actually carry can't recover detail that isn't there anymore -
+    # capped to the sum of their real bitrates instead, with a warning
+    # explaining why.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    monkeypatch.setattr(
+        stitch_module, "_video_bitrate",
+        _fake_intermediate_bitrates(500_000, 300_000),
+    )
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    warnings: list[str] = []
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", bitrate="5M", warnings=warnings,
+    )
+
+    # 500_000 + 300_000 = 800_000 bps ceiling, well under the
+    # requested 5_000_000 (5M) - the final combine call should be
+    # capped to the sum, not the original request.
+    final_call = captured_extra_codec_args[-1]
+    assert final_call == [
+        "-b:v", "800000", "-maxrate", "800000", "-bufsize", "800000",
+    ]
+    assert len(warnings) == 1
+    assert "5M" in warnings[0]
+    assert "800k" in warnings[0]
+
+
+def test_stack_does_not_cap_bitrate_when_already_below_the_ceiling(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    monkeypatch.setattr(
+        stitch_module, "_video_bitrate",
+        _fake_intermediate_bitrates(500_000, 300_000),
+    )
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    warnings: list[str] = []
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", bitrate="256k", warnings=warnings,
+    )
+
+    final_call = captured_extra_codec_args[-1]
+    assert final_call == [
+        "-b:v", "256k", "-maxrate", "256k", "-bufsize", "256k",
+    ]
+    assert warnings == []
+
+
+def test_stack_skips_the_bitrate_cap_when_intermediate_bitrate_unknown(
+    tmp_path, monkeypatch
+):
+    # Never worth failing (or even warning about) the export over -
+    # if either intermediate's bitrate can't be determined, the
+    # requested bitrate just flows through untouched.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    monkeypatch.setattr(stitch_module, "_video_bitrate", lambda path: None)
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    warnings: list[str] = []
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", bitrate="5M", warnings=warnings,
+    )
+
+    final_call = captured_extra_codec_args[-1]
+    assert final_call == ["-b:v", "5M", "-maxrate", "5M", "-bufsize", "5M"]
+    assert warnings == []
+
+
+def test_stack_skips_bitrate_probing_when_no_bitrate_requested(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    probe_calls = []
+
+    def fake_video_bitrate(path):
+        probe_calls.append(path)
+        return 1
+
+    monkeypatch.setattr(stitch_module, "_video_bitrate", fake_video_bitrate)
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="side_by_side")
+
+    assert probe_calls == []
+
+
 def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", None)
 

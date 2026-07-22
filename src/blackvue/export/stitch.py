@@ -82,6 +82,7 @@ def stitch_cameras(
     resolution: tuple[int, int] | None = None,
     bitrate: str | None = None,
     debug: bool = False,
+    warnings: list[str] | None = None,
 ) -> Path | None:
     """Compose a trip's front/rear footage into one video at
     `destination`.
@@ -137,13 +138,27 @@ def stitch_cameras(
     `debug=True` prints which decode method (nvdec or cpu) was
     attempted, whether it succeeded or fell back, and how long that
     ffmpeg call took, to stderr - see bv_export.py's --debug flag.
+
+    When both front and rear exist, a requested `bitrate` is also
+    checked against a ceiling: the two intermediates hstack/vstack
+    actually combines (see _stack()) are already resolution- and
+    bitrate-reduced from the original source, so they're the true
+    information ceiling for the final combine - not the original
+    cameras' own native bitrates, which the final pass never sees
+    again. A `bitrate` request above the sum of the two intermediates'
+    own actual bitrates is silently spending bits the encoder can't
+    use to recover detail that was already discarded upstream - capped
+    to that sum instead, with a message appended to `warnings` (if
+    given) explaining the cap. Skipped entirely (no probing, no
+    warning) if `bitrate` is None, or if either intermediate's own
+    bitrate can't be determined.
     """
 
     if front is not None and rear is not None:
         return _stack(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
-            debug=debug,
+            debug=debug, warnings=warnings,
         )
 
     only = front or rear
@@ -189,6 +204,61 @@ def _video_dimensions(path: Path) -> tuple[int, int]:
         raise MediaToolError(
             f"could not parse ffprobe output for {path.name}"
         ) from exc
+
+
+def _video_bitrate(path: Path) -> int | None:
+    """Return `path`'s own container-level bit rate in bits/second, or
+    None if ffprobe can't report one (a very short clip, an unusual
+    container, etc.) - used by _stack() to work out a sensible ceiling
+    for a requested --stitch-bitrate, never to fail the export over.
+
+    Deliberately not raising MediaToolError here (unlike
+    _video_dimensions()) - a missing bitrate just means skipping the
+    ceiling check, not aborting the whole stitch.
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=bit_rate",
+                "-of", "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    try:
+        return int(json.loads(result.stdout)["format"]["bit_rate"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _parse_bitrate_bps(value: str) -> int | None:
+    """Parse an ffmpeg-style bitrate string ("256k", "2M", "1500000")
+    into plain bits/second, or None if it doesn't parse - used to
+    compare a requested --stitch-bitrate against a computed ceiling.
+    Mirrors ffmpeg's own suffix convention (k/K = x1000, m/M = x1e6).
+    """
+
+    value = value.strip()
+    multiplier = 1
+
+    if value and value[-1] in "kK":
+        multiplier = 1_000
+        value = value[:-1]
+    elif value and value[-1] in "mM":
+        multiplier = 1_000_000
+        value = value[:-1]
+
+    try:
+        return int(float(value) * multiplier)
+    except ValueError:
+        return None
 
 
 def _bitrate_args(bitrate: str | None) -> list[str]:
@@ -576,6 +646,7 @@ def _stack(
     resolution: tuple[int, int] | None,
     bitrate: str | None,
     debug: bool = False,
+    warnings: list[str] | None = None,
 ) -> Path:
     if layout not in STACK_LAYOUTS:
         raise ValueError(
@@ -656,6 +727,38 @@ def _stack(
             front_future.result()
             rear_future.result()
 
+        # A requested `bitrate` is capped to the sum of the two
+        # intermediates' own actual bitrates, not the original
+        # cameras' native bitrates - the final combine pass never sees
+        # the originals again, only these already-reduced
+        # intermediates, so that's the real information ceiling. Sum,
+        # not the higher of the two: both intermediates are already
+        # scaled to roughly the same size (see _ideal_shared_dimension()
+        # above), so the composite has roughly double the pixel area of
+        # either one alone - capping at just one intermediate's bitrate
+        # would spread that same budget over twice the pixels, likely
+        # looking worse than either intermediate on its own. Skipped
+        # entirely if no bitrate was requested, or if either
+        # intermediate's own bitrate can't be determined (never worth
+        # failing the export over).
+        effective_bitrate = bitrate
+        if bitrate is not None:
+            front_bps = _video_bitrate(front_decoded)
+            rear_bps = _video_bitrate(rear_decoded)
+            requested_bps = _parse_bitrate_bps(bitrate)
+
+            if front_bps is not None and rear_bps is not None:
+                ceiling_bps = front_bps + rear_bps
+                if requested_bps is not None and requested_bps > ceiling_bps:
+                    effective_bitrate = str(ceiling_bps)
+                    if warnings is not None:
+                        warnings.append(
+                            f"stitch: requested bitrate {bitrate} exceeds "
+                            "the two intermediates' combined bitrate "
+                            f"(~{ceiling_bps // 1000}k) - capped to that "
+                            "instead"
+                        )
+
         # The expensive part - decoding the original source footage -
         # is already done above. Both intermediates are already
         # CPU-readable and already matched on the one axis
@@ -681,7 +784,7 @@ def _stack(
                 "-map", f"[{output_label}]",
             ],
             destination,
-            extra_codec_args=_bitrate_args(bitrate),
+            extra_codec_args=_bitrate_args(effective_bitrate),
         )
 
     return destination
