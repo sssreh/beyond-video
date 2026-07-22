@@ -157,10 +157,16 @@ def transcribe(
     try:
         raw_segments, info = model.transcribe(str(source), language=language)
 
+        # faster-whisper decodes in fixed-size chunks internally, so
+        # the last segment's end timestamp can land slightly past the
+        # audio's real length (info.duration, which faster-whisper
+        # measures from the same decode) - clamp both ends so nothing
+        # downstream (trip.srt in particular) ever runs longer than
+        # the source it was transcribed from.
         segments = tuple(
             SpeechSegment(
-                start=raw_segment.start,
-                end=raw_segment.end,
+                start=min(raw_segment.start, info.duration),
+                end=min(raw_segment.end, info.duration),
                 text=raw_segment.text.strip(),
             )
             for raw_segment in raw_segments
