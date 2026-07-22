@@ -29,6 +29,41 @@ def _escape_concat_path(path: Path) -> str:
     return str(path).replace("'", "'\\''")
 
 
+def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
+    """Encode a directory of frame_%06d.png images (map_video.py,
+    gsensor_video.py) into a video at `destination`, in order, at
+    `fps` frames/second.
+
+    Shared so every "render a frame sequence, hand it to ffmpeg"
+    overlay video uses the same encode settings and error handling.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-framerate", str(fps),
+                "-i", str(frame_dir / "frame_%06d.png"),
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg encode failed for {destination.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc
+
+
 def concatenate_media(sources: list[Path], destination: Path) -> None:
     """Concatenate video or audio files, in order, into `destination`
     via ffmpeg's concat demuxer, copying streams without re-encoding.

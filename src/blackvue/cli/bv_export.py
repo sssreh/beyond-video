@@ -57,6 +57,7 @@ def bv_export(
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     render_map: bool = False,
+    render_gsensor: bool = False,
     overwrite: bool = False,
     dry_run: bool = False,
 ) -> int:
@@ -159,6 +160,7 @@ def bv_export(
                 folder,
                 render_map=render_map,
                 map_cache_dir=map_cache_dir,
+                render_gsensor=render_gsensor,
             )
         except MediaToolError as exc:
             print(f"bv-export: {trip.label}: {exc}", file=sys.stderr)
@@ -169,7 +171,7 @@ def bv_export(
             written_path
             for written_path in (
                 result.front_video, result.rear_video, result.audio,
-                result.gpx, result.gsensor, result.map,
+                result.gpx, result.gsensor, result.map, result.gsensor_video,
                 result.srt, result.lrc,
             )
             if written_path is not None
@@ -305,6 +307,18 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--gsensor-video",
+        dest="render_gsensor",
+        action="store_true",
+        help=(
+            "Also render gsensor.mp4: a dot moving around a gauge, "
+            "tracking the trip's g-sensor (x, y) readings with a "
+            "short fading trail. No network involved, but off by "
+            "default - it adds real render time per trip."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -339,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         render_map=args.render_map,
+        render_gsensor=args.render_gsensor,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
     ))

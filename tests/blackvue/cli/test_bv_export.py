@@ -370,6 +370,57 @@ def test_bv_export_a_later_plain_export_keeps_an_earlier_maps_map_video(
     )
 
 
+def test_bv_export_gsensor_video_flag_renders_gsensor_video(tmp_path):
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+    from blackvue.telemetry.gsensor_reader import write_gsensor
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    from datetime import timedelta
+
+    write_gsensor(
+        (
+            GSensorSample(offset=timedelta(seconds=0), x=0, y=0, z=900),
+            GSensorSample(offset=timedelta(seconds=1), x=200, y=-100, z=950),
+        ),
+        archive / "20260720_100000_N.3gf",
+    )
+
+    exit_code = bv_export(str(archive), target=str(target), render_gsensor=True)
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    assert (folder / "gsensor.mp4").exists()
+
+
+def test_bv_export_without_gsensor_video_flag_writes_no_video(tmp_path):
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+    from blackvue.telemetry.gsensor_reader import write_gsensor
+    from datetime import timedelta
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    write_gsensor(
+        (
+            GSensorSample(offset=timedelta(seconds=0), x=0, y=0, z=900),
+            GSensorSample(offset=timedelta(seconds=1), x=200, y=-100, z=950),
+        ),
+        archive / "20260720_100000_N.3gf",
+    )
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    assert not (folder / "gsensor.mp4").exists()
+
+
 def test_bv_export_merges_srt_across_a_trip(tmp_path):
     from blackvue.generate.speech import SpeechSegment
     from blackvue.generate.subtitles import format_srt

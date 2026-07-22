@@ -1,4 +1,6 @@
 from .gpx_writer import write_gpx
+from .gsensor_video import interpolate_sample
+from .gsensor_video import render_gsensor_video
 from .map_render import render_frame
 from .map_video import interpolate_position
 from .map_video import render_map_video
@@ -25,11 +27,13 @@ __all__ = [
     "fetch_roads",
     "folder_name_for_trip",
     "interpolate_position",
+    "interpolate_sample",
     "load_or_fetch_roads",
     "merge_lrc",
     "merge_srt",
     "merge_text_assets",
     "render_frame",
+    "render_gsensor_video",
     "render_map_video",
     "write_gpx",
 ]
