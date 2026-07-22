@@ -1814,20 +1814,39 @@ annoying failure for "assemble one holiday video."
    for a real front-4K/rear-1080p size mismatch. Full suite green (378
    passed, up from 375).
 
-Immediate next step: get a fresh two-camera `--debug` run from Christer
-with both fixes in place - front should now show `decode=nvdec` actually
-succeeding (not failing in 0.5s), and rear's decode time should drop
-sharply now that it's targeting 720p instead of ~2160p. If the "single-
-process filtergraph serializes hardware-decoded inputs" theory is right,
-the stitch phase should land close to max(front, rear) decode time plus a
-now-cheap final combine pass, well under the 173.8s/230.8s/276.2s numbers
-so far. If it does, NVDEC becomes a clear win across the board and this
-investigation (item 58 in the task list) is closed. If it still doesn't
-land near expectations, there's some other bottleneck not yet identified,
-and reverting NVDEC for --stitch specifically becomes the fallback plan.
-Separately, confirm `--map` against a real archive (real Overpass query,
-real GPS data, see item 4's caveat above) - then continue `--stitch` per
-the spec above, in order: the map-panel aspect-ratio work, then g-sensor
-overlay placement, then subtitle burn-in, then `rearview_mirror`, then the
-auto-pick-from-trip-geometry layer on top once the individual pieces work
-with explicit flags.
+   **Investigation closed: both bugs fixed, NVDEC is now a clear win on
+   the two-camera path too (confirmed on Christer's real archive).**
+   Same command, both fixes in place: `rear.mp4 decode=nvdec succeeded
+   in 18.7s`, `front.mp4 decode=nvdec succeeded in 41.5s`, stitch phase
+   55.6s total - both cameras landing close to their earlier solo
+   baselines (front 38.5s solo, rear 17.0s solo), confirming they're
+   now genuinely overlapping with none of the earlier waste. 55.6s is
+   ~5x faster than the original single-process NVDEC attempt (276.2s),
+   ~4.2x faster than the shared-device-only attempt (230.8s), and
+   ~2.7x faster than the original CPU-only baseline this whole
+   investigation started from (~148s, implied). The two-process decode
+   architecture plus both filter-graph bug fixes are the complete
+   answer to why the first NVDEC attempt (task 57) made a real run
+   slower instead of faster.
+
+Summary of the full investigation, for anyone reading this later without
+wanting to dig through every follow-up above: NVDEC decode is a genuine
+win for `--stitch`, but only once (a) both hardware-decoded camera inputs
+are decoded in separate ffmpeg processes rather than one process with two
+`-hwaccel cuda` inputs (ffmpeg's filter graph engine serializes hardware-
+decoded frame handling across simultaneous inputs within a single
+process - confirmed by a controlled concurrent-vs-combined test on real
+footage, not just theory), and (b) each camera's intermediate is scaled
+toward the actual requested output resolution rather than matched to the
+other camera's full native size first. Two filter-graph syntax bugs (a
+prefix-ordering mistake and a trailing-comma mistake, both in branches
+that real usage hadn't exercised until this investigation forced them
+open) were found and fixed along the way, each initially misread as "NVDEC
+unavailable" until the timing was too fast to be a real decode attempt.
+
+Immediate next step: confirm `--map` against a real archive (real Overpass
+query, real GPS data, see item 4's caveat above) - then continue `--stitch`
+per the spec above, in order: the map-panel aspect-ratio work, then
+g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
+then the auto-pick-from-trip-geometry layer on top once the individual
+pieces work with explicit flags.
