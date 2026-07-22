@@ -556,6 +556,56 @@ background with no timestamp, dot/trail/rings still clearly legible.
 
 ---
 
+## map.mp4: rotating direction arrow, optional custom icon (done, this session)
+
+Christer asked whether a car icon instead of the plain position dot would be
+a good idea (yes - rotated to match direction of travel, it conveys more
+than a static dot) and whether it would cost much render time (no -
+negligible next to the existing per-frame PNG write and final ffmpeg
+encode, which dominate). Asked which to build first; chose the arrow now,
+with the option to try a custom car image later.
+
+- `map_video._interpolate_course(a, b, t)`: circular interpolation between
+  two compass courses (0-360 degrees, from the GPS fix's existing `course`
+  field, previously unused) - a plain linear interpolation breaks at the
+  0/360 wraparound (350 -> 10 degrees is a 20-degree turn through north,
+  not a 340-degree turn back through 180). Falls back to whichever course
+  is present if one fix's is `None` (empty in the raw NMEA data). Folds a
+  floating-point edge case (result landing on exactly `360.0` instead of
+  `0.0`) back to `0.0`.
+- `interpolate_position()` now returns `(lat, lon, speed_kmh, course)`
+  instead of a 3-tuple - a breaking change to this function's signature,
+  updated at its one caller (`render_map_video()`) and in tests.
+- `map_render._arrow_points(center, heading_degrees, ...)`: returns the 3
+  corners of a triangle pointing at `heading_degrees`, computed directly
+  with trig (no image asset, consistent with everything else this module
+  draws) - cheap enough per frame to be a non-issue.
+- `render_frame()` gained `heading` and `marker_image` params: draws the
+  arrow when `heading` is given, a custom image (rotated via
+  `Image.rotate()`, RGBA alpha-pasted) when `marker_image` is given
+  instead, or the original plain dot when neither is available (e.g. a
+  single-fix/stationary trip with no course to point at) - so existing
+  behavior is unchanged for callers that don't pass either.
+- New `bv-export --map-icon PATH`: loads a custom image once per trip (not
+  per frame) via `render_map_video(..., marker_image_path=...)`, threaded
+  through `export_trip(..., map_icon=...)`. A bad path raises
+  `MediaToolError`, degrading to a warning through the same path
+  `--map`'s other failure modes already use - the rest of the trip's
+  export still succeeds. Christer doesn't have a car image yet; he'll
+  supply his own PNG (transparency recommended, drawn pointing "up"/north
+  in its own file) when he wants to try it.
+
+Tested (12 new tests across `test_map_render`/`test_map_video`, plus 2 map
+wiring tests in `test_trip_export` and 1 CLI flag test in `test_bv_export`):
+arrow geometry at known headings (0/90 degrees), course-interpolation
+wraparound and None-fallback, custom-icon loading/rotation/paste (verified
+pixel-exact at heading 0, where no rotation should occur), and the missing-
+icon-file warning path. Full suite green (281 passed). Also visually
+confirmed via two rendered frames (heading 45 and 180) that the arrow
+points the correct real-world direction, not just a plausible-looking one.
+
+---
+
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
 
 Christer noticed on his real archive: the merged `trip.srt` ran a couple of

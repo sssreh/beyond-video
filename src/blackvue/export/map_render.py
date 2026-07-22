@@ -10,6 +10,10 @@ scaled by cos(mean latitude)); a full Mercator projection would be
 overkill at the scale a single driving trip covers and adds
 complexity for no visible benefit.
 
+The current-position marker is an arrow rotated to the GPS course
+over ground by default, or a custom image (also rotated) when one is
+supplied (bv-export --map-icon) - see render_frame()'s docstring.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -32,11 +36,15 @@ ROAD_COLOR = (200, 196, 188)
 ROUTE_COLOR = (230, 57, 70)
 POSITION_DOT_COLOR = (230, 57, 70)
 POSITION_DOT_OUTLINE = (255, 255, 255)
+MARKER_FILL_COLOR = (230, 57, 70)
+MARKER_OUTLINE_COLOR = (255, 255, 255)
 TEXT_COLOR = (40, 40, 40)
 
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 640
 DEFAULT_MARGIN_PX = 24
+DEFAULT_MARKER_LENGTH_PX = 16
+DEFAULT_MARKER_HALF_WIDTH_PX = 8
 
 _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -77,6 +85,55 @@ def _project(
     return x, y
 
 
+def _arrow_points(
+    center: tuple[float, float],
+    heading_degrees: float,
+    *,
+    length: float = DEFAULT_MARKER_LENGTH_PX,
+    half_width: float = DEFAULT_MARKER_HALF_WIDTH_PX,
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Return the 3 corners of a triangle pointing at `heading_degrees`
+    (compass degrees, clockwise from north/"up") centered on `center`.
+    """
+
+    angle = math.radians(heading_degrees)
+    # Screen coords: +x is east (right), +y is south (down) - up (north,
+    # heading 0) is therefore -y.
+    dx, dy = math.sin(angle), -math.cos(angle)
+    # 90-degrees-clockwise perpendicular of (dx, dy), for the two back
+    # corners either side of the nose.
+    px, py = -dy, dx
+
+    cx, cy = center
+    nose = (cx + dx * length, cy + dy * length)
+    back_x, back_y = cx - dx * length * 0.6, cy - dy * length * 0.6
+    left = (back_x - px * half_width, back_y - py * half_width)
+    right = (back_x + px * half_width, back_y + py * half_width)
+
+    return (nose, right, left)
+
+
+def _paste_marker_image(
+    image: Image.Image,
+    marker_image: Image.Image,
+    center: tuple[float, float],
+    heading_degrees: float | None,
+) -> None:
+    """Rotate `marker_image` (expected to point "up"/north in its own
+    file, RGBA so its own alpha channel can serve as the paste mask)
+    to `heading_degrees` and paste it centered on `center`.
+
+    PIL rotates counter-clockwise for a positive angle; compass
+    heading is clockwise from north, so the rotation angle is negated.
+    """
+
+    angle = -(heading_degrees or 0.0)
+    rotated = marker_image.rotate(angle, expand=True, resample=Image.BICUBIC)
+    x = int(center[0] - rotated.width / 2)
+    y = int(center[1] - rotated.height / 2)
+    image.paste(rotated, (x, y), rotated)
+
+
 def render_frame(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
@@ -84,14 +141,24 @@ def render_frame(
     position: tuple[float, float] | None,
     *,
     speed_kmh: float | None = None,
+    heading: float | None = None,
+    marker_image: Image.Image | None = None,
     timestamp_text: str | None = None,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
 ) -> Image.Image:
     """Render one map-overlay frame: background roads, the route
-    driven so far, a position dot, and an optional speed/timestamp
-    text overlay in the corner."""
+    driven so far, a position marker, and an optional speed/timestamp
+    text overlay in the corner.
+
+    The position marker is an arrow rotated to `heading` (compass
+    degrees, clockwise from north) when `heading` is given, `marker_image`
+    (a custom RGBA image, also rotated to `heading`) when that's given
+    instead, or a plain dot when neither is available (e.g. a
+    single-fix/stationary trip with no course data to point an arrow
+    in).
+    """
 
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
@@ -109,14 +176,26 @@ def render_frame(
         draw.line(pixels, fill=ROUTE_COLOR, width=4, joint="curve")
 
     if position is not None:
-        x, y = proj(*position)
-        radius = 7
-        draw.ellipse(
-            (x - radius, y - radius, x + radius, y + radius),
-            fill=POSITION_DOT_COLOR,
-            outline=POSITION_DOT_OUTLINE,
-            width=2,
-        )
+        point = proj(*position)
+
+        if marker_image is not None:
+            _paste_marker_image(image, marker_image, point, heading)
+        elif heading is not None:
+            draw.polygon(
+                _arrow_points(point, heading),
+                fill=MARKER_FILL_COLOR,
+                outline=MARKER_OUTLINE_COLOR,
+                width=2,
+            )
+        else:
+            x, y = point
+            radius = 7
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill=POSITION_DOT_COLOR,
+                outline=POSITION_DOT_OUTLINE,
+                width=2,
+            )
 
     lines = [line for line in (timestamp_text, _speed_text(speed_kmh)) if line]
     if lines:

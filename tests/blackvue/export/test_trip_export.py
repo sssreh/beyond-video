@@ -245,6 +245,56 @@ def test_export_trip_render_map_warns_instead_of_failing_on_fetch_error(
     assert result.gpx is not None
 
 
+def test_export_trip_render_map_uses_a_custom_icon_when_given(
+    tmp_path, monkeypatch
+):
+    from PIL import Image
+
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    icon_path = tmp_path / "car.png"
+    Image.new("RGBA", (16, 16), (0, 0, 255, 255)).save(icon_path)
+
+    result = export_trip(trip, dest_dir, render_map=True, map_icon=icon_path)
+
+    assert result.map == dest_dir / "map.mp4"
+    assert result.map.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_render_map_warns_instead_of_failing_on_a_bad_icon_path(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir)
+
+    result = export_trip(
+        trip,
+        dest_dir,
+        render_map=True,
+        map_icon=tmp_path / "does-not-exist.png",
+    )
+
+    assert result.map is None
+    assert len(result.warnings) == 1
+    assert "map" in result.warnings[0]
+    # The rest of the export still succeeded despite the bad icon path.
+    assert result.gpx is not None
+
+
 def _trip_with_gsensor_samples(source_dir):
     gsensor_a = source_dir / "a.3gf"
     gsensor_a.write_bytes(

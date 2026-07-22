@@ -329,6 +329,43 @@ def test_bv_export_map_flag_renders_map_video_with_a_real_route(
     assert (folder / "map.mp4").exists()
 
 
+def test_bv_export_map_icon_flag_uses_a_custom_marker_image(tmp_path, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    _write_gps(
+        archive / "20260720_100010_N.gps",
+        1784555911000, "5918.94615", "N", "01806.17070", "E",
+    )
+
+    icon_path = tmp_path / "car.png"
+    Image.new("RGBA", (16, 16), (0, 0, 255, 255)).save(icon_path)
+
+    exit_code = bv_export(
+        str(archive),
+        target=str(target),
+        render_map=True,
+        map_icon=str(icon_path),
+    )
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100010"
+    assert (folder / "map.mp4").exists()
+
+
 def test_bv_export_a_later_plain_export_keeps_an_earlier_maps_map_video(
     tmp_path, monkeypatch
 ):
