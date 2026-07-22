@@ -1878,14 +1878,24 @@ confirming the `out_height`/`out_width` cap kicks in rather than ever
 producing an intermediate bigger than the final frame. Full suite green
 (381 passed, up from 378).
 
-Immediate next step: get one more `--debug` run from Christer with this
-in place - the two decode times should each drop further still (roughly
-proportional to the pixel-count reduction, ~4x fewer pixels per
-intermediate), and confirm the final combine pass got noticeably cheaper
-too now that it has much less work to re-shrink. Then: confirm `--map`
-against a real archive (real Overpass query, real GPS data, see item 4's
-caveat above) - then continue `--stitch` per the spec above, in order: the
-map-panel aspect-ratio work, then g-sensor overlay placement, then
-subtitle burn-in, then `rearview_mirror`, then the
-auto-pick-from-trip-geometry layer on top once the individual pieces work
-with explicit flags.
+Confirmed on Christer's real archive: rear 16.3s, front 40.5s, stitch phase
+54.4s - essentially unchanged from the 55.6s before this fix (~2%
+faster), not the further big drop expected from a ~4x pixel-count
+reduction in the intermediate. Conclusion: decode time is dominated by
+reading the *source* footage at its own native 4K/1080p resolution, not
+by how large the intermediate encoded afterward is - NVENC's encode side
+is fast enough on this hardware that shrinking the intermediate target
+barely shows up in wall-clock time. The fix was still worth making (no
+more wasted oversized intermediates, cleaner/more correct design), just
+not where the remaining time actually goes. With two stable runs now
+landing in the 54-56s range (down from the original 276.2s, ~5.1x), this
+investigation is considered settled - no further NVDEC/--stitch
+performance work planned unless a new real-world number suggests
+otherwise.
+
+Immediate next step: confirm `--map` against a real archive (real Overpass
+query, real GPS data, see item 4's caveat above) - then continue `--stitch`
+per the spec above, in order: the map-panel aspect-ratio work, then
+g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
+then the auto-pick-from-trip-geometry layer on top once the individual
+pieces work with explicit flags.
