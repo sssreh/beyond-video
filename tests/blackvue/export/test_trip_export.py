@@ -308,3 +308,51 @@ def test_export_trip_skips_srt_lrc_when_no_recording_has_them(tmp_path):
     assert result.lrc is None
     assert not (dest_dir / "trip.srt").exists()
     assert not (dest_dir / "trip.lrc").exists()
+
+
+def test_export_trip_pads_srt_lrc_to_match_the_real_video_length(tmp_path):
+    # Christer's real-world case: the last stretch of a trip is quiet,
+    # so Whisper's segments (and the resulting .srt/.lrc) end well
+    # before the video actually does. export_trip() should pad the
+    # merged subtitle files out to the concatenated video's real
+    # (ffprobe-measured) length.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    video_path = source_dir / "front.mp4"
+    _make_video(video_path, duration_seconds=5.0)
+
+    srt_path = source_dir / "a.srt"
+    srt_path.write_text(
+        format_srt((SpeechSegment(0.0, 1.0, "hello"),))
+    )
+    lrc_path = source_dir / "a.lrc"
+    lrc_path.write_text(
+        format_lrc((SpeechSegment(0.0, 0.0, "hello"),))
+    )
+
+    recording = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={
+            Asset.FRONT: AssetFile(Asset.FRONT, video_path),
+            Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_path),
+            Asset.LYRICS: AssetFile(Asset.LYRICS, lrc_path),
+        },
+    )
+    trip = Trip((recording,))
+
+    result = export_trip(trip, dest_dir)
+
+    srt_text = result.srt.read_text()
+    assert "hello" in srt_text
+    # A second, empty cue was appended ending at (approximately) the
+    # video's real 5s length - not stopping at 1s where "hello" ended.
+    assert "\n2\n" in srt_text
+    assert "--> 00:00:05,000" in srt_text
+
+    lrc_text = result.lrc.read_text()
+    lines = lrc_text.splitlines()
+    assert lines[0] == "[00:00.00] hello"
+    assert len(lines) == 2
+    assert lines[1].startswith("[00:0")  # padding line near the 5s mark

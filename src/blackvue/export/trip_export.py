@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..archive.asset import Asset
 from ..generate.media import MediaToolError
+from ..generate.media import probe
 from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
 from ..telemetry.gsensor_reader import read_gsensor
@@ -210,14 +211,29 @@ def export_trip(
         out.write_text(merged, encoding="utf-8")
         text_paths.append(out)
 
+    # Whisper only emits segments for actual speech, so a trip with a
+    # quiet stretch at the end (nobody talking for the last couple of
+    # minutes, say) produces a merged subtitle file that stops well
+    # before the video does. Probing the actual concatenated video
+    # bv-export just wrote - not summing recordings' own .duration.txt
+    # files, which may not all exist - gives merge_srt()/merge_lrc()
+    # the real length to pad the trailing cue out to.
+    video_duration_seconds = None
+    video_for_duration = front_video or rear_video
+    if video_for_duration is not None:
+        try:
+            video_duration_seconds = probe(video_for_duration).duration_seconds
+        except MediaToolError as exc:
+            warnings.append(f"subtitle padding: {exc}")
+
     srt_path = None
-    merged_srt = merge_srt(trip)
+    merged_srt = merge_srt(trip, total_duration_seconds=video_duration_seconds)
     if merged_srt is not None:
         srt_path = destination / "trip.srt"
         srt_path.write_text(merged_srt + "\n", encoding="utf-8")
 
     lrc_path = None
-    merged_lrc = merge_lrc(trip)
+    merged_lrc = merge_lrc(trip, total_duration_seconds=video_duration_seconds)
     if merged_lrc is not None:
         lrc_path = destination / "trip.lrc"
         lrc_path.write_text(merged_lrc + "\n", encoding="utf-8")
