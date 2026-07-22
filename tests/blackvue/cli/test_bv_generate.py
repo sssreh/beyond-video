@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -1007,3 +1008,104 @@ def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
     assert (
         translation_path.read_text() == "already translated, from an earlier run"
     )
+
+
+def test_run_reports_no_recordings_found_for_an_empty_archive(
+    tmp_path, capsys
+):
+    args = parse_args([str(tmp_path), "--extract-audio"])
+
+    exit_code = bv_generate.run(args)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert "no recordings found" in out
+    assert str(tmp_path) in out
+
+
+def test_overwrite_decision_asks_once_and_caches_the_answer(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    decision = bv_generate._OverwriteDecision()
+
+    first = decision(Path("a.txt"))
+    second = decision(Path("b.txt"))
+
+    assert first is True
+    assert second is True
+
+
+def test_overwrite_decision_only_calls_input_once(monkeypatch):
+    calls = []
+
+    def fake_input(prompt):
+        calls.append(prompt)
+        return "n"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    decision = bv_generate._OverwriteDecision()
+    decision(Path("a.txt"))
+    decision(Path("b.txt"))
+    decision(Path("c.txt"))
+
+    assert len(calls) == 1
+
+
+def test_should_write_for_shares_one_overwrite_decision_across_calls(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bv_generate, "_interactive", lambda: True)
+
+    calls = []
+
+    def fake_input(prompt):
+        calls.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    first_file = tmp_path / "first.txt"
+    first_file.write_text("existing")
+    second_file = tmp_path / "second.txt"
+    second_file.write_text("existing")
+
+    args = _base_args()
+    args.overwrite_decision = bv_generate._OverwriteDecision()
+
+    first_result = bv_generate._should_write_for(first_file, args)
+    second_result = bv_generate._should_write_for(second_file, args)
+
+    assert first_result is True
+    assert second_result is True
+    assert len(calls) == 1, "should only prompt once for the whole run"
+
+
+def test_should_write_for_falls_back_to_asking_every_time_without_a_decision(
+    tmp_path, monkeypatch
+):
+    # No args.overwrite_decision set (e.g. a direct call site that
+    # predates the shared-decision mechanism) - falls back to the
+    # old per-call prompt behaviour rather than crashing.
+    monkeypatch.setattr(bv_generate, "_interactive", lambda: True)
+
+    calls = []
+
+    def fake_input(prompt):
+        calls.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    a_file = tmp_path / "a.txt"
+    a_file.write_text("existing")
+    b_file = tmp_path / "b.txt"
+    b_file.write_text("existing")
+
+    args = _base_args()
+
+    bv_generate._should_write_for(a_file, args)
+    bv_generate._should_write_for(b_file, args)
+
+    assert len(calls) == 2
