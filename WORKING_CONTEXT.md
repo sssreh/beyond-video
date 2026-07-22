@@ -548,53 +548,100 @@ annoying failure for "assemble one holiday video."
    (picking a mapping/tile approach, image/video generation) rather than
    more file merging.
 
-4. **Map-overlay video rendering (future, scoped but not started).** Render
-   a video overlaying position/speed/other telemetry on a map, to be
-   composited into each trip's export folder alongside the concatenated
-   front/rear video. Nothing built yet - only the data it would consume
-   exists (`trip.gpx`: lat/lon/timestamp/speed/course per fix, merged
-   across a trip by `bv-export`). Scoping notes from a design discussion
-   this session, for whenever this gets picked up:
+4. **Map-overlay video rendering (done, this session).** Renders `map.mp4`
+   for a trip: route driven so far, a moving position dot, and a
+   speed/timestamp text overlay, on a real street-level basemap. Opt-in via
+   `bv-export --map` (off by default - see below for why).
 
-   - **Mechanics (low-risk, not the hard part).** GPS fixes land roughly
-     once a second, so frames need interpolated position/speed between
-     consecutive fixes for smooth motion, not a jump once a second. Natural
-     approach given how much this project already leans on ffmpeg: render
-     each frame as an image (route line, moving position dot, a
-     speed/name/timestamp text overlay) with something like Pillow or
-     matplotlib, then hand the frame sequence to ffmpeg to encode into
-     `map.mp4`. Frame timestamps need to line up with the trip's real
-     timeline so the result can later sit next to the front/rear footage in
-     `--stitch` (item 5).
-   - **The real fork: what "map" means here.** Two live options, not yet
-     decided:
-     - *No basemap* - just plot the GPS route as an abstract line with a
-       moving dot and text overlay. Zero external data, zero network
-       dependency ever, fits the offline/private philosophy perfectly.
-       Doesn't look like an actual map - no roads or place context, just a
-       shape.
-     - *Real street-level basemap* - what "map" probably means for a
-       driving trip. Needs real map tile imagery from somewhere - either a
-       one-time cached fetch per region (similar in spirit to how
-       `bv-lang install` caches a translation model once, then works
-       offline after) or bundling something. This is the option in tension
-       with "not silently calling a cloud maps API" - it wouldn't be
-       silent, but it would need at least one moment of reaching out for
-       tiles, unless Christer supplies map data himself.
-     - *Ruled out*: a bundled low-detail vector basemap (coastlines/country
-       borders, no tile server, fully offline) was considered and rejected
-       - at driving-trip zoom it only shows "somewhere in Sweden," not
-       useful context for a dashcam trip.
-   - Decision needed before implementation starts: abstract route-line
-     (simple, fully local, could ship today) vs. real street map (needs a
-     tile-source decision first).
+   **Why not tile.openstreetmap.org, or a commercial tile API.** Before
+   writing any code, checked the actual usage terms rather than assuming -
+   good thing, since the original plan ("cache tiles per region, render
+   offline after") turns out to violate both options' terms, not just be
+   inconvenient:
+   - `tile.openstreetmap.org`'s usage policy explicitly prohibits
+     "pre-seeding" a region's tiles in advance and "building tile archives
+     ... for later distribution" - exactly what rendering a trip's route
+     needs (a whole bounding box fetched once, not tiles a human pans/zooms
+     through interactively). Confirmed via
+     https://operations.osmfoundation.org/policies/tiles/.
+   - Commercial tile APIs (MapTiler, Mapbox, Thunderforest, etc.) generally
+     license *live map display in an app*, not baking tiles into a
+     permanently-stored video file. MapTiler's terms, for example,
+     explicitly prohibit storing map content server-side or "using a
+     screenshot or other static image" instead of live API access - close
+     to what encoding a video from tile frames does. Confirmed with
+     Christer (AskUserQuestion) this was worth solving properly rather than
+     building on a shaky ToS footing.
+
+   **What it actually does instead:** uses the Overpass API - OSM's own
+   read-only data API, explicitly recommended by the OSM Foundation for
+   small-area, non-editing queries like this
+   (https://operations.osmfoundation.org/policies/api/) - to fetch raw road
+   *geometry* for a trip's (padded) GPS bounding box. That's ODbL-licensed
+   OSM *data*, not a rendered tile image, so caching/storing/redistributing
+   it offline with attribution is explicitly fine, unlike a pre-rendered
+   tile. beyond-video then draws the basemap itself from that geometry - no
+   live map service is involved once a region's road data is cached.
+
+   New `blackvue.export.osm_roads`: `bounding_box_for_fixes(fixes)`,
+   `fetch_roads(bbox)` (Overpass query + parse, proper identifying
+   User-Agent per OSM's API policy, wraps network/parse failures as
+   `MediaToolError`), `load_or_fetch_roads(bbox, cache_dir)` (caches the
+   raw response to disk by rounded bbox, so a trip - or repeat trips
+   through the same area - only ever hits Overpass once, then works fully
+   offline after; same one-fetch-then-offline pattern as `bv-lang
+   install`).
+
+   New `blackvue.export.map_render`: `render_frame(bbox, roads,
+   route_points, position, ...)` draws one frame with Pillow - roads as
+   thin gray lines, the route so far as a red line, a dot at the current
+   position, speed/timestamp text in the corner - using a simple
+   equirectangular projection (longitude scaled by `cos(mean latitude)`;
+   a full Mercator projection would be overkill at the scale a single
+   driving trip covers).
+
+   New `blackvue.export.map_video`: `interpolate_position(fixes,
+   timestamp)` linearly interpolates lat/lon/speed between the two GPS
+   fixes bracketing a timestamp (clamped at the ends, not extrapolated);
+   `render_map_video(fixes, roads, bbox, destination, fps=5)` builds the
+   full frame sequence (growing the drawn route with every real fix
+   reached, not just interpolated points) and hands it to ffmpeg
+   (`libx264`/`yuv420p`) to encode. Returns `None` (writes nothing) if
+   there aren't at least two valid, positioned, non-simultaneous fixes to
+   draw a route from - same "nothing to work with" convention as
+   `export_trip`'s other outputs.
+
+   `export_trip()` gained `render_map: bool = False` and `map_cache_dir:
+   Path | None = None` params, reusing the same merged `fixes` it already
+   computes for `trip.gpx` rather than reading GPS twice. A road-fetch or
+   render failure degrades to a warning (`ExportResult.warnings`), not a
+   failed export - the rest of the trip's files are still worth having
+   even if the map couldn't be built (e.g. Overpass unreachable). New
+   `ExportResult.map: Path | None` field.
+
+   `bv-export --map`: off by default (first-time-per-region network fetch,
+   real render time per trip). `map_cache_dir` defaults to
+   `--target/.osm_cache` - a sibling of the trip folders, not inside any
+   one trip's own folder, since that folder gets wiped and rebuilt from
+   scratch on every refresh; this way the OSM cache survives refreshes and
+   is shared across every trip exported to the same `--target`.
+
+   New dependency: `Pillow>=10.0` (pyproject.toml). Frame timestamps line
+   up with the trip's real GPS timeline, so the result can sit next to the
+   front/rear footage in `--stitch` (item 5) later. Not yet confirmed
+   against a real Overpass query or Christer's actual archive - only
+   unit-tested (roads/render/video-encode/CLI wiring all have real
+   ffmpeg/Pillow exercised in tests; Overpass itself is faked via
+   monkeypatched `load_or_fetch_roads`/`urlopen`, never hit for real in
+   tests).
 
 5. **--stitch option (future).** Compose the front and rear video
    side-by-side (`left_right`) or stacked (`top_down`), and optionally
    stitch the map-overlay video in too, at a chosen position. This is
    essentially an ffmpeg `filter_complex` composition step
-   (`hstack`/`vstack`/`overlay`) once item 4 produces the map video to
+   (`hstack`/`vstack`/`overlay`) now that item 4 produces the map video to
    combine.
 
-Immediate next step is item 2: waiting on a real `.gps`/`.3gf` file sample
-from Christer.
+Immediate next step: confirm `--map` against a real archive (real Overpass
+query, real GPS data) - see item 4's caveat above - then item 5 (`--stitch`)
+is unblocked.

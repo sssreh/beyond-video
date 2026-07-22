@@ -2,6 +2,8 @@ import subprocess
 
 from blackvue.cli.bv_export import bv_export
 from blackvue.cli.bv_export import main
+from blackvue.export import trip_export as trip_export_module
+from blackvue.export.osm_roads import Road
 
 
 def _make_video(path, duration_seconds: float = 0.5) -> None:
@@ -159,3 +161,91 @@ def test_bv_export_reports_nothing_to_export_for_empty_range(tmp_path, capsys):
     assert exit_code == 0
     assert "nothing to export" in out
     assert not target.exists()
+
+
+def _fake_roads(*_args, **_kwargs):
+    return (Road(points=((59.30, 18.00), (59.31, 18.02))),)
+
+
+def _write_gps(path, epoch_ms, lat_str, ns, lon_str, ew, speed_knots=10.0):
+    path.write_text(
+        f"[{epoch_ms}]$GPRMC,120000.00,A,{lat_str},{ns},{lon_str},{ew},"
+        f"{speed_knots},45.00,200726,,,A*6D\n"
+    )
+
+
+def test_bv_export_map_flag_renders_map_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+
+    exit_code = bv_export(str(archive), target=str(target), render_map=True)
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    # A single fix means bounding_box_for_fixes() has something to
+    # bound but render_map_video() itself needs >= 2 positioned fixes
+    # to draw a route from, so no map.mp4 is expected here - this
+    # confirms the flag doesn't crash the export in that case.
+    assert folder.is_dir()
+    assert not (folder / "map.mp4").exists()
+
+
+def test_bv_export_map_flag_renders_map_video_with_a_real_route(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    _write_gps(
+        archive / "20260720_100010_N.gps",
+        1784555911000, "5918.94615", "N", "01806.17070", "E",
+    )
+
+    exit_code = bv_export(str(archive), target=str(target), render_map=True)
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100010"
+    assert (folder / "map.mp4").exists()
+
+
+def test_bv_export_without_map_flag_never_touches_roads(tmp_path, monkeypatch):
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("should not fetch roads when --map is off")
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _refuse)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
