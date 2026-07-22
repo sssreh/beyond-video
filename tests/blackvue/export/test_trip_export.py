@@ -11,6 +11,9 @@ from blackvue.export.osm_roads import Road
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.generate.media import MediaToolError
+from blackvue.generate.speech import SpeechSegment
+from blackvue.generate.subtitles import format_lrc
+from blackvue.generate.subtitles import format_srt
 from blackvue.telemetry.gsensor_reader import read_gsensor
 from blackvue.trip.trip import Trip
 
@@ -240,3 +243,68 @@ def test_export_trip_render_map_warns_instead_of_failing_on_fetch_error(
     assert "map" in result.warnings[0]
     # The rest of the export still succeeded despite the map failure.
     assert result.gpx is not None
+
+
+def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    srt_a = source_dir / "a.srt"
+    srt_a.write_text(
+        format_srt((SpeechSegment(0.0, 2.0, "first recording"),))
+    )
+    lrc_a = source_dir / "a.lrc"
+    lrc_a.write_text(format_lrc((SpeechSegment(0.0, 0.0, "first recording"),)))
+
+    srt_b = source_dir / "b.srt"
+    srt_b.write_text(
+        format_srt((SpeechSegment(0.0, 1.0, "second recording"),))
+    )
+    lrc_b = source_dir / "b.lrc"
+    lrc_b.write_text(
+        format_lrc((SpeechSegment(0.0, 0.0, "second recording"),))
+    )
+
+    first = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={
+            Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_a),
+            Asset.LYRICS: AssetFile(Asset.LYRICS, lrc_a),
+        },
+    )
+    second = Recording(
+        id=RecordingId("20260720_100100_N"),
+        assets={
+            Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_b),
+            Asset.LYRICS: AssetFile(Asset.LYRICS, lrc_b),
+        },
+    )
+    trip = Trip((first, second))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.srt == dest_dir / "trip.srt"
+    srt_text = result.srt.read_text()
+    assert "00:00:00,000 --> 00:00:02,000" in srt_text
+    assert "first recording" in srt_text
+    # Second recording started 60s after the first.
+    assert "00:01:00,000 --> 00:01:01,000" in srt_text
+    assert "second recording" in srt_text
+
+    assert result.lrc == dest_dir / "trip.lrc"
+    lrc_text = result.lrc.read_text()
+    assert "[00:00.00] first recording" in lrc_text
+    assert "[01:00.00] second recording" in lrc_text
+
+
+def test_export_trip_skips_srt_lrc_when_no_recording_has_them(tmp_path):
+    dest_dir = tmp_path / "export"
+    trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.srt is None
+    assert result.lrc is None
+    assert not (dest_dir / "trip.srt").exists()
+    assert not (dest_dir / "trip.lrc").exists()

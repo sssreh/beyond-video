@@ -31,6 +31,8 @@ from .speech import transcribe
 from .speech import translate
 from .subtitles import format_lrc
 from .subtitles import format_srt
+from .subtitles import parse_lrc
+from .subtitles import parse_srt
 
 __all__ = [
     "DEPENDENT_MODELS",
@@ -51,6 +53,8 @@ __all__ = [
     "format_srt",
     "get_span",
     "normalize_language",
+    "parse_lrc",
+    "parse_srt",
     "probe",
     "read_mp4_info",
     "select_source",

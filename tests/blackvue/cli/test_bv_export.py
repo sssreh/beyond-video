@@ -230,6 +230,33 @@ def test_bv_export_map_flag_renders_map_video_with_a_real_route(
     assert (folder / "map.mp4").exists()
 
 
+def test_bv_export_merges_srt_across_a_trip(tmp_path):
+    from blackvue.generate.speech import SpeechSegment
+    from blackvue.generate.subtitles import format_srt
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.srt").write_text(
+        format_srt((SpeechSegment(0.0, 1.0, "hello"),))
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    (archive / "20260720_100010_N.srt").write_text(
+        format_srt((SpeechSegment(0.0, 1.0, "world"),))
+    )
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100010"
+    srt_text = (folder / "trip.srt").read_text()
+    assert "hello" in srt_text
+    assert "world" in srt_text
+    assert "00:00:10,000 --> 00:00:11,000" in srt_text
+
+
 def test_bv_export_without_map_flag_never_touches_roads(tmp_path, monkeypatch):
     def _refuse(*_args, **_kwargs):
         raise AssertionError("should not fetch roads when --map is off")

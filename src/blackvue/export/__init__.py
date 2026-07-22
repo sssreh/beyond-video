@@ -8,6 +8,8 @@ from .osm_roads import Road
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import fetch_roads
 from .osm_roads import load_or_fetch_roads
+from .subtitles import merge_lrc
+from .subtitles import merge_srt
 from .text import merge_text_assets
 from .trip_export import ExportResult
 from .trip_export import export_trip
@@ -24,6 +26,8 @@ __all__ = [
     "folder_name_for_trip",
     "interpolate_position",
     "load_or_fetch_roads",
+    "merge_lrc",
+    "merge_srt",
     "merge_text_assets",
     "render_frame",
     "render_map_video",

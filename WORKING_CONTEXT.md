@@ -276,6 +276,49 @@ against fakes so far, same as `--translate`.
 
 ---
 
+## SRT/LRC trip-level merge for bv-export (done, this session)
+
+Gap Christer spotted: `bv-generate --srt/--lrc` writes one `.srt`/`.lrc` per
+*recording*, but `bv-export` wasn't merging them into a trip-level file the
+way it already merges `transcript.txt`/`translation.txt` - so a
+multi-recording trip ended up with several separate per-recording subtitle
+files sitting in the archive instead of one `trip.srt`/`trip.lrc` in the
+export folder, timestamps rebased onto the trip's timeline.
+
+Text concatenation alone (what `merge_text_assets` does for transcripts)
+isn't enough here - subtitle timestamps are relative to each recording's
+own start, so simply gluing files together would leave every recording
+after the first with wrong (too-early) cue times. Needed the same
+offset-rebasing pattern `_merge_gsensor` already uses for `.3gf`.
+
+New `blackvue.generate.subtitles.parse_srt()` / `parse_lrc()` - symmetric
+readers for the existing `format_srt()`/`format_lrc()` writers, parsing
+cues back into `SpeechSegment`s (any baked-in `[SPEAKER_XX]` prefix from a
+diarized export is left as opaque text, not parsed back out - matches how
+the formatters treat it when `turns=None`). Cue index numbers are
+discarded on read since `format_srt()` renumbers sequentially on write
+anyway. LRC has no explicit end time, so `parse_lrc()` sets each segment's
+`end` equal to its `start` - fine, since `format_lrc()` never reads `end`.
+
+New `blackvue.export.subtitles` module: `merge_srt(trip)` / `merge_lrc(trip)`
+read every recording's `.srt`/`.lrc` in the trip (skipping recordings that
+don't have one), shift each recording's cues by `recording.id.timestamp -
+trip.start_timestamp` (same rebase math as g-sensor), sort the combined
+cues by start time (so recordings processed out of chronological order
+still merge correctly), and re-format/renumber as one trip-relative string.
+Returns `None` if no recording in the trip has the asset - same "nothing
+to work with" convention as the rest of `export_trip`'s outputs.
+
+`export_trip()` writes `trip.srt`/`trip.lrc` unconditionally whenever there's
+something to merge (no opt-in flag needed, unlike `--map` - this is pure
+local text processing, no network, negligible cost). New
+`ExportResult.srt`/`ExportResult.lrc` fields, included in `bv-export`'s
+written-file count.
+
+Not yet confirmed against Christer's real archive - only unit-tested.
+
+---
+
 ## Tested vs not tested
 
 Confirmed against real data on Christer's machine:
