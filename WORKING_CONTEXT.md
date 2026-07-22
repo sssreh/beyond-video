@@ -2342,3 +2342,120 @@ fabricated gauge stand-in. The 5-40%/15% size range and 20-50% map
 range stylistically, not from anything measured on real footage -
 worth a look together once there's a real side-by-side to compare
 against.
+
+## --stitch: wire subtitle burn-in into --stitch-subtitles/--no-subtitles-bg (done, this session)
+
+Fourth piece of the --stitch spec, after camera-layout composition, the
+map panel, and the g-sensor overlay: burning this trip's own trip.srt
+into stitch.mp4's final frame - centered, near the bottom (libass's own
+default SRT placement, so no explicit alignment override was needed),
+with a dark translucent background bar behind the text on by default.
+Never trip.lrc - already settled earlier in the --stitch spec
+discussion, since `merge_lrc()` always sets `end == start` (no real
+per-line duration, fine for karaoke-style display, not a proper
+subtitle cue).
+
+**Not gated behind its own "go render it first" step, unlike
+gsensor.mp4.** trip.srt is written automatically by export_trip()
+whenever the trip has *any* transcript data at all - not behind its own
+render flag - so by the time the `stitch_subtitles` check runs, this
+same call's own `srt_path` (already computed earlier in export_trip())
+is always fresh for whatever this run's recordings currently have. If
+the trip has no transcript data at all (`srt_path` stayed None), the
+burn-in is skipped with a warning rather than failing the stitch -
+consistent with the map panel/gsensor overlay's own "degrade, don't
+fail" convention for a missing input.
+
+**Filter chain** (stitch.py's `_stack()`, `_subtitles_filter()`): ffmpeg's
+`subtitles` filter, applied *last* - after both the gsensor overlay and
+the map panel, onto whatever the final composed frame is by that point
+(camera-only, +gsensor, +map, or both together). This is a deliberate
+choice, not an oversight: subtitles are dialogue captions for the whole
+video being watched, not scoped to one visual region the way the
+gsensor overlay deliberately is (see its own docstring note on why it's
+confined to the footage region alone). "Centered, near the bottom" is
+read here as the bottom of the *final* frame, map panel included -
+**not checked against a layout where that visually lands the subtitle
+text on top of the map panel itself** (e.g. side_by_side's default
+down-side panel) - a known, undecided gap flagged here rather than
+silently guessed at.
+
+**Background bar**: `force_style='BorderStyle=4,Outline=0,Shadow=0,BackColour=&H80000000&'`
+- BorderStyle=4 switches libass from its default outline-only text
+rendering to a solid box using BackColour (ASS packs color as
+`&HAABBGGRR` - blue/green/red order, not RGB, and the alpha byte gets
+*more* transparent as it increases; `&H80` lands around 50% translucent
+black). `--no-subtitles-bg` leaves the filter at libass's default style
+entirely (no force_style at all) - plain outlined text, the same as a
+bare .srt already renders as.
+
+**Windows path escaping** (`_escape_subtitles_filename()`): ffmpeg's
+`subtitles=` filter argument is parsed twice - once by ffmpeg's own
+filtergraph parser (where `:` separates the filter name from its
+options) and again by libass - before it's treated as a plain filename.
+Backslashes are converted to forward slashes (Windows accepts `/`
+everywhere ffmpeg/libass read a path, sidestepping `\`'s own meaning as
+an escape character rather than trying to double-escape it), and a
+drive-letter colon is escaped as `C\:` so the filtergraph parser doesn't
+read it as its own option separator and truncate the path. Verified as
+a pure string-escaping unit test (no real Windows path available in
+this sandbox to exercise end-to-end) plus real ffmpeg renders on Linux
+tmp paths (no colons there, so that specific escape never fires in this
+sandbox's own end-to-end tests, but the *filter syntax itself* -
+`subtitles='<path>':force_style='...'` - was confirmed working for real
+via direct ffmpeg calls before writing any of this).
+
+**No per-feature `warnings` entry on failure, unlike the map panel/
+gsensor overlay** - a deliberate scope trade-off, not an inconsistency.
+A subtitle-burn problem (a malformed .srt, a libass-less ffmpeg build)
+surfaces as an ordinary MediaToolError failing the whole stitch, since
+by this point it's the very last stage of one already-large ffmpeg
+command - isolating just this piece the way the map panel/gsensor
+overlay each get their own try/except would mean running the final
+encode a second time without subtitles as a fallback, real added cost
+for what should be a rare failure mode (Christer's own ffmpeg build
+already lists `--enable-libass`, confirmed from an earlier build-config
+paste in this project).
+
+**CLI**: `--stitch-subtitles` (bool), `--no-subtitles-bg` (bool,
+`dest=subtitles_bg`, `action=store_false`, default True) - named to
+match the existing `--no-movement`/`--no-duration` negative-flag
+convention rather than a `--stitch-`-prefixed negative, per the
+already-agreed spec.
+
+Tested: real end-to-end verification that a background bar darkens a
+meaningfully larger fraction of the bottom-of-frame region than bare
+outlined text does (both variants have *some* dark pixels near the
+bottom even with the bar off, since libass's default style already
+draws a thin outline around the glyphs - the comparison is relative,
+not an absolute pixel-color assertion, which turned out to be the
+fragile approach on a first attempt: comparing average brightness
+across the whole bottom strip barely moved, since the box only covers
+the text's own width, not the full frame - counting the fraction of
+genuinely dark pixels in that same region was the signal that actually
+separated the two variants cleanly, roughly 2x). Also confirmed the top
+of the frame stays completely untouched (plain footage, no dark
+pixels), and that combining subtitles with both a gsensor overlay and a
+map panel in the same render produces correct final dimensions with no
+warnings (the real thing being tested there: correct clause/label
+bookkeeping through all three optional pieces chained together). 7 new
+test_stitch.py tests (escaping unit test; background-vs-no-background
+comparison; top-of-frame untouched; combined with gsensor+map; ignored
+for the single-camera fallback; no-op when subtitles_path isn't given).
+4 new test_trip_export.py tests (uses this run's own trip.srt with no
+separate render step; options forwarded; skipped without the flag even
+though trip.srt still gets written; warns when there's no transcript
+data at all). 4 new test_bv_export.py CLI tests (flag gating,
+--no-subtitles-bg, one real end-to-end render burning an actual
+trip.srt into stitch.mp4). All genuinely executed via the harness, all
+green: test_stitch 68 passed, test_trip_export 34 passed, test_bv_export
+52 passed, 0 failed.
+
+Not confirmed against a real archive - only synthetic solid-color clips
+and a hand-written .srt. The interaction between subtitle placement and
+a bottom-side map panel (both wanting the same visual real estate) is
+the most likely thing to actually look wrong on Christer's own footage
+- worth checking together first, before rearview_mirror or auto-pick.
+
+Remaining --stitch roadmap: `rearview_mirror` camera layout, and
+auto-picking `--stitch-layout` from the trip's own geometry.

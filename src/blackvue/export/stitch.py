@@ -5,9 +5,9 @@ front/rear footage into one video via ffmpeg's hstack/vstack filters.
 This is the first --stitch building block - see WORKING_CONTEXT.md for
 the full agreed spec. Only the two camera layouts that are a straight
 stack of unmodified footage are built so far. rearview_mirror (flip +
-scale + overlay), the map panel, the g-sensor overlay, subtitle
-burn-in, and auto-picking a layout from the trip's own geometry all
-come in later passes.
+scale + overlay) and auto-picking a layout from the trip's own
+geometry come in later passes. The map panel, the g-sensor overlay,
+and subtitle burn-in are all wired in already.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -98,6 +98,14 @@ _GSENSOR_CHROMA_KEY_COLOR = "0x00ff00"
 
 _GSENSOR_POSITION_TOKENS = {"left", "right", "top", "down", "center"}
 
+# --stitch-subtitles' background bar color, as a libass ASS BackColour
+# literal (&HAABBGGRR - note ASS packs color as BGR, not RGB, and the
+# alpha byte is "more transparent as it goes up", the opposite of a
+# normal RGBA alpha channel): &H80 = roughly 50% translucent, 000000 =
+# black. Only used when subtitles_background is True (the default) -
+# see _subtitles_filter().
+_SUBTITLES_BG_COLOR = "&H80000000&"
+
 
 def parse_gsensor_position(position: str) -> tuple[str, str]:
     """Parse a --stitch-gsensor-pos string (e.g. "top-right", "left",
@@ -160,6 +168,60 @@ def _gsensor_overlay_xy_expr(
     return x_expr, y_expr
 
 
+def _escape_subtitles_filename(path: Path) -> str:
+    """Escape `path` for ffmpeg's `subtitles=` filter, whose argument
+    is parsed twice over - once by ffmpeg's own filtergraph parser
+    (where `:` separates the filter name from its options, and `\\`
+    is an escape character) and once more by libass - before it's
+    treated as a plain filename. The two escaping conventions that
+    actually matter here in practice:
+
+    - Backslashes become forward slashes. Windows accepts `/` as a
+      path separator everywhere ffmpeg/libass read a path, so this
+      sidesteps `\\`'s meaning as an escape character entirely rather
+      than trying to double-escape it correctly.
+    - A drive-letter colon (`C:`) is escaped as `C\\:` - `:` is the
+      filtergraph parser's own option separator, so a bare one there
+      would truncate the path at `C` and try to parse `\\...` as a
+      filter option.
+
+    The whole thing is then wrapped in single quotes by the caller
+    (see _subtitles_filter()), which is enough for the paths this
+    project actually produces (destination directories from bv-
+    export's own trip layout, never user-chosen arbitrary strings) -
+    no attempt is made here to handle a single quote *inside* the
+    path.
+    """
+
+    return str(path).replace("\\", "/").replace(":", "\\:")
+
+
+def _subtitles_filter(subtitles_path: Path, *, background: bool) -> str:
+    """The ffmpeg `subtitles=` filter fragment burning `subtitles_path`
+    (a .srt file) into whatever it's chained onto, at libass's default
+    placement (centered, near the bottom - the standard SRT rendering
+    position, so no explicit alignment override is needed).
+
+    When `background` is True (the default), a `force_style` override
+    adds a solid, semi-transparent box behind the text (BorderStyle=4
+    switches libass from its default outline-only rendering to an
+    opaque box using BackColour - see _SUBTITLES_BG_COLOR - with
+    Outline/Shadow zeroed out since they're meaningless once the box
+    replaces them). When False, the filter is left at its default
+    style entirely - plain outlined text, no box - which is what a
+    bare .srt already renders as without any force_style at all.
+    """
+
+    escaped = _escape_subtitles_filename(subtitles_path)
+    if not background:
+        return f"subtitles='{escaped}'"
+
+    style = (
+        f"BorderStyle=4,Outline=0,Shadow=0,BackColour={_SUBTITLES_BG_COLOR}"
+    )
+    return f"subtitles='{escaped}':force_style='{style}'"
+
+
 # Cached after the first check, same pattern as media.py's
 # _NVENC_AVAILABLE - which hwaccels this machine's ffmpeg build has is
 # a fixed fact for the life of the run.
@@ -212,6 +274,8 @@ def stitch_cameras(
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
     gsensor_xy: tuple[float, float] | None = None,
+    subtitles_path: Path | None = None,
+    subtitles_background: bool = True,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path | None:
@@ -324,6 +388,32 @@ def stitch_cameras(
     added alongside it - a named position is defined relative to just
     the camera composite, never the map panel's own space. Only
     meaningful when both front and rear exist, same as `map_mode`.
+
+    `subtitles_path`, if given, is an already-written trip.srt (see
+    trip_export.py, which always writes one whenever the trip has any
+    transcript data - not gated behind its own render flag the way
+    gsensor.mp4/map.mp4 are, so there's no separate "missing, go
+    render it first" warning path here the way there is for
+    `gsensor_video`) burned directly into the *final* frame via
+    ffmpeg's `subtitles` filter - after both the gsensor overlay and
+    the map panel, if either is also present, rather than confined to
+    just the camera footage region the way the gsensor overlay is.
+    Subtitles are dialogue captions for the whole video being watched,
+    not something tied to one particular visual region, so "centered,
+    near the bottom" is read here as the bottom of the final composed
+    frame, map panel included - this hasn't been checked against a
+    layout where that lands the text on top of the map panel itself
+    (e.g. side_by_side's default down-side panel), which is a known,
+    undecided gap, not an oversight. `subtitles_background` (default
+    True) draws a solid, semi-transparent bar behind the text for
+    readability - see _subtitles_filter(). Unlike the map panel/
+    gsensor overlay, a problem here (a malformed .srt, a libass build
+    without support) isn't caught into its own `warnings` entry - it
+    surfaces as a normal MediaToolError failing the whole stitch, since
+    by this point it's the very last stage of one already-large ffmpeg
+    command and there's no cheap way to isolate just this piece
+    without a second full encode. Only meaningful when both front and
+    rear exist, same as `map_mode`/`gsensor_video`.
     """
 
     if front is not None and rear is not None:
@@ -335,6 +425,8 @@ def stitch_cameras(
             map_roads=map_roads, map_icon=map_icon,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
+            subtitles_path=subtitles_path,
+            subtitles_background=subtitles_background,
             debug=debug, warnings=warnings,
         )
 
@@ -940,6 +1032,8 @@ def _stack(
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
     gsensor_xy: tuple[float, float] | None = None,
+    subtitles_path: Path | None = None,
+    subtitles_background: bool = True,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path:
@@ -1200,6 +1294,23 @@ def _stack(
                     )
                     output_label = "withmap"
                     extra_inputs += ["-i", str(rendered)]
+
+        if subtitles_path is not None:
+            # Applied last, onto whatever the final composed frame is
+            # at this point (camera-only, +gsensor, +map, or both) -
+            # subtitles are dialogue captions for the whole video, not
+            # scoped to one visual region the way the gsensor overlay
+            # deliberately is. No try/except here (unlike the map
+            # panel/gsensor blocks above) - see stitch_cameras()'s
+            # docstring for why a subtitle-burn failure is allowed to
+            # fail the whole stitch rather than degrading to a
+            # warning.
+            clauses.append(
+                f"[{output_label}]"
+                + _subtitles_filter(subtitles_path, background=subtitles_background)
+                + "[subtitled]"
+            )
+            output_label = "subtitled"
 
         encode_with_nvenc_fallback(
             [

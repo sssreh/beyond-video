@@ -928,6 +928,99 @@ def test_bv_export_stitch_gsensor_flag_produces_an_overlaid_video(tmp_path):
     assert (trip_folder / "gsensor.mp4").exists()
 
 
+def test_main_leaves_stitch_subtitles_false_when_stitch_flag_is_absent(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch-subtitles"])
+
+    assert captured["stitch_subtitles"] is False
+
+
+def test_main_parses_stitch_subtitles_flag(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-subtitles",
+    ])
+
+    assert captured["stitch_subtitles"] is True
+    # On by default - --no-subtitles-bg not given.
+    assert captured["stitch_subtitles_background"] is True
+
+
+def test_main_no_subtitles_bg_disables_the_background_default(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-subtitles", "--no-subtitles-bg",
+    ])
+
+    assert captured["stitch_subtitles_background"] is False
+
+
+def test_bv_export_stitch_subtitles_flag_burns_the_trip_srt_into_stitch_mp4(
+    tmp_path
+):
+    from blackvue.generate.speech import SpeechSegment
+    from blackvue.generate.subtitles import format_srt
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+    (archive / "20260720_100000_N.srt").write_text(
+        format_srt((SpeechSegment(0.0, 1.0, "hello there"),))
+    )
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="side_by_side", stitch_subtitles=True,
+    )
+
+    assert exit_code == 0
+    trip_folder = target / "trip_20260720_100000_20260720_100000"
+    assert (trip_folder / "stitch.mp4").exists()
+    assert (trip_folder / "trip.srt").exists()
+
+
 def test_main_rejects_a_malformed_stitch_resolution(tmp_path, capsys):
     archive = tmp_path / "archive"
     archive.mkdir()
