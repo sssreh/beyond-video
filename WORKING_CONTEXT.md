@@ -410,6 +410,45 @@ subtitle length to).
 
 ---
 
+## bv-export: ask before wiping an existing trip folder (done, this session)
+
+Christer asked: if he exports with `--map` (builds the expensive `map.mp4`),
+then later re-exports the same trip without `--map`, does that second run
+delete the map video? Previously yes - `bv-export` unconditionally did
+`shutil.rmtree(folder)` on any existing trip folder before every export.
+Christer's answer, once asked: in interactive mode ask whether to wipe or
+keep; otherwise (batch/cron, nobody to ask) always keep, since re-generating
+the map is expensive.
+
+New behavior in `bv_export.py`:
+
+- Default (no `--overwrite`): an existing trip folder is left in place -
+  the run only overwrites whatever files it actually regenerates this time,
+  so an earlier `--map` run's `map.mp4` survives a later plain export.
+- `--overwrite` (new flag): wipes and rebuilds every trip folder from
+  scratch, without asking - the old unconditional behavior, now opt-in.
+- Without `--overwrite`, in an interactive run (`_interactive()`, same
+  `sys.stdin.isatty() and sys.stdout.isatty()` check `bv-generate` uses):
+  asks once, on the first trip folder that already exists
+  (`_ask_wipe_existing()`, `[w/K]`, defaults to keep on empty input), and
+  reuses that same answer (`wipe_decision`) for every other trip folder
+  touched in the run - same "ask once per run" pattern as `bv-generate`'s
+  overwrite prompt.
+- Without `--overwrite`, non-interactive (batch/cron): always keeps, never
+  asks, never wipes.
+- `--dry-run` output now reflects this: reports "create" for a new folder,
+  "wipe and rebuild" only when `--overwrite` is given, "update in place"
+  otherwise.
+
+Tested (10 tests): default-keeps-existing-files, `--overwrite`-wipes,
+interactive-prompt-wipes-on-"w", interactive-prompt-keeps-on-default-empty-
+answer, interactive-prompt-only-asked-once-across-two-trip-folders, and the
+literal scenario Christer asked about - export with `--map` builds
+`map.mp4`, a later plain non-interactive export leaves `map.mp4`
+untouched (mtime unchanged).
+
+---
+
 ## Tested vs not tested
 
 Confirmed against real data on Christer's machine:

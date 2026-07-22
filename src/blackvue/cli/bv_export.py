@@ -29,6 +29,21 @@ from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
 from blackvue.trip.trip_builder import TripBuilder
 
 
+def _interactive() -> bool:
+    """Return True if running attached to a real terminal."""
+
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _ask_wipe_existing(folder: Path) -> bool:
+    answer = input(
+        f"{folder.name} already exists. Wipe and rebuild trip folders "
+        "from scratch this run, or keep existing files and only "
+        "update what each run actually produces? [w/K] "
+    ).strip().lower()
+    return answer in ("w", "wipe")
+
+
 def bv_export(
     path: str | Path = ".",
     *,
@@ -42,10 +57,23 @@ def bv_export(
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     render_map: bool = False,
+    overwrite: bool = False,
     dry_run: bool = False,
 ) -> int:
     """Export every detected trip in `path` to its own folder under
-    `target`. Returns 0 on success, 1 if any trip failed."""
+    `target`. Returns 0 on success, 1 if any trip failed.
+
+    A trip folder that already exists from a previous run is, by
+    default, left in place - this run only overwrites whatever files
+    it actually regenerates, so an output that's expensive to redo
+    (--map in particular) survives a later run that doesn't ask for
+    it again. `--overwrite` wipes and rebuilds every trip folder from
+    scratch instead, without asking. Without `--overwrite`: an
+    interactive run asks once (on the first trip folder that already
+    exists) whether to wipe or keep, and reuses that answer for every
+    other trip folder touched this run; a non-interactive run (cron/
+    batch) always keeps, since there's no one to ask.
+    """
 
     archive = Archive(path)
 
@@ -89,23 +117,41 @@ def bv_export(
 
     target_path = Path(target)
     # Shared across every trip in this run (and across runs) rather
-    # than living inside any one trip's own folder, since that folder
-    # gets wiped and rebuilt from scratch on every refresh - see
+    # than living inside any one trip's own folder, so it survives
+    # even a --overwrite wipe of an individual trip folder - see
     # export_trip()'s map_cache_dir docstring.
     map_cache_dir = target_path / ".osm_cache"
     exit_code = 0
+    # Cached on the first existing trip folder this run encounters,
+    # then reused for every other one - so an interactive run only
+    # asks once, the same "ask once per run" pattern bv-generate uses
+    # for its own overwrite prompt.
+    wipe_decision: bool | None = None
 
     for trip in trips:
         folder = target_path / folder_name_for_trip(trip, prefix)
 
         if dry_run:
-            action = "refresh" if folder.exists() else "create"
+            if not folder.exists():
+                action = "create"
+            elif overwrite:
+                action = "wipe and rebuild"
+            else:
+                action = "update in place"
             print(f"bv-export: [dry run] would {action} {folder} "
                   f"({len(trip)} recording(s))")
             continue
 
         if folder.exists():
-            shutil.rmtree(folder)
+            if overwrite:
+                shutil.rmtree(folder)
+            else:
+                if wipe_decision is None:
+                    wipe_decision = (
+                        _ask_wipe_existing(folder) if _interactive() else False
+                    )
+                if wipe_decision:
+                    shutil.rmtree(folder)
 
         try:
             result = export_trip(
@@ -259,6 +305,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Wipe and rebuild each trip's folder from scratch, without "
+            "asking. Without this: an interactive run asks once whether "
+            "to wipe or keep existing trip folders (the answer applies "
+            "to every trip folder touched this run); a non-interactive "
+            "run always keeps them, only overwriting whatever files it "
+            "actually regenerates - useful since some outputs (--map in "
+            "particular) are expensive to redo."
+        ),
+    )
+
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show which trip folders would be created/refreshed "
@@ -279,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         render_map=args.render_map,
+        overwrite=args.overwrite,
         dry_run=args.dry_run,
     ))
 
