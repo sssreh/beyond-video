@@ -726,6 +726,71 @@ def test_main_parses_stitch_resolution_from_the_command_line(
     assert captured["stitch_bitrate"] == "256k"
 
 
+def test_main_leaves_stitch_map_as_none_when_stitch_flag_is_absent(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    # --stitch-map given without --stitch itself - same "only means
+    # anything together with --stitch" convention as --stitch-layout/
+    # --stitch-resolution/--stitch-bitrate.
+    main(["--target", str(target), str(archive), "--stitch-map"])
+
+    assert captured["stitch_map"] is None
+
+
+def test_main_uses_the_default_stitch_map_mode_when_bare_flag_given(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch", "--stitch-map"])
+
+    assert captured["stitch_map"] == "map"
+
+
+def test_main_parses_an_explicit_stitch_map_mode_and_side(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-map", "zoom", "--stitch-map-side", "right",
+    ])
+
+    assert captured["stitch_map"] == "zoom"
+    assert captured["stitch_map_side"] == "right"
+
+
 def test_main_rejects_a_malformed_stitch_resolution(tmp_path, capsys):
     archive = tmp_path / "archive"
     archive.mkdir()

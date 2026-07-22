@@ -2124,3 +2124,132 @@ one real `ffmpeg`/`ffprobe` end-to-end render, not just monkeypatched
 calls) - all passed. Still worth an actual `pytest` run on Christer's
 machine before trusting this fully; the tests themselves are written
 and committed either way.
+
+Update: found a leftover custom test harness at `/tmp/run_harness.py`
+in this sandbox (from an earlier session, apparently - `/tmp` persists
+here even though it isn't one of the mounted project folders) that
+fakes just enough of `pytest`/`monkeypatch`/`capsys`/`tmp_path` to
+actually run real `test_*` functions with real `ffmpeg` calls, without
+needing `pytest` itself installed. Used it to confirm the aspect-ratio
+plumbing above for real: `test_osm_roads: 21 passed`, `test_map_video:
+20 passed`, both 0 failed - the earlier "hand-verified with equivalent
+plain-Python scripts, not the actual test suite" caveat no longer
+applies to this pair of files. Worth remembering this harness exists
+if a future sandbox session needs to actually run tests again.
+
+## --stitch: wire the map panel into --stitch-map/--stitch-map-side (done, this session)
+
+Full wiring on top of the aspect-ratio plumbing above - a map panel is
+now a real, working part of `--stitch`, not just groundwork for one.
+
+**The core design question, asked and confirmed with Christer first:**
+should the panel be rendered fresh, sized exactly for the stitch
+composite (no distortion, but `--stitch` generating one file itself -
+a departure from its stated "only composes what already exists" rule),
+or should it reuse whatever `map.mp4`/`map_zoom_*.mp4` already exists on
+disk, scaled into the panel slot as-is (stays consistent with that
+rule, but risks visible stretching)? Christer confirmed: render fresh.
+The aspect-ratio plumbing built earlier this session exists specifically
+to make that possible.
+
+**Where the panel's target size comes from.** The camera composite's
+own pixel dimensions are only knowable *inside* `_stack()`, after
+front/rear are decoded (and, if `--stitch-resolution` was given, after
+the final fit-and-pad) - so that's also the earliest point the panel
+can be rendered; it can't happen any earlier; a candidate design where
+`trip_export.py` renders the panel itself, ahead of calling
+`stitch_cameras()`, was rejected for exactly this reason. `stitch.py`
+gained direct dependencies on `map_video.render_map_video()` and
+`osm_roads.bounding_box_for_fixes()`/`aspect_ratio_of()` as a result -
+a real coupling this module didn't have before, but the map panel is a
+first-class part of `--stitch`'s own spec, not a bolt-on.
+
+**Panel sizing (`_map_panel_dimensions()`).** The axis shared with the
+camera composite (height for a left/right panel, width for top/down) is
+matched exactly - hstack/vstack both require that. The other, free axis
+is sized from the trip's own real-world GPS aspect ratio (new
+`osm_roads.aspect_ratio_of()`, the "just measure the ratio, don't grow
+anything" cousin of `bounding_box_for_fixes()`'s `aspect_ratio`-growing
+machinery) - a north-south trip wants a taller panel, east-west wants a
+wider one. Clamped to `_MIN_MAP_PANEL_FRACTION`/`_MAX_MAP_PANEL_FRACTION`
+(0.2-0.5) of the composite's own corresponding dimension, so a near-
+straight-line trip can't ask for a degenerate sliver or an oversized
+panel - picked to match the mirror inset's 10-50% and gsensor's 5-40%
+clamp ranges stylistically, not independently negotiated with Christer;
+worth revisiting if the real numbers look off on an actual archive. That
+clamp is relative to the camera composite *alone*, not the eventual
+composite+panel total (circular otherwise) - meaning when a map panel
+is also requested, `--stitch-resolution` bounds the camera portion, not
+necessarily the final file's own total dimensions, since the panel adds
+to it. A documented simplification, not hidden.
+
+**Default side (`_DEFAULT_MAP_SIDE_FOR_LAYOUT`).** `side_by_side` (a
+wide camera row) defaults to `down`; `top_down` (a tall camera column)
+defaults to `left` - per the already-agreed spec, nested perpendicular
+to the camera arrangement so the final frame doesn't turn into a long
+ribbon. This part didn't need to wait on the still-unbuilt "auto-pick
+camera layout from trip geometry" feature - given whatever camera
+layout is already in effect (explicit today), the map panel's own
+default side is independently well-defined right now.
+
+**`--stitch-map [map|zoom]`** (bare flag = static overview, `zoom` =
+follow-camera, reusing `--map-zoom METERS` as the panel's radius -
+`--map-zoom` must also be given for that variant, or the panel is
+skipped with a warning naming the missing flag) and
+**`--stitch-map-side {left,right,top,down}`** (override) are the new
+CLI flags, both only meaningful with `--stitch`. `export_trip()` gained
+matching `stitch_map`/`stitch_map_side` params, and now loads GPS
+fixes/OSM roads (the same `_load_trip_roads()` already shared by `--map`
+and `--map-zoom`) whenever `stitch_map` is requested too, not just
+`render_map`/`map_zoom_meters` - one fetch/cache, shared by up to three
+different renders in the same run.
+
+**Failure handling** matches the rest of `--stitch`: no GPS data, no
+default side for an unrecognized layout, a missing zoom radius, or any
+render/ffmpeg problem all degrade to a `warnings` entry and no panel,
+never a failed stitch. Scope gap, called out clearly rather than
+silently: the map panel only combines with the two-camera composite
+(`_stack()`) - the single-camera fallback path ignores `map_mode`
+entirely, same as it already ignores `layout`. Christer's own archive is
+often front-only, so this is a real, not theoretical, gap - worth
+revisiting if single-camera trips are a common case for this feature.
+
+**A real bug caught by actually running the test suite, not just manual
+scripts.** The first version unconditionally computed the camera
+composite's pixel dimensions (via an extra `ffprobe` call on the
+decoded rear intermediate) any time `resolution` wasn't given -
+including when no map panel was requested at all. Existing tests that
+fully mock `encode_with_nvenc_fallback` to write empty (0-byte)
+intermediate files broke immediately (`ffprobe failed for rear.mp4:
+moov atom not found`) - caught the moment `test_stitch.py` was actually
+run through the harness mentioned above, not by the manual verification
+scripts used earlier this session (which always used real ffmpeg
+output, never empty files, so this exact failure mode never showed up
+in them). Fixed by moving that computation inside the
+`if map_mode is not None and map_fixes:` block, so it's only ever
+computed when a panel is actually being built. This is the clearest
+evidence yet in this project that hand-verification scripts, however
+careful, are not a substitute for running the real test suite - found
+here entirely by luck of having a working harness available.
+
+Tested (all confirmed via the real harness, genuinely executed, not
+hand-verified): 16 new tests in `test_stitch.py` (`_map_panel_dimensions`
+unit tests - matches shared axis both ways, clamps the free dimension,
+returns None for no GPS data; `stitch_cameras()` end-to-end - default
+side for each layout, side override, zoom without/with a radius, no-
+GPS-data no-op, combines correctly with a requested `--stitch-resolution`
+too, ignored for the single-camera fallback). 3 new `test_trip_export.py`
+tests (panel actually grows the output vs. a plain stitch, `map_mode`/
+`map_side`/`map_fixes`/`map_roads` correctly forwarded to
+`stitch_cameras()`, roads never fetched when `stitch_map` isn't given).
+3 new `test_bv_export.py` CLI tests (`--stitch-map` only means anything
+together with `--stitch`, bare flag defaults to `map`, explicit
+mode+side parse correctly). All green: `test_stitch: 51 passed`,
+`test_trip_export: 26 passed`, `test_bv_export: 41 passed`, 0 failed
+across all three. The rest of the suite (everything the harness covers)
+re-run clean too, no regressions.
+
+Not confirmed against a real front+rear BlackVue archive with real GPS
+data - only against synthetic `testsrc` clips and hand-written GPS
+fixtures. Worth a real `bv-export --stitch --stitch-map` run on
+Christer's actual archive before calling this fully done.

@@ -75,6 +75,8 @@ def bv_export(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    stitch_map: str | None = None,
+    stitch_map_side: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -209,6 +211,8 @@ def bv_export(
                 stitch_layout=stitch_layout,
                 stitch_resolution=stitch_resolution,
                 stitch_bitrate=stitch_bitrate,
+                stitch_map=stitch_map,
+                stitch_map_side=stitch_map_side,
                 debug=debug,
             )
         except MediaToolError as exc:
@@ -425,12 +429,12 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Also render stitch.mp4: the trip's front and rear video "
             "composed into one, side by side or stacked (see "
-            "--stitch-layout). A trip with only one camera falls back "
-            "to a plain copy of whichever one exists. This is a first "
-            "version - no map panel, g-sensor overlay, subtitle "
-            "burn-in, rearview-mirror layout, or auto-picking a "
-            "layout from the trip's own geometry yet, all planned for "
-            "later."
+            "--stitch-layout), optionally with a map panel (see "
+            "--stitch-map). A trip with only one camera falls back to "
+            "a plain copy of whichever one exists, ignoring "
+            "--stitch-map too. G-sensor overlay, subtitle burn-in, "
+            "rearview-mirror layout, and auto-picking a layout from "
+            "the trip's own geometry are still planned for later."
         ),
     )
 
@@ -469,6 +473,33 @@ def main(argv: list[str] | None = None) -> int:
             "passed straight to ffmpeg and capped there (-b:v/"
             "-maxrate/-bufsize all set to RATE). Only used together "
             "with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-map",
+        nargs="?",
+        choices=["map", "zoom"],
+        const="map",
+        default=None,
+        help=(
+            "Also compose a map panel alongside the camera composite "
+            "in stitch.mp4, rendered fresh at whatever size fits the "
+            "composite (not a copy of --map's own map.mp4) - bare flag "
+            "uses a static whole-trip overview, --stitch-map zoom uses "
+            "a follow-camera view instead (reusing --map-zoom METERS "
+            "as its radius - --map-zoom must also be given for that "
+            "variant). Only used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-map-side",
+        choices=["left", "right", "top", "down"],
+        default=None,
+        help=(
+            "Override --stitch-map's panel side. Default: left for "
+            "--stitch-layout top_down, down for side_by_side."
         ),
     )
 
@@ -525,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
         stitch_layout=args.stitch_layout if args.stitch else None,
         stitch_resolution=args.stitch_resolution,
         stitch_bitrate=args.stitch_bitrate,
+        stitch_map=args.stitch_map if args.stitch else None,
+        stitch_map_side=args.stitch_map_side,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         debug=args.debug,

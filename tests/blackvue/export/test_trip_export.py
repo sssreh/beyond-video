@@ -1,3 +1,4 @@
+import json
 import struct
 import subprocess
 from datetime import timedelta
@@ -31,6 +32,23 @@ def _make_video(path, duration_seconds: float) -> None:
         text=True,
         check=True,
     )
+
+
+def _video_size(path) -> tuple[int, int]:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    return stream["width"], stream["height"]
 
 
 def _gsensor_bytes(*records) -> bytes:
@@ -587,6 +605,122 @@ def test_export_trip_stitch_warns_instead_of_failing_on_encode_error(
     assert "stitch" in result.warnings[0]
     # The rest of the export still succeeded despite the stitch failure.
     assert result.front_video is not None
+
+
+def _trip_with_front_rear_and_gps(source_dir):
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    gps_a = source_dir / "a.gps"
+    gps_a.write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    gps_b = source_dir / "b.gps"
+    gps_b.write_text(
+        "[1700000010000]$GPRMC,120010.00,A,4808.038,N,01132.000,E,"
+        "12.00,45.00,010124,,,A*6D\n"
+    )
+
+    return Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.GPS: AssetFile(Asset.GPS, gps_a),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100010_N"),
+            assets={Asset.GPS: AssetFile(Asset.GPS, gps_b)},
+        ),
+    ))
+
+
+def test_export_trip_stitch_map_adds_a_panel_to_stitch_mp4(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps(source_dir)
+
+    result_plain = export_trip(
+        trip, dest_dir / "plain", stitch_layout="side_by_side",
+    )
+    result_with_map = export_trip(
+        trip, dest_dir / "with_map",
+        stitch_layout="side_by_side", stitch_map="map",
+    )
+
+    assert result_plain.warnings == ()
+    assert result_with_map.warnings == ()
+    assert result_with_map.stitch.exists()
+
+    plain_size = _video_size(result_plain.stitch)
+    with_map_size = _video_size(result_with_map.stitch)
+    # Default side for side_by_side is 'down' - width unchanged, height
+    # grows to fit the added panel.
+    assert with_map_size[0] == plain_size[0]
+    assert with_map_size[1] > plain_size[1]
+
+
+def test_export_trip_stitch_map_side_is_forwarded(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps(source_dir)
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="top_down", stitch_map="map", stitch_map_side="right",
+    )
+
+    assert captured["map_mode"] == "map"
+    assert captured["map_side"] == "right"
+    assert len(captured["map_fixes"]) == 2
+    assert len(captured["map_roads"]) == 1
+
+
+def test_export_trip_stitch_map_skipped_without_stitch_map_flag(
+    tmp_path, monkeypatch
+):
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError(
+            "should not fetch roads for stitch when stitch_map isn't given"
+        )
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _refuse)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps(source_dir)
+
+    result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert result.stitch.exists()
+    assert result.warnings == ()
 
 
 def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
