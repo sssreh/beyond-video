@@ -543,8 +543,8 @@ def test_stack_scales_both_cameras_toward_the_target_resolution_not_native_size(
     # the eventual output needed (rear upscaled from 1080p to front's
     # native ~2160p, just to immediately shrink back to 720p two steps
     # later - measured at ~100s on Christer's archive for that
-    # unnecessary size). When a resolution is requested, both cameras'
-    # intermediates should target roughly that size directly instead.
+    # unnecessary size). Neither scale filter should reference front's
+    # native height (2160) at all.
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
 
     scale_filters = {}
@@ -574,10 +574,56 @@ def test_stack_scales_both_cameras_toward_the_target_resolution_not_native_size(
         layout="side_by_side", resolution=(1280, 720),
     )
 
-    assert scale_filters["front.mp4"] == "scale=-2:720"
-    assert scale_filters["rear.mp4"] == "scale=-2:720"
+    # Both same 16:9 aspect ratio, so the ideal shared height splits
+    # the target width evenly between them: 1280 / (16/9 + 16/9) = 360
+    # -> 640-wide each, combined width exactly 1280. Not out_height
+    # (720) directly - that combines to 2560 wide, double what's
+    # needed, which is the bug this test originally caught before
+    # _ideal_shared_dimension() existed (Christer worked out the
+    # correct ~half-of-target number by hand and asked whether that
+    # was right - it was).
+    assert scale_filters["front.mp4"] == "scale=-2:360"
+    assert scale_filters["rear.mp4"] == "scale=-2:360"
     assert "2160" not in scale_filters["front.mp4"]
     assert "2160" not in scale_filters["rear.mp4"]
+    assert "720" not in scale_filters["front.mp4"]
+    assert "720" not in scale_filters["rear.mp4"]
+
+
+def test_ideal_shared_dimension_hstack_makes_combined_width_match_target():
+    # Two same-aspect-ratio (16:9) cameras split the target width
+    # evenly - see the test above for the real-archive numbers this
+    # traces back to.
+    shared = stitch_module._ideal_shared_dimension(
+        3840, 2160, 1920, 1080,
+        filter_name="hstack", out_width=1280, out_height=720,
+    )
+    assert shared == 360
+
+
+def test_ideal_shared_dimension_vstack_makes_combined_height_match_target():
+    # Mirror of the hstack case: shared width instead of shared
+    # height, solving so the combined *height* (front's height on top
+    # of rear's) matches out_height instead of out_width.
+    shared = stitch_module._ideal_shared_dimension(
+        3840, 2160, 1920, 1080,
+        filter_name="vstack", out_width=1280, out_height=720,
+    )
+    assert shared == 640
+
+
+def test_ideal_shared_dimension_caps_at_the_other_target_dimension():
+    # Two very narrow/tall cameras (aspect ratio 1:4) side by side:
+    # solving purely for "combined width == out_width" would ask for a
+    # height taller than the target frame itself (each camera's own
+    # width contribution is small, so a lot of height is needed to use
+    # up the target width) - capped at out_height instead, since
+    # nothing should ever be scaled bigger than the final frame.
+    shared = stitch_module._ideal_shared_dimension(
+        100, 400, 100, 400,
+        filter_name="hstack", out_width=1280, out_height=720,
+    )
+    assert shared == 720
 
 
 def test_stack_decodes_front_and_rear_as_separate_ffmpeg_calls(
