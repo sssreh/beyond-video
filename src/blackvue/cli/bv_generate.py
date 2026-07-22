@@ -501,6 +501,11 @@ def _do_translate_only(
     extract+transcribe pipeline from scratch, it leaves the .aac and
     .transcript.txt files behind too, so the next run (of this or
     --transcribe) doesn't redo that work.
+
+    Exception: if --srt/--lrc are given, the existing-transcript reuse
+    is skipped and Whisper always runs fresh - a cached plain-text
+    transcript has no per-segment timing, so reusing it would produce
+    no subtitles at all.
     """
 
     translation_destination = archive_path / _language_suffixed_name(
@@ -531,8 +536,17 @@ def _do_translate_only(
     #    needs, so reuse it instead of re-running Whisper. Diarized
     #    and plain transcripts are tracked as separate assets, so
     #    this looks at whichever one matches what this run wants.
-    existing_transcript = recording.file(
-        Asset.TRANSCRIPT_DIARIZED if args.diarize else Asset.TRANSCRIPT
+    #    Skipped entirely when --srt/--lrc are requested: a cached
+    #    plain-text transcript has no per-segment timing, so reusing
+    #    it would silently produce no subtitles - forcing a fresh
+    #    transcribe() is the only way to actually satisfy the request.
+    want_segment_timing = args.srt or args.lrc
+    existing_transcript = (
+        None
+        if want_segment_timing
+        else recording.file(
+            Asset.TRANSCRIPT_DIARIZED if args.diarize else Asset.TRANSCRIPT
+        )
     )
 
     if existing_transcript is not None:
