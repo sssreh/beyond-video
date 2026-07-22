@@ -414,6 +414,69 @@ def test_run_reencode_single_with_hw_decode_builds_a_valid_filter_string(
     assert filter_complex.startswith("[0:v]hwdownload,format=nv12,scale=")
 
 
+def test_run_reencode_single_with_hw_decode_pins_the_input_to_a_shared_device(
+    tmp_path, monkeypatch
+):
+    # A controlled test on Christer's real archive found decoding
+    # front and rear concurrently in one ffmpeg process with two
+    # *unshared* -hwaccel cuda inputs cost ~5x the sum of decoding each
+    # alone (two separate processes, run at the same time, each cost
+    # barely more than solo) - pointing at ffmpeg opening two
+    # independent CUDA contexts rather than real GPU decoder
+    # contention. The fix: one -init_hw_device up front, every input
+    # pinned to it via -hwaccel_device. Asserted here on the args this
+    # module actually builds.
+    captured = {}
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured["input_args"] = input_args
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    stitch_module._run_reencode_single(
+        tmp_path / "front.mp4", tmp_path / "out.mp4",
+        resolution=None, bitrate=None, hw_decode=True,
+    )
+
+    input_args = captured["input_args"]
+    assert input_args[:3] == ["-init_hw_device", "cuda=cu:0", "-hwaccel"]
+    assert "-hwaccel_device" in input_args
+    assert input_args[input_args.index("-hwaccel_device") + 1] == "cu"
+
+
+def test_run_stack_with_hw_decode_shares_one_device_across_both_inputs(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured["input_args"] = input_args
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    stitch_module._run_stack(
+        tmp_path / "front.mp4", tmp_path / "rear.mp4", tmp_path / "out.mp4",
+        filter_name="hstack", front_width=640, front_height=480,
+        resolution=None, bitrate=None, hw_decode=True,
+    )
+
+    input_args = captured["input_args"]
+    # Exactly one -init_hw_device, up front (not one per input), and
+    # both -i's reference it via the same -hwaccel_device value.
+    assert input_args.count("-init_hw_device") == 1
+    assert input_args[0] == "-init_hw_device"
+    assert input_args[1] == "cuda=cu:0"
+    hwaccel_device_indices = [
+        i for i, arg in enumerate(input_args) if arg == "-hwaccel_device"
+    ]
+    assert len(hwaccel_device_indices) == 2
+    assert all(input_args[i + 1] == "cu" for i in hwaccel_device_indices)
+
+
 def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", None)
 

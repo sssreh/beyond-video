@@ -1673,16 +1673,62 @@ annoying failure for "assemble one holiday video."
    confirming the string handed to the encoder is well-formed. Full
    suite green (371 passed, up from 369).
 
-Immediate next step: get a fresh `--debug` run from Christer on the same
-single-camera trip now that this filter-syntax bug is fixed, to finally get
-the real signal - does single-camera NVDEC actually decode (and if so, is
-it fast or slow compared to CPU)? That result decides the hwdownload-
-copy-cost vs. two-camera-engine-contention question this was meant to
-answer in the first place, and from there whether to revert NVDEC, scope
-it to single-camera only, or try a different filter-graph approach -
-and separately, confirm `--map` against a real archive (real Overpass
-query, real GPS data, see item 4's caveat above) - then continue `--stitch`
-per the spec above, in order: the map-panel aspect-ratio work, then
-g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
-then the auto-pick-from-trip-geometry layer on top once the individual
-pieces work with explicit flags.
+   **Follow-up: root cause of the two-camera NVDEC regression found and
+   fixed - unshared CUDA device contexts, not real GPU contention (done,
+   this session).** With the filter-syntax bug above fixed, the real
+   single-camera NVDEC signal came back clean: front alone 38.5s, rear
+   alone 17.0s (both real, both faster than CPU decode measured on the
+   same trip - 61.9s and, by inference, proportionally more for rear).
+   So NVDEC decode itself is a genuine win when only one camera is
+   decoding - the question was why combining both into one `--stitch`
+   run cost 276.2s, nearly 5x the 55.5s sum of the two solo numbers.
+
+   Ruled out real GPU decoder-engine contention directly: ran the two
+   single-camera commands in two separate PowerShell windows, started
+   within a second of each other (confirmed genuinely overlapping, not
+   sequential) - front came back at 44.8s, rear at 19.0s, both only
+   modestly slower than their solo numbers. If the NVDEC hardware
+   itself were the bottleneck, two decodes running concurrently in any
+   process arrangement would cost close to that - not 5x worse. The
+   difference had to be something specific to one ffmpeg process
+   handling two `-hwaccel cuda` inputs in the same filter graph.
+
+   That matches a known ffmpeg rough edge: without an explicit shared
+   device, each `-hwaccel cuda` input opens its own separate CUDA
+   context, and cross-context synchronization once both contexts feed
+   into the same filter graph is expensive. Fix: `_shared_hw_device_args()`
+   emits one `-init_hw_device cuda=cu:0` up front (before any `-i`,
+   once per command, only when NVDEC is being attempted), and
+   `_hwaccel_input_args()` now also passes `-hwaccel_device cu` on
+   every hwaccel input, pinning it to that one shared device instead
+   of implicitly creating its own. Applied to both `_run_stack()`
+   (two-camera path, where this actually mattered) and
+   `_run_reencode_single()` (single-camera path, harmless/no-op there
+   since there's only one input anyway, but consistent).
+
+   Tested: 2 new tests inspecting the actual args built - one
+   confirming the single-input path pins to the shared device, one
+   confirming the two-input path emits exactly one `-init_hw_device`
+   (not one per input) and both `-i`'s reference the same
+   `-hwaccel_device` value. Can't verify the actual speedup in this
+   sandbox (no GPU) - real confirmation is Christer re-running the
+   original two-camera `--stitch --stitch-resolution 1280x720
+   --stitch-bitrate 256k --debug` command and comparing the new
+   `decode=nvdec` stitch-phase time against the old 276.2s. Full suite
+   green (373 passed, up from 371).
+
+Immediate next step: get a fresh two-camera `--debug` run from Christer
+with this fix in place - if the shared-device theory is right, the
+combined stitch-phase time should land much closer to the ~55.5s sum of
+the two solo decodes (maybe a bit more for the actual hstack/pad/encode
+work) instead of 276.2s. If it does, NVDEC becomes a clear win on both
+paths and this investigation (item 58 in the task list) is closed. If it
+doesn't fully close the gap, there's still more contention than the
+shared-device fix accounts for, and reverting NVDEC for the two-camera
+path specifically becomes the fallback plan. Separately, confirm `--map`
+against a real archive (real Overpass query, real GPS data, see item 4's
+caveat above) - then continue `--stitch` per the spec above, in order: the
+map-panel aspect-ratio work, then g-sensor overlay placement, then
+subtitle burn-in, then `rearview_mirror`, then the
+auto-pick-from-trip-geometry layer on top once the individual pieces work
+with explicit flags.
