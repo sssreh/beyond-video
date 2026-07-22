@@ -449,6 +449,39 @@ untouched (mtime unchanged).
 
 ---
 
+## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
+
+Christer noticed on his real archive: the merged `trip.srt` ran a couple of
+seconds longer than both the actual video and `trip.lrc`. Root cause was in
+`transcribe()` (`blackvue.generate.speech`), not in the merge/padding code:
+faster-whisper decodes in fixed-size internal chunks, so a segment's end
+timestamp - the last one especially - can land slightly past the real audio
+length. That inflated end time then survives untouched through per-recording
+`.srt` -> trip-level rebase/merge -> `trip.srt`.
+
+`trip.lrc` didn't show the same overrun because LRC has no end timestamp at
+all - `parse_lrc` sets `end=start`, so the padding check in
+`_pad_to_duration` (`last_end = max(segment.end for segment in segments)`)
+was comparing against each line's *start*, not an inflated end, and mostly
+happened not to exceed the video length by coincidence. That made `trip.lrc`
+look "correct" for the wrong reason, not because the underlying timing was
+actually more accurate - the real bug was upstream of both.
+
+Fix: `transcribe()` now clamps every segment's `start`/`end` to
+`info.duration` - faster-whisper's own measurement of the real audio length
+from the same decode, so no extra ffprobe call needed. This fixes it at the
+source, for `bv-generate`'s own per-recording `.srt`/`.transcript.txt`/etc.
+too, not just the trip-level merge.
+
+Tested: `test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration`
+(new, `test_speech.py`) - a fake whisper model returns a segment ending at
+121.5s against a 120.0s `info.duration`, asserts the returned `SpeechSegment`
+is clamped to 120.0s. Not yet confirmed against Christer's real archive (the
+original report was against real data, but this specific fix hasn't been
+re-run against it yet).
+
+---
+
 ## Tested vs not tested
 
 Confirmed against real data on Christer's machine:

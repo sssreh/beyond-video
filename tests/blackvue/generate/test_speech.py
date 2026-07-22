@@ -12,6 +12,7 @@ from blackvue.generate.speech import SpeechSegment
 from blackvue.generate.speech import _get_diarization_pipeline
 from blackvue.generate.speech import diarize
 from blackvue.generate.speech import format_diarized_transcript
+from blackvue.generate.speech import transcribe
 
 
 def test_format_diarized_transcript_groups_consecutive_same_speaker():
@@ -74,6 +75,60 @@ def test_format_diarized_transcript_labels_unknown_without_turns():
     result = format_diarized_transcript(segments, turns=())
 
     assert result == "[UNKNOWN] Hi."
+
+
+class _FakeRawSegment:
+    def __init__(self, start, end, text):
+        self.start = start
+        self.end = end
+        self.text = text
+
+
+class _FakeTranscriptionInfo:
+    def __init__(self, language, duration):
+        self.language = language
+        self.duration = duration
+
+
+class _FakeWhisperModel:
+    def __init__(self, raw_segments, info):
+        self._raw_segments = raw_segments
+        self._info = info
+
+    def transcribe(self, source, language=None):
+        return self._raw_segments, self._info
+
+
+def test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration(
+    monkeypatch,
+):
+    # faster-whisper decodes in fixed-size chunks internally, so a
+    # segment's end (or even start) timestamp can land past the
+    # audio's real length (info.duration, measured from the same
+    # decode) - this is what showed up as Christer's merged trip.srt
+    # running a couple of seconds longer than the actual video and
+    # trip.lrc: the last cue's end (121.5s) overran the real 120.0s of
+    # audio.
+    raw_segments = (
+        _FakeRawSegment(0.0, 5.0, "hello"),
+        _FakeRawSegment(118.0, 121.5, "goodbye"),
+    )
+    info = _FakeTranscriptionInfo(language="en", duration=120.0)
+
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(
+        speech_module,
+        "_get_whisper_model",
+        lambda model_size: _FakeWhisperModel(raw_segments, info),
+    )
+
+    transcript = transcribe(Path("/tmp/audio.aac"))
+
+    assert transcript.segments == (
+        SpeechSegment(start=0.0, end=5.0, text="hello"),
+        SpeechSegment(start=118.0, end=120.0, text="goodbye"),
+    )
 
 
 def _install_fake_pyannote_audio(
