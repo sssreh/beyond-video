@@ -299,6 +299,37 @@ Christer's exact scenario: pre-existing `translation.txt`, missing
 `.srt`/`.lrc`, no `--overwrite`); not yet reconfirmed by Christer against
 the real archive that surfaced both bugs.
 
+While chasing the above, Christer also hit a third, unrelated issue: he ran
+`bv-generate` without a `PATH` argument (defaults to `.`, unlike his
+`bv-export` commands which always included it explicitly) - zero recordings
+matched, and `bv-generate` printed nothing at all, no error, no hint. Two
+small UX fixes for this, both in `run()`:
+
+- **"No recordings found" message (done, this session).** `bv-generate` now
+  prints `bv-generate: <path> - no recordings found in range, nothing to
+  do.` and returns `EXIT_OK` when the `PATH --from --until --timestamp`
+  selection matches zero recordings, instead of silently doing nothing -
+  same convention `bv-export` already used. Catches a wrong/omitted path,
+  a `--timestamp` that doesn't match anything, or a genuinely empty
+  archive, not just the missing-argument case that triggered this.
+- **Ask-once overwrite prompt (done, this session).** Christer separately
+  asked for this: the interactive "`<file>` already exists. Overwrite?"
+  prompt used to fire once per existing output file, which is painful
+  against an archive with many recordings and several output types
+  (transcript, translation, srt, lrc, ...). New `_OverwriteDecision`
+  (a small callable that asks once, on the first existing file, then
+  caches the answer for the rest of the run) - one instance created in
+  `run()` per invocation, stashed on `args.overwrite_decision`, and
+  threaded through every `_should_write()` call via a new
+  `_should_write_for(path, args)` convenience wrapper that replaced all
+  12 call sites' repeated `overwrite=args.overwrite, dry_run=args.dry_run`
+  boilerplate. `_should_write()` itself stays backward compatible -
+  `overwrite_decision=None` (the default) falls back to asking every
+  time, so any caller that doesn't have a decision object still works.
+  `--overwrite`/`--dry-run`/non-interactive batch-skip behavior are all
+  unchanged; this only changes how many times the interactive prompt
+  itself fires.
+
 ---
 
 ## SRT/LRC trip-level merge for bv-export (done, this session)

@@ -249,12 +249,43 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _should_write(path: Path, *, overwrite: bool, dry_run: bool) -> bool:
+class _OverwriteDecision:
+    """Caches the interactive "overwrite existing files?" answer for
+    a whole bv-generate run, so it's asked once - on the first
+    existing file encountered - instead of once per file. One
+    instance is created per run() call and threaded through every
+    _should_write() call via args.overwrite_decision.
+    """
+
+    def __init__(self) -> None:
+        self._answered = False
+        self._overwrite = False
+
+    def __call__(self, path: Path) -> bool:
+        if not self._answered:
+            answer = input(
+                f"{path.name} already exists. Overwrite this and any "
+                "other existing files for the rest of this run? [y/N] "
+            ).strip().lower()
+            self._overwrite = answer in ("y", "yes")
+            self._answered = True
+
+        return self._overwrite
+
+
+def _should_write(
+    path: Path,
+    *,
+    overwrite: bool,
+    dry_run: bool,
+    overwrite_decision: "_OverwriteDecision | None" = None,
+) -> bool:
     """Decide whether to (re)generate an output file.
 
     - Missing file: always write.
     - Existing file with --overwrite: always rewrite.
-    - Existing file, interactive terminal, no --overwrite: ask.
+    - Existing file, interactive terminal, no --overwrite: ask (once
+      per run if overwrite_decision is given, otherwise once per call).
     - Existing file, non-interactive (batch/cron), no --overwrite: skip.
     - Dry-run never prompts; it only reports what it would do.
     """
@@ -269,6 +300,9 @@ def _should_write(path: Path, *, overwrite: bool, dry_run: bool) -> bool:
         return False
 
     if _interactive():
+        if overwrite_decision is not None:
+            return overwrite_decision(path)
+
         answer = input(
             f"{path.name} already exists. Overwrite? [y/N] "
         ).strip().lower()
@@ -280,6 +314,19 @@ def _should_write(path: Path, *, overwrite: bool, dry_run: bool) -> bool:
         file=sys.stderr,
     )
     return False
+
+
+def _should_write_for(path: Path, args: argparse.Namespace) -> bool:
+    """_should_write(), reading overwrite/dry_run/the shared
+    per-run overwrite decision straight from args - the common case
+    for every call site below."""
+
+    return _should_write(
+        path,
+        overwrite=args.overwrite,
+        dry_run=args.dry_run,
+        overwrite_decision=getattr(args, "overwrite_decision", None),
+    )
 
 
 def _report(verbose: bool, message: str) -> None:
@@ -351,9 +398,7 @@ def _do_extract_audio(
 
     destination = archive_path / f"{recording.id}.aac"
 
-    if not _should_write(
-        destination, overwrite=args.overwrite, dry_run=args.dry_run
-    ):
+    if not _should_write_for(destination, args):
         return False
 
     source_file = select_source(recording)
@@ -411,9 +456,7 @@ def _do_get_duration(
 
     destination = archive_path / f"{recording.id}.duration.txt"
 
-    if not _should_write(
-        destination, overwrite=args.overwrite, dry_run=args.dry_run
-    ):
+    if not _should_write_for(destination, args):
         return False
 
     if args.dry_run:
@@ -514,9 +557,7 @@ def _do_translate_only(
         "translation.txt",
         diarized=args.diarize,
     )
-    need_translation_write = _should_write(
-        translation_destination, overwrite=args.overwrite, dry_run=args.dry_run
-    )
+    need_translation_write = _should_write_for(translation_destination, args)
 
     # Computed up front (like _do_transcribe_with_optional_translate)
     # so a missing/needs-refresh .srt or .lrc alone is enough to keep
@@ -527,16 +568,12 @@ def _do_translate_only(
     # reaching the srt/lrc-writing code.
     srt_destination = archive_path / f"{recording.id}.srt" if args.srt else None
     need_srt_write = (
-        _should_write(srt_destination, overwrite=args.overwrite, dry_run=args.dry_run)
-        if args.srt
-        else False
+        _should_write_for(srt_destination, args) if args.srt else False
     )
 
     lrc_destination = archive_path / f"{recording.id}.lrc" if args.lrc else None
     need_lrc_write = (
-        _should_write(lrc_destination, overwrite=args.overwrite, dry_run=args.dry_run)
-        if args.lrc
-        else False
+        _should_write_for(lrc_destination, args) if args.lrc else False
     )
 
     if args.dry_run:
@@ -653,11 +690,7 @@ def _do_translate_only(
             diarized=args.diarize,
         )
 
-        if _should_write(
-            transcript_destination,
-            overwrite=args.overwrite,
-            dry_run=args.dry_run,
-        ):
+        if _should_write_for(transcript_destination, args):
             transcript_destination.write_text(
                 transcript_text + "\n", encoding="utf-8"
             )
@@ -748,11 +781,7 @@ def _do_transcribe_with_optional_translate(
             "translation.txt",
             diarized=args.diarize,
         )
-        need_translation_write = _should_write(
-            translation_destination,
-            overwrite=args.overwrite,
-            dry_run=args.dry_run,
-        )
+        need_translation_write = _should_write_for(translation_destination, args)
 
     # SRT/LRC filenames don't depend on language, so - like the
     # translation destination above - they can be checked up front.
@@ -761,18 +790,14 @@ def _do_transcribe_with_optional_translate(
 
     if args.srt:
         srt_destination = archive_path / f"{recording.id}.srt"
-        need_srt_write = _should_write(
-            srt_destination, overwrite=args.overwrite, dry_run=args.dry_run
-        )
+        need_srt_write = _should_write_for(srt_destination, args)
 
     lrc_destination = None
     need_lrc_write = False
 
     if args.lrc:
         lrc_destination = archive_path / f"{recording.id}.lrc"
-        need_lrc_write = _should_write(
-            lrc_destination, overwrite=args.overwrite, dry_run=args.dry_run
-        )
+        need_lrc_write = _should_write_for(lrc_destination, args)
 
     # The transcript filename depends on the *spoken* language. If
     # --language was given, that's already known. Otherwise it has
@@ -795,11 +820,7 @@ def _do_transcribe_with_optional_translate(
                         diarized=args.diarize,
                     )
                 )
-                if _should_write(
-                    transcript_destination,
-                    overwrite=args.overwrite,
-                    dry_run=True,
-                ):
+                if _should_write_for(transcript_destination, args):
                     print(
                         f"{recording.id}: would transcribe -> "
                         f"{transcript_destination.name}"
@@ -837,11 +858,7 @@ def _do_transcribe_with_optional_translate(
                 "transcript.txt",
                 diarized=args.diarize,
             )
-            need_transcript_write = _should_write(
-                transcript_destination,
-                overwrite=args.overwrite,
-                dry_run=args.dry_run,
-            )
+            need_transcript_write = _should_write_for(transcript_destination, args)
 
     if args.dry_run:
         if need_translation_write:
@@ -986,6 +1003,18 @@ def run(args: argparse.Namespace) -> int:
         for recording in archive.recordings
         if recording.id.value in interval
     ]
+
+    if not recordings:
+        print(
+            f"bv-generate: {archive_path} - no recordings found in "
+            "range, nothing to do."
+        )
+        return EXIT_OK
+
+    # Shared across every _should_write() call this run, so an
+    # interactive "overwrite?" prompt is only ever asked once (on the
+    # first existing file encountered), not once per file.
+    args.overwrite_decision = _OverwriteDecision()
 
     had_error = False
 
