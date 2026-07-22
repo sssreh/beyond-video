@@ -264,21 +264,40 @@ are already up to date, so `--srt`/`--lrc` alone against an already-
 transcribed archive still triggers a fresh Whisper run to get segment
 timing.
 
-**Bug found and fixed against Christer's real archive:** `_do_translate_only`
-(bare `--translate`, no `--transcribe`) cache-first reuses an existing
-plain-text transcript when one exists - a cached `.transcript.txt` has no
-segment timing, so the original version silently produced no `.srt`/`.lrc`
-at all whenever that cache-hit path was taken, with no warning. Christer
-hit exactly this running `--translate eng --srt --lrc` against recordings
-that already had a transcript. Fixed by having `_do_translate_only` skip
-the transcript-reuse cache entirely whenever `--srt`/`--lrc` are requested,
-forcing a fresh `transcribe()` call so there's real segment timing to draw
-from - trading away that path's caching benefit specifically when subtitle
-timing is actually needed. Plain `--translate` with no `--srt`/`--lrc`
-still uses the cache exactly as before.
+**Two bugs found and fixed against Christer's real archive**, both in
+`_do_translate_only` (bare `--translate`, no `--transcribe`):
 
-Fixed and unit-tested here; not yet reconfirmed by Christer against the
-real archive that surfaced the bug.
+1. It cache-first reuses an existing plain-text transcript when one
+   exists - a cached `.transcript.txt` has no segment timing, so the
+   original version silently produced no `.srt`/`.lrc` at all whenever
+   that cache-hit path was taken, with no warning. Fixed by skipping the
+   transcript-reuse cache whenever an `.srt`/`.lrc` actually needs
+   writing, forcing a fresh `transcribe()` call so there's real segment
+   timing to draw from.
+2. Christer re-ran with the fix above applied and *still* got nothing -
+   root cause was one level up: the whole function was gated on a single
+   `_should_write` check for `translation.txt` alone. He'd already run
+   plain `--translate` once, so `translation.txt` already existed; without
+   `--overwrite`, that gate returned early before the function ever
+   reached the srt/lrc-writing code, regardless of fix #1. Fixed by
+   computing `need_translation_write`/`need_srt_write`/`need_lrc_write`
+   independently up front (mirroring the pattern
+   `_do_transcribe_with_optional_translate` already used) and gating on
+   *any* of the three needing work, not just translation. Also tightened
+   the cache-bypass from fix #1 to trigger on `need_srt_write or
+   need_lrc_write` (whether a subtitle file actually needs writing)
+   rather than `args.srt or args.lrc` (whether the flags were merely
+   given) - avoids an unnecessary re-transcribe when srt/lrc are already
+   up to date and only translation.txt needed refreshing. The final
+   translate-and-write step is now also gated on `need_translation_write`,
+   so a run that only needed to (re)write `.srt`/`.lrc` doesn't
+   needlessly re-translate and overwrite an already-current
+   `translation.txt`.
+
+Fixed and unit-tested here (including a regression test reproducing
+Christer's exact scenario: pre-existing `translation.txt`, missing
+`.srt`/`.lrc`, no `--overwrite`); not yet reconfirmed by Christer against
+the real archive that surfaced both bugs.
 
 ---
 
