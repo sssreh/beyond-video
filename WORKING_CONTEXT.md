@@ -718,6 +718,81 @@ confirmed by re-running the full suite (still 301 passed).
 
 ---
 
+## Diagnose NVENC not being used on Christer's real machine (done, this session)
+
+Christer reported bv-export "just uses Intel graphics", never the RTX 5090.
+Root-caused step by step rather than guessing:
+
+- `ffmpeg` wasn't on PATH at all - only private copies bundled inside
+  BlueStacks and CapCut existed, neither reachable by `subprocess.run(["ffmpeg", ...])`.
+  A winget-installed Gyan.FFmpeg build existed but also wasn't on PATH.
+  Fixed by adding its `bin` folder to the User PATH.
+- Once `ffmpeg -encoders` listed `h264_nvenc` and `nvidia-smi` saw the 5090,
+  a direct `ffmpeg ... -c:v h264_nvenc` test still failed: "Driver does not
+  support the required nvenc API version. Required: 13.1 Found: 13.0" - the
+  installed NVIDIA driver (591.91) was too old for this ffmpeg build's NVENC
+  API. Fixed by updating the driver via NVIDIA App.
+- After the driver update, the same manual `h264_nvenc` test succeeded, and
+  a real `bv-export --map` run's output file confirmed
+  `TAG:encoder=Lavc62.28.102 h264_nvenc` via `ffprobe` - proof from the file
+  itself, since `encode_frame_sequence()`'s NVENC-then-CPU-fallback silently
+  swallows a failed NVENC attempt with no warning, so a successful export
+  alone never proves which encoder actually ran.
+- Windows Task Manager's per-GPU "Video Encode" graph showed 0% even during
+  a real NVENC run - not a bug, just Task Manager's ~1s sampling interval
+  missing an encode that finishes in a fraction of a second. The `ffprobe`
+  encoder tag remains the reliable check, not the graph.
+
+No code changes were needed for this one - it was entirely a machine setup
+issue (PATH, driver version). `encode_frame_sequence()`'s silent CPU fallback
+was flagged as a real (if separate) observability gap - not fixed yet, since
+by the time it came up NVENC was already confirmed working and the more
+pressing issue turned out to be render speed (see next section).
+
+---
+
+## Speed up map.mp4 frame rendering (done, this session)
+
+With NVENC confirmed working, Christer noticed `bv-export --map --map-zoom 240`
+still took 2m34s for a ~6-minute trip and asked why. Traced with
+`Measure-Command`: at `DEFAULT_FPS = 5`, a 6-minute trip is ~1,800 frames, and
+NVENC only accelerates the final encode step - turning already-drawn PNGs into
+video - which is a small fraction of that time. The real cost was in
+`map_render.render_frame()`, called once per frame, entirely on CPU:
+
+- Every frame redrew *every* road in the trip's whole dataset, even in
+  `--map-zoom` follow-camera mode where each frame's bounding box only
+  covers a small street-level sliver - almost all of that per-frame drawing
+  was for roads far off-canvas.
+- `_load_font()` reopened and re-parsed the same TrueType font file from disk
+  on every single frame instead of once for the whole export.
+
+Fixes:
+
+- `osm_roads.py`: new `index_roads(roads)` precomputes each road's own
+  (min/max lat/lon) bounding box once; new `roads_within_bbox(indexed_roads,
+  bbox)` does a cheap rectangle-overlap test per road (not a real geometric
+  intersection - a road that only grazes a corner of the frame can pass too,
+  which is harmless, just occasionally draws one extra off-canvas line).
+- `map_video.py`: in `--map-zoom` mode, `indexed_roads` is computed once
+  before the frame loop, and each frame now calls `render_frame()` with
+  `roads_within_bbox(indexed_roads, frame_bbox)` instead of the full,
+  unfiltered `roads` tuple. Static (non-zoomed) mode is unchanged - every
+  road is already relevant to the one whole-trip bbox there, nothing to
+  filter.
+- `map_render.py`: `_load_font()` now caches the loaded font in a
+  module-level `_CACHED_FONT`, loaded once on first use instead of every
+  frame.
+
+Tested: 3 new tests on `roads_within_bbox` (overlapping, partially-crossing,
+and no-overlap cases), 2 on `render_map_video` (zoomed mode filters roads
+per-frame and drops a far-away road; static mode still passes every road
+through unfiltered), 1 on `_load_font` (calls `ImageFont.truetype` only once
+across two calls). Full suite green (309 passed). Not yet re-timed against
+Christer's real archive to confirm the actual wall-clock improvement.
+
+---
+
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
 
 Christer noticed on his real archive: the merged `trip.srt` ran a couple of

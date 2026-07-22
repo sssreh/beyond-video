@@ -6,10 +6,13 @@ import pytest
 from blackvue.export import osm_roads as osm_roads_module
 from blackvue.export.osm_roads import MIN_ZOOM_RADIUS_METERS
 from blackvue.export.osm_roads import BoundingBox
+from blackvue.export.osm_roads import Road
 from blackvue.export.osm_roads import bounding_box_around_point
 from blackvue.export.osm_roads import fetch_roads
 from blackvue.export.osm_roads import bounding_box_for_fixes
+from blackvue.export.osm_roads import index_roads
 from blackvue.export.osm_roads import load_or_fetch_roads
+from blackvue.export.osm_roads import roads_within_bbox
 from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gps_reader import GpsFix
 
@@ -146,6 +149,36 @@ def test_bounding_box_around_point_floors_at_the_minimum_radius():
     )
 
     assert tiny == floored
+
+
+def test_roads_within_bbox_keeps_roads_that_overlap():
+    near = Road(points=((59.31, 18.02), (59.32, 18.03)))
+    far = Road(points=((10.0, 10.0), (10.1, 10.1)))
+
+    indexed = index_roads((near, far))
+    frame_bbox = BoundingBox(min_lat=59.30, min_lon=18.00, max_lat=59.33, max_lon=18.05)
+
+    assert roads_within_bbox(indexed, frame_bbox) == (near,)
+
+
+def test_roads_within_bbox_keeps_a_road_that_only_partially_overlaps():
+    # One end of the road sits inside the frame's bbox, the other well
+    # outside it - the road itself should still count as visible.
+    crossing = Road(points=((59.315, 18.025), (59.5, 18.5)))
+
+    indexed = index_roads((crossing,))
+    frame_bbox = BoundingBox(min_lat=59.30, min_lon=18.00, max_lat=59.33, max_lon=18.05)
+
+    assert roads_within_bbox(indexed, frame_bbox) == (crossing,)
+
+
+def test_roads_within_bbox_returns_empty_for_no_overlap():
+    far = Road(points=((10.0, 10.0), (10.1, 10.1)))
+
+    indexed = index_roads((far,))
+    frame_bbox = BoundingBox(min_lat=59.30, min_lon=18.00, max_lat=59.33, max_lon=18.05)
+
+    assert roads_within_bbox(indexed, frame_bbox) == ()
 
 
 def test_fetch_roads_parses_ways_with_geometry(monkeypatch):

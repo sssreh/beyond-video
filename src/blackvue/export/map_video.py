@@ -27,6 +27,8 @@ from .media import encode_frame_sequence
 from .osm_roads import BoundingBox
 from .osm_roads import Road
 from .osm_roads import bounding_box_around_point
+from .osm_roads import index_roads
+from .osm_roads import roads_within_bbox
 
 # 5 frames/second is enough for the position dot to read as smooth
 # motion without generating an excessive number of frames for a long
@@ -189,6 +191,16 @@ def render_map_video(
 
     frame_count = max(2, int(total_seconds * fps) + 1)
 
+    # In follow-camera mode each frame's bbox is a small street-level
+    # sliver of the whole trip - drawing every road in the whole
+    # trip's dataset on every single frame (most of it far off-canvas)
+    # is the dominant cost of rendering, not the ffmpeg encode step.
+    # index_roads() precomputes each road's own bbox once so the
+    # per-frame filter below (roads_within_bbox()) is cheap; in static
+    # (non-zoomed) mode every road is already relevant to the one
+    # whole-trip bbox, so there's nothing to filter.
+    indexed_roads = index_roads(roads) if zoom_meters is not None else None
+
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as frame_dir_name:
@@ -220,10 +232,15 @@ def render_map_video(
                 if zoom_meters is not None
                 else bbox
             )
+            frame_roads = (
+                roads_within_bbox(indexed_roads, frame_bbox)
+                if indexed_roads is not None
+                else roads
+            )
 
             frame = render_frame(
                 frame_bbox,
-                roads,
+                frame_roads,
                 tuple(route_so_far) + (position,),
                 position,
                 speed_kmh=speed,
