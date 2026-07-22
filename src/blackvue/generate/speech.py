@@ -96,23 +96,39 @@ class SpeakerTurn:
     speaker: str
 
 
+def _load_whisper_model(model_size: str):
+    """Load a faster-whisper model on GPU (CUDA) if this machine can
+    actually run it, falling back to CPU otherwise.
+
+    faster-whisper/CTranslate2 raise all sorts of different exceptions
+    depending on exactly what's missing (no NVIDIA GPU, driver too
+    old, cuDNN/cuBLAS libraries not installed, ...) - rather than
+    trying to enumerate and special-case them all, any failure loading
+    the CUDA model falls back to the CPU one, which faster-whisper
+    always supports. float16 is CTranslate2's recommended compute
+    type for GPU; int8 (quantized) is the equivalent recommendation
+    for CPU.
+    """
+
+    from faster_whisper import WhisperModel
+
+    try:
+        return WhisperModel(model_size, device="cuda", compute_type="float16")
+    except Exception:
+        return WhisperModel(model_size, device="cpu", compute_type="int8")
+
+
 def _get_whisper_model(model_size: str):
     """Return a cached faster-whisper model, loading it if needed."""
 
     if model_size not in _WHISPER_MODEL_CACHE:
         try:
-            from faster_whisper import WhisperModel
+            _WHISPER_MODEL_CACHE[model_size] = _load_whisper_model(model_size)
         except ImportError as exc:
             raise MediaToolError(
                 "faster-whisper is not installed "
                 "(pip install faster-whisper)"
             ) from exc
-
-        _WHISPER_MODEL_CACHE[model_size] = WhisperModel(
-            model_size,
-            device="cpu",
-            compute_type="int8",
-        )
 
     return _WHISPER_MODEL_CACHE[model_size]
 

@@ -1,5 +1,9 @@
 """
-Media concatenation for bv-export (ffmpeg concat demuxer).
+Media concatenation for bv-export (ffmpeg concat demuxer), plus the
+shared frame-sequence-to-video encoder map_video.py/gsensor_video.py
+both use - which tries NVIDIA's hardware h264_nvenc encoder when
+available, falling back to the CPU libx264 encoder otherwise (see
+encode_frame_sequence()).
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -29,6 +33,61 @@ def _escape_concat_path(path: Path) -> str:
     return str(path).replace("'", "'\\''")
 
 
+# Cached after the first check (per process) - which encoders this
+# machine's ffmpeg build has is a fixed fact for the life of the run,
+# not something worth re-shelling-out to ffmpeg to ask for every
+# single trip's map.mp4/gsensor.mp4.
+_NVENC_AVAILABLE: bool | None = None
+
+
+def _nvenc_available() -> bool:
+    """Return True if this machine's ffmpeg build lists h264_nvenc
+    (NVIDIA's hardware H.264 encoder) among its encoders.
+
+    Just having the encoder listed doesn't guarantee it'll actually
+    work (a real NVIDIA GPU + driver + ffmpeg built with NVENC support
+    all have to line up) - encode_frame_sequence() falls back to the
+    CPU encoder if an NVENC attempt fails for any reason, so a wrong
+    "True" here costs one failed attempt, not a broken export.
+    """
+
+    global _NVENC_AVAILABLE
+
+    if _NVENC_AVAILABLE is None:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _NVENC_AVAILABLE = "h264_nvenc" in result.stdout
+        except FileNotFoundError:
+            # No ffmpeg at all - encode_frame_sequence()'s own attempt
+            # below will raise the usual clean "not found" error.
+            _NVENC_AVAILABLE = False
+
+    return _NVENC_AVAILABLE
+
+
+def _run_ffmpeg_encode(
+    codec_args: list[str], frame_dir: Path, destination: Path, fps: int
+) -> None:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-framerate", str(fps),
+            "-i", str(frame_dir / "frame_%06d.png"),
+            *codec_args,
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
     """Encode a directory of frame_%06d.png images (map_video.py,
     gsensor_video.py) into a video at `destination`, in order, at
@@ -36,24 +95,34 @@ def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
 
     Shared so every "render a frame sequence, hand it to ffmpeg"
     overlay video uses the same encode settings and error handling.
+
+    Uses NVIDIA's hardware h264_nvenc encoder when this machine's
+    ffmpeg build supports it (see _nvenc_available()), falling back to
+    the software libx264 encoder - always used directly if NVENC
+    isn't available, and also if an NVENC attempt itself fails (e.g.
+    the encoder is listed but no compatible GPU/driver is actually
+    present) - so this always produces a video either way, just faster
+    when a real NVIDIA GPU is there to use.
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    if _nvenc_available():
+        try:
+            _run_ffmpeg_encode(
+                ["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p"],
+                frame_dir, destination, fps,
+            )
+            return
+        except FileNotFoundError as exc:
+            raise MediaToolError("ffmpeg not found on PATH") from exc
+        except subprocess.CalledProcessError:
+            pass  # fall through to the CPU encoder below
+
     try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-framerate", str(fps),
-                "-i", str(frame_dir / "frame_%06d.png"),
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                str(destination),
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
+        _run_ffmpeg_encode(
+            ["-c:v", "libx264", "-pix_fmt", "yuv420p"],
+            frame_dir, destination, fps,
         )
     except FileNotFoundError as exc:
         raise MediaToolError("ffmpeg not found on PATH") from exc

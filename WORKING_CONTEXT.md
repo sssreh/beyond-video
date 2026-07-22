@@ -606,6 +606,50 @@ points the correct real-world direction, not just a plausible-looking one.
 
 ---
 
+## GPU auto-detect with CPU fallback (done, this session)
+
+Christer asked whether video generation uses his NVIDIA GPU at all (no -
+`libx264` for map/gsensor encoding, `device="cpu"` for Whisper, nothing
+touches CUDA anywhere) and whether that'd be worth changing. Didn't know
+his card's NVENC support or whether CUDA/cuDNN is set up, so rather than
+asking him to go find out, both paths now auto-detect and fall back to
+CPU on their own - no configuration needed either way, works the same
+regardless of what's actually on his machine.
+
+- `export.media._nvenc_available()`: runs `ffmpeg -encoders` once per
+  process (cached in a module global) and checks for `h264_nvenc`.
+  `encode_frame_sequence()` (shared by `map.mp4`/`gsensor.mp4`) tries
+  `h264_nvenc` first when listed, but *also* falls back to `libx264` if
+  the NVENC attempt itself fails (encoder listed but no compatible
+  GPU/driver actually present, say) - only raises if the CPU encoder
+  fails too. A wrong "available" guess costs one failed attempt, never a
+  broken export.
+- `generate.speech._load_whisper_model()`: tries
+  `WhisperModel(..., device="cuda", compute_type="float16")` first,
+  falls back to today's `device="cpu", compute_type="int8"` on any
+  exception - faster-whisper/CTranslate2 raise different exception types
+  for "no GPU," "driver too old," "cuDNN/cuBLAS missing," etc., so this
+  catches broadly rather than trying to enumerate them all.
+- Neither path prints which one it picked (in scope for a later request,
+  not part of this one) - real GPU usage is checkable externally via
+  `nvidia-smi` while a `--transcribe`/`--map`/`--gsensor-video` run is in
+  progress. The CUDA Whisper path also needs matching `nvidia-cudnn-cu12`/
+  `nvidia-cublas-cu12` (or a system CUDA install) alongside faster-whisper
+  itself - if those aren't present it silently uses CPU, same as before
+  this change, just without a hard requirement to have them.
+
+Tested: 8 new tests (`_nvenc_available` detection + caching,
+`encode_frame_sequence` preferring/falling back between encoders including
+one real fallback exercised end-to-end with actual ffmpeg since this
+sandbox has no real NVENC hardware, `_load_whisper_model` CUDA-success and
+CUDA-failure-falls-back-to-CPU with a fake `faster_whisper` module, plus a
+genuine missing-dependency test since faster-whisper truly isn't installed
+in this sandbox). Full suite green (291 passed). Not yet run on Christer's
+real machine/GPU - the NVENC and CUDA success paths are only exercised via
+fakes here, since this sandbox has neither.
+
+---
+
 ## Fix: trip.srt running longer than the video/trip.lrc (done, this session)
 
 Christer noticed on his real archive: the merged `trip.srt` ran a couple of
