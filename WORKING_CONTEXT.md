@@ -1899,3 +1899,66 @@ per the spec above, in order: the map-panel aspect-ratio work, then
 g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
 then the auto-pick-from-trip-geometry layer on top once the individual
 pieces work with explicit flags.
+
+## bv-export: --timestamp/--from/--until select trips, not recordings (done, this session)
+
+Christer noticed, while thinking ahead to a future "refer to a trip by
+name" feature, that `bv-export`'s `--timestamp`/`--from`/`--until` flags
+worked by filtering *recordings* against the requested range before ever
+building trips from them:
+
+```python
+recordings = [r for r in archive.recordings if r.id.value in interval]
+trips = TripBuilder(...).build(recordings)
+```
+
+For a long continuous drive, this can silently truncate a trip: if the
+real trip's recordings span outside the requested window (e.g. the drive
+started a few minutes before a `--timestamp` window opens, or a
+`--timestamp` prefix like `20260721_124` only covers a literal 10-minute
+lexical range - see `lexicaltimeparser.py`), the recordings outside that
+window are filtered out *before* `TripBuilder` ever sees them - so a real,
+continuous trip gets exported as a truncated fragment, with the folder's
+own label (`trip.label`, from the *surviving* recordings' timestamps) not
+even reflecting the true, full drive.
+
+Christer's actual want, stated directly: "all trips that were in the
+range, and get recordings before and after range if the videos belong to
+the trips found in that range." Implemented exactly that - trips are now
+detected across the *whole* archive first, then a trip is kept if any one
+of its own recordings falls inside the requested range; the whole trip is
+then exported, including whatever recordings pushed it before or after
+the range's own boundaries:
+
+```python
+all_trips = TripBuilder(...).build(archive.recordings)
+trips = [
+    trip for trip in all_trips
+    if any(recording.id.value in interval for recording in trip)
+]
+```
+
+This matches how `bv-ls --trips` already worked (detect trips over the
+whole archive, filter for display afterward) - `bv-export` was the only
+place still filtering the *input* to trip detection rather than filtering
+the *output* of it.
+
+Trade-off, called out explicitly in `bv_export()`'s docstring and the
+`--timestamp`/`--from`/`--until` CLI help text: trip detection (and
+whatever it reads per recording - `.duration.txt` unless `--no-duration`,
+GPS/g-sensor data for movement bridging unless `--no-movement`) now runs
+across the *entire* archive on every run, not just the requested range - a
+real cost on a very large archive, accepted here in favor of never
+silently truncating a trip. Revisit if this becomes a real problem on
+Christer's actual archive size.
+
+Tested: 2 new tests in `test_bv_export.py` - a 3-recording trip where
+`--timestamp` matches *only* the middle recording exactly, confirming the
+whole trip (all 3 recordings, full label) is still exported rather than
+just the matching one; and a trip entirely outside the requested range
+still being excluded (exporting the whole overlapping trip isn't the same
+as exporting everything). Full suite green (383 passed, up from 381).
+
+The "refer to a trip by name" feature itself (the reason this came up) is
+still just an idea for later, not implemented - noted here for whenever
+it's picked up.
