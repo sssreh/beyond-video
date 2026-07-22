@@ -12,6 +12,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import concurrent.futures
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -287,6 +289,7 @@ def export_trip(
     # three for now - map/gsensor rendering do real CPU-bound Python
     # work (PIL frame drawing) that would contend for the GIL if also
     # threaded alongside each other, a separate change if wanted later.
+    concat_start = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         front_future = executor.submit(
             _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings
@@ -300,6 +303,10 @@ def export_trip(
         front_video = front_future.result()
         rear_video = rear_future.result()
         audio = audio_future.result()
+    print(
+        f"bv-export: concatenation phase took {time.monotonic() - concat_start:.1f}s",
+        file=sys.stderr,
+    )
 
     text_paths = []
     for asset, filename in TEXT_ASSETS:
@@ -346,6 +353,7 @@ def export_trip(
     map_path = None
     map_zoom_path = None
     if (render_map or map_zoom_meters is not None) and fixes:
+        map_start = time.monotonic()
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
         bbox, roads = _load_trip_roads(fixes, cache_dir, warnings)
 
@@ -363,6 +371,10 @@ def export_trip(
                     warning_label="map_zoom", map_icon=map_icon,
                     zoom_meters=map_zoom_meters,
                 )
+        print(
+            f"bv-export: map phase took {time.monotonic() - map_start:.1f}s",
+            file=sys.stderr,
+        )
 
     gsensor_path = None
     samples = _merge_gsensor(trip)
@@ -381,6 +393,7 @@ def export_trip(
 
     stitch_path = None
     if stitch_layout is not None:
+        stitch_start = time.monotonic()
         try:
             stitch_path = stitch_cameras(
                 front_video, rear_video, destination / "stitch.mp4",
@@ -390,6 +403,10 @@ def export_trip(
             )
         except MediaToolError as exc:
             warnings.append(f"stitch: {exc}")
+        print(
+            f"bv-export: stitch phase took {time.monotonic() - stitch_start:.1f}s",
+            file=sys.stderr,
+        )
 
     return ExportResult(
         front_video=front_video,
