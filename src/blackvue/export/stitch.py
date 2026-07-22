@@ -131,6 +131,32 @@ def _bitrate_args(bitrate: str | None) -> list[str]:
     return ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bitrate]
 
 
+def _fit_and_pad(input_label: str, output_label: str, width: int, height: int) -> str:
+    """A filter-chain fragment scaling `input_label` to fit inside a
+    width x height box without distorting its own aspect ratio
+    (force_original_aspect_ratio=decrease - shrinks to fit, never
+    stretches past the box), then pads with black bars to exactly
+    reach width x height (letterboxed or pillarboxed, whichever axis
+    ends up smaller than the box).
+
+    Confirmed against Christer's real archive: a plain scale=W:H
+    (stretching to the exact requested size regardless of the
+    source's own shape) visibly distorted the picture whenever the
+    stitched composite's natural aspect ratio didn't match the
+    requested one - e.g. two 16:9 cameras side by side come out
+    ultra-wide (~3.56:1), and forcing that into a --stitch-resolution
+    like 320x240 (4:3) squeezed the width far more than the height.
+    This fit-then-pad idiom keeps the file's own output dimensions
+    exactly what was asked for, without warping the actual picture.
+    """
+
+    return (
+        f"[{input_label}]scale=w={width}:h={height}:"
+        "force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[{output_label}]"
+    )
+
+
 def _reencode_single(
     source: Path,
     destination: Path,
@@ -143,7 +169,7 @@ def _reencode_single(
     if resolution is not None:
         width, height = resolution
         input_args += [
-            "-filter_complex", f"[0:v]scale={width}:{height}[v]",
+            "-filter_complex", _fit_and_pad("0:v", "v", width, height),
             "-map", "[v]",
         ]
     else:
@@ -171,30 +197,38 @@ def _stack(
 
     filter_name = STACK_LAYOUTS[layout]
 
-    # Front and rear cameras can differ in resolution (some BlackVue
-    # setups pair a higher-res front with a lower-res rear) - hstack/
-    # vstack both require matching dimensions on the non-stacked axis,
-    # so rear is stretched to front's own width/height (probed
-    # directly, rather than relying on ffmpeg's scale2ref filter,
-    # whose "which input gets scaled to match which" semantics turned
-    # out to be easy to get backwards - a plain probed scale=W:H is
-    # simpler to reason about and get right). A full stretch rather
-    # than a letterboxed fit: simpler, and worth revisiting only if it
-    # actually looks wrong on a real mismatched front/rear pair.
+    # hstack only requires matching *heights* (it concatenates
+    # horizontally, combined width is whatever the two widths sum to);
+    # vstack only requires matching *widths*. Only scale rear on the
+    # one dimension that actually needs to match front (probed
+    # directly - see _video_dimensions()), leaving the other free via
+    # ffmpeg's "-2" (auto-computed, rounded to an even number for H.264)
+    # so rear's own aspect ratio is preserved rather than forced to
+    # front's. (An earlier version scaled rear to front's exact width
+    # *and* height, which happened to look fine only because a real
+    # front/rear pair tested had the same aspect ratio as each other -
+    # not a safe assumption in general.)
     front_width, front_height = _video_dimensions(front)
+    if filter_name == "hstack":
+        match_filter = f"[1:v]scale=-2:{front_height}[rear_scaled]"
+    else:
+        match_filter = f"[1:v]scale={front_width}:-2[rear_scaled]"
+
     clauses = [
-        f"[1:v]scale={front_width}:{front_height}[rear_scaled]",
+        match_filter,
         f"[0:v][rear_scaled]{filter_name}=inputs=2[stacked]",
     ]
     output_label = "stacked"
 
-    # A second scale pass on the finished composite, if a specific
-    # output resolution was requested (e.g. a fast small test render)
-    # - independent of the front/rear-matching scale above, which
-    # exists purely so hstack/vstack don't refuse mismatched inputs.
+    # A second pass on the finished composite, if a specific output
+    # resolution was requested (e.g. a fast small test render) -
+    # independent of the front/rear-matching scale above, and using
+    # the aspect-preserving fit-then-pad idiom rather than a plain
+    # stretch, since the composite's own shape (e.g. ultra-wide for
+    # side_by_side) rarely matches an arbitrary requested resolution.
     if resolution is not None:
         out_width, out_height = resolution
-        clauses.append(f"[stacked]scale={out_width}:{out_height}[final]")
+        clauses.append(_fit_and_pad("stacked", "final", out_width, out_height))
         output_label = "final"
 
     encode_with_nvenc_fallback(

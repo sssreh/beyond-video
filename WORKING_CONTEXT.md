@@ -1452,6 +1452,51 @@ annoying failure for "assemble one holiday video."
    control, so this is a real `SystemExit` in the test, not a return
    value). Full suite green (351 passed, up from 342).
 
+   **Follow-up: real bug found on Christer's archive - --stitch-resolution
+   distorted the picture (fixed, this session).** Tried the 320x240
+   fast-render on a real front(3840x2160)+rear(1920x1080) trip - both
+   confirmed no rotation metadata (`ffprobe stream_side_data=rotation` and
+   `stream_tags=rotate` both empty) - and the result looked visibly
+   squished, worse in one axis than the other. Root cause: two 16:9
+   cameras stacked `side_by_side` come out ultra-wide (~3.56:1,
+   7680x2160 before any resolution flag), and the resolution scale was a
+   plain `scale=W:H` - a full stretch into 320x240 (4:3, 1.33:1)
+   regardless of the composite's own shape, squeezing width far more
+   than height. A screenshot of the actual output (buildings leaning,
+   sky dominating one panel) confirmed it visually before touching any
+   code.
+
+   Two fixes, both real correctness issues, not just the reported one:
+   - `_stack()`'s front/rear-matching scale (needed so hstack/vstack
+     don't refuse mismatched inputs) previously forced rear to front's
+     *exact* width and height - happened to look fine only because the
+     one real pair tested (both 16:9) shared an aspect ratio, not a safe
+     assumption in general. Now only the one dimension that actually
+     needs to match is scaled (height for `hstack`, width for `vstack`),
+     the other left free via ffmpeg's `-2` (auto-computed, rounded even)
+     so rear's own aspect ratio survives regardless of whether it
+     matches front's.
+   - The output-resolution scale (`--stitch-resolution`) changed from a
+     plain stretch to `_fit_and_pad()`: scales to fit inside the
+     requested box preserving the composite's own aspect ratio
+     (`force_original_aspect_ratio=decrease`), then pads with black
+     bars to exactly reach the requested dimensions - the output file is
+     still exactly the size asked for, but the picture itself is no
+     longer warped. Applied to both `_stack()`'s composite output and
+     `_reencode_single()`'s single-camera path.
+
+   Tested: 2 new tests - one with solid-color source clips (checked via
+   extracted-frame pixel sampling: black letterbox bars top/bottom,
+   red content band in the middle, not a uniformly-stretched frame), one
+   confirming a rear camera with a genuinely different aspect ratio than
+   front (640x480 vs 640x360) comes out at its own correctly-scaled
+   width, not force-matched to front's. All prior dimension-only tests
+   (asserting exact final WxH) still passed unchanged, since
+   `_fit_and_pad()` still produces exactly the requested output size -
+   they just didn't check picture content, which is why this shipped
+   without being caught until real footage exposed it. Full suite green
+   (353 passed, up from 351).
+
 Immediate next step: confirm `--map` against a real archive (real Overpass
 query, real GPS data) - see item 4's caveat above - and confirm `--stitch`
 against a real front+rear archive - then continue `--stitch` per the spec
