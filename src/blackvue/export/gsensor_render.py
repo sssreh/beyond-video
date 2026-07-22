@@ -11,6 +11,12 @@ own observed range rather than claiming any absolute g-force value,
 and axes are labeled X/Y rather than "lateral"/"braking" - which
 physical direction each axis corresponds to isn't confirmed either.
 
+The background is a flat chroma-key green rather than the cream tone
+map_render.py uses - gsensor.mp4 is meant to be composited over the
+front/rear footage later (the future --stitch item), not watched on
+its own, so the background needs to key out cleanly (ffmpeg's
+colorkey/chromakey filters) rather than blend in.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -20,32 +26,17 @@ from __future__ import annotations
 
 from PIL import Image
 from PIL import ImageDraw
-from PIL import ImageFont
 
-# Same fallback chain as map_render._load_font - duplicated rather
-# than imported since that's a module-private helper there too.
-_FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "DejaVuSans-Bold.ttf",
-)
-
-
-def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    for candidate in _FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(candidate, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-BACKGROUND_COLOR = (247, 244, 238)
-RING_COLOR = (222, 218, 210)
-AXIS_COLOR = (210, 206, 198)
+# Pure green: the simplest possible target for a chroma-key filter to
+# match exactly (a single RGB value, no gradient/anti-aliasing blend
+# to account for) since PIL's ImageDraw fills solid shapes with no
+# anti-aliasing of its own.
+BACKGROUND_COLOR = (0, 255, 0)
+RING_COLOR = (255, 255, 255)
+AXIS_COLOR = (255, 255, 255)
 TRAIL_COLOR = (230, 57, 70)
 DOT_COLOR = (230, 57, 70)
 DOT_OUTLINE = (255, 255, 255)
-TEXT_COLOR = (40, 40, 40)
 
 DEFAULT_SIZE = 480
 DEFAULT_MARGIN_PX = 40
@@ -125,14 +116,13 @@ def render_frame(
     trail_points: tuple[tuple[float, float], ...],
     position: tuple[float, float] | None,
     *,
-    timestamp_text: str | None = None,
     width: int = DEFAULT_SIZE,
     height: int = DEFAULT_SIZE,
     margin: int = DEFAULT_MARGIN_PX,
 ) -> Image.Image:
-    """Render one dot-gauge frame: reference rings/axes, a fading
-    trail of recent (x, y) samples, a dot at the current sample, and
-    an optional caption in the corner."""
+    """Render one dot-gauge frame on a flat chroma-key green
+    background: reference rings/axes, a fading trail of recent (x, y)
+    samples, and a dot at the current sample."""
 
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
@@ -176,16 +166,6 @@ def render_frame(
             fill=DOT_COLOR,
             outline=DOT_OUTLINE,
             width=2,
-        )
-
-    if timestamp_text:
-        font = _load_font()
-        draw.text(
-            (margin, height - margin - 4),
-            timestamp_text,
-            fill=TEXT_COLOR,
-            font=font,
-            anchor="ls",
         )
 
     return image

@@ -193,9 +193,11 @@ def export_trip(
 
     `render_gsensor=True` additionally renders gsensor.mp4 - a dot
     moving around a gauge, tracking the trip's g-sensor (x, y)
-    readings with a short fading trail (see gsensor_render.py/
-    gsensor_video.py). No network involved, but off by default since
-    it's extra render time most exports won't want.
+    readings with a short fading trail, on a flat chroma-key green
+    background meant to be composited over the front/rear footage
+    later (see gsensor_render.py/gsensor_video.py). No network
+    involved, but off by default since it's extra render time most
+    exports won't want.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -268,9 +270,7 @@ def export_trip(
     if render_gsensor and samples:
         try:
             gsensor_video_path = render_gsensor_video(
-                samples,
-                destination / "gsensor.mp4",
-                start_timestamp=trip.start_timestamp,
+                samples, destination / "gsensor.mp4"
             )
         except MediaToolError as exc:
             warnings.append(f"gsensor video: {exc}")
