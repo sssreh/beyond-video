@@ -2457,5 +2457,114 @@ a bottom-side map panel (both wanting the same visual real estate) is
 the most likely thing to actually look wrong on Christer's own footage
 - worth checking together first, before rearview_mirror or auto-pick.
 
-Remaining --stitch roadmap: `rearview_mirror` camera layout, and
-auto-picking `--stitch-layout` from the trip's own geometry.
+## --stitch: implement the rearview_mirror camera layout (done, this session)
+
+Fifth piece of the --stitch spec, and the last of the three camera
+`--stitch-layout` options: `rearview_mirror` - front stays full-frame
+(the primary content), rear is flipped horizontally (a real rearview
+mirror shows things reversed, not raw footage) and shrunk into an
+inset overlaid top-center, sized `--stitch-mirror-size` percent
+(10-50, default 25) of the composite's own width, per the already
+-agreed spec.
+
+**Different in kind from side_by_side/top_down, not just a third
+STACK_LAYOUTS entry.** The other two are a plain ffmpeg hstack/vstack
+of two full-size cameras, both pre-scaled to match on the shared axis
+before combining. rearview_mirror never combines two full-size
+cameras at all - front decodes untouched (or fit-and-padded to
+`--stitch-resolution` alone, the same way the hstack/vstack composite
+is, just applied to front by itself since there's no second full-size
+camera to combine it with first) and rear also decodes untouched; the
+inset's actual scale-down happens inside the filter_complex, based on
+the *composite's* own already-known width, not at decode time.
+`rearview_mirror` is tracked as its own `_MIRROR_LAYOUT` name, kept
+out of `STACK_LAYOUTS` (which stays exactly the two hstack/vstack
+entries), with a new `ALL_LAYOUTS` tuple as the actual full set
+`stitch_cameras()`/`--stitch-layout` accept - `STACK_LAYOUTS` is
+narrowly about "what ffmpeg stack filter does this layout use", not
+"what layouts exist".
+
+**Filter chain**: `[1:v]scale=<mirror_width>:-2,hflip[mirrored]` then
+`[front][mirrored]overlay=x=(main_w-overlay_w)/2:y=<margin>[withmirror]`
+- reuses ffmpeg's own `main_w`/`overlay_w` runtime variables for
+horizontal centering (no Python-side math needed there), a small
+precomputed `margin_y` (2% of composite height, same purely-visual
+-polish role and value as the gsensor overlay's own margin, kept as
+its own separate `_MIRROR_MARGIN_FRACTION` constant since the two
+features are conceptually distinct even though they share a number).
+Reuses ffmpeg input index 1 (rear) directly for the inset - unlike
+gsensor.mp4/the map panel, which are separate already-rendered files
+each needing their own new input index.
+
+Once the front+inset composite exists (`camera_label`), everything
+downstream - gsensor overlay, map panel, subtitle burn-in - treats it
+exactly like the hstack/vstack composite would, unchanged. The
+existing `comp_width`/`comp_height` computation (previously gated
+behind "only worth an extra ffprobe call when gsensor/map panel are
+actually requested") now also runs unconditionally for
+`rearview_mirror`, since the mirror inset's own size needs it too,
+before its overlay clause even exists.
+
+**Map panel gets a tighter clamp in this layout specifically**: capped
+at 30% of the composite's width/height rather than the general 50%
+(`_REARVIEW_MAP_PANEL_MAX_FRACTION` vs. `_MAX_MAP_PANEL_FRACTION`) -
+per the agreed spec, most of a rearview_mirror frame still needs to
+stay the primary front view, with the mirror inset already claiming
+some of it too. `_map_panel_dimensions()` gained a `max_fraction`
+parameter (default `_MAX_MAP_PANEL_FRACTION`) so `_stack()` can pass
+the tighter one only for this layout. `_DEFAULT_MAP_SIDE_FOR_LAYOUT`
+gained `"rearview_mirror": "down"` - **my own pick**, not specified
+beyond the spec's "left or down" - front is the whole composite here
+(no rear column/row to be perpendicular to the way side_by_side/
+top_down have), so there's no geometric argument either way; `down`
+just matches side_by_side's own default.
+
+**A genuinely bogus test caught by the real render, not by review**:
+the pre-existing `test_stitch_cameras_rejects_an_unknown_layout` used
+`layout="rearview_mirror"` as its "this should be rejected" example -
+correct before this session, now a false failure once the layout
+actually exists. Fixed by switching it to a truly nonexistent layout
+name (`"diagonal"`) and adding a companion
+`test_all_layouts_includes_rearview_mirror` alongside the renamed
+`test_stack_layouts_has_the_two_hstack_vstack_layouts` (kept as-is,
+still true - `STACK_LAYOUTS` deliberately never gained a third entry).
+
+**CLI**: `--stitch-layout` now accepts `rearview_mirror` (choices
+sourced from `ALL_LAYOUTS` directly, so the CLI and stitch.py can't
+drift apart on what's valid). `--stitch-mirror-size PERCENT`
+(argparse-level range validation, 10-50, default 25 - same pattern as
+`--stitch-gsensor-size`).
+
+Tested: real end-to-end verification that hflip is actually happening
+(not just scale+overlay) - a rear source with red on its own left half
+and green on its own right half ends up with green on the inset's left
+and red on its right after compositing, sampled at exact computed
+pixel coordinates, same rigor as the gsensor colorkey verification
+earlier this session. Also verified: inset width scales correctly with
+a non-default `--stitch-mirror-size`; front stays exactly full-frame
+with no mirror inset requested elsewhere in the frame; a requested
+`--stitch-resolution` still produces exactly that final size; the 30%
+map-panel cap actually engages (a sharply north-south trip fixture
+that would ask for far more than 30% under the general clamp lands
+exactly at comp_height*0.3 instead); single-camera fallback ignores
+`rearview_mirror` entirely, same convention as every other stitch
+feature. 8 new/changed test_stitch.py tests, 2 new test_trip_export.py
+tests (produces a video, `stitch_mirror_size` forwarded), 6 new
+test_bv_export.py CLI tests (layout choice, default/explicit mirror
+size, range rejection, one real end-to-end render). All genuinely
+executed via the harness (in three batches this time - test_stitch
+alone now runs past the harness's single-command time budget with 74
+real-ffmpeg tests in the file), all green: test_stitch 74 passed,
+test_trip_export 36 passed, test_bv_export 57 passed, 0 failed.
+
+Not confirmed against a real archive - only synthetic solid-color/
+color-block clips. The `--stitch-mirror-size` 10-50%/25% range comes
+directly from the agreed spec this time (not one of this session's own
+picks, unlike the gsensor/map-panel ranges) - but the actual visual
+result (is a 25% top-center inset the right size/position against a
+real dashcam's real field of view) is still worth Christer's own eyes
+once he's back at his archive.
+
+Remaining --stitch roadmap: auto-picking `--stitch-layout` between
+side_by_side/top_down from the trip's own north-south/east-west
+geometry - the last item on the original --stitch spec.

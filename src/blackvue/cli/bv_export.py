@@ -21,10 +21,14 @@ from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
+from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import read_duration_seconds
@@ -62,6 +66,21 @@ def _parse_gsensor_size(value: str) -> float:
         raise argparse.ArgumentTypeError(
             f"size {value!r} out of range "
             f"({MIN_GSENSOR_SIZE_PERCENT:g}-{MAX_GSENSOR_SIZE_PERCENT:g})"
+        )
+
+    return size
+
+
+def _parse_mirror_size(value: str) -> float:
+    try:
+        size = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid size {value!r} (expected a number)")
+
+    if not (MIN_MIRROR_SIZE_PERCENT <= size <= MAX_MIRROR_SIZE_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"size {value!r} out of range "
+            f"({MIN_MIRROR_SIZE_PERCENT:g}-{MAX_MIRROR_SIZE_PERCENT:g})"
         )
 
     return size
@@ -115,6 +134,7 @@ def bv_export(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_gsensor: bool = False,
@@ -257,6 +277,7 @@ def bv_export(
                 stitch_layout=stitch_layout,
                 stitch_resolution=stitch_resolution,
                 stitch_bitrate=stitch_bitrate,
+                stitch_mirror_size=stitch_mirror_size,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
                 stitch_gsensor=stitch_gsensor,
@@ -480,27 +501,44 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Also render stitch.mp4: the trip's front and rear video "
-            "composed into one, side by side or stacked (see "
-            "--stitch-layout), optionally with a map panel (see "
-            "--stitch-map), a g-sensor overlay (see --stitch-gsensor), "
-            "and/or burned-in subtitles (see --stitch-subtitles). A "
-            "trip with only one camera falls back to a plain copy of "
-            "whichever one exists, ignoring all of those too. "
-            "Rearview-mirror layout and auto-picking a layout from the "
-            "trip's own geometry are still planned for later."
+            "composed into one, side by side, stacked, or as a "
+            "rearview-mirror inset (see --stitch-layout), optionally "
+            "with a map panel (see --stitch-map), a g-sensor overlay "
+            "(see --stitch-gsensor), and/or burned-in subtitles (see "
+            "--stitch-subtitles). A trip with only one camera falls "
+            "back to a plain copy of whichever one exists, ignoring "
+            "all of those too. Auto-picking a layout from the trip's "
+            "own geometry is still planned for later."
         ),
     )
 
     parser.add_argument(
         "--stitch-layout",
-        choices=["side_by_side", "top_down"],
+        choices=list(ALL_LAYOUTS),
         default="side_by_side",
         help=(
             "Camera arrangement for --stitch: 'side_by_side' (front | "
-            "rear) or 'top_down' (front / rear). Only used together "
-            "with --stitch. Default: side_by_side - the eventual "
-            "plan is to auto-pick this from the trip's own "
+            "rear), 'top_down' (front / rear), or 'rearview_mirror' "
+            "(front full-frame, rear flipped horizontally and shrunk "
+            "into a mirror-style inset overlaid top-center - see "
+            "--stitch-mirror-size). Only used together with --stitch. "
+            "Default: side_by_side - the eventual plan is to auto-pick "
+            "between side_by_side/top_down from the trip's own "
             "north-south/east-west shape, not implemented yet."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-mirror-size",
+        type=_parse_mirror_size,
+        default=DEFAULT_MIRROR_SIZE_PERCENT,
+        metavar="PERCENT",
+        help=(
+            f"Mirror inset size as a percentage of the composite's own "
+            f"width ({MIN_MIRROR_SIZE_PERCENT:g}-"
+            f"{MAX_MIRROR_SIZE_PERCENT:g}). Only meaningful with "
+            f"--stitch-layout rearview_mirror. Default: "
+            f"{DEFAULT_MIRROR_SIZE_PERCENT:g}."
         ),
     )
 
@@ -552,7 +590,9 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Override --stitch-map's panel side. Default: left for "
-            "--stitch-layout top_down, down for side_by_side."
+            "--stitch-layout top_down, down for side_by_side or "
+            "rearview_mirror (capped at 30%% of width/height in "
+            "rearview_mirror specifically, vs. the general 50%%)."
         ),
     )
 
@@ -691,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_layout=args.stitch_layout if args.stitch else None,
         stitch_resolution=args.stitch_resolution,
         stitch_bitrate=args.stitch_bitrate,
+        stitch_mirror_size=args.stitch_mirror_size,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
         stitch_gsensor=args.stitch_gsensor if args.stitch else False,
