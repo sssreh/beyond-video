@@ -32,6 +32,7 @@ from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_roads
 from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
+from .stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from .stitch import stitch_cameras
 from .subtitles import merge_lrc
 from .subtitles import merge_srt
@@ -216,6 +217,7 @@ def export_trip(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_gsensor: bool = False,
@@ -266,16 +268,25 @@ def export_trip(
     involved, but off by default since it's extra render time most
     exports won't want.
 
-    `stitch_layout`, if given ('side_by_side' or 'top_down' - see
-    stitch.py), additionally renders stitch.mp4: the trip's front and
-    rear footage composed into one video via ffmpeg hstack/vstack. A
-    trip with only one camera falls back to a plain copy of whichever
-    one exists, ignoring `stitch_layout` (unless `stitch_resolution`/
-    `stitch_bitrate` are also given, which force a re-encode even for
-    a single camera) - the map panel and g-sensor overlay below are
-    ignored for that single-camera path too. See WORKING_CONTEXT.md
-    for the full --stitch spec - rearview_mirror layout and auto
-    -picking a layout from the trip's geometry are still ahead.
+    `stitch_layout`, if given ('side_by_side', 'top_down', or
+    'rearview_mirror' - see stitch.py), additionally renders
+    stitch.mp4: the trip's front and rear footage composed into one
+    video. The first two are a plain ffmpeg hstack/vstack of both full
+    -size cameras; 'rearview_mirror' is different in kind - front stays
+    full-frame and rear becomes a small flipped (a real mirror shows
+    things reversed), scaled inset overlaid top-center, sized via
+    `stitch_mirror_size`. A trip with only one camera falls back to a
+    plain copy of whichever one exists, ignoring `stitch_layout`
+    (unless `stitch_resolution`/`stitch_bitrate` are also given, which
+    force a re-encode even for a single camera) - the map panel and
+    g-sensor overlay below are ignored for that single-camera path too.
+    See WORKING_CONTEXT.md for the full --stitch spec - auto-picking a
+    layout from the trip's geometry is still ahead.
+
+    `stitch_mirror_size` (percent of the composite's own width, 10-50,
+    default stitch.DEFAULT_MIRROR_SIZE_PERCENT) controls the mirror
+    inset's size when `stitch_layout='rearview_mirror'` - ignored for
+    the other two layouts.
 
     `stitch_resolution` (a (width, height) pixel pair) and
     `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)
@@ -294,11 +305,14 @@ def export_trip(
     skipped with a warning. `stitch_map_side` ('left', 'right', 'top',
     or 'down') overrides the panel's default side, which is otherwise
     picked from `stitch_layout` (left for top_down, down for
-    side_by_side). Needs the trip's own GPS fixes (and, for roads to
-    draw, a successful OSM fetch/cache) the same way `render_map`/
-    `map_zoom_meters` do - degrades to a warning and no panel (not a
-    failed stitch) if there's no GPS data, no default side, or a
-    missing zoom radius.
+    side_by_side or rearview_mirror). Needs the trip's own GPS fixes
+    (and, for roads to draw, a successful OSM fetch/cache) the same way
+    `render_map`/`map_zoom_meters` do - degrades to a warning and no
+    panel (not a failed stitch) if there's no GPS data, no default
+    side, or a missing zoom radius. Capped at 30% of width/height
+    (rather than the general 50%) when `stitch_layout='rearview_mirror'`
+    specifically - most of that frame still needs to stay the primary
+    front view, with the mirror inset already claiming some of it too.
 
     `stitch_gsensor=True` (also requires `stitch_layout`) composites
     an *already-rendered* gsensor.mp4 as a transparent chroma-keyed
@@ -505,6 +519,7 @@ def export_trip(
                 layout=stitch_layout,
                 resolution=stitch_resolution,
                 bitrate=stitch_bitrate,
+                mirror_size=stitch_mirror_size,
                 map_mode=stitch_map,
                 map_side=stitch_map_side,
                 map_zoom_meters=map_zoom_meters,

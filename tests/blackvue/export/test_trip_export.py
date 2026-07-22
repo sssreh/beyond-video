@@ -564,6 +564,44 @@ def test_export_trip_stitch_layout_produces_a_video(tmp_path):
     assert result.warnings == ()
 
 
+def test_export_trip_stitch_rearview_mirror_produces_a_video(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(trip, dest_dir, stitch_layout="rearview_mirror")
+
+    assert result.stitch == dest_dir / "stitch.mp4"
+    assert result.stitch.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_mirror_size_is_forwarded(tmp_path, monkeypatch):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="rearview_mirror", stitch_mirror_size=40.0,
+    )
+
+    assert captured["mirror_size"] == 40.0
+
+
 def test_export_trip_stitch_falls_back_to_front_only_with_no_rear(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()

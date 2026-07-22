@@ -51,12 +51,55 @@ STACK_LAYOUTS = {
 # side_by_side (wide) camera row gets its map panel on the bottom -
 # nested perpendicular to the camera arrangement so the final frame
 # doesn't turn into a long thin ribbon in either direction.
-# rearview_mirror isn't in STACK_LAYOUTS yet (not implemented), so it
-# has no entry here either.
+# rearview_mirror's own default ("down") is my own pick, not specified
+# in the agreed spec beyond "left or down" - front is the whole
+# composite in this layout (no rear column/row to be perpendicular
+# to), so there's no geometric argument either way; `down` just
+# matches side_by_side's own default rather than for any deeper
+# reason.
 _DEFAULT_MAP_SIDE_FOR_LAYOUT = {
     "side_by_side": "down",
     "top_down": "left",
+    "rearview_mirror": "down",
 }
+
+# rearview_mirror isn't a plain hstack/vstack of two full-size cameras
+# (see STACK_LAYOUTS) - front stays full-frame and rear becomes a
+# small flipped inset overlaid on top of it, so it's tracked as its
+# own name rather than added to that dict.
+_MIRROR_LAYOUT = "rearview_mirror"
+
+# All layout names stitch_cameras()/_stack() accept - STACK_LAYOUTS'
+# two plus rearview_mirror.
+ALL_LAYOUTS = (*STACK_LAYOUTS, _MIRROR_LAYOUT)
+
+# --stitch-mirror-size's range/default (percent of the camera
+# composite's own width the rear inset is scaled to, matching the
+# spec's own "10-50%, default 25%" language) - its own separate range
+# from --stitch-gsensor-size's 5-40%/15%, since a rearview mirror
+# reads as a much more prominent element than a small gsensor gauge.
+MIN_MIRROR_SIZE_PERCENT = 10.0
+MAX_MIRROR_SIZE_PERCENT = 50.0
+DEFAULT_MIRROR_SIZE_PERCENT = 25.0
+
+# A small top margin (percent of the composite's own height) so the
+# mirror inset doesn't sit flush against the very top edge of the
+# frame - same purely-visual-polish role as _GSENSOR_MARGIN_FRACTION,
+# kept as its own separate constant since the two features are
+# conceptually distinct even though they currently share a value.
+# There's no horizontal margin to speak of - the inset is always
+# centered, so x is symmetric by construction.
+_MIRROR_MARGIN_FRACTION = 0.02
+
+# In rearview_mirror mode specifically, the agreed spec caps the map
+# panel at 30% of the composite's width/height (vs. the general
+# _MAX_MAP_PANEL_FRACTION of 50% used for side_by_side/top_down) -
+# most of a rearview-mirror frame still needs to stay the primary
+# front view, with both the mirror inset *and* the map panel competing
+# for a share of it. _MIN_MAP_PANEL_FRACTION (0.2) is unchanged - it's
+# still comfortably below 0.3, so the clamp range just narrows rather
+# than needing its own separate minimum.
+_REARVIEW_MAP_PANEL_MAX_FRACTION = 0.3
 
 # The map panel's free dimension (the one not forced to match the
 # camera composite - see _map_panel_dimensions()) is clamped to this
@@ -264,6 +307,7 @@ def stitch_cameras(
     layout: str,
     resolution: tuple[int, int] | None = None,
     bitrate: str | None = None,
+    mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_zoom_meters: float | None = None,
@@ -282,16 +326,32 @@ def stitch_cameras(
     """Compose a trip's front/rear footage into one video at
     `destination`.
 
-    `layout` must be one of STACK_LAYOUTS's keys ('side_by_side' or
-    'top_down' - 'rearview_mirror' isn't built yet). Only meaningful
-    when both front and rear exist; a trip with just one of the two
-    (the common single-front-camera case) falls back to a plain copy
-    of whichever one is available, ignoring `layout` entirely - the
-    same "don't fail, just do the sensible thing" convention the rest
-    of bv-export follows for a missing optional input - unless
-    `resolution`/`bitrate` are given too, in which case the single
-    camera still gets re-encoded to honor them (a plain stream copy
-    can't resize or re-bitrate). Returns None if neither exists.
+    `layout` must be one of ALL_LAYOUTS ('side_by_side', 'top_down', or
+    'rearview_mirror'). Only meaningful when both front and rear exist;
+    a trip with just one of the two (the common single-front-camera
+    case) falls back to a plain copy of whichever one is available,
+    ignoring `layout` entirely - the same "don't fail, just do the
+    sensible thing" convention the rest of bv-export follows for a
+    missing optional input - unless `resolution`/`bitrate` are given
+    too, in which case the single camera still gets re-encoded to
+    honor them (a plain stream copy can't resize or re-bitrate).
+    Returns None if neither exists.
+
+    'rearview_mirror' is different in kind from the other two: front
+    stays full-frame (the primary content) and rear is flipped
+    horizontally (a real mirror shows things reversed, not raw
+    footage), scaled to `mirror_size` percent of the composite's own
+    width (10-50, default 25 - see MIN_/MAX_/DEFAULT_MIRROR_SIZE_PERCENT),
+    and overlaid top-center with a small margin - not concatenated via
+    hstack/vstack the way the other two layouts are. Everything below
+    (gsensor overlay, map panel, subtitle burn-in) treats the resulting
+    front+inset frame exactly like 'side_by_side'/'top_down' treat
+    their own hstack/vstack result - same `warnings`-degrading
+    behavior, same ordering. The one difference: a map panel alongside
+    a rearview_mirror composite is capped at 30% of width/height rather
+    than the general 50% (see _REARVIEW_MAP_PANEL_MAX_FRACTION) - most
+    of the frame still needs to stay the primary front view, with the
+    mirror inset already claiming some of it too.
 
     `resolution`, if given, is an (width, height) pixel pair the final
     output is scaled to (preserving aspect ratio, letterboxed to
@@ -420,6 +480,7 @@ def stitch_cameras(
         return _stack(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
+            mirror_size=mirror_size,
             map_mode=map_mode, map_side=map_side,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
@@ -862,6 +923,7 @@ def _map_panel_dimensions(
     *,
     side: str,
     fixes: tuple[GpsFix, ...],
+    max_fraction: float = _MAX_MAP_PANEL_FRACTION,
 ) -> tuple[int, int] | None:
     """The (width, height) --stitch-map's panel should render at so it
     slots onto `side` of a comp_width x comp_height camera composite
@@ -873,9 +935,12 @@ def _map_panel_dimensions(
     *free* axis is sized from the trip's own real-world aspect ratio
     (see osm_roads.aspect_ratio_of()) - a north-south trip wants a
     taller panel, an east-west trip a wider one - clamped to between
-    _MIN_MAP_PANEL_FRACTION and _MAX_MAP_PANEL_FRACTION of the
-    composite's own corresponding dimension, so a near-straight-line
-    trip can't ask for a degenerate sliver or an oversized panel.
+    _MIN_MAP_PANEL_FRACTION and `max_fraction` (defaults to
+    _MAX_MAP_PANEL_FRACTION; _stack() passes the tighter
+    _REARVIEW_MAP_PANEL_MAX_FRACTION for rearview_mirror instead, per
+    the agreed spec's own 30% cap for that layout) of the composite's
+    own corresponding dimension, so a near-straight-line trip can't ask
+    for a degenerate sliver or an oversized panel.
 
     That clamp is relative to the camera composite alone, not the
     eventual composite+panel total (which would make this circular) -
@@ -896,12 +961,12 @@ def _map_panel_dimensions(
 
     if side in ("left", "right"):
         low = comp_width * _MIN_MAP_PANEL_FRACTION
-        high = comp_width * _MAX_MAP_PANEL_FRACTION
+        high = comp_width * max_fraction
         free_dimension = max(low, min(comp_height * trip_ratio, high))
         width, height = free_dimension, comp_height
     else:
         low = comp_height * _MIN_MAP_PANEL_FRACTION
-        high = comp_height * _MAX_MAP_PANEL_FRACTION
+        high = comp_height * max_fraction
         free_dimension = max(low, min(comp_width / trip_ratio, high))
         width, height = comp_width, free_dimension
 
@@ -1022,6 +1087,7 @@ def _stack(
     layout: str,
     resolution: tuple[int, int] | None,
     bitrate: str | None,
+    mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_zoom_meters: float | None = None,
@@ -1037,30 +1103,37 @@ def _stack(
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path:
-    if layout not in STACK_LAYOUTS:
+    if layout not in ALL_LAYOUTS:
         raise ValueError(
             f"unknown stitch layout: {layout!r} "
-            f"(expected one of {sorted(STACK_LAYOUTS)})"
+            f"(expected one of {sorted(ALL_LAYOUTS)})"
         )
 
-    filter_name = STACK_LAYOUTS[layout]
+    is_mirror = layout == _MIRROR_LAYOUT
+    filter_name = None if is_mirror else STACK_LAYOUTS[layout]
 
     # hstack only requires matching *heights* (it concatenates
     # horizontally, combined width is whatever the two widths sum to);
-    # vstack only requires matching *widths*.
+    # vstack only requires matching *widths*. rearview_mirror doesn't
+    # stack two full-size cameras at all - front stays full-frame and
+    # rear becomes a small inset, so neither needs pre-decode scaling
+    # to match the other on any axis; the inset's actual size (a
+    # percent of the *composite's* own width) is only knowable once the
+    # composite dimensions are worked out below, so that scaling
+    # happens in the filter_complex, not here at decode time.
     #
-    # When a final `resolution` is requested, scale BOTH cameras'
-    # intermediates to the *ideal* shared height (hstack) or width
-    # (vstack) - the one that makes the combined composite land as
-    # close as possible to `resolution` without exceeding it - rather
-    # than matching rear to front's full native size (the original
-    # bug: an unnecessary upscale, fixed in the previous commit) or
-    # even scaling both cameras straight to the target's own height/
-    # width (fixed here: still wasteful, since two cameras stacked
-    # side by side at height=out_height combine to roughly *twice*
-    # out_width, so the final pass then has to shrink the whole
-    # composite by about half again). Christer worked out the correct
-    # target by hand for the common case (two same-aspect-ratio
+    # When a final `resolution` is requested (hstack/vstack only),
+    # scale BOTH cameras' intermediates to the *ideal* shared height
+    # (hstack) or width (vstack) - the one that makes the combined
+    # composite land as close as possible to `resolution` without
+    # exceeding it - rather than matching rear to front's full native
+    # size (the original bug: an unnecessary upscale, fixed in the
+    # previous commit) or even scaling both cameras straight to the
+    # target's own height/width (fixed here: still wasteful, since two
+    # cameras stacked side by side at height=out_height combine to
+    # roughly *twice* out_width, so the final pass then has to shrink
+    # the whole composite by about half again). Christer worked out the
+    # correct target by hand for the common case (two same-aspect-ratio
     # cameras: roughly half of `resolution` per camera) and asked
     # whether that was right - see _ideal_shared_dimension() for the
     # general version that also handles cameras with *different*
@@ -1069,7 +1142,11 @@ def _stack(
     # When no `resolution` is given (full native-quality output),
     # front stays untouched and rear matches front's own native size
     # on the one axis that actually needs to match - unchanged.
-    if resolution is not None:
+    if is_mirror:
+        front_scale_filter = None
+        rear_scale_filter = None
+        front_width, front_height = _video_dimensions(front)
+    elif resolution is not None:
         out_width, out_height = resolution
         front_width, front_height = _video_dimensions(front)
         rear_width, rear_height = _video_dimensions(rear)
@@ -1151,43 +1228,43 @@ def _stack(
         # The expensive part - decoding the original source footage -
         # is already done above. Both intermediates are already
         # CPU-readable and already matched on the one axis
-        # hstack/vstack needs, so this final pass is a plain CPU
-        # decode + stack + (optional) resolution fit-and-pad + encode.
-        # Deliberately no hwaccel here: there's nothing left to gain
-        # from it on these much-smaller intermediates, and using it
-        # would just reintroduce the two-hwaccel-input cost this
-        # whole redesign exists to avoid.
-        clauses = [f"[0:v][1:v]{filter_name}=inputs=2[stacked]"]
-        camera_label = "stacked"
-
-        if resolution is not None:
-            out_width, out_height = resolution
-            clauses.append(_fit_and_pad("stacked", "camera", out_width, out_height))
-            camera_label = "camera"
-
-        output_label = camera_label
+        # hstack/vstack needs (or, for rearview_mirror, both simply
+        # untouched - see the decode-scale-filter selection above), so
+        # this final pass is a plain CPU decode + combine + (optional)
+        # resolution fit-and-pad + encode. Deliberately no hwaccel
+        # here: there's nothing left to gain from it on these much-
+        # smaller intermediates, and using it would just reintroduce
+        # the two-hwaccel-input cost this whole redesign exists to
+        # avoid.
+        clauses: list[str] = []
         extra_inputs: list[str] = []
-        # front=0, rear=1 are always present; gsensor and/or the map
-        # panel each claim the next free index in whichever order they
-        # actually get added below (gsensor first if both are
-        # requested) - not a fixed [2:v]/[3:v] assignment, since either
-        # one alone still needs to land on index 2.
+        # front=0, rear=1 are always present; the mirror inset (for
+        # rearview_mirror) reuses input 1 directly, so it never claims
+        # a new index. gsensor and/or the map panel each claim the next
+        # free index in whichever order they actually get added below
+        # (gsensor first if both are requested) - not a fixed
+        # [2:v]/[3:v] assignment, since either one alone still needs to
+        # land on index 2.
         next_input_index = 2
 
+        # The camera composite's own pixel dimensions - either exactly
+        # `resolution` (a fit-and-pad below guarantees that for every
+        # layout), or, with no `resolution` given, computed from what's
+        # already been probed above. Needed *unconditionally* for
+        # rearview_mirror (the mirror inset's own size is a percent of
+        # it, computed before the inset's overlay clause even exists);
+        # for side_by_side/top_down it's only worth the extra ffprobe
+        # call when the gsensor overlay or a map panel is actually
+        # requested too - shared by both features below, computed once
+        # either way, not once each.
         comp_width = comp_height = None
-        if gsensor_video is not None or (map_mode is not None and map_fixes):
-            # The camera composite's own pixel dimensions are only
-            # knowable *now*, and only worth computing when the
-            # gsensor overlay or a map panel is actually requested (an
-            # extra ffprobe call otherwise, on top of everything
-            # already probed above) - either exactly `resolution` (the
-            # fit-and-pad above guarantees that), or, with no
-            # `resolution` given, front's own decoded size plus
-            # whatever rear contributed on the stacking axis (both
-            # already probed/matched above). Shared by both features
-            # below - computed once, not once each.
+        if is_mirror or gsensor_video is not None or (
+            map_mode is not None and map_fixes
+        ):
             if resolution is not None:
                 comp_width, comp_height = resolution
+            elif is_mirror:
+                comp_width, comp_height = front_width, front_height
             else:
                 comp_width, comp_height = front_width, front_height
                 rear_decoded_width, rear_decoded_height = _video_dimensions(
@@ -1197,6 +1274,46 @@ def _stack(
                     comp_width += rear_decoded_width
                 else:
                     comp_height += rear_decoded_height
+
+        if is_mirror:
+            # Front stays full-frame (the primary content) - fit-and
+            # -padded to `resolution` if given, same as hstack/vstack's
+            # own composite is, just applied to front alone here since
+            # there's no second full-size camera to combine it with
+            # first. Rear becomes a small flipped inset (a real
+            # rearview mirror shows things reversed, not raw footage)
+            # scaled to `mirror_size` percent of the composite's own
+            # width - computed just above - and overlaid top-center
+            # with a small margin so it doesn't sit flush against the
+            # very top edge. Reuses input 1 (rear) directly rather than
+            # claiming a new index - unlike gsensor.mp4/the map panel,
+            # which are separate already-rendered files.
+            front_label = "0:v"
+            if resolution is not None:
+                out_width, out_height = resolution
+                clauses.append(_fit_and_pad("0:v", "camera", out_width, out_height))
+                front_label = "camera"
+
+            mirror_width = max(2, round(comp_width * mirror_size / 100 / 2) * 2)
+            margin_y = round(comp_height * _MIRROR_MARGIN_FRACTION)
+            clauses.append(f"[1:v]scale={mirror_width}:-2,hflip[mirrored]")
+            clauses.append(
+                f"[{front_label}][mirrored]overlay="
+                f"x=(main_w-overlay_w)/2:y={margin_y}[withmirror]"
+            )
+            camera_label = "withmirror"
+        else:
+            clauses.append(f"[0:v][1:v]{filter_name}=inputs=2[stacked]")
+            camera_label = "stacked"
+
+            if resolution is not None:
+                out_width, out_height = resolution
+                clauses.append(
+                    _fit_and_pad("stacked", "camera", out_width, out_height)
+                )
+                camera_label = "camera"
+
+        output_label = camera_label
 
         if gsensor_video is not None:
             # Unlike the map panel, this is an *already-rendered* file
@@ -1258,6 +1375,10 @@ def _stack(
             else:
                 panel_size = _map_panel_dimensions(
                     comp_width, comp_height, side=panel_side, fixes=map_fixes,
+                    max_fraction=(
+                        _REARVIEW_MAP_PANEL_MAX_FRACTION
+                        if is_mirror else _MAX_MAP_PANEL_FRACTION
+                    ),
                 )
                 panel_path = tmp_path / "map_panel.mp4"
                 rendered = None

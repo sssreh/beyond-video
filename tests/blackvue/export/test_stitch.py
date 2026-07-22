@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from blackvue.export import stitch as stitch_module
+from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import STACK_LAYOUTS
 from blackvue.export.stitch import _escape_subtitles_filename
 from blackvue.export.stitch import _map_panel_dimensions
@@ -197,12 +198,19 @@ def test_stitch_cameras_rejects_an_unknown_layout(tmp_path):
 
     with pytest.raises(ValueError):
         stitch_cameras(
-            front, rear, tmp_path / "stitch.mp4", layout="rearview_mirror"
+            front, rear, tmp_path / "stitch.mp4", layout="diagonal"
         )
 
 
-def test_stack_layouts_has_the_two_currently_supported_layouts():
+def test_stack_layouts_has_the_two_hstack_vstack_layouts():
+    # rearview_mirror is deliberately NOT in STACK_LAYOUTS - it isn't a
+    # plain hstack/vstack of two full-size cameras (see ALL_LAYOUTS for
+    # the full set stitch_cameras() itself accepts).
     assert set(STACK_LAYOUTS) == {"side_by_side", "top_down"}
+
+
+def test_all_layouts_includes_rearview_mirror():
+    assert set(ALL_LAYOUTS) == {"side_by_side", "top_down", "rearview_mirror"}
 
 
 def test_stitch_cameras_scales_the_stacked_output_to_a_requested_resolution(
@@ -1529,4 +1537,151 @@ def test_stitch_cameras_without_subtitles_path_leaves_footage_untouched(
     )
 
     assert _video_size(destination) == (320, 120)
+    assert warnings == []
+
+
+def _make_rear_flip_probe(path, size=320, duration_seconds=1.0):
+    # Red on the left half, green on the right half - hflip should
+    # swap which color ends up on which side, giving an unambiguous
+    # real-render check that the mirror inset is actually flipped, not
+    # just scaled and placed.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"color=c=black:size={size}x{size}:rate=5",
+            "-vf",
+            f"drawbox=x=0:y=0:w={size // 2}:h={size}:color=red:t=fill,"
+            f"drawbox=x={size // 2}:y=0:w={size // 2}:h={size}:"
+            "color=lime:t=fill",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_stitch_cameras_rearview_mirror_flips_and_places_the_inset_top_center(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "blue")
+    _make_rear_flip_probe(rear, size=320)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror", warnings=warnings,
+    )
+
+    assert warnings == []
+    # Front stays full-frame - rearview_mirror never crops/pads it
+    # absent a --stitch-resolution request.
+    assert _video_size(destination) == (640, 480)
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # Default mirror_size=25% of 640 -> inset 160 wide, 120 tall
+    # (rear's own 1:1 aspect preserved). margin_y = round(480*0.02) = 10.
+    inset_x0, inset_y0 = (640 - 160) // 2, 10
+
+    # Pre-flip, red was on rear's LEFT half and green on the right -
+    # after hflip, green should now be on the inset's own left side and
+    # red on its right.
+    left = image.getpixel((inset_x0 + 20, inset_y0 + 60))
+    right = image.getpixel((inset_x0 + 140, inset_y0 + 60))
+    assert left[1] > 150 and left[0] < 100  # green-ish
+    assert right[0] > 150 and right[1] < 100  # red-ish
+
+    # Far from the inset: plain blue front footage, untouched.
+    far = image.getpixel((10, 470))
+    assert far[2] > far[0] and far[2] > far[1]
+
+
+def test_stitch_cameras_rearview_mirror_mirror_size_is_configurable(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "blue")
+    _make_solid_video(rear, 320, 320, "red")
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=40.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # 40% of 640 = 256 wide (even already).
+    inset_x0 = (640 - 256) // 2
+    inside = image.getpixel((inset_x0 + 128, 10 + 60))
+    outside = image.getpixel((inset_x0 - 10, 10 + 60))
+    assert inside[0] > 150 and inside[1] < 100  # inside the red inset
+    assert not (outside[0] > 150 and outside[1] < 100)  # blue front
+
+
+def test_stitch_cameras_rearview_mirror_scales_to_a_requested_resolution(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 640, 480)
+    _make_video(rear, 320, 240)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        resolution=(320, 240), warnings=warnings,
+    )
+
+    assert warnings == []
+    assert _video_size(destination) == (320, 240)
+
+
+def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "blue")
+    _make_solid_video(rear, 320, 240, "black")
+    # A sharply north-south trip - with the general 50% clamp this
+    # would ask for a much taller panel than 30% of 480 (144px); the
+    # agreed spec caps rearview_mirror specifically at 30%, so the
+    # actual added height should land exactly there instead.
+    fixes = (_fix(0, 59.00, 18.000), _fix(2, 60.00, 18.001))
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        map_mode="map", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    assert width == 640
+    # comp_height (480) * 0.3 = 144, already even.
+    assert height == 480 + 144
+
+
+def test_stitch_cameras_rearview_mirror_falls_back_to_plain_copy_for_single_camera(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    _make_video(front, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, None, destination, layout="rearview_mirror", warnings=warnings,
+    )
+
+    # Same "not built for the single-camera path" convention as every
+    # other rearview_mirror-specific/optional piece.
+    assert _video_size(destination) == (160, 120)
     assert warnings == []

@@ -666,6 +666,101 @@ def test_main_uses_an_explicit_stitch_layout_when_given(tmp_path, monkeypatch):
     assert captured["stitch_layout"] == "top_down"
 
 
+def test_main_accepts_rearview_mirror_as_a_stitch_layout(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-layout", "rearview_mirror",
+    ])
+
+    assert captured["stitch_layout"] == "rearview_mirror"
+
+
+def test_main_uses_the_default_stitch_mirror_size_when_not_given(
+    tmp_path, monkeypatch
+):
+    from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
+
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_mirror_size"] == DEFAULT_MIRROR_SIZE_PERCENT
+
+
+def test_main_parses_an_explicit_stitch_mirror_size(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-layout", "rearview_mirror",
+        "--stitch-mirror-size", "40",
+    ])
+
+    assert captured["stitch_mirror_size"] == 40.0
+
+
+def test_main_rejects_an_out_of_range_stitch_mirror_size(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-mirror-size", "99",
+        ])
+
+
+def test_bv_export_stitch_rearview_mirror_flag_produces_a_video(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="rearview_mirror", stitch_mirror_size=40.0,
+    )
+
+    assert exit_code == 0
+    trip_folder = target / "trip_20260720_100000_20260720_100000"
+    assert (trip_folder / "stitch.mp4").exists()
+
+
 def test_bv_export_stitch_resolution_flag_produces_a_scaled_down_video(
     tmp_path
 ):
