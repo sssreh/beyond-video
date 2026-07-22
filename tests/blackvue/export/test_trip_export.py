@@ -723,6 +723,139 @@ def test_export_trip_stitch_map_skipped_without_stitch_map_flag(
     assert result.warnings == ()
 
 
+def test_export_trip_stitch_gsensor_uses_a_freshly_rendered_file(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    gsensor_a = source_dir / "a.3gf"
+    gsensor_a.write_bytes(_gsensor_bytes((0, 100, -50, 900), (100, 90, -40, 950)))
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a),
+            },
+        ),
+    ))
+
+    result = export_trip(
+        trip, dest_dir,
+        stitch_layout="side_by_side", render_gsensor=True, stitch_gsensor=True,
+    )
+
+    assert result.gsensor_video == dest_dir / "gsensor.mp4"
+    assert result.stitch.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_gsensor_reuses_a_file_from_an_earlier_run(
+    tmp_path
+):
+    # render_gsensor=False this run - gsensor.mp4 already sitting in
+    # the destination folder from some earlier run should still be
+    # picked up (bv-export's own keep-existing-files-by-default
+    # behavior), not just this run's own fresh render.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+
+    _make_video(dest_dir / "gsensor.mp4", 1.0)
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+            },
+        ),
+    ))
+
+    result = export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_gsensor=True,
+    )
+
+    assert result.gsensor_video is None
+    assert result.stitch.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_gsensor_warns_when_no_gsensor_mp4_exists(
+    tmp_path
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_gsensor=True,
+    )
+
+    assert result.stitch.exists()
+    assert len(result.warnings) == 1
+    assert "gsensor.mp4 not found" in result.warnings[0]
+
+
+def test_export_trip_stitch_gsensor_options_are_forwarded(tmp_path, monkeypatch):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+
+    _make_video(dest_dir / "gsensor.mp4", 1.0)
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+            },
+        ),
+    ))
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="side_by_side", stitch_gsensor=True,
+        stitch_gsensor_size=25.0, stitch_gsensor_xy=(5.0, 5.0),
+    )
+
+    assert captured["gsensor_video"] == dest_dir / "gsensor.mp4"
+    assert captured["gsensor_size"] == 25.0
+    assert captured["gsensor_xy"] == (5.0, 5.0)
+
+
 def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()

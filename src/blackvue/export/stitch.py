@@ -68,6 +68,98 @@ _DEFAULT_MAP_SIDE_FOR_LAYOUT = {
 _MIN_MAP_PANEL_FRACTION = 0.2
 _MAX_MAP_PANEL_FRACTION = 0.5
 
+# --stitch-gsensor's size range/default (percent of the camera
+# composite's own width the overlay is scaled to) - per the agreed
+# spec, its own separate range from the (not yet built) rearview
+# -mirror inset's 10-50%/25%.
+MIN_GSENSOR_SIZE_PERCENT = 5.0
+MAX_GSENSOR_SIZE_PERCENT = 40.0
+DEFAULT_GSENSOR_SIZE_PERCENT = 15.0
+
+# --stitch-gsensor's default named position when neither --stitch
+# -gsensor-pos nor --stitch-gsensor-xy is given - not specified in the
+# agreed spec, picked here as a reasonable PIP-style default (a
+# corner, out of the way of whatever's usually the visual focus of
+# dashcam footage - the road ahead, roughly center-low) rather than
+# independently confirmed with Christer.
+DEFAULT_GSENSOR_POSITION = "top-right"
+
+# A small fixed margin (percent of the footage region's own matching
+# dimension) so a named-position overlay doesn't sit flush against the
+# very edge of the frame - purely a visual-polish default, not part of
+# the agreed spec either. Explicit --stitch-gsensor-xy coordinates get
+# no such margin - that's a deliberate raw override (see the agreed
+# spec's own note on this), so it lands exactly where asked.
+_GSENSOR_MARGIN_FRACTION = 0.02
+
+# The gsensor.mp4 chroma-key background color (see gsensor_render.py's
+# BACKGROUND_COLOR) as an ffmpeg colorkey hex literal.
+_GSENSOR_CHROMA_KEY_COLOR = "0x00ff00"
+
+_GSENSOR_POSITION_TOKENS = {"left", "right", "top", "down", "center"}
+
+
+def parse_gsensor_position(position: str) -> tuple[str, str]:
+    """Parse a --stitch-gsensor-pos string (e.g. "top-right", "left",
+    plain "center") into (horizontal, vertical) tokens - "left"/
+    "right"/"center" and "top"/"down"/"center" respectively, each
+    defaulting to "center" if that axis wasn't named at all (so "top"
+    alone means top-center, not an error).
+
+    Raises ValueError for an unrecognized token or a self
+    -contradictory combination (e.g. "left-right", "top-down") - used
+    both by _gsensor_overlay_position() at render time and by
+    bv_export.py's CLI argument parsing (so a typo is a clear
+    command-line error, not a silent no-op or a --debug-only warning).
+    """
+
+    tokens = position.lower().split("-")
+    unknown = [token for token in tokens if token not in _GSENSOR_POSITION_TOKENS]
+    if unknown:
+        raise ValueError(
+            f"unknown position token(s): {', '.join(unknown)} "
+            f"(expected combinations of {sorted(_GSENSOR_POSITION_TOKENS)})"
+        )
+
+    horizontal = [token for token in tokens if token in ("left", "right")]
+    vertical = [token for token in tokens if token in ("top", "down")]
+    if len(horizontal) > 1:
+        raise ValueError("position can't be both left and right")
+    if len(vertical) > 1:
+        raise ValueError("position can't be both top and down")
+
+    return (
+        horizontal[0] if horizontal else "center",
+        vertical[0] if vertical else "center",
+    )
+
+
+def _gsensor_overlay_xy_expr(
+    horizontal: str, vertical: str, *, margin_x: int, margin_y: int
+) -> tuple[str, str]:
+    """ffmpeg `overlay` filter x/y expressions placing the overlay at
+    `horizontal`/`vertical` (see parse_gsensor_position()) within the
+    footage region, `margin_x`/`margin_y` pixels in from the relevant
+    edge(s) - "center" ignores the margin on that axis entirely.
+    `main_w`/`main_h`/`overlay_w`/`overlay_h` are ffmpeg's own overlay
+    -filter runtime variables (the footage region's and the scaled
+    overlay's own width/height), not Python values - resolved by
+    ffmpeg itself when the filter actually runs.
+    """
+
+    x_expr = {
+        "left": str(margin_x),
+        "right": f"main_w-overlay_w-{margin_x}",
+        "center": "(main_w-overlay_w)/2",
+    }[horizontal]
+    y_expr = {
+        "top": str(margin_y),
+        "down": f"main_h-overlay_h-{margin_y}",
+        "center": "(main_h-overlay_h)/2",
+    }[vertical]
+    return x_expr, y_expr
+
+
 # Cached after the first check, same pattern as media.py's
 # _NVENC_AVAILABLE - which hwaccels this machine's ffmpeg build has is
 # a fixed fact for the life of the run.
@@ -116,6 +208,10 @@ def stitch_cameras(
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
     map_icon: Path | None = None,
+    gsensor_video: Path | None = None,
+    gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
+    gsensor_pos: str | None = None,
+    gsensor_xy: tuple[float, float] | None = None,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path | None:
@@ -206,6 +302,28 @@ def stitch_cameras(
     image-load failure) degrades to a `warnings` entry and no panel,
     never a failed stitch - the camera composite alone is still worth
     having.
+
+    `gsensor_video`, if given, is an *already-rendered* gsensor.mp4
+    (see gsensor_video.py's --gsensor-video) composited as a
+    transparent chroma-keyed overlay on top of the camera footage -
+    unlike the map panel, --stitch never generates this itself; a
+    missing gsensor.mp4 is trip_export.py's job to check for and warn
+    about before ever calling this. Scaled to `gsensor_size` percent
+    (5-40, default 15 - see MIN_/MAX_/DEFAULT_GSENSOR_SIZE_PERCENT) of
+    the camera composite's own width, preserving its own aspect ratio.
+    Positioned via `gsensor_pos` (a named position like "top-right" or
+    plain "center" - see parse_gsensor_position(); defaults to
+    DEFAULT_GSENSOR_POSITION if neither `gsensor_pos` nor `gsensor_xy`
+    is given) or `gsensor_xy` (an explicit (x_percent, y_percent) of
+    the footage region's own top-left corner - a deliberate raw
+    override with no margin, unlike named positions, and allowed to
+    land anywhere including on top of the map panel). If both are
+    given, `gsensor_xy` wins (bv_export.py's CLI treats them as
+    mutually exclusive, but this function doesn't re-enforce that).
+    Applied to the footage region only, *before* any map panel is
+    added alongside it - a named position is defined relative to just
+    the camera composite, never the map panel's own space. Only
+    meaningful when both front and rear exist, same as `map_mode`.
     """
 
     if front is not None and rear is not None:
@@ -215,6 +333,8 @@ def stitch_cameras(
             map_mode=map_mode, map_side=map_side,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
+            gsensor_video=gsensor_video, gsensor_size=gsensor_size,
+            gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
             debug=debug, warnings=warnings,
         )
 
@@ -816,6 +936,10 @@ def _stack(
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
     map_icon: Path | None = None,
+    gsensor_video: Path | None = None,
+    gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
+    gsensor_pos: str | None = None,
+    gsensor_xy: tuple[float, float] | None = None,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path:
@@ -949,16 +1073,25 @@ def _stack(
 
         output_label = camera_label
         extra_inputs: list[str] = []
+        # front=0, rear=1 are always present; gsensor and/or the map
+        # panel each claim the next free index in whichever order they
+        # actually get added below (gsensor first if both are
+        # requested) - not a fixed [2:v]/[3:v] assignment, since either
+        # one alone still needs to land on index 2.
+        next_input_index = 2
 
-        if map_mode is not None and map_fixes:
+        comp_width = comp_height = None
+        if gsensor_video is not None or (map_mode is not None and map_fixes):
             # The camera composite's own pixel dimensions are only
-            # knowable *now*, and only worth computing when a map
-            # panel is actually requested (an extra ffprobe call
-            # otherwise, on top of everything already probed above) -
-            # either exactly `resolution` (the fit-and-pad above
-            # guarantees that), or, with no `resolution` given, front's
-            # own decoded size plus whatever rear contributed on the
-            # stacking axis (both already probed/matched above).
+            # knowable *now*, and only worth computing when the
+            # gsensor overlay or a map panel is actually requested (an
+            # extra ffprobe call otherwise, on top of everything
+            # already probed above) - either exactly `resolution` (the
+            # fit-and-pad above guarantees that), or, with no
+            # `resolution` given, front's own decoded size plus
+            # whatever rear contributed on the stacking axis (both
+            # already probed/matched above). Shared by both features
+            # below - computed once, not once each.
             if resolution is not None:
                 comp_width, comp_height = resolution
             else:
@@ -971,6 +1104,47 @@ def _stack(
                 else:
                     comp_height += rear_decoded_height
 
+        if gsensor_video is not None:
+            # Unlike the map panel, this is an *already-rendered* file
+            # (trip_export.py's job to check it exists before ever
+            # calling this) - just scaled, chroma-keyed, and overlaid
+            # onto the camera footage, no rendering here. Applied
+            # *before* any map panel is added alongside camera_label,
+            # so a named position is relative to the footage region
+            # alone - see gsensor_pos's docstring note in
+            # stitch_cameras().
+            gsensor_index = next_input_index
+            next_input_index += 1
+            extra_inputs += ["-i", str(gsensor_video)]
+
+            overlay_width = max(2, round(comp_width * gsensor_size / 100 / 2) * 2)
+            margin_x = round(comp_width * _GSENSOR_MARGIN_FRACTION)
+            margin_y = round(comp_height * _GSENSOR_MARGIN_FRACTION)
+
+            if gsensor_xy is not None:
+                x_percent, y_percent = gsensor_xy
+                x_expr = str(round(comp_width * x_percent / 100))
+                y_expr = str(round(comp_height * y_percent / 100))
+            else:
+                horizontal, vertical = parse_gsensor_position(
+                    gsensor_pos or DEFAULT_GSENSOR_POSITION
+                )
+                x_expr, y_expr = _gsensor_overlay_xy_expr(
+                    horizontal, vertical, margin_x=margin_x, margin_y=margin_y,
+                )
+
+            clauses.append(
+                f"[{gsensor_index}:v]scale={overlay_width}:-2,"
+                f"colorkey={_GSENSOR_CHROMA_KEY_COLOR}:0.15:0.05[gskeyed]"
+            )
+            clauses.append(
+                f"[{camera_label}][gskeyed]overlay=x={x_expr}:y={y_expr}"
+                "[gsensored]"
+            )
+            camera_label = "gsensored"
+            output_label = camera_label
+
+        if map_mode is not None and map_fixes:
             panel_side = map_side or _DEFAULT_MAP_SIDE_FOR_LAYOUT.get(layout)
 
             if panel_side is None:
@@ -1014,16 +1188,18 @@ def _stack(
                     panel_filter_name = (
                         "hstack" if panel_side in ("left", "right") else "vstack"
                     )
+                    map_index = next_input_index
+                    next_input_index += 1
                     combine_inputs = (
-                        f"[2:v][{camera_label}]"
+                        f"[{map_index}:v][{camera_label}]"
                         if panel_side in ("left", "top")
-                        else f"[{camera_label}][2:v]"
+                        else f"[{camera_label}][{map_index}:v]"
                     )
                     clauses.append(
                         f"{combine_inputs}{panel_filter_name}=inputs=2[withmap]"
                     )
                     output_label = "withmap"
-                    extra_inputs = ["-i", str(rendered)]
+                    extra_inputs += ["-i", str(rendered)]
 
         encode_with_nvenc_fallback(
             [

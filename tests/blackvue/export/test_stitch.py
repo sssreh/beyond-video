@@ -9,6 +9,7 @@ from PIL import Image
 from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import STACK_LAYOUTS
 from blackvue.export.stitch import _map_panel_dimensions
+from blackvue.export.stitch import parse_gsensor_position
 from blackvue.export.stitch import stitch_cameras
 from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gps_reader import GpsFix
@@ -63,6 +64,31 @@ def _extract_first_frame(video_path, png_path) -> Image.Image:
         check=True,
     )
     return Image.open(png_path).convert("RGB")
+
+
+def _make_gsensor_fake(path, size=480, box_size=200, duration_seconds=1.0):
+    # A flat chroma-key green background with a big red box in the
+    # middle - a stand-in for gsensor_render.py's real gauge (also
+    # pure green background, RGB(0,255,0)), just simpler to reason
+    # about pixel colors for a colorkey/overlay smoke test. The box is
+    # deliberately large (not gsensor.mp4's actual thin rings/dot) so
+    # it's still trivially samplable after being scaled down to a
+    # small overlay and re-encoded.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"color=c=0x00ff00:size={size}x{size}:rate=5",
+            "-vf",
+            f"drawbox=x=iw/2-{box_size // 2}:y=ih/2-{box_size // 2}:"
+            f"w={box_size}:h={box_size}:color=red:t=fill",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def _video_size(path) -> tuple[int, int]:
@@ -1141,4 +1167,189 @@ def test_stitch_cameras_map_panel_ignored_for_single_camera_fallback(tmp_path):
     # `layout` is for this path, not a warning-worthy failure.
     width, height = _video_size(destination)
     assert (width, height) == (160, 120)
+    assert warnings == []
+
+
+# --- --stitch-gsensor overlay tests ---
+
+
+def test_parse_gsensor_position_parses_named_combinations():
+    assert parse_gsensor_position("top-right") == ("right", "top")
+    assert parse_gsensor_position("down-left") == ("left", "down")
+    assert parse_gsensor_position("left") == ("left", "center")
+    assert parse_gsensor_position("top") == ("center", "top")
+    assert parse_gsensor_position("center") == ("center", "center")
+
+
+def test_parse_gsensor_position_is_case_insensitive():
+    assert parse_gsensor_position("Top-Right") == ("right", "top")
+
+
+def test_parse_gsensor_position_rejects_contradictory_horizontal_tokens():
+    with pytest.raises(ValueError) as exc_info:
+        parse_gsensor_position("left-right")
+    assert "left and right" in str(exc_info.value)
+
+
+def test_parse_gsensor_position_rejects_contradictory_vertical_tokens():
+    with pytest.raises(ValueError) as exc_info:
+        parse_gsensor_position("top-down")
+    assert "top and down" in str(exc_info.value)
+
+
+def test_parse_gsensor_position_rejects_unknown_tokens():
+    with pytest.raises(ValueError) as exc_info:
+        parse_gsensor_position("bottom")
+    assert "unknown position token" in str(exc_info.value)
+
+
+def test_stitch_cameras_gsensor_overlay_keys_out_the_green_background(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "blue")
+    _make_solid_video(rear, 160, 120, "blue")
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        gsensor_video=gsensor, gsensor_pos="top-right",
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    assert _video_size(destination) == (320, 120)
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+
+    # comp 320x120, default size 15% -> overlay ~48x48, margin ~(6, 2).
+    overlay_x0, overlay_y0 = 320 - 48 - 6, 2
+    corner = image.getpixel((overlay_x0 + 2, overlay_y0 + 2))
+    center = image.getpixel((overlay_x0 + 24, overlay_y0 + 24))
+    far = image.getpixel((10, 100))
+
+    # Far from the overlay: plain blue footage, untouched.
+    assert far[2] > far[0] and far[2] > far[1]
+    # Near the overlay's own corner (outside the fake gauge's red
+    # box): the green background was keyed out, so the blue footage
+    # underneath shows through - not green.
+    assert not (corner[1] > 200 and corner[0] < 60 and corner[2] < 60)
+    # The overlay's own center (inside the fake gauge's red box):
+    # still red - the overlay's actual content survived the key.
+    assert center[0] > 120 and center[1] < 100
+
+
+def test_stitch_cameras_gsensor_overlay_defaults_to_top_right(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "blue")
+    _make_solid_video(rear, 160, 120, "blue")
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    # No gsensor_pos/gsensor_xy given at all.
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        gsensor_video=gsensor, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    overlay_x0, overlay_y0 = 320 - 48 - 6, 2
+    center = image.getpixel((overlay_x0 + 24, overlay_y0 + 24))
+    assert center[0] > 120 and center[1] < 100
+
+
+def test_stitch_cameras_gsensor_overlay_explicit_xy_places_it_exactly(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "blue")
+    _make_solid_video(rear, 160, 120, "blue")
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        gsensor_video=gsensor, gsensor_xy=(50.0, 50.0),
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # comp 320x120 -> x=round(320*0.5)=160, y=round(120*0.5)=60, no
+    # margin applied to an explicit xy override.
+    center = image.getpixel((160 + 24, 60 + 24))
+    assert center[0] > 120 and center[1] < 100
+
+
+def test_stitch_cameras_gsensor_overlay_combines_with_a_map_panel(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "blue")
+    _make_solid_video(rear, 160, 120, "blue")
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        gsensor_video=gsensor, gsensor_pos="top-right",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+        warnings=warnings,
+    )
+
+    # Correct input-index bookkeeping between the two extra inputs
+    # (gsensor at index 2, map panel at index 3) is the real thing
+    # being tested here - a wrong index would either fail outright or
+    # silently combine the wrong stream.
+    assert warnings == []
+    width, height = _video_size(destination)
+    assert width == 320
+    assert height > 120
+
+
+def test_stitch_cameras_gsensor_overlay_ignored_for_single_camera_fallback(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    _make_video(front, 160, 120)
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, None, destination, layout="side_by_side",
+        gsensor_video=gsensor, warnings=warnings,
+    )
+
+    # Same "not built for the single-camera path yet" convention as
+    # the map panel.
+    assert _video_size(destination) == (160, 120)
+    assert warnings == []
+
+
+def test_stitch_cameras_without_gsensor_video_leaves_footage_untouched(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", warnings=warnings,
+    )
+
+    assert _video_size(destination) == (320, 120)
     assert warnings == []

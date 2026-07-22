@@ -21,6 +21,11 @@ from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
+from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
+from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
@@ -44,6 +49,41 @@ def _parse_resolution(value: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError(
             f"invalid resolution {value!r} (expected WIDTHxHEIGHT, "
             "e.g. 320x240)"
+        )
+
+
+def _parse_gsensor_size(value: str) -> float:
+    try:
+        size = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid size {value!r} (expected a number)")
+
+    if not (MIN_GSENSOR_SIZE_PERCENT <= size <= MAX_GSENSOR_SIZE_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"size {value!r} out of range "
+            f"({MIN_GSENSOR_SIZE_PERCENT:g}-{MAX_GSENSOR_SIZE_PERCENT:g})"
+        )
+
+    return size
+
+
+def _parse_gsensor_position(value: str) -> str:
+    try:
+        parse_gsensor_position(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+    return value
+
+
+def _parse_gsensor_xy(value: str) -> tuple[float, float]:
+    try:
+        x_str, y_str = value.split(",")
+        return float(x_str), float(y_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid position {value!r} (expected X,Y as percentages, "
+            "e.g. 80,10)"
         )
 
 
@@ -77,6 +117,10 @@ def bv_export(
     stitch_bitrate: str | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
+    stitch_gsensor: bool = False,
+    stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
+    stitch_gsensor_pos: str | None = None,
+    stitch_gsensor_xy: tuple[float, float] | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -213,6 +257,10 @@ def bv_export(
                 stitch_bitrate=stitch_bitrate,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
+                stitch_gsensor=stitch_gsensor,
+                stitch_gsensor_size=stitch_gsensor_size,
+                stitch_gsensor_pos=stitch_gsensor_pos,
+                stitch_gsensor_xy=stitch_gsensor_xy,
                 debug=debug,
             )
         except MediaToolError as exc:
@@ -430,9 +478,10 @@ def main(argv: list[str] | None = None) -> int:
             "Also render stitch.mp4: the trip's front and rear video "
             "composed into one, side by side or stacked (see "
             "--stitch-layout), optionally with a map panel (see "
-            "--stitch-map). A trip with only one camera falls back to "
-            "a plain copy of whichever one exists, ignoring "
-            "--stitch-map too. G-sensor overlay, subtitle burn-in, "
+            "--stitch-map) and/or a g-sensor overlay (see "
+            "--stitch-gsensor). A trip with only one camera falls "
+            "back to a plain copy of whichever one exists, ignoring "
+            "--stitch-map/--stitch-gsensor too. Subtitle burn-in, "
             "rearview-mirror layout, and auto-picking a layout from "
             "the trip's own geometry are still planned for later."
         ),
@@ -504,6 +553,62 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-gsensor",
+        action="store_true",
+        help=(
+            "Also composite gsensor.mp4 (see --gsensor-video) as a "
+            "transparent overlay on top of the camera footage in "
+            "stitch.mp4. Unlike --stitch-map, this never generates "
+            "gsensor.mp4 itself - it must already exist (this run's "
+            "own --gsensor-video, or an earlier run's), or the "
+            "overlay is skipped with a warning. Only used together "
+            "with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-gsensor-size",
+        type=_parse_gsensor_size,
+        default=DEFAULT_GSENSOR_SIZE_PERCENT,
+        metavar="PERCENT",
+        help=(
+            f"Overlay size as a percentage of the camera composite's "
+            f"width ({MIN_GSENSOR_SIZE_PERCENT:g}-"
+            f"{MAX_GSENSOR_SIZE_PERCENT:g}). Default: "
+            f"{DEFAULT_GSENSOR_SIZE_PERCENT:g}."
+        ),
+    )
+
+    gsensor_position_group = parser.add_mutually_exclusive_group()
+    gsensor_position_group.add_argument(
+        "--stitch-gsensor-pos",
+        type=_parse_gsensor_position,
+        default=None,
+        metavar="POSITION",
+        help=(
+            "Named overlay position: any combination of left/right/"
+            "top/down/center (e.g. top-right, plain center). Defined "
+            "relative to the camera footage only, excluding whatever "
+            "space --stitch-map's panel occupies. Default: "
+            f"{DEFAULT_GSENSOR_POSITION}. Mutually exclusive with "
+            "--stitch-gsensor-xy."
+        ),
+    )
+    gsensor_position_group.add_argument(
+        "--stitch-gsensor-xy",
+        type=_parse_gsensor_xy,
+        default=None,
+        metavar="X,Y",
+        help=(
+            "Explicit overlay position as X,Y percentages (not "
+            "pixels) of the footage region's top-left corner, e.g. "
+            "80,10. A deliberate override - allowed to land anywhere, "
+            "including on top of --stitch-map's panel. Mutually "
+            "exclusive with --stitch-gsensor-pos."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -558,6 +663,10 @@ def main(argv: list[str] | None = None) -> int:
         stitch_bitrate=args.stitch_bitrate,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
+        stitch_gsensor=args.stitch_gsensor if args.stitch else False,
+        stitch_gsensor_size=args.stitch_gsensor_size,
+        stitch_gsensor_pos=args.stitch_gsensor_pos,
+        stitch_gsensor_xy=args.stitch_gsensor_xy,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         debug=args.debug,
