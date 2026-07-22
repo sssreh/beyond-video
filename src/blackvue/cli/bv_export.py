@@ -61,6 +61,7 @@ def bv_export(
     map_icon: str | Path | None = None,
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
+    stitch_layout: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
 ) -> int:
@@ -167,6 +168,7 @@ def bv_export(
                 map_icon=map_icon_path,
                 map_zoom_meters=map_zoom_meters,
                 render_gsensor=render_gsensor,
+                stitch_layout=stitch_layout,
             )
         except MediaToolError as exc:
             print(f"bv-export: {trip.label}: {exc}", file=sys.stderr)
@@ -178,7 +180,7 @@ def bv_export(
             for written_path in (
                 result.front_video, result.rear_video, result.audio,
                 result.gpx, result.gsensor, result.map, result.map_zoom,
-                result.gsensor_video, result.srt, result.lrc,
+                result.gsensor_video, result.stitch, result.srt, result.lrc,
             )
             if written_path is not None
         ] + list(result.text)
@@ -365,6 +367,34 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch",
+        action="store_true",
+        help=(
+            "Also render stitch.mp4: the trip's front and rear video "
+            "composed into one, side by side or stacked (see "
+            "--stitch-layout). A trip with only one camera falls back "
+            "to a plain copy of whichever one exists. This is a first "
+            "version - no map panel, g-sensor overlay, subtitle "
+            "burn-in, rearview-mirror layout, or auto-picking a "
+            "layout from the trip's own geometry yet, all planned for "
+            "later."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-layout",
+        choices=["side_by_side", "top_down"],
+        default="side_by_side",
+        help=(
+            "Camera arrangement for --stitch: 'side_by_side' (front | "
+            "rear) or 'top_down' (front / rear). Only used together "
+            "with --stitch. Default: side_by_side - the eventual "
+            "plan is to auto-pick this from the trip's own "
+            "north-south/east-west shape, not implemented yet."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -402,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         map_icon=args.map_icon,
         map_zoom_meters=args.map_zoom_meters,
         render_gsensor=args.render_gsensor,
+        stitch_layout=args.stitch_layout if args.stitch else None,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
     ))

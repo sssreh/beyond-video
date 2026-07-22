@@ -71,38 +71,32 @@ def _nvenc_available() -> bool:
 
 
 def _run_ffmpeg_encode(
-    codec_args: list[str], frame_dir: Path, destination: Path, fps: int
+    codec_args: list[str], input_args: list[str], destination: Path
 ) -> None:
     subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-framerate", str(fps),
-            "-i", str(frame_dir / "frame_%06d.png"),
-            *codec_args,
-            str(destination),
-        ],
+        ["ffmpeg", "-y", *input_args, *codec_args, str(destination)],
         capture_output=True,
         text=True,
         check=True,
     )
 
 
-def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
-    """Encode a directory of frame_%06d.png images (map_video.py,
-    gsensor_video.py) into a video at `destination`, in order, at
-    `fps` frames/second.
-
-    Shared so every "render a frame sequence, hand it to ffmpeg"
-    overlay video uses the same encode settings and error handling.
-
-    Uses NVIDIA's hardware h264_nvenc encoder when this machine's
-    ffmpeg build supports it (see _nvenc_available()), falling back to
-    the software libx264 encoder - always used directly if NVENC
-    isn't available, and also if an NVENC attempt itself fails (e.g.
-    the encoder is listed but no compatible GPU/driver is actually
+def encode_with_nvenc_fallback(input_args: list[str], destination: Path) -> None:
+    """Run ffmpeg with `input_args` (whatever inputs/filters/maps the
+    caller needs - a frame-sequence input, a multi-video
+    filter_complex composition, etc.), encoding video with NVIDIA's
+    hardware h264_nvenc encoder when this machine's ffmpeg build
+    supports it (see _nvenc_available()), falling back to the software
+    libx264 encoder otherwise - always used directly if NVENC isn't
+    available, and also if an NVENC attempt itself fails (e.g. the
+    encoder is listed but no compatible GPU/driver is actually
     present) - so this always produces a video either way, just faster
     when a real NVIDIA GPU is there to use.
+
+    Shared by every "encode a video via ffmpeg" caller in bv-export
+    (map_video.py/gsensor_video.py's frame sequences via
+    encode_frame_sequence() below, stitch.py's camera composition) so
+    they all get the same NVENC-then-CPU fallback behavior for free.
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +105,7 @@ def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
         try:
             _run_ffmpeg_encode(
                 ["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p"],
-                frame_dir, destination, fps,
+                input_args, destination,
             )
             return
         except FileNotFoundError as exc:
@@ -122,7 +116,7 @@ def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
     try:
         _run_ffmpeg_encode(
             ["-c:v", "libx264", "-pix_fmt", "yuv420p"],
-            frame_dir, destination, fps,
+            input_args, destination,
         )
     except FileNotFoundError as exc:
         raise MediaToolError("ffmpeg not found on PATH") from exc
@@ -131,6 +125,19 @@ def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
             f"ffmpeg encode failed for {destination.name}: "
             f"{exc.stderr.strip()}"
         ) from exc
+
+
+def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
+    """Encode a directory of frame_%06d.png images (map_video.py,
+    gsensor_video.py) into a video at `destination`, in order, at
+    `fps` frames/second - see encode_with_nvenc_fallback() for the
+    actual encode/fallback behavior.
+    """
+
+    encode_with_nvenc_fallback(
+        ["-framerate", str(fps), "-i", str(frame_dir / "frame_%06d.png")],
+        destination,
+    )
 
 
 def concatenate_media(sources: list[Path], destination: Path) -> None:

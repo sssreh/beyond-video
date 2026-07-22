@@ -490,6 +490,99 @@ def test_main_leaves_map_zoom_as_none_when_the_flag_is_absent(
     assert captured["map_zoom_meters"] is None
 
 
+def test_bv_export_stitch_flag_produces_a_composed_video(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    exit_code = bv_export(
+        str(archive), target=str(target), stitch_layout="side_by_side",
+    )
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    assert (folder / "stitch.mp4").exists()
+
+
+def test_bv_export_without_stitch_flag_writes_no_stitch_video(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    assert not (folder / "stitch.mp4").exists()
+
+
+def test_main_leaves_stitch_layout_as_none_when_stitch_flag_is_absent(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["stitch_layout"] is None
+
+
+def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_layout"] == "side_by_side"
+
+
+def test_main_uses_an_explicit_stitch_layout_when_given(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-layout", "top_down",
+    ])
+
+    assert captured["stitch_layout"] == "top_down"
+
+
 def test_bv_export_a_later_plain_export_keeps_an_earlier_maps_map_video(
     tmp_path, monkeypatch
 ):

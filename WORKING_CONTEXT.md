@@ -1260,8 +1260,9 @@ annoying failure for "assemble one holiday video."
    terms/pricing research first) or if a cleaner open high-resolution
    source turns up later.
 
-5. **--stitch option (future) - design spec agreed with Christer, not yet
-   implemented.** Composes whatever's already in a trip folder into one
+5. **--stitch option - design spec agreed with Christer; camera-layout
+   composition (increment 1 of 5, done this session) implemented, the
+   rest still future work.** Composes whatever's already in a trip folder into one
    video via ffmpeg `filter_complex` (`hstack`/`vstack`/`overlay`). Scope:
    `--stitch` only works with files that already exist - it never
    generates anything itself. A requested element with no source file
@@ -1365,11 +1366,55 @@ annoying failure for "assemble one holiday video."
      negative-flag convention elsewhere in this CLI, rather than a
      `--stitch-`-prefixed negative.
 
+   **Increment 1 - camera-layout composition (done, this session).**
+   `side_by_side`/`top_down` only (not `rearview_mirror` yet - that needs
+   the flip+scale+overlay step, a later increment), no map panel/gsensor
+   overlay/subtitles/auto-pick yet either.
+
+   New `blackvue.export.stitch`: `stitch_cameras(front, rear, destination,
+   *, layout)` - `hstack` (`side_by_side`) or `vstack` (`top_down`) via
+   ffmpeg `filter_complex`. Front and rear can be different resolutions
+   (some BlackVue setups pair a higher-res front with a lower-res rear) -
+   rear is probed and scaled (stretched, not letterboxed) to front's exact
+   width/height first, since `hstack`/`vstack` both require matching
+   dimensions on the non-stacked axis. Tried ffmpeg's `scale2ref` filter
+   for this first, but its "which input scales to match which" semantics
+   turned out easy to get backwards in practice (empirically confirmed
+   both orderings before giving up on it) - a plain probed `scale=W:H` is
+   simpler to get right and easier to read. A trip with only one camera
+   (the common single-front-camera case) falls back to a plain copy of
+   whichever one exists, ignoring `layout` - same "do the sensible thing"
+   convention as the rest of `bv-export`. No audio track yet - that's a
+   later pass, trip-level audio already lives in its own `audio.aac`.
+
+   `media.py`'s NVENC-fallback encode logic (previously private to
+   `encode_frame_sequence()`, frame-sequence-input-specific) generalized
+   into `encode_with_nvenc_fallback(input_args, destination)` so
+   `stitch.py` gets the same NVENC-then-CPU-fallback behavior for free
+   instead of duplicating the GPU-detect logic - `encode_frame_sequence()`
+   is now a thin wrapper over it.
+
+   `export_trip()` gained `stitch_layout: str | None = None` (None = no
+   stitch); `ExportResult.stitch: Path | None`. A stitch failure degrades
+   to a warning, same pattern as map/gsensor. `bv-export --stitch` (bool)
+   + `--stitch-layout {side_by_side,top_down}` (default `side_by_side` -
+   temporary, until auto-pick-from-geometry exists).
+
+   Tested: 9 new tests on `stitch_cameras` (both layouts' output
+   dimensions, mismatched-resolution scaling, front-only/rear-only
+   fallback, neither-camera returns None, unknown layout raises,
+   MediaToolError on a bad source), 4 on `export_trip` (skipped by
+   default, produces a video, front-only fallback, warns instead of
+   failing), 4 CLI-level (`--stitch` produces `stitch.mp4`, absent flag
+   writes nothing, default/explicit `--stitch-layout` argparse wiring).
+   Full suite green (342 passed, up from 312). Not yet confirmed against
+   a real front+rear BlackVue archive - only unit-tested with synthetic
+   ffmpeg testsrc clips.
+
 Immediate next step: confirm `--map` against a real archive (real Overpass
-query, real GPS data) - see item 4's caveat above - then start implementing
-`--stitch` per the spec above, in roughly this order: camera-layout
-composition (the two `stack` modes first, they're simpler than
-`rearview_mirror`'s flip+scale+overlay), then the map-panel aspect-ratio
-work, then g-sensor overlay placement, then subtitle burn-in, then the
+query, real GPS data) - see item 4's caveat above - and confirm `--stitch`
+against a real front+rear archive - then continue `--stitch` per the spec
+above, in order: the map-panel aspect-ratio work, then g-sensor overlay
+placement, then subtitle burn-in, then `rearview_mirror`, then the
 auto-pick-from-trip-geometry layer on top once the individual pieces work
 with explicit flags.

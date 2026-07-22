@@ -10,6 +10,7 @@ from .osm_roads import Road
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import fetch_roads
 from .osm_roads import load_or_fetch_roads
+from .stitch import stitch_cameras
 from .subtitles import merge_lrc
 from .subtitles import merge_srt
 from .text import merge_text_assets
@@ -35,5 +36,6 @@ __all__ = [
     "render_frame",
     "render_gsensor_video",
     "render_map_video",
+    "stitch_cameras",
     "write_gpx",
 ]

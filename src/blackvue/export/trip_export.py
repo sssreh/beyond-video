@@ -28,6 +28,7 @@ from .map_video import render_map_video
 from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_roads
+from .stitch import stitch_cameras
 from .subtitles import merge_lrc
 from .subtitles import merge_srt
 from .text import merge_text_assets
@@ -55,6 +56,7 @@ class ExportResult:
     map: Path | None = None
     map_zoom: Path | None = None
     gsensor_video: Path | None = None
+    stitch: Path | None = None
     srt: Path | None = None
     lrc: Path | None = None
     text: tuple[Path, ...] = field(default_factory=tuple)
@@ -207,6 +209,7 @@ def export_trip(
     map_icon: Path | None = None,
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
+    stitch_layout: str | None = None,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -247,6 +250,15 @@ def export_trip(
     later (see gsensor_render.py/gsensor_video.py). No network
     involved, but off by default since it's extra render time most
     exports won't want.
+
+    `stitch_layout`, if given ('side_by_side' or 'top_down' - see
+    stitch.py), additionally renders stitch.mp4: the trip's front and
+    rear footage composed into one video via ffmpeg hstack/vstack. A
+    trip with only one camera falls back to a plain copy of whichever
+    one exists, ignoring `stitch_layout`. This is the first --stitch
+    building block (see WORKING_CONTEXT.md for the full spec) - no
+    map panel, g-sensor overlay, subtitle burn-in, rearview_mirror
+    layout, or auto-picking a layout from the trip's geometry yet.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -340,6 +352,16 @@ def export_trip(
         except MediaToolError as exc:
             warnings.append(f"gsensor video: {exc}")
 
+    stitch_path = None
+    if stitch_layout is not None:
+        try:
+            stitch_path = stitch_cameras(
+                front_video, rear_video, destination / "stitch.mp4",
+                layout=stitch_layout,
+            )
+        except MediaToolError as exc:
+            warnings.append(f"stitch: {exc}")
+
     return ExportResult(
         front_video=front_video,
         rear_video=rear_video,
@@ -349,6 +371,7 @@ def export_trip(
         map=map_path,
         map_zoom=map_zoom_path,
         gsensor_video=gsensor_video_path,
+        stitch=stitch_path,
         srt=srt_path,
         lrc=lrc_path,
         text=tuple(text_paths),

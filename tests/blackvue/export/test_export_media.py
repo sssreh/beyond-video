@@ -141,7 +141,7 @@ def test_encode_frame_sequence_uses_libx264_directly_when_nvenc_unavailable(
     monkeypatch.setattr(media_module, "_NVENC_AVAILABLE", False)
     captured = []
 
-    def fake_encode(codec_args, frame_dir, destination, fps):
+    def fake_encode(codec_args, input_args, destination):
         captured.append(codec_args)
 
     monkeypatch.setattr(media_module, "_run_ffmpeg_encode", fake_encode)
@@ -157,7 +157,7 @@ def test_encode_frame_sequence_tries_nvenc_first_when_available(
     monkeypatch.setattr(media_module, "_NVENC_AVAILABLE", True)
     captured = []
 
-    def fake_encode(codec_args, frame_dir, destination, fps):
+    def fake_encode(codec_args, input_args, destination):
         captured.append(codec_args)
 
     monkeypatch.setattr(media_module, "_run_ffmpeg_encode", fake_encode)

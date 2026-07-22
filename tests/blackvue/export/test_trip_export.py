@@ -447,6 +447,91 @@ def test_export_trip_render_gsensor_warns_instead_of_failing_on_encode_error(
     assert result.gsensor is not None
 
 
+def _trip_with_front_and_rear(source_dir):
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    return Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+            },
+        ),
+    ))
+
+
+def test_export_trip_skips_stitch_by_default(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.stitch is None
+    assert not (dest_dir / "stitch.mp4").exists()
+
+
+def test_export_trip_stitch_layout_produces_a_video(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert result.stitch == dest_dir / "stitch.mp4"
+    assert result.stitch.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_falls_back_to_front_only_with_no_rear(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_only = source_dir / "front_only.mp4"
+    _make_video(front_only, 1.0)
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_only)},
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir, stitch_layout="top_down")
+
+    assert result.stitch == dest_dir / "stitch.mp4"
+    assert result.stitch.exists()
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_warns_instead_of_failing_on_encode_error(
+    tmp_path, monkeypatch
+):
+    def _broken(*_args, **_kwargs):
+        raise MediaToolError("ffmpeg not found on PATH")
+
+    monkeypatch.setattr(trip_export_module, "stitch_cameras", _broken)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert result.stitch is None
+    assert len(result.warnings) == 1
+    assert "stitch" in result.warnings[0]
+    # The rest of the export still succeeded despite the stitch failure.
+    assert result.front_video is not None
+
+
 def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
