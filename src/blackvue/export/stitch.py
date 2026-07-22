@@ -226,16 +226,64 @@ def _fit_and_pad(
     )
 
 
+# The named CUDA device every hwaccel input is pinned to via
+# -hwaccel_device (see _hwaccel_input_args()/_shared_hw_device_args())
+# - an arbitrary but consistent label, not a magic ffmpeg constant.
+_HW_DEVICE_NAME = "cu"
+
+
+def _shared_hw_device_args(hw_decode: bool) -> list[str]:
+    """-init_hw_device args creating one explicit, named CUDA device
+    ("cu", device index 0) up front - go once at the very start of the
+    ffmpeg command, before any -i. Every hwaccel input then references
+    this same device via -hwaccel_device (see _hwaccel_input_args())
+    instead of implicitly creating its own separate CUDA context.
+
+    This matters for real, not just in theory: a controlled test on
+    Christer's real archive (RTX 5090 laptop GPU) found NVDEC-decoding
+    front and rear concurrently in two SEPARATE ffmpeg processes cost
+    barely more than decoding each alone (44.8s vs a 38.5s solo
+    baseline for front; 19.0s vs 17.0s solo for rear - modest overlap
+    overhead). But decoding both in ONE ffmpeg process with two
+    *unshared* -hwaccel cuda inputs (this module's original behavior)
+    cost 276.2s for the same two files - roughly 5x the sum of the two
+    solo times, far more than real GPU decoder-engine contention would
+    explain (the two-separate-processes result rules that out: if the
+    NVDEC hardware itself were the bottleneck, running two decodes at
+    once - in any process arrangement - would cost close to what was
+    measured there, not 5x worse). The likely explanation: without an
+    explicit shared device, ffmpeg opens two independent CUDA contexts
+    (one per input) and pays real cross-context synchronization
+    overhead once both feed into the same filter graph - a known rough
+    edge in ffmpeg's multi-input hwaccel handling, and this is its
+    documented fix.
+    """
+
+    if not hw_decode:
+        return []
+    return ["-init_hw_device", f"cuda={_HW_DEVICE_NAME}:0"]
+
+
 def _hwaccel_input_args(source: Path, *, hw_decode: bool) -> list[str]:
     """The -i args for one input, with NVDEC decode flags prepended
-    when `hw_decode` is True. -hwaccel_output_format cuda keeps
-    decoded frames in GPU memory - a later "hwdownload,format=nv12" in
-    the filter graph (see _hw_predecode_filter()) is what brings them
-    back to normal CPU frames for the (CPU-only) scale/stack/pad
-    filters this module uses."""
+    when `hw_decode` is True. -hwaccel_device pins this input to the
+    one shared CUDA device created by _shared_hw_device_args() (must
+    be called once, before any -i, in the same ffmpeg command) rather
+    than letting this input open its own separate context - see that
+    function's docstring for why that distinction turned out to matter
+    a lot in practice. -hwaccel_output_format cuda keeps decoded
+    frames in GPU memory - a later "hwdownload,format=nv12" in the
+    filter graph (see _hw_predecode_filter()) is what brings them back
+    to normal CPU frames for the (CPU-only) scale/stack/pad filters
+    this module uses."""
 
     if hw_decode:
-        return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", str(source)]
+        return [
+            "-hwaccel", "cuda",
+            "-hwaccel_device", _HW_DEVICE_NAME,
+            "-hwaccel_output_format", "cuda",
+            "-i", str(source),
+        ]
     return ["-i", str(source)]
 
 
@@ -325,7 +373,9 @@ def _run_reencode_single(
     bitrate: str | None,
     hw_decode: bool,
 ) -> None:
-    input_args = _hwaccel_input_args(source, hw_decode=hw_decode)
+    input_args = _shared_hw_device_args(hw_decode) + _hwaccel_input_args(
+        source, hw_decode=hw_decode
+    )
     predecode = _hw_predecode_filter(hw_decode)
 
     if resolution is not None:
@@ -455,6 +505,7 @@ def _run_stack(
 
     encode_with_nvenc_fallback(
         [
+            *_shared_hw_device_args(hw_decode),
             *_hwaccel_input_args(front, hw_decode=hw_decode),
             *_hwaccel_input_args(rear, hw_decode=hw_decode),
             "-filter_complex", ";".join(clauses),
