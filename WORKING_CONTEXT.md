@@ -1334,6 +1334,37 @@ annoying failure for "assemble one holiday video."
    `trip.srt` in directly via the `subtitles` filter - exact mechanism
    still to be decided at implementation time).
 
+   **Argument list agreed with Christer:**
+   - `--stitch` - master switch, produces the composed video.
+   - `--stitch-layout {side_by_side,top_down,rearview_mirror}` -
+     auto-picked from trip geometry if omitted.
+   - `--stitch-mirror-size PERCENT` - 10-50, default 25. Only meaningful
+     with `rearview_mirror`.
+   - `--stitch-map [map|zoom]` - same optional-value `nargs='?'` pattern
+     `--map-zoom` already uses: bare flag includes the panel using the
+     static map, `--stitch-map zoom` picks `map_zoom_XXXm.mp4` instead,
+     omitted entirely means no map panel.
+   - `--stitch-map-side {left,right,top,down}` - override the auto-picked
+     side (default: left for `top_down` cameras, bottom for
+     `side_by_side`).
+   - `--stitch-gsensor` - bool, include the gsensor overlay.
+   - `--stitch-gsensor-size PERCENT` - 5-40, default 15.
+   - `--stitch-gsensor-pos POSITION` - named position (combinations of
+     left/right/top/down/center, e.g. `top-right`, `center`) - excluded
+     from the map panel/mirror inset region, see above.
+   - `--stitch-gsensor-xy X,Y` - explicit position as percent (not
+     pixels - resolution-independent, consistent with the size flags
+     being percentages too) of the footage region, e.g. `80,10`.
+     Mutually exclusive with `--stitch-gsensor-pos`. Allowed to land on
+     the map panel/mirror inset even though named positions can't - a
+     deliberate override, the user asked for that exact spot.
+   - `--stitch-subtitles` - bool, burn `trip.srt` into the frame.
+   - `--no-subtitles-bg` - bool, disables the dark translucent background
+     bar behind subtitle text (on by default when `--stitch-subtitles` is
+     given) - named to match the existing `--no-movement`/`--no-duration`
+     negative-flag convention elsewhere in this CLI, rather than a
+     `--stitch-`-prefixed negative.
+
 Immediate next step: confirm `--map` against a real archive (real Overpass
 query, real GPS data) - see item 4's caveat above - then start implementing
 `--stitch` per the spec above, in roughly this order: camera-layout
