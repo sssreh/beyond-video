@@ -446,6 +446,38 @@ def test_run_reencode_single_with_hw_decode_pins_the_input_to_a_shared_device(
     assert input_args[input_args.index("-hwaccel_device") + 1] == "cu"
 
 
+def test_run_reencode_single_with_hw_decode_and_no_resolution_builds_valid_filter(
+    tmp_path, monkeypatch
+):
+    # Regression test: with resolution=None, hw_decode=True takes the
+    # "elif hw_decode" branch, which builds f"[0:v]{predecode}[v]" -
+    # predecode ("hwdownload,format=nv12,") ends with a trailing comma
+    # meant to separate it from a following filter, but there's no
+    # following filter here, so the un-stripped version produced
+    # "[0:v]hwdownload,format=nv12,[v]" - a dangling comma right
+    # before the output label, which ffmpeg rejects instantly. Found
+    # for real on Christer's archive (this exact branch had never been
+    # exercised before - every prior real run always passed
+    # --stitch-resolution, which takes the other branch).
+    captured = {}
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured["input_args"] = input_args
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    stitch_module._run_reencode_single(
+        tmp_path / "front.mp4", tmp_path / "out.mp4",
+        resolution=None, bitrate=None, hw_decode=True,
+    )
+
+    input_args = captured["input_args"]
+    filter_complex = input_args[input_args.index("-filter_complex") + 1]
+    assert filter_complex == "[0:v]hwdownload,format=nv12[v]"
+
+
 def test_run_decode_camera_with_hw_decode_pins_the_input_to_a_shared_device(
     tmp_path, monkeypatch
 ):
@@ -472,6 +504,80 @@ def test_run_decode_camera_with_hw_decode_pins_the_input_to_a_shared_device(
     assert input_args[:3] == ["-init_hw_device", "cuda=cu:0", "-hwaccel"]
     assert "-hwaccel_device" in input_args
     assert input_args[input_args.index("-hwaccel_device") + 1] == "cu"
+
+
+def test_run_decode_camera_with_hw_decode_and_no_scale_filter_builds_valid_filter(
+    tmp_path, monkeypatch
+):
+    # The same trailing-comma regression as
+    # test_run_reencode_single_with_hw_decode_and_no_resolution_builds_valid_filter,
+    # in _run_decode_camera()'s equivalent branch - this is the one
+    # that actually fired on Christer's real archive: front doesn't
+    # need a scale_filter (only rear does, to match front - see
+    # _stack()), so front's decode call hits exactly this branch.
+    captured = {}
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured["input_args"] = input_args
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    stitch_module._run_decode_camera(
+        tmp_path / "front.mp4", tmp_path / "out.mp4",
+        scale_filter=None, hw_decode=True,
+    )
+
+    input_args = captured["input_args"]
+    filter_complex = input_args[input_args.index("-filter_complex") + 1]
+    assert filter_complex == "[0:v]hwdownload,format=nv12[v]"
+
+
+def test_stack_scales_both_cameras_toward_the_target_resolution_not_native_size(
+    tmp_path, monkeypatch
+):
+    # Regression test for the second real-archive finding: matching
+    # rear to front's full NATIVE height before the final downscale
+    # wasted a lot of time encoding an intermediate far bigger than
+    # the eventual output needed (rear upscaled from 1080p to front's
+    # native ~2160p, just to immediately shrink back to 720p two steps
+    # later - measured at ~100s on Christer's archive for that
+    # unnecessary size). When a resolution is requested, both cameras'
+    # intermediates should target roughly that size directly instead.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    scale_filters = {}
+
+    def fake_decode_camera(source, destination, *, scale_filter, debug=False):
+        scale_filters[destination.name] = scale_filter
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "_decode_camera", fake_decode_camera)
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    # Front is 4K, rear is 1080p - a real mismatch like Christer's
+    # archive - front's native height (2160) must NOT show up in
+    # either scale filter below.
+    _make_video(front, 3840, 2160, duration_seconds=0.1)
+    _make_video(rear, 1920, 1080, duration_seconds=0.1)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", resolution=(1280, 720),
+    )
+
+    assert scale_filters["front.mp4"] == "scale=-2:720"
+    assert scale_filters["rear.mp4"] == "scale=-2:720"
+    assert "2160" not in scale_filters["front.mp4"]
+    assert "2160" not in scale_filters["rear.mp4"]
 
 
 def test_stack_decodes_front_and_rear_as_separate_ffmpeg_calls(

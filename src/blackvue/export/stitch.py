@@ -402,8 +402,19 @@ def _run_reencode_single(
             "-map", "[v]",
         ]
     elif hw_decode:
+        # predecode ("hwdownload,format=nv12,") ends with a trailing
+        # comma, meant as a separator before whatever filter follows
+        # it (see _fit_and_pad()'s `prefix` param above). With nothing
+        # following it here, that trailing comma has to be stripped -
+        # left in, "[0:v]hwdownload,format=nv12,[v]" is a malformed
+        # filter chain (a dangling comma right before the output
+        # label) that ffmpeg rejects instantly - the same class of bug
+        # as the _fit_and_pad prefix-ordering one fixed earlier, just
+        # in the one branch that historically never got exercised
+        # (every real run so far always passed --stitch-resolution,
+        # which takes the branch above instead).
         input_args += [
-            "-filter_complex", f"[0:v]{predecode}[v]",
+            "-filter_complex", f"[0:v]{predecode.rstrip(',')}[v]",
             "-map", "[v]",
         ]
     else:
@@ -490,8 +501,14 @@ def _run_decode_camera(
             "-map", "[v]",
         ]
     elif hw_decode:
+        # See the identical comment in _run_reencode_single() - same
+        # bug, same fix: predecode's trailing comma needs stripping
+        # when nothing follows it. This is front's own branch whenever
+        # a --stitch-resolution isn't in play for the intermediate
+        # scale (see _stack()'s scale-filter selection below) - it's
+        # what actually fired on Christer's real archive this time.
         input_args += [
-            "-filter_complex", f"[0:v]{predecode}[v]",
+            "-filter_complex", f"[0:v]{predecode.rstrip(',')}[v]",
             "-map", "[v]",
         ]
     else:
@@ -517,19 +534,43 @@ def _stack(
         )
 
     filter_name = STACK_LAYOUTS[layout]
-    front_width, front_height = _video_dimensions(front)
 
     # hstack only requires matching *heights* (it concatenates
     # horizontally, combined width is whatever the two widths sum to);
-    # vstack only requires matching *widths*. Only scale rear on the
-    # one dimension that actually needs to match front (probed
-    # directly above), leaving the other free via ffmpeg's "-2"
-    # (auto-computed, rounded to an even number for H.264) so rear's
-    # own aspect ratio is preserved rather than forced to front's.
-    if filter_name == "hstack":
-        rear_scale_filter = f"scale=-2:{front_height}"
+    # vstack only requires matching *widths*.
+    #
+    # When a final `resolution` is requested, scale BOTH cameras'
+    # intermediates directly toward it, rather than matching rear to
+    # front's full native size and only shrinking to the target in the
+    # final pass. Found on Christer's real archive: front 4K + rear
+    # 1080p, hstack, matching rear to front's native ~2160p height
+    # (an upscale from rear's own 1080p) before a --stitch-resolution
+    # 1280x720 request cost rear's intermediate encode ~100s - for a
+    # size the very next step immediately threw away. Scaling straight
+    # to (roughly) the target height/width instead means neither
+    # intermediate is ever larger than it needs to be, and this also
+    # sidesteps needing to know front's native size at all up front
+    # (no _video_dimensions(front) probe needed in this branch).
+    #
+    # When no `resolution` is given (full native-quality output),
+    # front stays untouched and rear matches front's own native size
+    # on the one axis that actually needs to match - the original
+    # behavior, unchanged.
+    if resolution is not None:
+        out_width, out_height = resolution
+        if filter_name == "hstack":
+            front_scale_filter = f"scale=-2:{out_height}"
+            rear_scale_filter = f"scale=-2:{out_height}"
+        else:
+            front_scale_filter = f"scale={out_width}:-2"
+            rear_scale_filter = f"scale={out_width}:-2"
     else:
-        rear_scale_filter = f"scale={front_width}:-2"
+        front_scale_filter = None
+        front_width, front_height = _video_dimensions(front)
+        if filter_name == "hstack":
+            rear_scale_filter = f"scale=-2:{front_height}"
+        else:
+            rear_scale_filter = f"scale={front_width}:-2"
 
     with tempfile.TemporaryDirectory(prefix="bv-stitch-") as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -547,7 +588,7 @@ def _stack(
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             front_future = executor.submit(
                 _decode_camera, front, front_decoded,
-                scale_filter=None, debug=debug,
+                scale_filter=front_scale_filter, debug=debug,
             )
             rear_future = executor.submit(
                 _decode_camera, rear, rear_decoded,

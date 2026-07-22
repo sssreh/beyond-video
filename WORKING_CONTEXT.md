@@ -1769,20 +1769,65 @@ annoying failure for "assemble one holiday video."
    behavior, different internal architecture. Full suite green (375
    passed, up from 373).
 
+   **Follow-up: two bugs found on the very first real-archive run of the
+   two-process redesign (done, this session).** Christer's first
+   `--debug` run with the redesign in place: `front.mp4 decode=nvdec
+   failed in 0.5s` (again too fast to be real), `rear.mp4 decode=nvdec
+   succeeded in 100.0s` (real, but far slower than expected), stitch
+   phase 173.8s total - better than 230.8s, but not the clean win hoped
+   for, and for the wrong reasons.
+
+   Bug 1 (same class as the earlier `_fit_and_pad` prefix bug): in both
+   `_run_reencode_single()`'s and the new `_run_decode_camera()`'s
+   `elif hw_decode:` branch (taken when there's no scale filter to
+   apply - front's case, since only rear needs the matching scale),
+   the filter was built as `f"[0:v]{predecode}[v]"`. `predecode`
+   ("hwdownload,format=nv12,") carries a trailing comma meant to
+   separate it from a *following* filter (see `_fit_and_pad()`'s
+   `prefix` param) - with nothing following it here, that trailing
+   comma left a dangling `,[v]` right before the output label, another
+   instant ffmpeg syntax error. This branch had simply never been
+   exercised before - every prior real run always passed
+   `--stitch-resolution`, which takes the other, correct branch. Fixed
+   by stripping the trailing comma (`predecode.rstrip(',')`) in both
+   `elif` branches.
+
+   Bug 2, more consequential: `_stack()` was still matching rear to
+   **front's full native height** before decoding, regardless of any
+   requested `resolution` - e.g. front 4K (~2160p) + rear 1080p +
+   `--stitch-resolution 1280x720` meant rear got upscaled to ~2160p as
+   an intermediate, just to be shrunk straight back down to 720p two
+   steps later. That upscale-then-downscale round trip is exactly
+   rear's measured ~100s. Fixed: when `resolution` is given, *both*
+   cameras' intermediates now scale directly toward it (e.g. `scale=-2:
+   720` for both, for an hstack layout) instead of matching each
+   other's native size first - this also means `_video_dimensions(front)`
+   no longer needs to be probed at all in that case. When no
+   `resolution` is given (full native-quality output), the original
+   native-height-matching behavior is unchanged.
+
+   Tested: 2 new regression tests asserting the exact filter string for
+   the trailing-comma fix (one per call site), and 1 new test
+   confirming both cameras' scale filters target the requested
+   resolution's height/width directly (with front's real native
+   height, 2160, explicitly asserted absent from either filter string)
+   for a real front-4K/rear-1080p size mismatch. Full suite green (378
+   passed, up from 375).
+
 Immediate next step: get a fresh two-camera `--debug` run from Christer
-with this redesign in place - if the "single-process filtergraph
-serializes hardware-decoded inputs" theory is right, the stitch phase
-should land close to max(front, rear) decode time plus the final combine
-pass (each camera's decode now genuinely overlaps the other, rather than
-sharing one process), landing well under the old 230.8s/276.2s numbers.
-If it does, NVDEC becomes a clear win across the board and this
+with both fixes in place - front should now show `decode=nvdec` actually
+succeeding (not failing in 0.5s), and rear's decode time should drop
+sharply now that it's targeting 720p instead of ~2160p. If the "single-
+process filtergraph serializes hardware-decoded inputs" theory is right,
+the stitch phase should land close to max(front, rear) decode time plus a
+now-cheap final combine pass, well under the 173.8s/230.8s/276.2s numbers
+so far. If it does, NVDEC becomes a clear win across the board and this
 investigation (item 58 in the task list) is closed. If it still doesn't
 land near expectations, there's some other bottleneck not yet identified,
-and reverting NVDEC for --stitch specifically (keeping it only for
-non-stitch single-file re-encodes, if any exist) becomes the fallback
-plan. Separately, confirm `--map` against a real archive (real Overpass
-query, real GPS data, see item 4's caveat above) - then continue `--stitch`
-per the spec above, in order: the map-panel aspect-ratio work, then
-g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
-then the auto-pick-from-trip-geometry layer on top once the individual
-pieces work with explicit flags.
+and reverting NVDEC for --stitch specifically becomes the fallback plan.
+Separately, confirm `--map` against a real archive (real Overpass query,
+real GPS data, see item 4's caveat above) - then continue `--stitch` per
+the spec above, in order: the map-panel aspect-ratio work, then g-sensor
+overlay placement, then subtitle burn-in, then `rearview_mirror`, then the
+auto-pick-from-trip-geometry layer on top once the individual pieces work
+with explicit flags.
