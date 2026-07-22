@@ -131,6 +131,87 @@ def test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration(
     )
 
 
+class _FakeCudaAwareWhisperModel:
+    """Stands in for faster_whisper.WhisperModel: records every
+    construction call, and optionally raises for device="cuda" to
+    simulate a machine with no usable GPU (no NVIDIA card, driver too
+    old, missing cuDNN/cuBLAS, ...) - the exact exception type varies
+    in practice, so this uses a plain RuntimeError as a representative
+    stand-in.
+    """
+
+    calls: list[tuple[str, str, str]] = []
+    cuda_should_fail = True
+
+    def __init__(self, model_size, device, compute_type):
+        type(self).calls.append((model_size, device, compute_type))
+        if device == "cuda" and type(self).cuda_should_fail:
+            raise RuntimeError("no CUDA-capable device found")
+        self.model_size = model_size
+        self.device = device
+        self.compute_type = compute_type
+
+
+def _install_fake_faster_whisper(monkeypatch, *, cuda_should_fail):
+    _FakeCudaAwareWhisperModel.calls = []
+    _FakeCudaAwareWhisperModel.cuda_should_fail = cuda_should_fail
+
+    fake_module = types.ModuleType("faster_whisper")
+    fake_module.WhisperModel = _FakeCudaAwareWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
+
+
+def test_load_whisper_model_falls_back_to_cpu_when_cuda_is_unavailable(
+    monkeypatch,
+):
+    import blackvue.generate.speech as speech_module
+
+    _install_fake_faster_whisper(monkeypatch, cuda_should_fail=True)
+
+    model = speech_module._load_whisper_model("small")
+
+    assert model.device == "cpu"
+    assert model.compute_type == "int8"
+    assert _FakeCudaAwareWhisperModel.calls == [
+        ("small", "cuda", "float16"),
+        ("small", "cpu", "int8"),
+    ]
+
+
+def test_load_whisper_model_uses_cuda_when_available(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    _install_fake_faster_whisper(monkeypatch, cuda_should_fail=False)
+
+    model = speech_module._load_whisper_model("small")
+
+    assert model.device == "cuda"
+    assert model.compute_type == "float16"
+    # No CPU fallback attempted - the first (GPU) load already worked.
+    assert _FakeCudaAwareWhisperModel.calls == [("small", "cuda", "float16")]
+
+
+def test_get_whisper_model_reports_missing_faster_whisper_cleanly():
+    # Genuine, unmocked condition in this sandbox: faster-whisper isn't
+    # installed (matches the pattern _load_waveform_via_ffmpeg's own
+    # missing-torch test uses below). A cache key unique to this test
+    # avoids colliding with any other test's cached model under the
+    # same _WHISPER_MODEL_CACHE.
+    import blackvue.generate.speech as speech_module
+
+    try:
+        speech_module._get_whisper_model("_real-missing-dependency-check")
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised is True
+    assert "faster-whisper" in message
+    assert "pip install faster-whisper" in message
+
+
 def _install_fake_pyannote_audio(
     monkeypatch, pipeline_factory=None, *, legacy_kwarg=True
 ):
