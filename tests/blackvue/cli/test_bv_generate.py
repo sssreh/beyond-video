@@ -885,14 +885,20 @@ def test_translate_only_writes_srt_lrc_on_fresh_transcribe(
     assert (tmp_path / "20260715_220000_N.lrc").exists()
 
 
-def test_translate_only_skips_srt_lrc_when_reusing_cached_transcript(
+def test_translate_only_srt_lrc_forces_a_fresh_transcribe_over_the_cache(
     tmp_path, monkeypatch
 ):
     # A cached plain-text transcript has no segment timing, so --srt/
-    # --lrc can't be satisfied without a real transcribe() call. This
-    # first version simply skips them rather than forcing a
-    # re-transcription cache-first --translate would otherwise avoid.
-    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    # --lrc can't be satisfied by the normal cache-first --translate
+    # path. Reported by Christer against a real archive: --translate
+    # --srt --lrc silently produced no subtitles when a transcript
+    # already existed. Fixed by bypassing the transcript-reuse cache
+    # entirely whenever --srt/--lrc are requested, so Whisper always
+    # runs and there's real segment timing to draw from.
+    calls = []
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory(calls)
+    )
     monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
     monkeypatch.setattr(
         bv_generate,
@@ -902,9 +908,14 @@ def test_translate_only_skips_srt_lrc_when_reusing_cached_transcript(
 
     recording = Recording(id=RecordingId("20260715_230000_N"))
     transcript_path = tmp_path / "20260715_230000_N_tha.transcript.txt"
-    transcript_path.write_text("hej da")
+    transcript_path.write_text("stale cached text")
     recording.assets[Asset.TRANSCRIPT] = AssetFile(
         asset=Asset.TRANSCRIPT, path=transcript_path
+    )
+    audio_path = tmp_path / "20260715_230000_N.aac"
+    audio_path.write_bytes(b"a")
+    recording.assets[Asset.AUDIO] = AssetFile(
+        asset=Asset.AUDIO, path=audio_path
     )
 
     args = _base_args(translate="sv", srt=True, lrc=True)
@@ -912,5 +923,38 @@ def test_translate_only_skips_srt_lrc_when_reusing_cached_transcript(
     had_error = bv_generate._do_translate_only(recording, tmp_path, args)
 
     assert had_error is False
-    assert not (tmp_path / "20260715_230000_N.srt").exists()
-    assert not (tmp_path / "20260715_230000_N.lrc").exists()
+    assert calls == [audio_path], "should re-transcribe, not reuse the cache"
+    assert (tmp_path / "20260715_230000_N.srt").exists()
+    assert (tmp_path / "20260715_230000_N.lrc").exists()
+
+
+def test_translate_only_without_srt_lrc_still_reuses_cached_transcript(
+    tmp_path, monkeypatch
+):
+    # Regression check: plain --translate (no --srt/--lrc) keeps the
+    # original cache-first behaviour - the fix above only bypasses the
+    # cache when subtitle timing is actually needed.
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: (
+            f"[{source_language}->{target_language}] {text}"
+        ),
+    )
+
+    recording = Recording(id=RecordingId("20260715_231500_N"))
+    transcript_path = tmp_path / "20260715_231500_N_tha.transcript.txt"
+    transcript_path.write_text("hej da")
+    recording.assets[Asset.TRANSCRIPT] = AssetFile(
+        asset=Asset.TRANSCRIPT, path=transcript_path
+    )
+
+    args = _base_args(translate="sv")
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    out = tmp_path / "20260715_231500_N_swe.translation.txt"
+    assert out.read_text().strip() == "[th->sv] hej da"

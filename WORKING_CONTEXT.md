@@ -262,17 +262,23 @@ path), a missing `.srt`/`.lrc` now counts toward the "does this recording
 need any work" check even if the transcript/translation files themselves
 are already up to date, so `--srt`/`--lrc` alone against an already-
 transcribed archive still triggers a fresh Whisper run to get segment
-timing. In `_do_translate_only` (bare `--translate`, no `--transcribe`),
-which cache-first reuses an existing plain-text transcript when one exists,
-`--srt`/`--lrc` are silently skipped when that cache-hit path is taken -
-a cached `.transcript.txt` has no segment timing to draw from, and forcing
-a re-transcription would defeat the whole point of that path's caching.
-Only generates them on the fresh-transcribe branch, where segment timing is
-actually available. No warning is printed for the skip case; revisit if
-this proves confusing in practice.
+timing.
 
-Not yet confirmed against Christer's real archive - only unit-tested
-against fakes so far, same as `--translate`.
+**Bug found and fixed against Christer's real archive:** `_do_translate_only`
+(bare `--translate`, no `--transcribe`) cache-first reuses an existing
+plain-text transcript when one exists - a cached `.transcript.txt` has no
+segment timing, so the original version silently produced no `.srt`/`.lrc`
+at all whenever that cache-hit path was taken, with no warning. Christer
+hit exactly this running `--translate eng --srt --lrc` against recordings
+that already had a transcript. Fixed by having `_do_translate_only` skip
+the transcript-reuse cache entirely whenever `--srt`/`--lrc` are requested,
+forcing a fresh `transcribe()` call so there's real segment timing to draw
+from - trading away that path's caching benefit specifically when subtitle
+timing is actually needed. Plain `--translate` with no `--srt`/`--lrc`
+still uses the cache exactly as before.
+
+Fixed and unit-tested here; not yet reconfirmed by Christer against the
+real archive that surfaced the bug.
 
 ---
 
