@@ -35,6 +35,39 @@ STACK_LAYOUTS = {
     "top_down": "vstack",
 }
 
+# Cached after the first check, same pattern as media.py's
+# _NVENC_AVAILABLE - which hwaccels this machine's ffmpeg build has is
+# a fixed fact for the life of the run.
+_NVDEC_AVAILABLE: bool | None = None
+
+
+def _nvdec_available() -> bool:
+    """Return True if this machine's ffmpeg build lists "cuda" among
+    its hwaccels (NVIDIA's hardware video decoder, NVDEC).
+
+    Same caveat as media.py's _nvenc_available(): being listed doesn't
+    guarantee a specific file will actually decode via NVDEC (codec/
+    profile support varies) - a failed attempt just falls back to
+    plain CPU decode, so a wrong "True" here costs one failed attempt,
+    not a broken stitch.
+    """
+
+    global _NVDEC_AVAILABLE
+
+    if _NVDEC_AVAILABLE is None:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-hwaccels"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _NVDEC_AVAILABLE = "cuda" in result.stdout
+        except FileNotFoundError:
+            _NVDEC_AVAILABLE = False
+
+    return _NVDEC_AVAILABLE
+
 
 def stitch_cameras(
     front: Path | None,
@@ -60,12 +93,23 @@ def stitch_cameras(
     can't resize or re-bitrate). Returns None if neither exists.
 
     `resolution`, if given, is an (width, height) pixel pair the final
-    output is scaled to - handy for a fast, small test render (e.g.
-    (320, 240)) instead of waiting on a full-resolution encode.
-    `bitrate`, if given, is passed straight to ffmpeg as `-b:v` (plus
-    matching `-maxrate`/`-bufsize` to actually constrain it - e.g.
-    "256k", "2M"), on top of whichever encoder
-    (encode_with_nvenc_fallback()) ends up handling the encode.
+    output is scaled to (preserving aspect ratio, letterboxed to
+    exactly fill it - see _fit_and_pad()) - handy for a fast, small
+    test render (e.g. (320, 240)) instead of waiting on a
+    full-resolution encode. `bitrate`, if given, is passed straight to
+    ffmpeg as `-b:v` (plus matching `-maxrate`/`-bufsize` to actually
+    constrain it - e.g. "256k", "2M").
+
+    Decoding the source video(s) tries NVIDIA's hardware decoder
+    (NVDEC) first when available (see _nvdec_available()), falling
+    back to plain CPU decode if that fails for real - independent of
+    encode_with_nvenc_fallback()'s own NVENC/libx264 choice for the
+    *encode* side, so decode and encode each pick GPU-vs-CPU on their
+    own. Only the encode side was GPU-accelerated before this; decode
+    is real, unavoidable per-frame work for the source video's full
+    length regardless of how small the requested output is, so it was
+    the dominant cost of a --stitch run on a real (especially 4K)
+    front camera.
 
     No audio track is carried into the stitched video yet - trip-level
     audio already lives in its own audio.aac (see trip_export.py),
@@ -157,6 +201,28 @@ def _fit_and_pad(input_label: str, output_label: str, width: int, height: int) -
     )
 
 
+def _hwaccel_input_args(source: Path, *, hw_decode: bool) -> list[str]:
+    """The -i args for one input, with NVDEC decode flags prepended
+    when `hw_decode` is True. -hwaccel_output_format cuda keeps
+    decoded frames in GPU memory - a later "hwdownload,format=nv12" in
+    the filter graph (see _hw_predecode_filter()) is what brings them
+    back to normal CPU frames for the (CPU-only) scale/stack/pad
+    filters this module uses."""
+
+    if hw_decode:
+        return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", str(source)]
+    return ["-i", str(source)]
+
+
+def _hw_predecode_filter(hw_decode: bool) -> str:
+    """A filter-chain prefix bringing a hardware-decoded (GPU-resident)
+    stream back to normal CPU frames, or nothing at all for a plain
+    CPU-decoded stream which is already in that form. See
+    _hwaccel_input_args()."""
+
+    return "hwdownload,format=nv12," if hw_decode else ""
+
+
 def _reencode_single(
     source: Path,
     destination: Path,
@@ -164,12 +230,42 @@ def _reencode_single(
     resolution: tuple[int, int] | None,
     bitrate: str | None,
 ) -> None:
-    input_args = ["-i", str(source)]
+    if _nvdec_available():
+        try:
+            _run_reencode_single(
+                source, destination,
+                resolution=resolution, bitrate=bitrate, hw_decode=True,
+            )
+            return
+        except MediaToolError:
+            pass  # fall through to plain CPU decode below
+
+    _run_reencode_single(
+        source, destination,
+        resolution=resolution, bitrate=bitrate, hw_decode=False,
+    )
+
+
+def _run_reencode_single(
+    source: Path,
+    destination: Path,
+    *,
+    resolution: tuple[int, int] | None,
+    bitrate: str | None,
+    hw_decode: bool,
+) -> None:
+    input_args = _hwaccel_input_args(source, hw_decode=hw_decode)
+    predecode = _hw_predecode_filter(hw_decode)
 
     if resolution is not None:
         width, height = resolution
         input_args += [
-            "-filter_complex", _fit_and_pad("0:v", "v", width, height),
+            "-filter_complex", predecode + _fit_and_pad("0:v", "v", width, height),
+            "-map", "[v]",
+        ]
+    elif hw_decode:
+        input_args += [
+            "-filter_complex", f"[0:v]{predecode}[v]",
             "-map", "[v]",
         ]
     else:
@@ -196,6 +292,42 @@ def _stack(
         )
 
     filter_name = STACK_LAYOUTS[layout]
+    front_width, front_height = _video_dimensions(front)
+
+    if _nvdec_available():
+        try:
+            _run_stack(
+                front, rear, destination,
+                filter_name=filter_name,
+                front_width=front_width, front_height=front_height,
+                resolution=resolution, bitrate=bitrate, hw_decode=True,
+            )
+            return destination
+        except MediaToolError:
+            pass  # fall through to plain CPU decode below
+
+    _run_stack(
+        front, rear, destination,
+        filter_name=filter_name,
+        front_width=front_width, front_height=front_height,
+        resolution=resolution, bitrate=bitrate, hw_decode=False,
+    )
+    return destination
+
+
+def _run_stack(
+    front: Path,
+    rear: Path,
+    destination: Path,
+    *,
+    filter_name: str,
+    front_width: int,
+    front_height: int,
+    resolution: tuple[int, int] | None,
+    bitrate: str | None,
+    hw_decode: bool,
+) -> None:
+    predecode = _hw_predecode_filter(hw_decode)
 
     # hstack only requires matching *heights* (it concatenates
     # horizontally, combined width is whatever the two widths sum to);
@@ -208,16 +340,18 @@ def _stack(
     # *and* height, which happened to look fine only because a real
     # front/rear pair tested had the same aspect ratio as each other -
     # not a safe assumption in general.)
-    front_width, front_height = _video_dimensions(front)
     if filter_name == "hstack":
-        match_filter = f"[1:v]scale=-2:{front_height}[rear_scaled]"
+        rear_scale = f"scale=-2:{front_height}"
     else:
-        match_filter = f"[1:v]scale={front_width}:-2[rear_scaled]"
+        rear_scale = f"scale={front_width}:-2"
 
-    clauses = [
-        match_filter,
-        f"[0:v][rear_scaled]{filter_name}=inputs=2[stacked]",
-    ]
+    clauses = [f"[1:v]{predecode}{rear_scale}[rear_scaled]"]
+    front_label = "0:v"
+    if predecode:
+        clauses.insert(0, f"[0:v]{predecode}null[front_predecoded]")
+        front_label = "front_predecoded"
+
+    clauses.append(f"[{front_label}][rear_scaled]{filter_name}=inputs=2[stacked]")
     output_label = "stacked"
 
     # A second pass on the finished composite, if a specific output
@@ -233,12 +367,11 @@ def _stack(
 
     encode_with_nvenc_fallback(
         [
-            "-i", str(front),
-            "-i", str(rear),
+            *_hwaccel_input_args(front, hw_decode=hw_decode),
+            *_hwaccel_input_args(rear, hw_decode=hw_decode),
             "-filter_complex", ";".join(clauses),
             "-map", f"[{output_label}]",
         ],
         destination,
         extra_codec_args=_bitrate_args(bitrate),
     )
-    return destination

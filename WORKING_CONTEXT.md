@@ -1534,10 +1534,59 @@ annoying failure for "assemble one holiday video."
    sequential-to-concurrent refactor could get wrong. Full suite green
    (354 passed, up from 353).
 
+   **Follow-up: NVDEC hardware decode (done, this session).** After the
+   concatenation parallelization above, Christer measured a real
+   `--map` + `--stitch --stitch-layout side_by_side --stitch-resolution
+   1280x720 --stitch-bitrate 256k` run at 5m20s with only ~58% CPU and
+   just one ffmpeg process visible at a time (past the brief 3-way
+   concat-parallelization phase). Root cause: NVENC only ever
+   accelerated the final *encode* step - *decoding* the source videos
+   (a real front 4K + rear 1080p camera pair, several minutes each)
+   always happened on the CPU, and that decode is unavoidable, real
+   per-frame work for the source's full length regardless of how small
+   the requested output is - the actual bottleneck on a real archive,
+   not the encode side.
+
+   Offered two options: scale front/rear down early (right after
+   decode, before the expensive hstack/pad filtering) to cut filter
+   cost while leaving decode itself CPU-bound, or add NVDEC hardware
+   decode via `-hwaccel cuda`. Christer chose the bigger one: NVDEC.
+
+   Added `_nvdec_available()` to `stitch.py` (mirrors `media.py`'s
+   `_nvenc_available()` - checks `ffmpeg -hwaccels` for `"cuda"`,
+   cached for the life of the run). When available, both `_stack()`
+   (two-camera path) and `_reencode_single()` (single-camera +
+   resolution/bitrate path) now try NVDEC decode first: each `-i` gets
+   `-hwaccel cuda -hwaccel_output_format cuda`, keeping decoded frames
+   in GPU memory, then `hwdownload,format=nv12` is inserted into the
+   filter graph immediately after each such stream - `hstack`/
+   `vstack`/`pad`/`scale` are CPU-only filters, not CUDA filters, so
+   the frames have to come back to normal memory before those touch
+   them. If the NVDEC attempt fails for any reason (raises
+   `MediaToolError` - `encode_with_nvenc_fallback()` already tries both
+   NVENC and libx264 encoders before giving up, so a decode-side
+   failure surfaces as both those attempts failing the same way),
+   `_stack()`/`_reencode_single()` catch it and transparently retry the
+   whole thing with plain CPU decode - the same two-level fallback
+   pattern as the encode side (outer: decode method GPU→CPU, wrapping
+   the existing inner: encode method NVENC→libx264), so a --stitch run
+   always produces a video either way, just faster with a real NVIDIA
+   GPU behind it.
+
+   Tested: 3 new tests, following the same "force `_NVDEC_AVAILABLE =
+   True`, let the real `-hwaccel cuda` attempt genuinely fail in this
+   sandbox (no GPU here), confirm graceful fallback to CPU decode still
+   produces a correct video" pattern already used for NVENC in
+   `test_export_media.py` - one for the two-camera stack path, one for
+   the single-camera + resolution path, one confirming
+   `_nvdec_available()` itself parses `ffmpeg -hwaccels` output and
+   caches the result. Full suite green (365 passed, up from 354).
+
 Immediate next step: confirm `--map` against a real archive (real Overpass
-query, real GPS data) - see item 4's caveat above - and confirm `--stitch`
-against a real front+rear archive - then continue `--stitch` per the spec
-above, in order: the map-panel aspect-ratio work, then g-sensor overlay
-placement, then subtitle burn-in, then `rearview_mirror`, then the
+query, real GPS data) - see item 4's caveat above - and confirm both
+`--stitch` and the new NVDEC decode path against a real front+rear archive
+(the 5m20s/58%-CPU run that prompted this) - then continue `--stitch` per
+the spec above, in order: the map-panel aspect-ratio work, then g-sensor
+overlay placement, then subtitle burn-in, then `rearview_mirror`, then the
 auto-pick-from-trip-geometry layer on top once the individual pieces work
 with explicit flags.

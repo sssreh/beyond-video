@@ -290,3 +290,71 @@ def test_stitch_cameras_raises_media_tool_error_on_a_bad_source(tmp_path):
         stitch_cameras(
             front, rear, tmp_path / "stitch.mp4", layout="side_by_side"
         )
+
+
+def test_stitch_cameras_falls_back_to_cpu_decode_when_nvdec_fails_for_real(
+    tmp_path, monkeypatch
+):
+    # Force "NVDEC is available" (this sandbox has no real NVIDIA GPU)
+    # and let the real ffmpeg attempt run - the -hwaccel cuda attempt
+    # genuinely fails here, proving the fallback to plain CPU decode
+    # isn't just mocked but actually produces a correct, working
+    # stitched video. Same pattern as
+    # test_encode_frame_sequence_falls_back_to_libx264_when_nvenc_fails_for_real
+    # in test_export_media.py, one level up: that test forces the
+    # encode-side NVENC/libx264 fallback, this one forces the
+    # decode-side NVDEC/CPU fallback stitch.py adds on top of it.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", True)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    result = stitch_cameras(front, rear, destination, layout="side_by_side")
+
+    assert result == destination
+    assert destination.exists()
+    assert _video_size(destination) == (640, 240)
+
+
+def test_stitch_cameras_single_camera_falls_back_to_cpu_decode_when_nvdec_fails(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", True)
+
+    front = tmp_path / "front.mp4"
+    _make_video(front, 640, 480)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, None, destination,
+        layout="side_by_side", resolution=(320, 240),
+    )
+
+    assert _video_size(destination) == (320, 240)
+
+
+def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", None)
+
+    captured = {}
+
+    class FakeResult:
+        stdout = "Hardware acceleration methods:\ncuda\nqsv\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeResult()
+
+    monkeypatch.setattr(stitch_module.subprocess, "run", fake_run)
+
+    assert stitch_module._nvdec_available() is True
+    assert captured["command"] == ["ffmpeg", "-hide_banner", "-hwaccels"]
+
+    # Cached after the first call - a second call shouldn't shell out
+    # again.
+    captured.clear()
+    assert stitch_module._nvdec_available() is True
+    assert captured == {}
