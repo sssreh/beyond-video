@@ -517,6 +517,56 @@ def _run_decode_camera(
     encode_with_nvenc_fallback(input_args, destination)
 
 
+def _ideal_shared_dimension(
+    front_width: int,
+    front_height: int,
+    rear_width: int,
+    rear_height: int,
+    *,
+    filter_name: str,
+    out_width: int,
+    out_height: int,
+) -> int:
+    """The shared height (hstack) or width (vstack) both cameras'
+    intermediates should be scaled to, chosen so the combined
+    composite lands as close as possible to (out_width, out_height)
+    without exceeding either dimension - never bigger than the final
+    output will actually use.
+
+    For hstack, both cameras share a height H; each contributes a
+    width of H * its own aspect ratio, and the composite's total width
+    is the sum of the two. Solving "combined width == out_width" for H
+    gives out_width / (front_aspect + rear_aspect) - e.g. two same-
+    aspect-ratio (16:9) cameras split an out_width of 1280 evenly,
+    landing H at 360 (640-wide each), not out_height (720, which is
+    what an earlier version of this function used - producing a
+    combined width of 2560, exactly double what the final pass needed,
+    wasting real decode/encode time on detail that just got thrown
+    away one step later). Capped at out_height too, in case the
+    cameras are narrow/tall enough that the width constraint alone
+    would ask for an H bigger than the target frame itself.
+
+    vstack is the mirror of this: both cameras share a width W, each
+    contributes a height of W / its own aspect ratio, solving
+    "combined height == out_height" for W, capped at out_width.
+
+    Rounded to the nearest even number - unlike the "-2" ffmpeg uses
+    for the *other*, free dimension in these scale filters (which
+    self-rounds), this one is a literal scale=... value and needs to
+    be even for yuv420p encoding on its own.
+    """
+
+    front_aspect = front_width / front_height
+    rear_aspect = rear_width / rear_height
+
+    if filter_name == "hstack":
+        shared = min(out_width / (front_aspect + rear_aspect), out_height)
+    else:
+        shared = min(out_height / (1 / front_aspect + 1 / rear_aspect), out_width)
+
+    return max(2, round(shared / 2) * 2)
+
+
 def _stack(
     front: Path,
     rear: Path,
@@ -540,30 +590,39 @@ def _stack(
     # vstack only requires matching *widths*.
     #
     # When a final `resolution` is requested, scale BOTH cameras'
-    # intermediates directly toward it, rather than matching rear to
-    # front's full native size and only shrinking to the target in the
-    # final pass. Found on Christer's real archive: front 4K + rear
-    # 1080p, hstack, matching rear to front's native ~2160p height
-    # (an upscale from rear's own 1080p) before a --stitch-resolution
-    # 1280x720 request cost rear's intermediate encode ~100s - for a
-    # size the very next step immediately threw away. Scaling straight
-    # to (roughly) the target height/width instead means neither
-    # intermediate is ever larger than it needs to be, and this also
-    # sidesteps needing to know front's native size at all up front
-    # (no _video_dimensions(front) probe needed in this branch).
+    # intermediates to the *ideal* shared height (hstack) or width
+    # (vstack) - the one that makes the combined composite land as
+    # close as possible to `resolution` without exceeding it - rather
+    # than matching rear to front's full native size (the original
+    # bug: an unnecessary upscale, fixed in the previous commit) or
+    # even scaling both cameras straight to the target's own height/
+    # width (fixed here: still wasteful, since two cameras stacked
+    # side by side at height=out_height combine to roughly *twice*
+    # out_width, so the final pass then has to shrink the whole
+    # composite by about half again). Christer worked out the correct
+    # target by hand for the common case (two same-aspect-ratio
+    # cameras: roughly half of `resolution` per camera) and asked
+    # whether that was right - see _ideal_shared_dimension() for the
+    # general version that also handles cameras with *different*
+    # aspect ratios from each other.
     #
     # When no `resolution` is given (full native-quality output),
     # front stays untouched and rear matches front's own native size
-    # on the one axis that actually needs to match - the original
-    # behavior, unchanged.
+    # on the one axis that actually needs to match - unchanged.
     if resolution is not None:
         out_width, out_height = resolution
+        front_width, front_height = _video_dimensions(front)
+        rear_width, rear_height = _video_dimensions(rear)
+        shared = _ideal_shared_dimension(
+            front_width, front_height, rear_width, rear_height,
+            filter_name=filter_name, out_width=out_width, out_height=out_height,
+        )
         if filter_name == "hstack":
-            front_scale_filter = f"scale=-2:{out_height}"
-            rear_scale_filter = f"scale=-2:{out_height}"
+            front_scale_filter = f"scale=-2:{shared}"
+            rear_scale_filter = f"scale=-2:{shared}"
         else:
-            front_scale_filter = f"scale={out_width}:-2"
-            rear_scale_filter = f"scale={out_width}:-2"
+            front_scale_filter = f"scale={shared}:-2"
+            rear_scale_filter = f"scale={shared}:-2"
     else:
         front_scale_filter = None
         front_width, front_height = _video_dimensions(front)

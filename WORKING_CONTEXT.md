@@ -1844,9 +1844,48 @@ that real usage hadn't exercised until this investigation forced them
 open) were found and fixed along the way, each initially misread as "NVDEC
 unavailable" until the timing was too fast to be a real decode attempt.
 
-Immediate next step: confirm `--map` against a real archive (real Overpass
-query, real GPS data, see item 4's caveat above) - then continue `--stitch`
-per the spec above, in order: the map-panel aspect-ratio work, then
-g-sensor overlay placement, then subtitle burn-in, then `rearview_mirror`,
-then the auto-pick-from-trip-geometry layer on top once the individual
-pieces work with explicit flags.
+**Follow-up: intermediate resolution was still bigger than it needed to be
+(done, this session, found by Christer's own back-of-envelope math).**
+Even after the fix above, both cameras' intermediates were scaled directly
+to `out_height` (hstack) / `out_width` (vstack) - e.g. both scaled to
+height 720 for a `--stitch-resolution 1280x720` request. But two same-
+aspect-ratio (16:9) cameras placed side by side at height 720 combine to
+width **2560**, not 1280 - exactly double the target, meaning the final
+combine pass still had to shrink the whole composite by about half again.
+Christer worked out by hand that each camera should instead target roughly
+*half* of 1280 (i.e. ~640-wide, ~360-tall) and asked whether that was
+right instead of him just being "stupid" - it was exactly right, and the
+exact number (360, not a hardcoded half-split) falls out of a general
+formula: for hstack, both cameras share height H, each contributes width
+`H * its own aspect ratio`, and solving "combined width == out_width" for
+H gives `out_width / (front_aspect + rear_aspect)` (capped at `out_height`
+in case that would ask for an H taller than the target frame). vstack is
+the mirror of this (shared width, solving on combined height instead).
+
+Implemented as `_ideal_shared_dimension()`, replacing the naive
+`out_height`/`out_width` scale target in `_stack()`'s resolution-given
+branch. For Christer's real front-4K/rear-1080p pair at 1280x720/
+side_by_side, this drops the shared intermediate height from 720 to 360 -
+both intermediates roughly a quarter the pixel count of the previous fix,
+on top of everything else already fixed in this investigation.
+
+Tested: the existing real-archive-shaped test's expected scale filter
+values updated (720 -> 360, with an added assertion that "720" doesn't
+appear either, not just "2160"), plus 3 new tests directly on
+`_ideal_shared_dimension()` - matching-aspect-ratio hstack case (360, the
+real numbers), the vstack mirror case (640), and a narrow/tall-camera case
+confirming the `out_height`/`out_width` cap kicks in rather than ever
+producing an intermediate bigger than the final frame. Full suite green
+(381 passed, up from 378).
+
+Immediate next step: get one more `--debug` run from Christer with this
+in place - the two decode times should each drop further still (roughly
+proportional to the pixel-count reduction, ~4x fewer pixels per
+intermediate), and confirm the final combine pass got noticeably cheaper
+too now that it has much less work to re-shrink. Then: confirm `--map`
+against a real archive (real Overpass query, real GPS data, see item 4's
+caveat above) - then continue `--stitch` per the spec above, in order: the
+map-panel aspect-ratio work, then g-sensor overlay placement, then
+subtitle burn-in, then `rearview_mirror`, then the
+auto-pick-from-trip-geometry layer on top once the individual pieces work
+with explicit flags.
