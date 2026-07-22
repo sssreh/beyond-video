@@ -958,3 +958,52 @@ def test_translate_only_without_srt_lrc_still_reuses_cached_transcript(
     assert had_error is False
     out = tmp_path / "20260715_231500_N_swe.translation.txt"
     assert out.read_text().strip() == "[th->sv] hej da"
+
+
+def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
+    tmp_path, monkeypatch
+):
+    # The exact scenario Christer hit: he'd already run --translate
+    # once (translation.txt exists on disk), then re-ran with --srt
+    # --lrc added. The old code gated the *entire* function on
+    # translation.txt's own _should_write check - since translation.txt
+    # already existed and --overwrite wasn't passed, the function
+    # returned before ever reaching the srt/lrc-writing code, so
+    # nothing was generated even after the cache-bypass fix above.
+    # need_srt_write/need_lrc_write must now be checked independently.
+    calls = []
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory(calls)
+    )
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_233000_N"))
+    transcript_path = tmp_path / "20260715_233000_N_tha.transcript.txt"
+    transcript_path.write_text("stale cached text")
+    recording.assets[Asset.TRANSCRIPT] = AssetFile(
+        asset=Asset.TRANSCRIPT, path=transcript_path
+    )
+    audio_path = tmp_path / "20260715_233000_N.aac"
+    audio_path.write_bytes(b"a")
+    recording.assets[Asset.AUDIO] = AssetFile(
+        asset=Asset.AUDIO, path=audio_path
+    )
+
+    translation_path = tmp_path / "20260715_233000_N_swe.translation.txt"
+    translation_path.write_text("already translated, from an earlier run")
+
+    args = _base_args(translate="sv", srt=True, lrc=True)
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    assert calls == [audio_path], "should still re-transcribe for segment timing"
+    assert (tmp_path / "20260715_233000_N.srt").exists()
+    assert (tmp_path / "20260715_233000_N.lrc").exists()
+    # translation.txt was already up to date and --overwrite wasn't
+    # given, so it should be left untouched - translate() should never
+    # even be called (monkeypatched to _refuse above).
+    assert (
+        translation_path.read_text() == "already translated, from an earlier run"
+    )

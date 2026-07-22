@@ -502,10 +502,10 @@ def _do_translate_only(
     .transcript.txt files behind too, so the next run (of this or
     --transcribe) doesn't redo that work.
 
-    Exception: if --srt/--lrc are given, the existing-transcript reuse
-    is skipped and Whisper always runs fresh - a cached plain-text
-    transcript has no per-segment timing, so reusing it would produce
-    no subtitles at all.
+    Exception: if --srt/--lrc are given and actually need (re)writing,
+    the existing-transcript reuse is skipped and Whisper always runs
+    fresh - a cached plain-text transcript has no per-segment timing,
+    so reusing it would produce no subtitles at all.
     """
 
     translation_destination = archive_path / _language_suffixed_name(
@@ -514,17 +514,44 @@ def _do_translate_only(
         "translation.txt",
         diarized=args.diarize,
     )
-
-    if not _should_write(
+    need_translation_write = _should_write(
         translation_destination, overwrite=args.overwrite, dry_run=args.dry_run
-    ):
-        return False
+    )
+
+    # Computed up front (like _do_transcribe_with_optional_translate)
+    # so a missing/needs-refresh .srt or .lrc alone is enough to keep
+    # this recording from being skipped, even when translation.txt
+    # itself is already up to date - that's the bug Christer hit:
+    # translation.txt already existed from an earlier run, so the old
+    # single-destination gate below returned early before ever
+    # reaching the srt/lrc-writing code.
+    srt_destination = archive_path / f"{recording.id}.srt" if args.srt else None
+    need_srt_write = (
+        _should_write(srt_destination, overwrite=args.overwrite, dry_run=args.dry_run)
+        if args.srt
+        else False
+    )
+
+    lrc_destination = archive_path / f"{recording.id}.lrc" if args.lrc else None
+    need_lrc_write = (
+        _should_write(lrc_destination, overwrite=args.overwrite, dry_run=args.dry_run)
+        if args.lrc
+        else False
+    )
 
     if args.dry_run:
-        print(
-            f"{recording.id}: would translate -> "
-            f"{translation_destination.name}"
-        )
+        if need_translation_write:
+            print(
+                f"{recording.id}: would translate -> "
+                f"{translation_destination.name}"
+            )
+        if need_srt_write:
+            print(f"{recording.id}: would write {srt_destination.name}")
+        if need_lrc_write:
+            print(f"{recording.id}: would write {lrc_destination.name}")
+        return False
+
+    if not (need_translation_write or need_srt_write or need_lrc_write):
         return False
 
     transcript_text: str | None = None
@@ -536,11 +563,11 @@ def _do_translate_only(
     #    needs, so reuse it instead of re-running Whisper. Diarized
     #    and plain transcripts are tracked as separate assets, so
     #    this looks at whichever one matches what this run wants.
-    #    Skipped entirely when --srt/--lrc are requested: a cached
-    #    plain-text transcript has no per-segment timing, so reusing
-    #    it would silently produce no subtitles - forcing a fresh
-    #    transcribe() is the only way to actually satisfy the request.
-    want_segment_timing = args.srt or args.lrc
+    #    Skipped entirely when an .srt/.lrc actually needs writing: a
+    #    cached plain-text transcript has no per-segment timing, so
+    #    reusing it would silently produce no subtitles - forcing a
+    #    fresh transcribe() is the only way to actually satisfy that.
+    want_segment_timing = need_srt_write or need_lrc_write
     existing_transcript = (
         None
         if want_segment_timing
@@ -642,50 +669,51 @@ def _do_translate_only(
         # SRT/LRC need per-segment timing, which only exists right
         # after a fresh transcribe() call (this branch) - a reused
         # cached transcript (above) has no segments to draw from, so
-        # this is deliberately skipped in that case.
-        if args.srt:
-            srt_destination = archive_path / f"{recording.id}.srt"
-            if _should_write(
-                srt_destination, overwrite=args.overwrite, dry_run=args.dry_run
-            ):
-                srt_destination.write_text(
-                    format_srt(segments, turns) + "\n", encoding="utf-8"
-                )
-                _report(
-                    args.verbose,
-                    f"{recording.id}: wrote {srt_destination.name}",
-                )
+        # this is deliberately skipped in that case. need_srt_write/
+        # need_lrc_write were already computed up front, before it
+        # was known whether this branch would even run - reused here
+        # rather than re-checking _should_write a second time.
+        if need_srt_write:
+            srt_destination.write_text(
+                format_srt(segments, turns) + "\n", encoding="utf-8"
+            )
+            _report(
+                args.verbose, f"{recording.id}: wrote {srt_destination.name}"
+            )
 
-        if args.lrc:
-            lrc_destination = archive_path / f"{recording.id}.lrc"
-            if _should_write(
-                lrc_destination, overwrite=args.overwrite, dry_run=args.dry_run
-            ):
-                lrc_destination.write_text(
-                    format_lrc(segments, turns) + "\n", encoding="utf-8"
-                )
-                _report(
-                    args.verbose,
-                    f"{recording.id}: wrote {lrc_destination.name}",
-                )
+        if need_lrc_write:
+            lrc_destination.write_text(
+                format_lrc(segments, turns) + "\n", encoding="utf-8"
+            )
+            _report(
+                args.verbose, f"{recording.id}: wrote {lrc_destination.name}"
+            )
 
-    translate_fn = _translate_diarized if args.diarize else translate
+    # Gated on need_translation_write, not just "did we get this far":
+    # this point is also reached when only --srt/--lrc needed
+    # (re)writing and translation.txt was already up to date - without
+    # this check, that case would re-translate and silently overwrite
+    # an already-good translation.txt, bypassing the overwrite policy
+    # for a file that didn't need touching.
+    if need_translation_write:
+        translate_fn = _translate_diarized if args.diarize else translate
 
-    try:
-        translated = translate_fn(
-            transcript_text,
-            source_language=transcript_language,
-            target_language=args.translate,
+        try:
+            translated = translate_fn(
+                transcript_text,
+                source_language=transcript_language,
+                target_language=args.translate,
+            )
+        except MediaToolError as exc:
+            print(f"bv-generate: {recording.id}: {exc}", file=sys.stderr)
+            return True
+
+        translation_destination.write_text(translated + "\n", encoding="utf-8")
+        _report(
+            args.verbose,
+            f"{recording.id}: wrote {translation_destination.name}",
         )
-    except MediaToolError as exc:
-        print(f"bv-generate: {recording.id}: {exc}", file=sys.stderr)
-        return True
 
-    translation_destination.write_text(translated + "\n", encoding="utf-8")
-    _report(
-        args.verbose,
-        f"{recording.id}: wrote {translation_destination.name}",
-    )
     return False
 
 
