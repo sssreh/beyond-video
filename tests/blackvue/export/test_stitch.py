@@ -336,6 +336,38 @@ def test_stitch_cameras_single_camera_falls_back_to_cpu_decode_when_nvdec_fails(
     assert _video_size(destination) == (320, 240)
 
 
+def test_stitch_cameras_is_silent_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="side_by_side")
+
+    assert capsys.readouterr().err == ""
+
+
+def test_stitch_cameras_prints_decode_timing_when_debug_is_true(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4", layout="side_by_side", debug=True
+    )
+
+    err = capsys.readouterr().err
+    assert "decode=cpu" in err
+    assert "succeeded in" in err
+
+
 def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", None)
 

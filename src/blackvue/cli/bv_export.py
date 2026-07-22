@@ -77,6 +77,7 @@ def bv_export(
     stitch_bitrate: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
+    debug: bool = False,
 ) -> int:
     """Export every detected trip in `path` to its own folder under
     `target`. Returns 0 on success, 1 if any trip failed.
@@ -91,6 +92,12 @@ def bv_export(
     exists) whether to wipe or keep, and reuses that answer for every
     other trip folder touched this run; a non-interactive run (cron/
     batch) always keeps, since there's no one to ask.
+
+    `debug=True` prints wall-clock timing to stderr for each trip's
+    concatenation/map/stitch phases, plus which decode method (nvdec
+    or cpu) --stitch actually used and how long it took - diagnostic
+    breadcrumbs for tracking down where time went on a slow run, off
+    by default since most runs don't need them.
     """
 
     archive = Archive(path)
@@ -184,6 +191,7 @@ def bv_export(
                 stitch_layout=stitch_layout,
                 stitch_resolution=stitch_resolution,
                 stitch_bitrate=stitch_bitrate,
+                debug=debug,
             )
         except MediaToolError as exc:
             print(f"bv-export: {trip.label}: {exc}", file=sys.stderr)
@@ -455,6 +463,18 @@ def main(argv: list[str] | None = None) -> int:
              "without writing anything.",
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Print wall-clock timing to stderr for each trip's "
+            "concatenation/map/stitch phases, plus which decode "
+            "method (nvdec or cpu) --stitch used and how long it "
+            "took - useful for tracking down where time went on a "
+            "slow run."
+        ),
+    )
+
     args = parser.parse_args(argv)
 
     return run_cli("bv-export", lambda: bv_export(
@@ -477,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_bitrate=args.stitch_bitrate,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
+        debug=args.debug,
     ))
 
 

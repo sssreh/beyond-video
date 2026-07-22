@@ -215,6 +215,7 @@ def export_trip(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    debug: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -272,6 +273,11 @@ def export_trip(
     scale/constrain stitch.mp4 - handy for a fast, small test render
     instead of waiting on a full-resolution encode. Both only apply
     when `stitch_layout` is also given.
+
+    `debug=True` prints wall-clock timing to stderr for the
+    concatenation/map/stitch phases below, plus (from stitch.py)
+    which decode method --stitch actually used - see bv_export.py's
+    --debug flag.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -303,10 +309,12 @@ def export_trip(
         front_video = front_future.result()
         rear_video = rear_future.result()
         audio = audio_future.result()
-    print(
-        f"bv-export: concatenation phase took {time.monotonic() - concat_start:.1f}s",
-        file=sys.stderr,
-    )
+    if debug:
+        print(
+            f"bv-export: concatenation phase took "
+            f"{time.monotonic() - concat_start:.1f}s",
+            file=sys.stderr,
+        )
 
     text_paths = []
     for asset, filename in TEXT_ASSETS:
@@ -353,7 +361,7 @@ def export_trip(
     map_path = None
     map_zoom_path = None
     if (render_map or map_zoom_meters is not None) and fixes:
-        map_start = time.monotonic()
+        map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
         bbox, roads = _load_trip_roads(fixes, cache_dir, warnings)
 
@@ -371,10 +379,11 @@ def export_trip(
                     warning_label="map_zoom", map_icon=map_icon,
                     zoom_meters=map_zoom_meters,
                 )
-        print(
-            f"bv-export: map phase took {time.monotonic() - map_start:.1f}s",
-            file=sys.stderr,
-        )
+        if debug:
+            print(
+                f"bv-export: map phase took {time.monotonic() - map_start:.1f}s",
+                file=sys.stderr,
+            )
 
     gsensor_path = None
     samples = _merge_gsensor(trip)
@@ -393,20 +402,23 @@ def export_trip(
 
     stitch_path = None
     if stitch_layout is not None:
-        stitch_start = time.monotonic()
+        stitch_start = time.monotonic() if debug else None
         try:
             stitch_path = stitch_cameras(
                 front_video, rear_video, destination / "stitch.mp4",
                 layout=stitch_layout,
                 resolution=stitch_resolution,
                 bitrate=stitch_bitrate,
+                debug=debug,
             )
         except MediaToolError as exc:
             warnings.append(f"stitch: {exc}")
-        print(
-            f"bv-export: stitch phase took {time.monotonic() - stitch_start:.1f}s",
-            file=sys.stderr,
-        )
+        if debug:
+            print(
+                f"bv-export: stitch phase took "
+                f"{time.monotonic() - stitch_start:.1f}s",
+                file=sys.stderr,
+            )
 
     return ExportResult(
         front_video=front_video,
