@@ -2,6 +2,7 @@ import json
 import subprocess
 
 import pytest
+from PIL import Image
 
 from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import STACK_LAYOUTS
@@ -22,6 +23,31 @@ def _make_video(path, width, height, duration_seconds=1.0):
         text=True,
         check=True,
     )
+
+
+def _make_solid_video(path, width, height, color, duration_seconds=1.0):
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"color=c={color}:size={width}x{height}:rate=10",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _extract_first_frame(video_path, png_path) -> Image.Image:
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(video_path), "-frames:v", "1", str(png_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Image.open(png_path).convert("RGB")
 
 
 def _video_size(path) -> tuple[int, int]:
@@ -154,6 +180,62 @@ def test_stitch_cameras_scales_the_stacked_output_to_a_requested_resolution(
     # width) - the resolution override replaces that entirely, not
     # scaling relative to it.
     assert _video_size(destination) == (320, 240)
+
+
+def test_stitch_cameras_letterboxes_instead_of_distorting_a_mismatched_aspect(
+    tmp_path
+):
+    # Two 640x480 (4:3) clips side by side stack to 1280x480 - a
+    # 2.667:1 shape. Fitting that into a 320x240 (4:3, 1.333:1) box
+    # without distorting it leaves black bars top/bottom rather than
+    # squishing the picture to fill the whole frame - this is the bug
+    # Christer hit on his real archive (two 16:9 cameras stacked side
+    # by side, forced into an unrelated aspect ratio, came out visibly
+    # squeezed).
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "red")
+    _make_solid_video(rear, 640, 480, "red")
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination,
+        layout="side_by_side", resolution=(320, 240),
+    )
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+
+    top_bar = image.getpixel((160, 5))
+    bottom_bar = image.getpixel((160, 234))
+    center = image.getpixel((160, 120))
+
+    assert sum(top_bar) < 60
+    assert sum(bottom_bar) < 60
+    assert center[0] > 150 and center[1] < 80 and center[2] < 80
+
+
+def test_stitch_cameras_preserves_a_mismatched_rears_own_aspect_ratio(
+    tmp_path
+):
+    # A rear camera with a genuinely different aspect ratio than
+    # front (not just a different resolution at the same ratio, like
+    # the earlier mismatched-resolution test) - front 640x480 (4:3),
+    # rear 640x360 (16:9). hstack only requires matching heights, so
+    # rear should scale to height 480 while keeping its own 16:9
+    # shape (853x480), not get force-stretched into 4:3.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 640, 480)
+    _make_video(rear, 640, 360)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(front, rear, destination, layout="side_by_side")
+
+    width, height = _video_size(destination)
+    assert height == 480
+    # front's own 640 plus rear scaled to keep 16:9 at height 480
+    # (640 * (480/360) rounded to even) = 853 or 854.
+    assert width in (640 + 853, 640 + 854)
 
 
 def test_stitch_cameras_scales_a_single_camera_when_resolution_given(tmp_path):
