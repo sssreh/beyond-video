@@ -628,6 +628,10 @@ def test_main_sets_debug_true_when_debug_flag_given(tmp_path, monkeypatch):
 def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(
     tmp_path, monkeypatch
 ):
+    # Default changed from a fixed 'side_by_side' to the 'auto' sentinel
+    # once layout auto-picking existed - export_trip() is what resolves
+    # 'auto' to a concrete layout from the trip's own GPS shape (see
+    # test_trip_export.py's own auto-pick tests), not this CLI layer.
     captured = {}
 
     def _fake_bv_export(**kwargs):
@@ -642,7 +646,7 @@ def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(
 
     main(["--target", str(target), str(archive), "--stitch"])
 
-    assert captured["stitch_layout"] == "side_by_side"
+    assert captured["stitch_layout"] == "auto"
 
 
 def test_main_uses_an_explicit_stitch_layout_when_given(tmp_path, monkeypatch):
@@ -759,6 +763,78 @@ def test_bv_export_stitch_rearview_mirror_flag_produces_a_video(tmp_path):
     assert exit_code == 0
     trip_folder = target / "trip_20260720_100000_20260720_100000"
     assert (trip_folder / "stitch.mp4").exists()
+
+
+def test_main_defaults_stitch_layout_to_auto(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_layout"] == "auto"
+
+
+def _video_size(path):
+    import json
+
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    return stream["width"], stream["height"]
+
+
+def test_bv_export_stitch_without_stitch_layout_auto_picks_from_gps(
+    tmp_path
+):
+    # A real end-to-end run of the default 'auto' --stitch-layout, no
+    # --stitch-layout given at all - front+rear plus a sharply
+    # east-west GPS shape should land on side_by_side, same as if
+    # --stitch-layout side_by_side had been passed explicitly.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+    _write_gps(
+        archive / "20260720_100000_N.gps",
+        1784555901000, "5917.94615", "N", "01805.17070", "E",
+    )
+    _make_video(archive / "20260720_100010_NF.mp4")
+    _write_gps(
+        archive / "20260720_100010_N.gps",
+        1784555911000, "5917.94715", "N", "01905.17070", "E",
+    )
+
+    exit_code = main([
+        "--target", str(target), str(archive), "--stitch",
+    ])
+
+    assert exit_code == 0
+    # Both recordings (100000, 100010) share one trip - the folder
+    # name spans both.
+    stitch_path = (
+        target / "trip_20260720_100000_20260720_100010" / "stitch.mp4"
+    )
+    # side_by_side hstacks two 64x64 cameras - combined width doubles.
+    assert _video_size(stitch_path) == (128, 64)
 
 
 def test_bv_export_stitch_resolution_flag_produces_a_scaled_down_video(

@@ -34,15 +34,25 @@ from .osm_roads import aspect_ratio_of
 from .osm_roads import bounding_box_for_fixes
 
 # side_by_side places front and rear next to each other (ffmpeg
-# hstack) - per the agreed --stitch spec, this is the layout a trip
-# that runs mostly east-west will eventually auto-pick. top_down
+# hstack) - per the agreed --stitch spec, the layout a trip that runs
+# mostly east-west auto-picks (see pick_stitch_layout()). top_down
 # stacks them one above the other (vstack) - the north-south pick.
-# Auto-picking from the trip's own geometry isn't built yet, so
-# `layout` is always explicit for now.
 STACK_LAYOUTS = {
     "side_by_side": "hstack",
     "top_down": "vstack",
 }
+
+# --stitch-layout's sentinel value for "pick side_by_side or top_down
+# from the trip's own geometry" (see pick_stitch_layout()) - the
+# default when --stitch-layout isn't given explicitly, always
+# overridable by naming a real layout instead. Never itself a valid
+# `layout` for stitch_cameras()/_stack() - trip_export.py resolves it
+# to a concrete entry in ALL_LAYOUTS before ever calling this module's
+# public API, so stitch_cameras() only ever sees real layout names.
+# rearview_mirror is deliberately never auto-picked - it's a distinct
+# visual style someone opts into, not something the trip's shape alone
+# should decide.
+AUTO_LAYOUT = "auto"
 
 # --stitch-map's default panel side when --stitch-map-side isn't given
 # explicitly, keyed by camera `layout` - per the agreed spec: a
@@ -915,6 +925,40 @@ def _run_decode_camera(
         input_args += ["-map", "0:v"]
 
     encode_with_nvenc_fallback(input_args, destination)
+
+
+def pick_stitch_layout(fixes: tuple[GpsFix, ...]) -> str | None:
+    """Auto-pick 'side_by_side' or 'top_down' from a trip's own real
+    -world GPS extent, per the agreed --stitch spec: a trip that runs
+    mostly east-west (wider than tall) picks 'side_by_side' (front |
+    rear, itself a wide row); a trip that runs mostly north-south
+    (taller than wide) picks 'top_down' (front / rear, itself a tall
+    column) - each camera arrangement matching the trip's own overall
+    shape rather than fighting it. Uses the same lat/lon-bbox math
+    (bounding_box_for_fixes()/aspect_ratio_of(), cos(latitude)
+    -corrected) --stitch-map's panel sizing already relies on.
+
+    Never picks 'rearview_mirror' - that's a distinct visual style
+    someone opts into deliberately (see AUTO_LAYOUT's own docstring
+    note), not something the trip's shape alone should decide.
+
+    A perfectly square-real-world-extent trip (aspect ratio exactly 1)
+    picks 'side_by_side' - an arbitrary tie-break, not a meaningful
+    threshold; ties are vanishingly rare on real GPS data anyway.
+
+    Returns None if there isn't enough GPS data to compute a bounding
+    box at all (mirrors bounding_box_for_fixes()'s own "nothing to
+    bound" convention) - callers should fall back to a fixed default
+    layout in that case, same "degrade, don't fail" pattern the map
+    panel/gsensor overlay/subtitle burn-in all already follow for a
+    missing input.
+    """
+
+    bbox = bounding_box_for_fixes(fixes)
+    if bbox is None:
+        return None
+
+    return "side_by_side" if aspect_ratio_of(bbox) >= 1.0 else "top_down"
 
 
 def _map_panel_dimensions(

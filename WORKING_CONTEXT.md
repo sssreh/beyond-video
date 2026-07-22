@@ -2565,6 +2565,99 @@ result (is a 25% top-center inset the right size/position against a
 real dashcam's real field of view) is still worth Christer's own eyes
 once he's back at his archive.
 
-Remaining --stitch roadmap: auto-picking `--stitch-layout` between
-side_by_side/top_down from the trip's own north-south/east-west
-geometry - the last item on the original --stitch spec.
+## --stitch: auto-pick --stitch-layout from trip geometry (done, this session)
+
+Sixth and last piece of the original --stitch spec: when
+`--stitch-layout` isn't given explicitly, pick `side_by_side` or
+`top_down` from the trip's own real-world GPS extent instead of a
+fixed default - an east-west trip (wider than tall) picks
+`side_by_side` (front | rear, itself a wide row); a north-south trip
+(taller than wide) picks `top_down` (front / rear, itself a tall
+column) - each camera arrangement matching the trip's own overall
+shape. `rearview_mirror` is never auto-picked - it's a distinct visual
+style someone opts into by name, not something the trip's shape alone
+should decide (also true of the map panel's own left/down auto-pick,
+which was always keyed off the *camera* layout regardless of how that
+layout itself got chosen - unaffected by this change).
+
+**The sentinel design**: `stitch_layout: str | None` already had a
+meaning before this session - `None` means "skip --stitch entirely",
+checked throughout trip_export.py (`if stitch_layout is not None:`,
+`if stitch_gsensor and stitch_layout is not None`, etc.). Auto-pick
+needed a *third* state ("--stitch is happening, but pick the camera
+layout for me") without disturbing that existing None-means-skip
+convention. Solved with a new `stitch.AUTO_LAYOUT = "auto"` sentinel
+string - a real, non-None value, so every existing "are we stitching
+at all" gate keeps working unchanged - resolved to a concrete
+`side_by_side`/`top_down` in trip_export.py's `export_trip()`, right
+before the `stitch_cameras()` call, via the new
+`stitch.pick_stitch_layout(fixes)`. `AUTO_LAYOUT` never reaches
+`stitch_cameras()`/`_stack()` itself - deliberately kept out of
+`ALL_LAYOUTS`, so passing it there directly still raises the same
+`ValueError` any other made-up layout name would (verified with a real
+test, not just by inspection - the kind of invariant that's easy to
+silently break in a later refactor without a test pinning it down).
+
+**`pick_stitch_layout(fixes) -> str | None`** (stitch.py, next to
+`_map_panel_dimensions()` - same aspect-ratio-from-GPS math via
+`bounding_box_for_fixes()`/`aspect_ratio_of()`): returns `None` if
+there isn't enough GPS data to compute a bounding box at all, mirroring
+every other "nothing to bound" convention already in this module - the
+caller (trip_export.py) degrades that to a `warnings` entry and a
+fixed `side_by_side` fallback, the same "degrade, don't fail" pattern
+the map panel/gsensor overlay/subtitle burn-in all already follow. A
+perfectly square real-world extent (aspect ratio exactly 1.0) picks
+`side_by_side` - an arbitrary, harmless tie-break, not a meaningful
+threshold.
+
+**CLI**: `--stitch-layout`'s `choices` now include `AUTO_LAYOUT`
+alongside `ALL_LAYOUTS` (sourced directly from stitch.py's own
+constants, so the CLI can't silently drift out of sync with what's
+actually valid), and its `default` changed from a fixed
+`"side_by_side"` string to `AUTO_LAYOUT` - so a bare `--stitch` with no
+`--stitch-layout` at all now auto-picks, while any explicit
+`--stitch-layout` value (including `side_by_side` typed out by hand)
+is always honored exactly as given, per the spec's "always
+overridable" language.
+
+**A pre-existing test caught by the changed default, not by
+review**: `test_main_uses_the_default_stitch_layout_when_stitch_flag_given`
+asserted `captured["stitch_layout"] == "side_by_side"` for a bare
+`--stitch` - correct before this session, a false failure now that the
+CLI's own default is `"auto"` instead. Fixed by updating the
+assertion (with a comment explaining *why* the expectation changed,
+not just what it changed to) rather than treating it as a real
+regression - a deliberate, understood consequence of the new default,
+not a bug.
+
+Tested: `pick_stitch_layout()` directly against an east-west fixture,
+a north-south fixture, and no GPS data at all (3 tests). A real
+`export_trip()`-level end-to-end check that `stitch.AUTO_LAYOUT`
+actually produces a `side_by_side`-shaped file for an east-west trip
+and a `top_down`-shaped one for a north-south trip (checked via real
+ffprobe dimensions, not just which string got passed internally),
+plus the no-GPS-data warning+fallback path, plus confirmation that an
+*explicit* `stitch_layout="top_down"` on an east-west trip is honored
+exactly (never silently overridden by auto-pick) - 4 new
+test_trip_export.py tests. 3 new test_bv_export.py CLI tests (default
+is now `"auto"`, a genuinely real end-to-end run through `main()` with
+no `--stitch-layout` at all against a real east-west GPS archive,
+landing on the expected `side_by_side` dimensions) plus the one
+existing test's assertion fix described above. All genuinely executed
+via the harness (test_stitch split across three batches again, same
+reason as last time - too many real-ffmpeg tests now to fit one
+harness invocation's time budget), all green: test_stitch 78 passed,
+test_trip_export 40 passed, test_bv_export 59 passed, 0 failed.
+
+Not confirmed against a real archive - the aspect-ratio-based pick
+logic is straightforward and directly mirrors the already-agreed spec
+text, but whether it actually produces a *pleasant-looking* stitch.mp4
+on Christer's own real trips (as opposed to just "technically the
+requested layout") is still worth his own eyes.
+
+This closes out the original --stitch spec's six-item roadmap end to
+end: camera-layout composition, resolution/bitrate controls, the map
+panel, the g-sensor overlay, subtitle burn-in, and now layout auto
+-pick. `rearview_mirror` remains explicit-only by design. No further
+--stitch work is currently planned - future requests would be new
+scope, not spec items still outstanding.

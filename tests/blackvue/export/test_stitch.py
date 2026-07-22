@@ -9,10 +9,12 @@ from PIL import Image
 
 from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import ALL_LAYOUTS
+from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import STACK_LAYOUTS
 from blackvue.export.stitch import _escape_subtitles_filename
 from blackvue.export.stitch import _map_panel_dimensions
 from blackvue.export.stitch import parse_gsensor_position
+from blackvue.export.stitch import pick_stitch_layout
 from blackvue.export.stitch import stitch_cameras
 from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gps_reader import GpsFix
@@ -211,6 +213,33 @@ def test_stack_layouts_has_the_two_hstack_vstack_layouts():
 
 def test_all_layouts_includes_rearview_mirror():
     assert set(ALL_LAYOUTS) == {"side_by_side", "top_down", "rearview_mirror"}
+
+
+def test_pick_stitch_layout_picks_side_by_side_for_an_east_west_trip():
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.301, 18.100))
+    assert pick_stitch_layout(fixes) == "side_by_side"
+
+
+def test_pick_stitch_layout_picks_top_down_for_a_north_south_trip():
+    fixes = (_fix(0, 59.00, 18.000), _fix(2, 60.00, 18.001))
+    assert pick_stitch_layout(fixes) == "top_down"
+
+
+def test_pick_stitch_layout_returns_none_for_no_gps_data():
+    assert pick_stitch_layout(()) is None
+
+
+def test_stitch_cameras_rejects_auto_layout_directly(tmp_path):
+    # AUTO_LAYOUT is a trip_export.py/CLI-level sentinel resolved
+    # *before* ever reaching stitch_cameras() - it should never be a
+    # valid `layout` here, same as any other made-up name.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    with pytest.raises(ValueError):
+        stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout=AUTO_LAYOUT)
 
 
 def test_stitch_cameras_scales_the_stacked_output_to_a_requested_resolution(
