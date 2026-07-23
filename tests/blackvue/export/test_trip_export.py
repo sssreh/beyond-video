@@ -822,6 +822,33 @@ def test_export_trip_stitch_mirror_zoom_is_forwarded(tmp_path, monkeypatch):
     assert captured["mirror_zoom"] == 40.0
 
 
+def test_export_trip_stitch_mirror_pan_is_forwarded(tmp_path, monkeypatch):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="rearview_mirror",
+        stitch_mirror_pan_x=-25.0, stitch_mirror_pan_y=60.0,
+    )
+
+    assert captured["mirror_pan_x"] == -25.0
+    assert captured["mirror_pan_y"] == 60.0
+
+
 def test_export_trip_stitch_mirror_icon_is_forwarded(tmp_path, monkeypatch):
     from PIL import Image
     from PIL import ImageDraw

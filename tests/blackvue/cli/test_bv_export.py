@@ -920,6 +920,97 @@ def test_main_rejects_an_out_of_range_stitch_mirror_zoom(tmp_path):
         ])
 
 
+def test_main_uses_the_default_stitch_mirror_pan_when_not_given(
+    tmp_path, monkeypatch
+):
+    from blackvue.export.stitch import DEFAULT_MIRROR_PAN_PERCENT
+
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_mirror_pan_x"] == DEFAULT_MIRROR_PAN_PERCENT
+    assert captured["stitch_mirror_pan_y"] == DEFAULT_MIRROR_PAN_PERCENT
+
+
+def test_main_parses_explicit_stitch_mirror_pan_x_and_pan_y(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-layout", "rearview_mirror",
+        "--stitch-mirror-pan-x", "-40", "--stitch-mirror-pan-y", "75",
+    ])
+
+    assert captured["stitch_mirror_pan_x"] == -40.0
+    assert captured["stitch_mirror_pan_y"] == 75.0
+
+
+def test_main_rejects_an_out_of_range_stitch_mirror_pan_x(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-mirror-pan-x", "150",
+        ])
+
+
+def test_main_rejects_an_out_of_range_stitch_mirror_pan_y(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-mirror-pan-y", "-150",
+        ])
+
+
+def test_bv_export_stitch_mirror_pan_flags_produce_a_video(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="rearview_mirror", stitch_mirror_zoom=50.0,
+        stitch_mirror_pan_x=-100.0, stitch_mirror_pan_y=0.0,
+    )
+
+    assert exit_code == 0
+    trip_folder = target / "trip_20260720_100000_20260720_100000"
+    assert (trip_folder / "stitch.mp4").exists()
+
+
 def test_bv_export_stitch_rearview_mirror_flag_produces_a_video(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()

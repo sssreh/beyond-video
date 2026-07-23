@@ -29,15 +29,18 @@ from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
+from blackvue.export.stitch import DEFAULT_MIRROR_PAN_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
+from blackvue.export.stitch import MAX_MIRROR_PAN_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MAP_SIZE_PERCENT
+from blackvue.export.stitch import MIN_MIRROR_PAN_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_ZOOM_PERCENT
@@ -164,6 +167,23 @@ def _parse_mirror_zoom(value: str) -> float:
     return zoom
 
 
+def _parse_mirror_pan(value: str) -> float:
+    try:
+        pan = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid pan {value!r} (expected a number)"
+        )
+
+    if not (MIN_MIRROR_PAN_PERCENT <= pan <= MAX_MIRROR_PAN_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"pan {value!r} out of range "
+            f"({MIN_MIRROR_PAN_PERCENT:g}-{MAX_MIRROR_PAN_PERCENT:g})"
+        )
+
+    return pan
+
+
 def _parse_map_size(value: str) -> float:
     try:
         size = float(value)
@@ -233,6 +253,8 @@ def bv_export(
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     stitch_mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    stitch_mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
+    stitch_mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
     stitch_mirror_icon: str | Path | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
@@ -396,6 +418,8 @@ def bv_export(
                 stitch_mirror_size=stitch_mirror_size,
                 stitch_mirror_radius=stitch_mirror_radius,
                 stitch_mirror_zoom=stitch_mirror_zoom,
+                stitch_mirror_pan_x=stitch_mirror_pan_x,
+                stitch_mirror_pan_y=stitch_mirror_pan_y,
                 stitch_mirror_icon=stitch_mirror_icon_path,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
@@ -709,6 +733,43 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-mirror-pan-x",
+        type=_parse_mirror_pan,
+        default=DEFAULT_MIRROR_PAN_PERCENT,
+        metavar="PERCENT",
+        help=(
+            f"Pan the mirror inset's crop window left/right within the "
+            f"margin --stitch-mirror-zoom already crops away "
+            f"({MIN_MIRROR_PAN_PERCENT:g}-{MAX_MIRROR_PAN_PERCENT:g}) - 0 "
+            f"(the default) stays centered, negative pans left, positive "
+            f"pans right, +/-{MAX_MIRROR_PAN_PERCENT:g} pushes the crop "
+            f"window flush against one edge. Only has room to move once "
+            f"--stitch-mirror-zoom is above 0 - at 0 there's no "
+            f"cropped-away margin to pan into. Only meaningful with "
+            f"--stitch-layout rearview_mirror. Default: "
+            f"{DEFAULT_MIRROR_PAN_PERCENT:g}."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-mirror-pan-y",
+        type=_parse_mirror_pan,
+        default=DEFAULT_MIRROR_PAN_PERCENT,
+        metavar="PERCENT",
+        help=(
+            f"Pan the mirror inset's crop window up/down within the "
+            f"margin --stitch-mirror-zoom already crops away "
+            f"({MIN_MIRROR_PAN_PERCENT:g}-{MAX_MIRROR_PAN_PERCENT:g}) - 0 "
+            f"(the default) stays centered, negative pans up, positive "
+            f"pans down, +/-{MAX_MIRROR_PAN_PERCENT:g} pushes the crop "
+            f"window flush against one edge. Same --stitch-mirror-zoom "
+            f"-dependent behavior as --stitch-mirror-pan-x. Only "
+            f"meaningful with --stitch-layout rearview_mirror. Default: "
+            f"{DEFAULT_MIRROR_PAN_PERCENT:g}."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-mirror-icon",
         metavar="PATH",
         default=None,
@@ -999,6 +1060,8 @@ def main(argv: list[str] | None = None) -> int:
         stitch_mirror_size=args.stitch_mirror_size,
         stitch_mirror_radius=args.stitch_mirror_radius,
         stitch_mirror_zoom=args.stitch_mirror_zoom,
+        stitch_mirror_pan_x=args.stitch_mirror_pan_x,
+        stitch_mirror_pan_y=args.stitch_mirror_pan_y,
         stitch_mirror_icon=args.stitch_mirror_icon,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
