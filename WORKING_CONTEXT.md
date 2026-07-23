@@ -4134,3 +4134,31 @@ for `bv-export.md` - no functional change, committed separately.
 No test suite covers documentation content directly; verification was
 manual cross-referencing against real `--help` output and `trip_export.py`'s
 own source (see above) rather than an automated test.
+
+## Rewrote the stale docs/CLI.md to match reality (this session)
+
+Flagged the old `docs/CLI.md` to Christer while writing the man pages
+above (it referenced `bv-find`/`bv-transcribe` and a `--type`/`--match`/
+`--latest`/`--last-hours`/`--last-minutes`/`--last-days` selector
+family, none of which exist in the real CLI) and he said to fix it.
+
+Rewrote it from scratch rather than patching it - kept only what's
+actually real and shared across commands: the camera system ID concept
+(`bv-config`/`bv-download`'s first argument) and the `--from`/`--until`/
+`--timestamp` lexical-prefix timestamp selection every archive-reading
+command (`bv-download`, `bv-ls`, `bv-generate`, `bv-export`) genuinely
+shares, including `--timestamp`'s real mutual-exclusivity with `--from`/
+`--until` (confirmed against `LexicalTimeParser.parse()`'s own
+`ValueError` check, not assumed) and the same from-value-precision
+-determines-range table the old doc had, re-verified rather than copied
+blind this time. Everything fictional was removed outright, with a
+short note at the top explaining why the page looks different now and
+that it was cross-checked against real `--help` output this time.
+Points to the new `docs/man/` for per-command detail and `docs/PIPELINE.md`
+for run order, rather than re-documenting either here.
+
+Also fixed the file's own stray literal backslash-escaping throughout
+(`\#`, `\##`, `\--`, `\*\*`, doubled blank lines between every line) -
+looked like it had been pasted through something that over-escaped
+markdown - while rewriting it, since the replacement content needed
+writing from scratch anyway.
