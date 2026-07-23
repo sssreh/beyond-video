@@ -3435,3 +3435,23 @@ mode, and an end-to-end 1,000-road/150-frame render finishes well
 under a generous 15s bound), `test_trip_export` 52 passed and
 `test_stitch` 87 passed (both regression-only, map panel path
 unaffected), 0 failed.
+
+## bv-export: --stitch-gsensor's reuse path gave no --debug output (done, this session)
+
+Christer: "gsensor file doesn't give any output when the video already
+exist". Root cause: when `--stitch-gsensor` finds an existing
+gsensor.mp4 already sitting in the destination folder (render_gsensor
+=False this run), trip_export.py's reuse branch only calls
+`log.step("using existing gsensor.mp4 for stitch overlay")` - a
+trip.log line, with no matching `--debug` stderr print. Every other
+phase (concat/map/gsensor render/stitch) prints something to stderr
+under `--debug`; this one path was silent, which read as "did this
+get skipped by mistake" rather than "this was intentionally reused".
+
+Fix: one `if debug: print(...)` added to the reuse branch -
+"bv-export: gsensor.mp4 already exists - reusing for stitch overlay
+(render skipped)" - stderr only, trip.log's own line is unchanged.
+
+Tested: `test_trip_export` 54 passed (52 existing + 2 new: a `--debug`
+test asserting the reuse message appears, and a silent-by-default test
+with `--debug` omitted), 0 failed.

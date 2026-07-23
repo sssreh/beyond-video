@@ -1116,6 +1116,77 @@ def test_export_trip_stitch_gsensor_reuses_a_file_from_an_earlier_run(
     assert result.warnings == ()
 
 
+def test_export_trip_stitch_gsensor_reuse_debug_prints_to_stderr(
+    tmp_path, capsys
+):
+    # Christer: "gsensor file doesn't give any output when the video
+    # already exist" - every other phase prints something to stderr
+    # under --debug, but the reuse path (render_gsensor=False, an
+    # existing gsensor.mp4 already sitting in the destination folder)
+    # printed nothing at all, unlike a fresh render's own "gsensor
+    # phase took Xs" line.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+
+    _make_video(dest_dir / "gsensor.mp4", 1.0)
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+            },
+        ),
+    ))
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_gsensor=True,
+        debug=True,
+    )
+
+    err = capsys.readouterr().err
+    assert "gsensor.mp4 already exists" in err
+    assert "reusing for stitch overlay" in err
+
+
+def test_export_trip_stitch_gsensor_reuse_is_silent_by_default(tmp_path, capsys):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+
+    _make_video(dest_dir / "gsensor.mp4", 1.0)
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+            },
+        ),
+    ))
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_gsensor=True,
+    )
+
+    assert capsys.readouterr().err == ""
+
+
 def test_export_trip_stitch_gsensor_warns_when_trip_has_no_gsensor_data(
     tmp_path
 ):

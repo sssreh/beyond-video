@@ -639,6 +639,12 @@ def export_trip(
         if candidate.exists():
             stitch_gsensor_source = candidate
             log.step("using existing gsensor.mp4 for stitch overlay")
+            if debug:
+                print(
+                    "bv-export: gsensor.mp4 already exists - reusing for "
+                    "stitch overlay (render skipped)",
+                    file=sys.stderr,
+                )
         elif not samples:
             warnings.append(
                 "stitch gsensor overlay: no g-sensor data for this "
