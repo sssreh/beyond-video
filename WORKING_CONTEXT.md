@@ -4757,3 +4757,37 @@ exercised yet - only the build), and the PC/SMB route has produced a
 real trip visible in `bv-web`. Remaining unverified: an actual
 `bv-generate`/`bv-export` run driven through `bv-cli` on the NAS
 itself (as opposed to just the image build).
+
+## Fix low-contrast map roads (this session)
+
+Christer, looking at a real exported trip in `bv-web`: "the map
+background is empty, i can see the red dot." Traced this to
+`map_render.py`'s `render_frame()`: roads are only drawn once onto
+the shared static background image, then reused for every frame,
+while the position dot is drawn fresh each frame regardless of
+whether any roads exist - so an empty `roads` list produces exactly
+this symptom (dot moving over a blank background) without anything
+being broken in the render pipeline itself. Initially suspected the
+OSM road fetch (`osm_roads.py`, Overpass API) had returned zero roads
+for that area, possibly cached that way in `.osm_cache/`.
+
+Ruled that out once Christer confirmed the roads are actually there -
+just barely visible, and only up close. Root cause was simpler:
+`ROAD_COLOR = (200, 196, 188)` (light gray) against
+`BACKGROUND_COLOR = (247, 244, 238)` (cream) is a ~48/255-per-channel
+contrast, which reads as "empty" at normal viewing size/distance,
+especially after H.264 compression smooths it further - not a browser
+or web-viewer bug (`bv-web` serves the file as-is via `FileResponse`,
+no transcoding).
+
+Fixed by darkening `ROAD_COLOR` to `(140, 134, 122)` in
+`map_render.py` - roughly doubles the contrast against the cream
+background while staying a muted gray so the red route/position-dot
+color (`(230, 57, 70)`) is still the clear visual focus. Applies to
+both the standalone `map.mp4`/`map_zoom_*m.mp4` renders and the
+`--stitch-map` panel baked into `stitch.mp4`, since both draw through
+the same `render_frame()` function.
+
+Not yet verified against a real re-export - Christer hasn't re-run
+`bv-export` with this change yet to confirm the roads are clearly
+visible at normal viewing size.

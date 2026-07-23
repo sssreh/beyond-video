@@ -32,7 +32,7 @@ from .osm_roads import BoundingBox
 from .osm_roads import Road
 
 BACKGROUND_COLOR = (247, 244, 238)
-ROAD_COLOR = (200, 196, 188)
+ROAD_COLOR = (140, 134, 122)
 ROUTE_COLOR = (230, 57, 70)
 POSITION_DOT_COLOR = (230, 57, 70)
 POSITION_DOT_OUTLINE = (255, 255, 255)
