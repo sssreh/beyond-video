@@ -117,8 +117,9 @@ def test_trips_groups_close_recordings_and_shows_one_row_each(
 
 
 def test_trips_respects_max_gap_override(tmp_path, capsys):
-    # 5 minutes apart: same trip under the default 10-minute gap, but
-    # two separate trips once --max-gap is tightened to 1 minute.
+    # 5 minutes apart: same trip under the default 5-minute gap (plus
+    # its 10-second tolerance), but two separate trips once --max-gap
+    # is tightened to 1 minute.
     (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
     (tmp_path / "20260715_100500_NF.mp4").write_bytes(b"x")
 
@@ -137,7 +138,7 @@ def test_trips_respects_max_gap_override(tmp_path, capsys):
 def test_trips_bridges_a_gap_when_gps_shows_movement_and_movement_flag_given(
     tmp_path, capsys
 ):
-    # 30 minutes apart - would be two trips under the default 10-minute
+    # 30 minutes apart - would be two trips under the default 5-minute
     # gap, but the first recording's .gps file shows the vehicle still
     # moving right at the end of the recording, so they should bridge
     # into one trip - only when movement=True is explicitly given
@@ -216,10 +217,10 @@ def test_main_leaves_movement_false_without_the_flag(tmp_path, capsys):
 def test_trips_uses_duration_file_to_avoid_a_false_split(tmp_path, capsys):
     # The first recording starts at 10:00:00 and, per its
     # .duration.txt, really runs 12 minutes - so it doesn't end until
-    # 10:12:00. The second recording starts at 10:11:00, only 1
-    # minute after that real end - well inside the default 10-minute
-    # gap - even though the raw start-to-start gap (11 minutes) would
-    # exceed it.
+    # 10:12:00. The second recording starts at 10:11:00, actually
+    # *before* that real end (a negative computed gap - always inside
+    # any positive max_gap) - even though the raw start-to-start gap
+    # (11 minutes) would exceed it.
     (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
     (tmp_path / "20260715_100000_N.duration.txt").write_text("720\n")
     (tmp_path / "20260715_101100_NF.mp4").write_bytes(b"x")
@@ -248,17 +249,17 @@ def test_no_duration_flag_ignores_duration_files(tmp_path, capsys):
 
 
 def test_trips_default_gap_tolerance_absorbs_a_few_seconds(tmp_path, capsys):
-    # 10 minutes and 5 seconds apart - within the default 10-second
-    # tolerance on top of the default 10-minute max-gap.
+    # 5 minutes and 5 seconds apart - within the default 10-second
+    # tolerance on top of the default 5-minute max-gap.
     (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
-    (tmp_path / "20260715_101005_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100505_NF.mp4").write_bytes(b"x")
 
     exit_code = bv_ls(str(tmp_path), trips=True)
 
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "trip_20260715_100000_20260715_101005" in out
+    assert "trip_20260715_100000_20260715_100505" in out
 
 
 def test_gap_tolerance_can_be_tightened(tmp_path, capsys):
@@ -276,14 +277,14 @@ def test_gap_tolerance_can_be_tightened(tmp_path, capsys):
     assert "trip_20260715_101005_20260715_101005" in out
 
 
-def test_trips_defaults_to_a_ten_minute_gap(tmp_path, capsys):
+def test_trips_defaults_to_a_five_minute_gap(tmp_path, capsys):
     (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
-    (tmp_path / "20260715_100900_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100400_NF.mp4").write_bytes(b"x")
 
     exit_code = bv_ls(str(tmp_path), trips=True)
 
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    # 9 minutes apart - one trip under the default 10-minute gap.
-    assert "trip_20260715_100000_20260715_100900" in out
+    # 4 minutes apart - one trip under the default 5-minute gap.
+    assert "trip_20260715_100000_20260715_100400" in out

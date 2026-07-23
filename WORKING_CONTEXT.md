@@ -3166,3 +3166,36 @@ non-empty) but no rendered gsensor.mp4 on disk, to cover the case
 where the original "go run --gsensor-video" message is still correct.
 
 Tested: `test_trip_export` 48 passed (47 + 1 new test), 0 failed.
+
+## Trip detection: default --max-gap lowered from 10 to 5 minutes (done, this session)
+
+Christer asked to change the default gap threshold to 5 minutes.
+`trip_builder.py`'s `DEFAULT_MAX_GAP` changed from `timedelta(minutes=
+10)` to `timedelta(minutes=5)`. `gap_tolerance`'s 10-second noise
+margin on top is unchanged, so the real effective threshold is now
+5m10s (was 10m10s). `bv-export --max-gap`/`bv-ls --max-gap`'s help
+text render the default from this same constant, so nothing needed
+changing there.
+
+Two `test_bv_ls.py` tests hardcoded timing that depended on the exact
+old default rather than just testing generic gap behavior, and had to
+be updated to still exercise what they were meant to:
+
+- `test_trips_default_gap_tolerance_absorbs_a_few_seconds` used
+  recordings 10m5s apart (just inside the old 10m10s threshold) - now
+  5m5s apart (just inside the new 5m10s threshold).
+- `test_trips_defaults_to_a_ten_minute_gap` (recordings 9 minutes
+  apart, under the old 10-minute default) - renamed
+  `test_trips_defaults_to_a_five_minute_gap`, recordings now 4 minutes
+  apart.
+
+Everything else referencing the old default was either a stale
+comment (fixed for accuracy) or a test whose actual gap was far enough
+from the boundary (30 minutes, or a negative duration-aware gap) that
+the exact default value never mattered to the assertion - confirmed by
+running the full `test_trip_builder`/`test_bv_ls`/`test_bv_export`
+suites rather than trying to eyeball every case.
+
+Tested: `test_trip_builder` 23 passed (all pass `max_gap` explicitly,
+unaffected by the constant), `test_bv_ls` 17 passed, `test_bv_export`
+64 passed, 0 failed.

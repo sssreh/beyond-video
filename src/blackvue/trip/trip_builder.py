@@ -8,7 +8,7 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.trip.trip import Trip
 
 
-DEFAULT_MAX_GAP = timedelta(minutes=10)
+DEFAULT_MAX_GAP = timedelta(minutes=5)
 
 # Small fixed safety margin added on top of max_gap before a gap counts
 # as a split. Exists to absorb measurement noise that has nothing to
