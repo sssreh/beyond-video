@@ -1146,6 +1146,48 @@ def test_stitch_cameras_map_panel_defaults_to_left_for_top_down(tmp_path):
     assert width > 160
 
 
+def test_stitch_cameras_map_panel_render_is_silent_by_default(tmp_path, capsys):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_stitch_cameras_map_panel_debug_reports_render_timing(tmp_path, capsys):
+    # Christer: "but it doesnt report time for the map video build" -
+    # the panel is rendered fresh inside _stack() (see the design
+    # decision recorded in WORKING_CONTEXT.md's --stitch-map section:
+    # reused files would risk visible stretching, so a fresh render
+    # was chosen instead), but its own cost was entirely invisible,
+    # folded into the overall "stitch phase took Xs" line with no way
+    # to tell how much of that was the panel specifically.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(), debug=True,
+    )
+
+    err = capsys.readouterr().err
+    assert "stitch: map panel render took" in err
+
+
 def test_stitch_cameras_map_panel_side_can_be_overridden(tmp_path):
     front = tmp_path / "front.mp4"
     rear = tmp_path / "rear.mp4"

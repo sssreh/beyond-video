@@ -1564,6 +1564,7 @@ def _stack(
                 )
                 panel_path = tmp_path / "map_panel.mp4"
                 rendered = None
+                panel_start = time.monotonic() if debug else None
                 try:
                     rendered = _render_map_panel(
                         map_mode, map_fixes, map_roads, panel_path,
@@ -1576,6 +1577,12 @@ def _stack(
                 except MediaToolError as exc:
                     if warnings is not None:
                         warnings.append(f"stitch map panel: {exc}")
+                if debug and panel_size is not None:
+                    print(
+                        f"stitch: map panel render took "
+                        f"{time.monotonic() - panel_start:.1f}s",
+                        file=sys.stderr,
+                    )
 
                 if rendered is None:
                     if warnings is not None and panel_size is None:
