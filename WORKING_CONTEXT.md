@@ -4428,3 +4428,63 @@ changes - still can't run a real `docker-compose build` in this
 sandbox (no docker binary, no network), so this remains dependent on
 Christer's own NAS as the real test, same limitation noted in the two
 prior deploy-related commits.
+
+## bv-web's first real app-level bug: `TemplateResponse()`'s new calling convention (this session)
+
+The disclosed limitation from `bv-web`'s original commit ("app.py's
+actual FastAPI routes have only been reviewed by hand, not exercised
+by a real HTTP request") caught up with us here: after Christer got
+the container actually running for the first time (see the several
+preceding deploy/infra commits - none of which were app bugs, all
+Synology/docker-compose-version plumbing), the very first page load
+(`GET /login`) returned `Internal Server Error`. Real traceback from
+`docker-compose logs`:
+
+```
+File ".../blackvue/web/app.py", line 93, in login_form
+    return templates.TemplateResponse(
+        "login.html", {"request": request, "next": next, "error": None}
+    )
+File ".../starlette/templating.py", line 148, in TemplateResponse
+    template = self.get_template(name)
+...
+File ".../jinja2/utils.py", line 515, in __getitem__
+    rv = self._mapping[key]
+TypeError: unhashable type: 'dict'
+```
+
+Root cause: `app.py` was written using the *old* `Jinja2Templates.
+TemplateResponse(name: str, context: dict)` calling convention (with
+`request` passed inside the context dict), which was Starlette's
+recommended form for years and is what most existing examples/
+tutorials still show. Starlette 1.3.1 - what actually resolved on
+Christer's NAS during `pip install .[web]`, since neither `pyproject.
+toml` nor this session pinned an upper bound - has fully moved to the
+newer `TemplateResponse(request: Request, name: str, context: dict |
+None = None)` signature, where `request` is an explicit first
+positional argument rather than a context dict key. Called the old
+way against the new signature, `"login.html"` (a string) lands in the
+`request` parameter and the context dict lands in the `name`
+parameter - so `env.get_template(name)` tries to use a dict as a
+Jinja2 template-cache key, which is exactly the `unhashable type:
+'dict'` error above. This wasn't something version-pinning would have
+caught either, since the *old* convention is the one that's
+deprecated/broken now, not the new one - writing to the new
+convention from the start was always going to be the right call, this
+sandbox's total lack of network access just meant it couldn't be
+caught before a real deploy.
+
+Fixed all five `TemplateResponse()` call sites in `app.py` (the 403
+handler, `GET /login`, the login-failure branch of `POST /login`,
+`GET /` trip list, `GET /trips/{trip_id}` detail) to the new
+`TemplateResponse(request, "name.html", {...})` form, dropping the
+now-redundant `"request": request` context entry from each (Starlette
+injects `request` into the template's globals automatically once it's
+passed as its own argument). Verified with `ast.parse()` that the
+file is still syntactically valid - still can't actually exercise
+these routes in this sandbox (no fastapi/starlette installed, no
+network to get them), so this fix is reasoned from the real traceback
+Christer provided rather than reproduced locally. Templates themselves
+(`login.html`, etc.) are unaffected - they already just reference
+`{{ user }}`/`{{ trips }}`/etc. by name, agnostic to which calling
+convention put them there.

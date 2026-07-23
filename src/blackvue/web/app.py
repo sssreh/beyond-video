@@ -79,8 +79,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
         if exc.status_code == status.HTTP_403_FORBIDDEN:
             return templates.TemplateResponse(
+                request,
                 "forbidden.html",
-                {"request": request, "detail": exc.detail},
+                {"detail": exc.detail},
                 status_code=status.HTTP_403_FORBIDDEN,
             )
         # Anything else (404s in particular) keeps FastAPI's normal
@@ -91,7 +92,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request, next: str = "/"):
         return templates.TemplateResponse(
-            "login.html", {"request": request, "next": next, "error": None}
+            request, "login.html", {"next": next, "error": None}
         )
 
     @app.post("/login")
@@ -104,12 +105,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         user = users_config.authenticate(username, password)
         if user is None:
             return templates.TemplateResponse(
+                request,
                 "login.html",
-                {
-                    "request": request,
-                    "next": next,
-                    "error": "Wrong username or password.",
-                },
+                {"next": next, "error": "Wrong username or password."},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
@@ -139,7 +137,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def trip_list(request: Request, user: User = Depends(require_login)):
         trips = scan_trips(target)
         return templates.TemplateResponse(
-            "trip_list.html", {"request": request, "user": user, "trips": trips}
+            request, "trip_list.html", {"user": user, "trips": trips}
         )
 
     @app.get("/trips/{trip_id}", response_class=HTMLResponse)
@@ -148,7 +146,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     ):
         trip = _find_trip(target, trip_id)
         return templates.TemplateResponse(
-            "trip_detail.html", {"request": request, "user": user, "trip": trip}
+            request, "trip_detail.html", {"user": user, "trip": trip}
         )
 
     @app.get("/trips/{trip_id}/files/{filename}")
