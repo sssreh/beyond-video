@@ -92,6 +92,31 @@ MIN_MIRROR_SIZE_PERCENT = 10.0
 MAX_MIRROR_SIZE_PERCENT = 50.0
 DEFAULT_MIRROR_SIZE_PERCENT = 25.0
 
+# --stitch-mirror-radius's range/default (percent of the inset's own
+# min(width, height)/2 the four corners are rounded by - 0 is today's
+# plain rectangle, unchanged default; 100 rounds each corner all the
+# way to a quarter of that radius, producing a "stadium"/pill shape for
+# a non-square inset or a full circle for a square one). Christer:
+# "i would like that the mirror have round edges" - percent-of-inset
+# -size rather than a fixed pixel radius, his own recommended option,
+# so it scales automatically if --stitch-mirror-size later changes
+# rather than needing to be re-tuned by hand.
+MIN_MIRROR_RADIUS_PERCENT = 0.0
+MAX_MIRROR_RADIUS_PERCENT = 100.0
+DEFAULT_MIRROR_RADIUS_PERCENT = 0.0
+
+# --stitch-mirror-zoom's range/default (percent of the rear source
+# cropped away from each edge toward the center before it's scaled
+# into the inset - 0 is today's full rear frame, unchanged default;
+# higher values show progressively less of the frame, i.e. a tighter,
+# more "zoomed in" mirror view). Capped below 100 (95, not the
+# mathematically-possible-but-degenerate 100 which would crop away the
+# entire frame) - Christer's own recommended reading of "zoom in
+# percent": 0 = full frame, higher = tighter crop.
+MIN_MIRROR_ZOOM_PERCENT = 0.0
+MAX_MIRROR_ZOOM_PERCENT = 95.0
+DEFAULT_MIRROR_ZOOM_PERCENT = 0.0
+
 # A small top margin (percent of the composite's own height) so the
 # mirror inset doesn't sit flush against the very top edge of the
 # frame - same purely-visual-polish role as _GSENSOR_MARGIN_FRACTION,
@@ -352,6 +377,7 @@ def stitch_cameras(
     max_width: int | None = None,
     max_height: int | None = None,
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
+    mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_size: float | None = None,
@@ -391,8 +417,19 @@ def stitch_cameras(
     footage), scaled to `mirror_size` percent of the composite's own
     width (10-50, default 25 - see MIN_/MAX_/DEFAULT_MIRROR_SIZE_PERCENT),
     and overlaid top-center with a small margin - not concatenated via
-    hstack/vstack the way the other two layouts are. Everything below
-    (gsensor overlay, map panel, subtitle burn-in) treats the resulting
+    hstack/vstack the way the other two layouts are. `mirror_radius`
+    (0-100, default 0 - see MIN_/MAX_/DEFAULT_MIRROR_RADIUS_PERCENT)
+    additionally rounds the inset's four corners, as a percent of the
+    inset's own min(width, height)/2 - 0 leaves them square (unchanged
+    default), 100 rounds each corner all the way to a quarter-circle
+    of that radius (a "stadium"/pill shape for a non-square inset, a
+    full circle for a square one). Applied via an ffmpeg `geq` alpha
+    mask in the final combine step, not baked into the rear inset's
+    own decode-time intermediate - an intermediate re-encoded to H.264
+    has no alpha channel to carry the mask through, so this has to
+    happen after decode, right before the overlay (see _stack()'s own
+    `is_mirror` block for exactly where). Everything below (gsensor
+    overlay, map panel, subtitle burn-in) treats the resulting
     front+inset frame exactly like 'side_by_side'/'top_down' treat
     their own hstack/vstack result - same `warnings`-degrading
     behavior, same ordering. The one difference: a map panel alongside
@@ -584,7 +621,7 @@ def stitch_cameras(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
             scale=scale, max_width=max_width, max_height=max_height,
-            mirror_size=mirror_size,
+            mirror_size=mirror_size, mirror_radius=mirror_radius,
             map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
@@ -1254,6 +1291,58 @@ def _ideal_shared_dimension(
     return max(2, round(shared / 2) * 2)
 
 
+def _mirror_radius_alpha_expr(radius_percent: float) -> str:
+    """The ffmpeg geq `a=` (alpha) expression rounding a rectangle's
+    four corners to a radius of `radius_percent` percent of
+    min(W, H)/2 - see MIN_/MAX_/DEFAULT_MIRROR_RADIUS_PERCENT. `W`/`H`/
+    `X`/`Y` are geq's own per-pixel runtime variables (the input
+    frame's width/height and the current pixel's coordinates) -
+    resolved by ffmpeg itself when the filter actually runs, never
+    Python values.
+
+    Tests each of the four `radius`x`radius` corner squares in turn:
+    a pixel inside one of them is transparent (alpha 0) only if it's
+    also farther than `radius` from that corner's own rounding-circle
+    center; every other pixel (the whole non-corner body, plus the
+    parts of each corner square already inside its circle) stays fully
+    opaque (255). Distances are compared as squared values
+    (`pow(...,2)`) rather than via a `hypot`/`sqrt` call, both to avoid
+    a square root per pixel and because `hypot` isn't universally
+    available across ffmpeg builds' eval expression parsers - `pow` is.
+
+    Only meaningful embedded inside a `geq=...:a='...'` option value
+    wrapped in single quotes (see the caller in _stack()) - like
+    _subtitles_filter()'s own `force_style='...'` wrapping, this
+    protects the expression's internal commas (geq's own per-pixel
+    `pow(a,b)` calls) from being misread as ffmpeg's top-level filter
+    -chain separators, without needing to backslash-escape each one by
+    hand.
+    """
+
+    radius_expr = f"min(W,H)/2*{radius_percent / 100}"
+    return (
+        "if("
+        f"lt(X,{radius_expr})*lt(Y,{radius_expr})*"
+        f"gt(pow({radius_expr}-X,2)+pow({radius_expr}-Y,2),pow({radius_expr},2)),"
+        "0,"
+        "if("
+        f"lt(W-X,{radius_expr})*lt(Y,{radius_expr})*"
+        f"gt(pow(X-(W-{radius_expr}),2)+pow({radius_expr}-Y,2),pow({radius_expr},2)),"
+        "0,"
+        "if("
+        f"lt(X,{radius_expr})*lt(H-Y,{radius_expr})*"
+        f"gt(pow({radius_expr}-X,2)+pow(Y-(H-{radius_expr}),2),pow({radius_expr},2)),"
+        "0,"
+        "if("
+        f"lt(W-X,{radius_expr})*lt(H-Y,{radius_expr})*"
+        f"gt(pow(X-(W-{radius_expr}),2)+pow(Y-(H-{radius_expr}),2),pow({radius_expr},2)),"
+        "0,"
+        "255"
+        ")))"
+        ")"
+    )
+
+
 def _stack(
     front: Path,
     rear: Path,
@@ -1266,6 +1355,7 @@ def _stack(
     max_width: int | None = None,
     max_height: int | None = None,
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
+    mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_size: float | None = None,
@@ -1647,18 +1737,32 @@ def _stack(
             # shows things reversed, not raw footage) - both baked into
             # its own decode step above (see the `is_mirror` branch
             # there) rather than done here in the final combine's
-            # filter_complex, so nothing left to do but overlay it
-            # top-center with a small margin so it doesn't sit flush
-            # against the very top edge. Reuses input 1 directly rather
-            # than claiming a new index - unlike gsensor.mp4/the map
-            # panel, which are separate already-rendered files. Any
-            # --stitch-resolution fit-and-pad happens *after* this
-            # overlay (see `output_label` below), not to front alone
-            # first, so the inset is always sized/placed against real
-            # visible footage.
+            # filter_complex. Reuses input 1 directly rather than
+            # claiming a new index - unlike gsensor.mp4/the map panel,
+            # which are separate already-rendered files. Any --stitch
+            # -resolution fit-and-pad happens *after* this overlay (see
+            # `output_label` below), not to front alone first, so the
+            # inset is always sized/placed against real visible
+            # footage.
+            rear_label = "1:v"
+            if mirror_radius > 0:
+                # Can't bake this into rear's own decode-time
+                # intermediate (see this function's own is_mirror
+                # decode-scale-filter comment) - an H.264 intermediate
+                # has no alpha channel, so the rounding has to happen
+                # here, right before the overlay, on the already-small
+                # decoded inset (cheap regardless of the per-pixel geq
+                # cost, since it's a small region, not the full frame).
+                clauses.append(
+                    "[1:v]format=rgba,geq="
+                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                    f"a='{_mirror_radius_alpha_expr(mirror_radius)}'"
+                    "[mirror_rounded]"
+                )
+                rear_label = "mirror_rounded"
             margin_y = round(content_height * _MIRROR_MARGIN_FRACTION)
             clauses.append(
-                "[0:v][1:v]overlay="
+                f"[0:v][{rear_label}]overlay="
                 f"x=(main_w-overlay_w)/2:y={margin_y}[withmirror]"
             )
             camera_label = "withmirror"

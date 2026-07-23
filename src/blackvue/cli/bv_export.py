@@ -27,13 +27,16 @@ from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import DEFAULT_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
+from blackvue.export.stitch import MAX_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MAP_SIZE_PERCENT
+from blackvue.export.stitch import MIN_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
@@ -124,6 +127,23 @@ def _parse_mirror_size(value: str) -> float:
     return size
 
 
+def _parse_mirror_radius(value: str) -> float:
+    try:
+        radius = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid radius {value!r} (expected a number)"
+        )
+
+    if not (MIN_MIRROR_RADIUS_PERCENT <= radius <= MAX_MIRROR_RADIUS_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"radius {value!r} out of range "
+            f"({MIN_MIRROR_RADIUS_PERCENT:g}-{MAX_MIRROR_RADIUS_PERCENT:g})"
+        )
+
+    return radius
+
+
 def _parse_map_size(value: str) -> float:
     try:
         size = float(value)
@@ -191,6 +211,7 @@ def bv_export(
     stitch_max_width: int | None = None,
     stitch_max_height: int | None = None,
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
+    stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
@@ -350,6 +371,7 @@ def bv_export(
                 stitch_max_width=stitch_max_width,
                 stitch_max_height=stitch_max_height,
                 stitch_mirror_size=stitch_mirror_size,
+                stitch_mirror_radius=stitch_mirror_radius,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
                 stitch_map_size=stitch_map_size,
@@ -629,6 +651,22 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-mirror-radius",
+        type=_parse_mirror_radius,
+        default=DEFAULT_MIRROR_RADIUS_PERCENT,
+        metavar="PERCENT",
+        help=(
+            f"Round the mirror inset's four corners, as a percentage of "
+            f"the inset's own min(width, height)/2 "
+            f"({MIN_MIRROR_RADIUS_PERCENT:g}-{MAX_MIRROR_RADIUS_PERCENT:g}"
+            f") - 0 leaves them square, 100 rounds each corner all the "
+            f"way to a quarter-circle of that radius. Only meaningful "
+            f"with --stitch-layout rearview_mirror. Default: "
+            f"{DEFAULT_MIRROR_RADIUS_PERCENT:g}."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-resolution",
         type=_parse_resolution,
         default=None,
@@ -893,6 +931,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_max_width=args.stitch_max_width,
         stitch_max_height=args.stitch_max_height,
         stitch_mirror_size=args.stitch_mirror_size,
+        stitch_mirror_radius=args.stitch_mirror_radius,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
         stitch_map_size=args.stitch_map_size,

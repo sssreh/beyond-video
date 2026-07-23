@@ -35,6 +35,7 @@ from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_roads
 from .stitch import AUTO_LAYOUT
 from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
+from .stitch import DEFAULT_MIRROR_RADIUS_PERCENT
 from .stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from .stitch import pick_stitch_layout
 from .stitch import stitch_cameras
@@ -261,6 +262,7 @@ def export_trip(
     stitch_max_width: int | None = None,
     stitch_max_height: int | None = None,
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
+    stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
@@ -346,7 +348,11 @@ def export_trip(
     `stitch_mirror_size` (percent of the composite's own width, 10-50,
     default stitch.DEFAULT_MIRROR_SIZE_PERCENT) controls the mirror
     inset's size when `stitch_layout='rearview_mirror'` - ignored for
-    the other two layouts.
+    the other two layouts. `stitch_mirror_radius` (percent of the
+    inset's own min(width, height)/2, 0-100, default
+    stitch.DEFAULT_MIRROR_RADIUS_PERCENT) rounds its four corners - 0
+    (the default) leaves them square, matching the layout's original
+    plain-rectangle look.
 
     `stitch_resolution` (a (width, height) pixel pair) and
     `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)
@@ -744,6 +750,7 @@ def export_trip(
                 max_width=stitch_max_width,
                 max_height=stitch_max_height,
                 mirror_size=stitch_mirror_size,
+                mirror_radius=stitch_mirror_radius,
                 map_mode=stitch_map,
                 map_side=stitch_map_side,
                 map_size=stitch_map_size,
