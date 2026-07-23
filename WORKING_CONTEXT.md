@@ -3995,3 +3995,83 @@ Tested: `test_mirror_icon` 8 passed (7 existing + 1 new). `test_stitch`
 112 passed (only the 4 mirror_icon-specific tests re-run directly,
 since this fix only touches mirror_icon.py's own error path).
 `test_trip_export` 59 passed (full module, no regressions). 0 failed.
+
+## --stitch-mirror-pan-x/-pan-y: pan the mirror crop within zoom's margin (this session)
+
+Christer asked for the option to pan the mirror inset's crop left
+-right/up-down "in order to find the perfect view," after confirming
+`--stitch-mirror-zoom` only ever crops toward the rear source's own
+center. Design confirmed via two AskUserQuestion rounds: two separate
+flags (`--stitch-mirror-pan-x`/`-pan-y`, matching the existing one
+-flag-per-percent convention `mirror-size`/`-radius`/`-zoom` already
+follow) rather than one combined flag, and - after Christer asked for
+more explanation - "Option A": pan only has room to move within the
+margin `mirror_zoom` already crops away, rather than working
+independently of zoom. The latter was walked through concretely using
+Christer's own `--stitch-mirror-zoom 70` from an earlier real run: at
+zoom=70 only the center 30% of the rear frame is kept, and pan slides
+that 30% window anywhere within the original 100% up to fully flush
+against one edge; at zoom=0 there's no cropped-away margin at all, so
+pan is a no-op regardless of its own value. The alternative (pan and
+zoom fully independent) would mean either quietly clamping back to
+this same behavior anyway, or inventing pixels beyond the source
+frame's own edges via padding - not possible without visible artifacts
+for a real camera frame with no data past its own boundary.
+
+`mirror_pan_x`/`mirror_pan_y` (-100 to 100, default 0 - see MIN_/MAX_/
+DEFAULT_MIRROR_PAN_PERCENT) are signed percentages: 0 stays centered
+(today's unchanged default), negative pans left/up, positive pans
+right/down, +/-100 pushes the crop window flush against one edge.
+Implemented as an ffmpeg `crop=...:x=...:y=...` expression - ffmpeg's
+crop filter exposes its own computed output size as `ow`/`oh` inside
+the `x=`/`y=` expressions, so `(iw-ow)/2` is the exact centered offset
+ffmpeg would pick by default; multiplying it by `1 + pan/100` slides
+that offset from 0 (pan=-100, flush against the near edge) through 1
+(pan=0, centered) to 2 (pan=+100, flush against the far edge) - always
+within the margin `mirror_zoom` cropped away, never past the source's
+own real pixels. The multiplier is computed in Python (always in
+[0, 2], never negative) and embedded as a plain literal, avoiding any
+ffmpeg eval-parser ambiguity from embedding a signed percent directly.
+
+New `_mirror_zoom_crop_filter(mirror_zoom, mirror_pan_x, mirror_pan_y)`
+helper in stitch.py, replacing the crop-string-building logic that used
+to be duplicated between the plain procedural inset and the
+mirror_icon compositing branches - both now call the same function.
+At `mirror_pan_x == mirror_pan_y == 0` it returns the exact same crop
+string as before pan existed (ffmpeg's own default centering, no
+explicit `x=`/`y=`) - existing zoom-only tests and their exact filter
+strings stay unaffected. Wired through the same three layers as every
+other `--stitch-mirror-*` flag: `_stack()`/`stitch_cameras()`
+(stitch.py), `export_trip()` (trip_export.py, `stitch_mirror_pan_x`/
+`stitch_mirror_pan_y` params), and `--stitch-mirror-pan-x`/`-pan-y
+PERCENT` (bv_export.py, `_parse_mirror_pan()` validator shared by both
+flags). Applies to both the plain procedural inset and the
+`--stitch-mirror-icon` compositing path (pan works the same way in
+both, since both branches now share the one crop helper).
+
+Verified the pan math manually before writing any test assertions -
+built a 2x2 quadrant-colored probe video and confirmed pan-x=-100/+100
+select the source's own left/right halves and pan-y=-100/+100 select
+top/bottom, accounting for the rear inset's own hflip (always applied,
+independent of pan - a real mirror shows things reversed). New pixel
+-level tests in test_stitch.py use two simpler two-color split probes
+(`_make_rear_pan_probe_horizontal`/`_vertical`, left/red-right/blue and
+top/red-bottom/blue) sized so mirror_zoom=50's own crop width/height
+exactly matches the color split, so panning fully to one edge always
+lands on a single uniform color with no ambiguity from hflip:
+`test_stitch_cameras_rearview_mirror_pan_x_negative_shows_the_left_edge`/
+`_positive_shows_the_right_edge`, the `_pan_y_` equivalents for top/
+bottom, `test_stitch_cameras_rearview_mirror_pan_is_a_no_op_without_zoom`
+(confirms pan=100/100 does nothing at mirror_zoom=0, sampling both
+inset halves - hflip'd, so left shows blue/right shows red), and
+`test_stitch_cameras_rearview_mirror_icon_still_respects_mirror_pan`
+(same pan-x=-100 check through the mirror_icon compositing path, glass
+-interior pixel manually verified against a real render before being
+written into the assertion).
+
+Tested: `test_stitch` 114 passed (108 existing from the icon task + 6
+new). `test_trip_export` 60 passed (59 existing + 1 new: both pan
+values are forwarded to `stitch_cameras()`). `test_bv_export` 86
+passed (81 existing + 5 new: default/explicit-both-flags/out-of-range
+-each-flag, and a produces-a-video integration test). 0 failed across
+all three modules, 260 tests total.

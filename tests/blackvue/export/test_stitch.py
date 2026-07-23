@@ -2600,6 +2600,198 @@ def test_stitch_cameras_rearview_mirror_icon_still_respects_mirror_zoom(
     assert thirty_pixel[2] > thirty_pixel[0] and thirty_pixel[2] > thirty_pixel[1]
 
 
+def _make_rear_pan_probe_horizontal(path, size=320):
+    # Left half solid red, right half solid blue - each half exactly
+    # matches mirror_zoom=50's own crop width (half the source), so
+    # panning fully to one edge selects a single uniform color with
+    # no internal left-right variation (immune to the rear inset's
+    # own hflip, which would otherwise complicate reasoning about
+    # which side ends up where).
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", f"color=c=black:size={size}x{size}:rate=5",
+            "-filter_complex",
+            f"color=c=red:size={size // 2}x{size}[l];"
+            f"color=c=blue:size={size // 2}x{size}[r];"
+            "[l][r]hstack[out]",
+            "-map", "[out]", "-t", "1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _make_rear_pan_probe_vertical(path, size=320):
+    # Same idea as _make_rear_pan_probe_horizontal, split top/bottom
+    # instead of left/right - top half solid red, bottom half solid
+    # blue, each exactly half the source (matching mirror_zoom=50's
+    # own crop height).
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", f"color=c=black:size={size}x{size}:rate=5",
+            "-filter_complex",
+            f"color=c=red:size={size}x{size // 2}[t];"
+            f"color=c=blue:size={size}x{size // 2}[b];"
+            "[t][b]vstack[out]",
+            "-map", "[out]", "-t", "1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_stitch_cameras_rearview_mirror_pan_x_negative_shows_the_left_edge(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_pan_probe_horizontal(rear)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=50.0, mirror_pan_x=-100.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # Default mirror_size=25% of 640 -> 160x160 inset at (240, 10).
+    # mirror_zoom=50 crops to half the 320px source (160px); pan_x=
+    # -100 pushes that crop window flush against the source's own
+    # left edge, landing entirely within the solid-red left half.
+    pixel = image.getpixel((320, 90))
+    assert pixel[0] > 150 and pixel[1] < 100 and pixel[2] < 100
+
+
+def test_stitch_cameras_rearview_mirror_pan_x_positive_shows_the_right_edge(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_pan_probe_horizontal(rear)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=50.0, mirror_pan_x=100.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    pixel = image.getpixel((320, 90))
+    assert pixel[2] > 150 and pixel[0] < 100 and pixel[1] < 100
+
+
+def test_stitch_cameras_rearview_mirror_pan_y_negative_shows_the_top_edge(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_pan_probe_vertical(rear)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=50.0, mirror_pan_y=-100.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    pixel = image.getpixel((320, 90))
+    assert pixel[0] > 150 and pixel[1] < 100 and pixel[2] < 100
+
+
+def test_stitch_cameras_rearview_mirror_pan_y_positive_shows_the_bottom_edge(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_pan_probe_vertical(rear)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=50.0, mirror_pan_y=100.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    pixel = image.getpixel((320, 90))
+    assert pixel[2] > 150 and pixel[0] < 100 and pixel[1] < 100
+
+
+def test_stitch_cameras_rearview_mirror_pan_is_a_no_op_without_zoom(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_pan_probe_horizontal(rear)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=0.0, mirror_pan_x=100.0, mirror_pan_y=100.0,
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # At mirror_zoom=0 there's no cropped-away margin for pan to move
+    # into - the full, unchanged source (both red and blue halves)
+    # still shows in the inset regardless of the pan values given. The
+    # rear inset is always hflip'd (a real mirror shows things
+    # reversed), so the source's own left/red - right/blue halves
+    # swap sides in the final inset: left side of the inset shows
+    # blue, right side shows red - unaffected by the pan_x/pan_y=100
+    # given, since neither has any margin to act on.
+    left_half = image.getpixel((260, 90))
+    right_half = image.getpixel((380, 90))
+    assert left_half[2] > 150 and left_half[0] < 100
+    assert right_half[0] > 150 and right_half[2] < 100
+
+
+def test_stitch_cameras_rearview_mirror_icon_still_respects_mirror_pan(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 400, 300, "black")
+    _make_rear_pan_probe_horizontal(rear, size=200)
+    icon_path = tmp_path / "mirror.png"
+    _make_mirror_icon(icon_path)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=50.0, mirror_zoom=50.0, mirror_pan_x=-100.0,
+        mirror_icon=icon_path, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # Same glass-interior screen coordinate as the mirror_icon zoom
+    # test above (200, 91) - with pan_x=-100 pushing the crop flush
+    # against the pan probe's own solid-red left half, the glass
+    # should show red instead of the unpanned centered crop's mix.
+    pixel = image.getpixel((200, 91))
+    assert pixel[0] > 150 and pixel[1] < 100 and pixel[2] < 100
+
+
 def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
     tmp_path
 ):

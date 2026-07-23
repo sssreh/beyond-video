@@ -119,6 +119,23 @@ MIN_MIRROR_ZOOM_PERCENT = 0.0
 MAX_MIRROR_ZOOM_PERCENT = 95.0
 DEFAULT_MIRROR_ZOOM_PERCENT = 0.0
 
+# --stitch-mirror-pan-x/-pan-y's range/default (percent, signed: 0 is
+# centered - today's unchanged default - negative pans left/up,
+# positive pans right/down). Pan only has room to move within the
+# margin --stitch-mirror-zoom already crops away from each edge - at
+# pan=+/-100 the crop window sits flush against one edge of the rear
+# source, using up all of that margin; at mirror_zoom=0 there is no
+# margin at all, so pan is a no-op regardless of its own value. Same
+# "explain zoom in terms of a 0-100 range, then let pan lean into
+# whichever side of that range" design Christer confirmed via
+# AskUserQuestion - deliberately NOT independent of mirror_zoom (that
+# would mean either clamping pan back down to this exact behavior
+# anyway, or inventing pixels beyond the source frame's own edges at
+# low zoom, which isn't possible without visible padding).
+MIN_MIRROR_PAN_PERCENT = -100.0
+MAX_MIRROR_PAN_PERCENT = 100.0
+DEFAULT_MIRROR_PAN_PERCENT = 0.0
+
 # A small top margin (percent of the composite's own height) so the
 # mirror inset doesn't sit flush against the very top edge of the
 # frame - same purely-visual-polish role as _GSENSOR_MARGIN_FRACTION,
@@ -381,6 +398,8 @@ def stitch_cameras(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
+    mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
     mirror_icon: Path | None = None,
     map_mode: str | None = None,
     map_side: str | None = None,
@@ -441,6 +460,15 @@ def stitch_cameras(
     step (unlike `mirror_radius` above, a plain crop carries no alpha
     -channel problem), right before the scale+hflip already baked in
     there - see this function's own decode-scale-filter comment.
+    `mirror_pan_x`/`mirror_pan_y` (-100 to 100, default 0 - see MIN_/
+    MAX_/DEFAULT_MIRROR_PAN_PERCENT) slide that crop window off-center,
+    within the margin `mirror_zoom` cropped away - 0 stays centered
+    (unchanged default), negative pans left/up, positive pans right
+    /down, +/-100 pushes the crop window flush against one edge. Only
+    has room to move at all once `mirror_zoom` > 0 - at 0 there's no
+    cropped-away margin to pan into, so pan is a no-op regardless of
+    its own value. See _mirror_zoom_crop_filter()'s own docstring for
+    the exact math.
 
     `mirror_icon`, if given, is a path to a photo of a real physical
     rearview mirror - see mirror_icon.py's own module docstring for
@@ -451,9 +479,10 @@ def stitch_cameras(
     and the photo's own frame/bezel/mount is composited on top - so
     the result reads as footage playing inside the actual photographed
     mirror. `mirror_radius` is ignored when this is given (the photo's
-    own glass shape already defines the silhouette); `mirror_zoom`
-    still applies, cropping the rear source toward its center before
-    it's fit to the glass area. Positioned flush against the front
+    own glass shape already defines the silhouette); `mirror_zoom`/
+    `mirror_pan_x`/`mirror_pan_y` still apply, cropping the rear source
+    (optionally off-center) before it's fit to the glass area.
+    Positioned flush against the front
     composite's own top edge (not `mirror_size`'s usual small top
     margin) - Christer: "i want it to be attached to the top of front
     image", matching how a real dashcam's own windshield mount would
@@ -657,7 +686,8 @@ def stitch_cameras(
             layout=layout, resolution=resolution, bitrate=bitrate,
             scale=scale, max_width=max_width, max_height=max_height,
             mirror_size=mirror_size, mirror_radius=mirror_radius,
-            mirror_zoom=mirror_zoom, mirror_icon=mirror_icon,
+            mirror_zoom=mirror_zoom, mirror_pan_x=mirror_pan_x,
+            mirror_pan_y=mirror_pan_y, mirror_icon=mirror_icon,
             map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
@@ -1389,6 +1419,54 @@ def _mirror_icon_layout(
     )
 
 
+def _mirror_zoom_crop_filter(
+    mirror_zoom: float, mirror_pan_x: float, mirror_pan_y: float
+) -> str:
+    """A `crop=...,` filter fragment (trailing comma, or `""` as a
+    no-op) implementing --stitch-mirror-zoom/-pan-x/-pan-y together -
+    shared by both is_mirror branches below (the plain procedural
+    inset and the mirror_icon compositing path), which otherwise had
+    to duplicate this exact crop math.
+
+    At `mirror_zoom` <= 0 there's no margin to crop into at all, so
+    pan can't do anything either - returns `""` regardless of pan,
+    the same "no-op means no clause at all" convention every other
+    mirror flag here follows.
+
+    Otherwise, crops to `keep_fraction = 1 - mirror_zoom/100` of the
+    source's own width/height, same as before pan existed. With pan
+    at its default (0, 0), that's still ffmpeg's own default centered
+    crop (x/y omitted) - preserves the exact filter string pan-naive
+    callers/tests already expect. A nonzero pan adds explicit `x=`/
+    `y=` expressions instead: ffmpeg's crop filter exposes its own
+    computed output size as `ow`/`oh` inside those expressions, so
+    `(iw-ow)/2` is the same centered offset ffmpeg would've picked by
+    default - multiplying it by `1 + pan/100` slides that offset from
+    0 (pan=-100, flush against the left/top edge) through 1 (pan=0,
+    centered) to 2 (pan=+100, flush against the right/bottom edge),
+    using up exactly the margin `mirror_zoom` cropped away and never
+    reaching past the source frame's own real pixels. The multiplier
+    is computed here in Python (always in [0, 2], never negative) and
+    embedded as a plain literal - avoids any ffmpeg eval-parser
+    ambiguity from embedding a signed percent directly into the
+    expression string.
+    """
+
+    if mirror_zoom <= 0:
+        return ""
+
+    keep_fraction = 1 - mirror_zoom / 100
+    if mirror_pan_x == 0 and mirror_pan_y == 0:
+        return f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
+
+    pan_x_multiplier = 1 + mirror_pan_x / 100
+    pan_y_multiplier = 1 + mirror_pan_y / 100
+    return (
+        f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction}:"
+        f"x=(iw-ow)/2*{pan_x_multiplier}:y=(ih-oh)/2*{pan_y_multiplier},"
+    )
+
+
 def _cover_crop_filter(source_width: int, source_height: int, *, target_width: int, target_height: int) -> str:
     """A `crop=...` filter fragment (no trailing comma) that crops
     `source_width` x `source_height` down to `target_width`/
@@ -1488,6 +1566,8 @@ def _stack(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
+    mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
     mirror_icon: Path | None = None,
     map_mode: str | None = None,
     map_side: str | None = None,
@@ -1703,12 +1783,9 @@ def _stack(
                 probe_rear_mirror_width, probe_rear_mirror_height,
                 target_width=mirror_glass_width, target_height=mirror_glass_height,
             )
-            rear_crop_filter = ""
-            if mirror_zoom > 0:
-                keep_fraction = 1 - mirror_zoom / 100
-                rear_crop_filter = (
-                    f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
-                )
+            rear_crop_filter = _mirror_zoom_crop_filter(
+                mirror_zoom, mirror_pan_x, mirror_pan_y
+            )
             # No `format=rgba`/padding/alpha-clip here - those need an
             # alpha channel this decode-time intermediate's own H.264
             # encode can't carry, so they happen in the final
@@ -1741,18 +1818,17 @@ def _stack(
             # a rounded-corner mask, which would need an alpha channel
             # the intermediate's own H.264 encode can't carry.
             mirror_width = max(2, round(front_width * mirror_size / 100 / 2) * 2)
-            # `mirror_zoom`: crops rear toward its own center by that
+            # `mirror_zoom`/`mirror_pan_x`/`mirror_pan_y`: crops rear
+            # toward its own center (or off-center, per pan) by that
             # percent of each edge *before* the scale+hflip above - a
             # uniform fraction off both iw/ih preserves rear's own
             # aspect ratio exactly, so it doesn't interact with
             # `mirror_width`'s own -2 auto-height sizing. A no-op (no
-            # crop clause at all) when 0, the unchanged default.
-            rear_crop_filter = ""
-            if mirror_zoom > 0:
-                keep_fraction = 1 - mirror_zoom / 100
-                rear_crop_filter = (
-                    f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
-                )
+            # crop clause at all) at mirror_zoom=0, the unchanged
+            # default - see _mirror_zoom_crop_filter()'s own docstring.
+            rear_crop_filter = _mirror_zoom_crop_filter(
+                mirror_zoom, mirror_pan_x, mirror_pan_y
+            )
             rear_scale_filter = f"{rear_crop_filter}scale={mirror_width}:-2,hflip"
     elif effective_resolution is not None:
         out_width, out_height = effective_resolution
