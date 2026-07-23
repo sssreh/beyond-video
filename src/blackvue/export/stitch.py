@@ -1296,10 +1296,12 @@ def _stack(
 
     # `effective_resolution`: what actually drives decode-time scaling
     # and comp_width/comp_height below - `resolution` itself when the
-    # caller gave one explicitly, or (hstack/vstack only - see the
-    # `is_mirror` exclusion below) an equivalent resolution derived
+    # caller gave one explicitly, or an equivalent resolution derived
     # from `scale`/`max_width`/`max_height` against the *natural*,
-    # pre-decode composite size.
+    # pre-decode composite size (hstack/vstack: front+rear combined;
+    # rearview_mirror: front alone, since rear never contributes to the
+    # composite's own dimensions there - see the `is_mirror` branch
+    # just below).
     #
     # Earlier version of this feature applied scale/max_width/
     # max_height only as a trailing filter on the already-fully
@@ -1315,27 +1317,37 @@ def _stack(
     # `resolution` has always been documented to not help with - see
     # this function's own decode-time-scaling comment below.)
     #
-    # Computed here via two cheap ffprobe calls on the *source* files
-    # (not the decoded intermediates - no decode needed to know their
-    # own native size), then fed through the exact same code
-    # `resolution` already uses for decode-time scaling/comp sizing/
-    # fit-and-pad below - safe from `resolution`'s own black-bar risk
-    # specifically because this target is *derived* from the natural
-    # composite's own aspect ratio, never an arbitrary WxH a caller
-    # picked by hand.
+    # First version of *this* fix only covered hstack/vstack, leaving
+    # rearview_mirror out entirely - Christer's own layout, and exactly
+    # why "still slow" persisted for him even after that first pass:
+    # front decoded at full native size regardless of --stitch-scale,
+    # and rear (the mirror inset) did too, despite only ever needing
+    # `mirror_size` percent of it. Folded in here instead of staying a
+    # special case.
+    #
+    # Computed here via cheap ffprobe calls on the *source* files (not
+    # the decoded intermediates - no decode needed to know their own
+    # native size), then fed through the exact same code `resolution`
+    # already uses for decode-time scaling/comp sizing/fit-and-pad
+    # below - safe from `resolution`'s own black-bar risk specifically
+    # because this target is *derived* from the natural composite's
+    # own aspect ratio, never an arbitrary WxH a caller picked by hand.
     effective_resolution = resolution
-    if resolution is None and not is_mirror and (
+    if resolution is None and (
         scale is not None or max_width is not None or max_height is not None
     ):
         probe_front_width, probe_front_height = _video_dimensions(front)
-        probe_rear_width, probe_rear_height = _video_dimensions(rear)
-        if filter_name == "hstack":
+        if is_mirror:
+            natural_width, natural_height = probe_front_width, probe_front_height
+        elif filter_name == "hstack":
+            probe_rear_width, probe_rear_height = _video_dimensions(rear)
             rear_scaled_width = round(
                 probe_rear_width * probe_front_height / probe_rear_height
             )
             natural_width = probe_front_width + rear_scaled_width
             natural_height = probe_front_height
         else:
+            probe_rear_width, probe_rear_height = _video_dimensions(rear)
             rear_scaled_height = round(
                 probe_rear_height * probe_front_width / probe_rear_width
             )
@@ -1364,25 +1376,29 @@ def _stack(
     # already folded into `effective_resolution` above - if so, the
     # trailing scale filter near the end of this function (which
     # historically was the *only* mechanism) must not also apply them,
-    # or the output would be shrunk twice. Not true for rearview
-    # -mirror (excluded above - front is never decode-time-scaled for
-    # that layout, `resolution` or not, so the trailing filter stays
-    # the only mechanism there) or when `resolution` was *also* given
-    # explicitly (a deliberate "shrink further, on top of an explicit
-    # resolution" combination - the trailing filter still applies on
-    # top of whatever `resolution` itself already produced, unchanged
-    # from this feature's first version).
+    # or the output would be shrunk twice. Still False - trailing
+    # filter stays the only mechanism - when an explicit `resolution`
+    # was given instead of/alongside scale/max_width/max_height
+    # (`effective_resolution is resolution` in that case, whether or
+    # not `is_mirror` - rearview_mirror's front has never been decode
+    # -time-scaled by a bare `--stitch-resolution` and this fix doesn't
+    # change that, only what scale/max_width/max_height do on their
+    # own) - a deliberate "shrink further, on top of an explicit
+    # resolution" combination, the trailing filter still applies on top
+    # of whatever `resolution` itself already produced, unchanged from
+    # this feature's first version.
     pre_decode_scale_applied = effective_resolution is not resolution
 
     # hstack only requires matching *heights* (it concatenates
     # horizontally, combined width is whatever the two widths sum to);
     # vstack only requires matching *widths*. rearview_mirror doesn't
     # stack two full-size cameras at all - front stays full-frame and
-    # rear becomes a small inset, so neither needs pre-decode scaling
-    # to match the other on any axis; the inset's actual size (a
-    # percent of the *composite's* own width) is only knowable once the
-    # composite dimensions are worked out below, so that scaling
-    # happens in the filter_complex, not here at decode time.
+    # rear becomes a small inset, so the two never need matching to
+    # each other on any axis - but front alone still benefits from
+    # decode-time scaling whenever `effective_resolution` was derived
+    # (see above), and rear always benefits from being decoded straight
+    # to its own final inset size, addressed in the `is_mirror` branch
+    # below.
     #
     # When a final `resolution` is requested (hstack/vstack only),
     # scale BOTH cameras' intermediates to the *ideal* shared height
@@ -1405,9 +1421,37 @@ def _stack(
     # front stays untouched and rear matches front's own native size
     # on the one axis that actually needs to match - unchanged.
     if is_mirror:
-        front_scale_filter = None
-        rear_scale_filter = None
-        front_width, front_height = _video_dimensions(front)
+        if pre_decode_scale_applied:
+            # front IS the composite for rearview_mirror (rear never
+            # contributes to its dimensions - see `effective_
+            # resolution`'s own is_mirror branch above), so the target
+            # derived there is exactly front's own post-decode size -
+            # no separate "ideal shared dimension" math needed the way
+            # hstack/vstack requires for two cameras sharing one axis.
+            front_width, front_height = effective_resolution
+            front_scale_filter = f"scale={front_width}:{front_height}"
+        else:
+            front_scale_filter = None
+            front_width, front_height = _video_dimensions(front)
+        # The rear inset only ever needs to end up `mirror_size`
+        # percent of front's own (possibly already-scaled) width -
+        # decoding it at full native size just to immediately shrink it
+        # down in the final combine pass wastes real decode+encode time
+        # on detail that gets discarded one step later, the same class
+        # of waste `_ideal_shared_dimension()` exists to avoid for
+        # hstack/vstack. This runs unconditionally (not just when scale/
+        # max_width/max_height/resolution are given) - Christer's own
+        # report ("front, rear, panel and stitch are still slow") named
+        # rear specifically, and this was wasted work even at full
+        # native quality with no shrink flags at all. Scaled and
+        # flipped right here at decode time instead of in the final
+        # combine's own filter_complex (see the `is_mirror` overlay
+        # clause below, now much simpler) - both ops are safe to bake
+        # into the intermediate, unlike a rounded-corner mask, which
+        # would need an alpha channel the intermediate's own H.264
+        # encode can't carry.
+        mirror_width = max(2, round(front_width * mirror_size / 100 / 2) * 2)
+        rear_scale_filter = f"scale={mirror_width}:-2,hflip"
     elif effective_resolution is not None:
         out_width, out_height = effective_resolution
         # `pre_decode_scale_applied` means front/rear were already
@@ -1597,25 +1641,24 @@ def _stack(
             final_width, final_height = comp_width, comp_height
 
         if is_mirror:
-            # Front stays full-frame (the primary content). Rear
-            # becomes a small flipped inset (a real rearview mirror
-            # shows things reversed, not raw footage) scaled to
-            # `mirror_size` percent of the *real* composite width
-            # (content_width - see this block's own note above, not
-            # the eventual padded comp_width) and overlaid top-center
-            # with a small margin so it doesn't sit flush against the
-            # very top edge. Reuses input 1 (rear) directly rather than
-            # claiming a new index - unlike gsensor.mp4/the map panel,
-            # which are separate already-rendered files. Any
+            # Front stays full-frame (the primary content). Rear (input
+            # 1) arrives here already scaled to `mirror_size` percent
+            # of front's own width and flipped (a real rearview mirror
+            # shows things reversed, not raw footage) - both baked into
+            # its own decode step above (see the `is_mirror` branch
+            # there) rather than done here in the final combine's
+            # filter_complex, so nothing left to do but overlay it
+            # top-center with a small margin so it doesn't sit flush
+            # against the very top edge. Reuses input 1 directly rather
+            # than claiming a new index - unlike gsensor.mp4/the map
+            # panel, which are separate already-rendered files. Any
             # --stitch-resolution fit-and-pad happens *after* this
             # overlay (see `output_label` below), not to front alone
             # first, so the inset is always sized/placed against real
             # visible footage.
-            mirror_width = max(2, round(content_width * mirror_size / 100 / 2) * 2)
             margin_y = round(content_height * _MIRROR_MARGIN_FRACTION)
-            clauses.append(f"[1:v]scale={mirror_width}:-2,hflip[mirrored]")
             clauses.append(
-                "[0:v][mirrored]overlay="
+                "[0:v][1:v]overlay="
                 f"x=(main_w-overlay_w)/2:y={margin_y}[withmirror]"
             )
             camera_label = "withmirror"
@@ -1792,16 +1835,18 @@ def _stack(
         # the exact same aspect ratio either way, never adding a black
         # bar the way an exact --stitch-resolution WxH pair can.
         #
-        # Skipped entirely when `pre_decode_scale_applied` (hstack/
-        # vstack, no explicit `resolution` given) - `effective_
-        # resolution` already folded scale/max_width/max_height into
-        # decode-time scaling above, so re-applying here would shrink
-        # the output twice. Still runs for rearview_mirror (front is
-        # never decode-time-scaled for that layout - see
-        # `effective_resolution`'s own `is_mirror` exclusion) and when
-        # `resolution` was *also* given explicitly (a deliberate
-        # "shrink further, on top of an explicit resolution"
-        # combination, unchanged from this feature's first version).
+        # Skipped entirely when `pre_decode_scale_applied` (any layout,
+        # including rearview_mirror since this fix - no explicit
+        # `resolution` given) - `effective_resolution` already folded
+        # scale/max_width/max_height into decode-time scaling above, so
+        # re-applying here would shrink the output twice. Still runs
+        # when `resolution` was given explicitly (a deliberate "shrink
+        # further, on top of an explicit resolution" combination,
+        # unchanged from this feature's first version) - including
+        # rearview_mirror combined with an explicit `resolution`,
+        # which still doesn't get decode-time front scaling (a bare
+        # `--stitch-resolution` alone was never in scope for this fix -
+        # see `effective_resolution`'s own `is_mirror` branch above).
         # One known imprecision, accepted rather than solved here (same
         # spirit as `_map_panel_dimensions()`'s own documented
         # composite-alone-not-total simplification): when
