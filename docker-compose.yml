@@ -1,3 +1,13 @@
+# Explicit version key on purpose: Synology's Container Manager only
+# ships the old standalone docker-compose 1.x CLI over SSH (no
+# `docker compose` v2 plugin) - without a version key, that CLI reads
+# this file as the legacy Compose v1 format (top-level keys are
+# service names directly, no `services:` wrapper), which would
+# misread everything below as one oddly-named service. "3.8" is a
+# Compose file format docker-compose 1.28.5 (Christer's version)
+# understands and that supports everything used here.
+version: "3.8"
+
 services:
   bv-web:
     build: .
@@ -13,7 +23,7 @@ services:
       # show up here too.
       - ./data/trips:/data/trips:ro
       # bv-web's accounts file (web-users.cfg) - read-write, and kept
-      # outside the image so it survives `docker compose build`/
+      # outside the image so it survives `docker-compose build`/
       # container recreation. Created empty on first run; populate it
       # with `docker exec -it beyond-video-web bv-web adduser ...`
       # (see docs/DEPLOY.md).

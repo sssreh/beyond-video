@@ -64,11 +64,13 @@ Either through Container Manager's GUI (**Project** -> **Create** -> pick `/volu
 
 ```
 cd /volume1/beyond-video
-docker compose build
-docker compose up -d
+docker-compose build
+docker-compose up -d
 ```
 
-The image only installs the `web` extra (fastapi/uvicorn/jinja2) - it does not pull in faster-whisper/pyannote.audio/argostranslate/torch, so this build should be quick. `docker compose ps` should show `beyond-video-web` as running.
+Note the hyphen: Synology's Container Manager only puts the old standalone `docker-compose` 1.x CLI on the SSH `$PATH`, not the newer `docker compose` (space) v2 plugin - `docker compose ...` will fail with a confusing `unknown shorthand flag` error rather than a clear "not found." Check which one you have with `docker-compose --version` (v1, hyphenated) vs `docker compose version` (v2 plugin) if unsure; every command in this doc uses the hyphenated form to match Christer's actual NAS.
+
+The image only installs the `web` extra (fastapi/uvicorn/jinja2) - it does not pull in faster-whisper/pyannote.audio/argostranslate/torch, so this build should be quick. `docker-compose ps` should show `beyond-video-web` as running.
 
 ## 5. Create your owner account
 
@@ -84,7 +86,7 @@ Prompts for a password twice. This writes `data/config/web-users.cfg` on the hos
 
 From a browser on the same network: `http://<nas-ip>:19373`. Log in with the account from step 5. You should land on the trip list, showing "No trips found yet" until step 7 below.
 
-If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Firewall**) isn't blocking port 19373, and `docker compose logs -f` from `/volume1/beyond-video` for errors.
+If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Firewall**) isn't blocking port 19373, and `docker-compose logs -f` from `/volume1/beyond-video` for errors.
 
 ## 7. Feeding it real trips
 
@@ -95,7 +97,7 @@ If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Fir
 ```
 cd /volume1/beyond-video
 git pull
-docker compose up -d --build
+docker-compose up -d --build
 ```
 
 `data/` is untouched by this - your accounts and trips survive.
@@ -103,9 +105,9 @@ docker compose up -d --build
 ## Restarting / logs
 
 ```
-docker compose restart
-docker compose logs -f
-docker compose down      # stops and removes the container (data/ is unaffected)
+docker-compose restart
+docker-compose logs -f
+docker-compose down      # stops and removes the container (data/ is unaffected)
 ```
 
 ## See also
