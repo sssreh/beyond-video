@@ -27,9 +27,9 @@ from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import DEFAULT_MIRROR_PAN_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
-from blackvue.export.stitch import DEFAULT_MIRROR_PAN_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
