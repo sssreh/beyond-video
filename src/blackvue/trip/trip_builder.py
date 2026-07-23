@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 
 from blackvue.archive.recording import Recording
+from blackvue.archive.recording_id import RecordingId
 from blackvue.trip.trip import Trip
 
 
@@ -21,7 +22,14 @@ DEFAULT_MAX_GAP = timedelta(minutes=10)
 # being opt-in like `bridge`/`recording_duration`.
 DEFAULT_GAP_TOLERANCE = timedelta(seconds=10)
 
-Bridge = Callable[[Recording, Recording], bool]
+# `bridge` may return any truthy value to bridge a gap (False/None to
+# not) - conventionally a short human-readable reason string, which is
+# what movement_bridges_gap() returns (see telemetry/movement.py) so
+# build()'s own `reasons` output (below) can show *what* evidence
+# bridged a given gap, not just that something did. A plain bool
+# still works fine (see test_trip_builder.py's own fake bridges) -
+# build() only ever checks truthiness, never the exact type.
+Bridge = Callable[[Recording, Recording], "str | bool | None"]
 RecordingDuration = Callable[[Recording], "int | None"]
 
 
@@ -87,7 +95,27 @@ class TripBuilder:
 
         return recording.id.timestamp
 
-    def build(self, recordings: Iterable[Recording]) -> list[Trip]:
+    def build(
+        self,
+        recordings: Iterable[Recording],
+        *,
+        reasons: dict[RecordingId, str] | None = None,
+    ) -> list[Trip]:
+        """Group `recordings` (assumed already sorted chronologically -
+        see ArchiveReader.read(), which sorts by RecordingId) into
+        trips.
+
+        `reasons`, if given, is populated in place with one entry per
+        recording (keyed by `recording.id`) explaining why it starts a
+        new trip or continues the current one - the exact gap, the
+        threshold it was compared against, and (if a gap over
+        threshold was still bridged) what evidence bridged it. Meant
+        for bv-export's own per-trip log file (see export/trip_log.py)
+        so a surprising trip membership decision can be checked against
+        the real reasoning that produced it, not re-derived after the
+        fact by guessing.
+        """
+
         recordings = tuple(recordings)
 
         if not recordings:
@@ -96,21 +124,69 @@ class TripBuilder:
         trips: list[Trip] = []
 
         current_trip: list[Recording] = [recordings[0]]
+        if reasons is not None:
+            reasons[recordings[0].id] = "first recording in the archive"
+
+        threshold = self.max_gap + self.gap_tolerance
 
         for recording in recordings[1:]:
             previous = current_trip[-1]
 
             gap = recording.id.timestamp - self._end_timestamp(previous)
+            gap_desc = self._describe_gap(gap)
+            threshold_desc = f"{threshold.total_seconds():.1f}s"
 
-            if gap > self.max_gap + self.gap_tolerance and not (
-                self.bridge and self.bridge(previous, recording)
-            ):
+            bridge_reason = None
+            if gap > threshold and self.bridge:
+                bridge_reason = self.bridge(previous, recording)
+
+            if gap > threshold and not bridge_reason:
+                if reasons is not None:
+                    reasons[recording.id] = (
+                        f"starts a new trip - gap since {previous.id} was "
+                        f"{gap_desc}, over the {threshold_desc} "
+                        "max_gap+gap_tolerance threshold, and no movement "
+                        "evidence bridged it"
+                    )
                 trips.append(Trip(tuple(current_trip)))
                 current_trip = [recording]
             else:
+                if reasons is not None:
+                    if gap > threshold:
+                        reasons[recording.id] = (
+                            f"continues the trip - gap since {previous.id} "
+                            f"was {gap_desc}, over the {threshold_desc} "
+                            f"max_gap+gap_tolerance threshold, but bridged "
+                            f"by: {bridge_reason}"
+                        )
+                    else:
+                        reasons[recording.id] = (
+                            f"continues the trip - gap since {previous.id} "
+                            f"was {gap_desc}, within the {threshold_desc} "
+                            "max_gap+gap_tolerance threshold"
+                        )
                 current_trip.append(recording)
 
         trips.append(Trip(tuple(current_trip)))
 
         return trips
+
+    @staticmethod
+    def _describe_gap(gap: timedelta) -> str:
+        """A human-readable rendering of a gap for `reasons` messages -
+        flags a negative gap explicitly (the previous/current
+        recordings overlap, or aren't in chronological order) rather
+        than printing a bare, easy-to-miss negative number - this is
+        exactly the shape a real sort-order or duration-parsing bug
+        would take, so it's worth being loud about here rather than
+        letting it blend into an otherwise-normal-looking log line.
+        """
+
+        seconds = gap.total_seconds()
+        if seconds < 0:
+            return (
+                f"{-seconds:.1f}s BEFORE the previous recording's own end "
+                "(overlapping or out-of-order timestamps)"
+            )
+        return f"{seconds:.1f}s"
     
