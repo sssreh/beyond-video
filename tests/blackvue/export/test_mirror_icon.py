@@ -130,6 +130,27 @@ def test_load_mirror_frame_raises_when_there_is_no_enclosed_glass_area(
     assert "no enclosed glass" in str(excinfo.value)
 
 
+def test_load_mirror_frame_raises_a_clear_error_when_the_image_is_entirely_dark(
+    tmp_path
+):
+    # Reproduces a real bad-input case: feeding one of load_mirror
+    # _frame()'s own outputs (a saved frame_overlay.png, RGBA with a
+    # fully transparent "glass" region) back in as a --stitch-mirror
+    # -icon source. Image.open(...).convert("RGB") strips alpha and
+    # keeps the underlying RGB, which for a transparent region created
+    # via Image.new("RGBA", ..., (0, 0, 0, 0)) is solid black - so the
+    # whole reloaded image reads as "dark," with content (the earlier
+    # `not content_xs` check doesn't catch this) but zero glass pixels
+    # (a later, separate check has to catch it instead - this used to
+    # crash with an unguarded ValueError from min() on an empty list).
+    icon_path = tmp_path / "all_dark.png"
+    Image.new("RGB", (20, 20), (0, 0, 0)).save(icon_path)
+
+    with pytest.raises(MediaToolError) as excinfo:
+        load_mirror_frame(icon_path)
+    assert "no enclosed glass" in str(excinfo.value)
+
+
 def test_largest_connected_component_keeps_only_the_biggest_blob():
     # A 5x5 grid: a 2x2 block of True in the top-left (4 cells) and a
     # single lone True cell in the bottom-right corner (1 cell,

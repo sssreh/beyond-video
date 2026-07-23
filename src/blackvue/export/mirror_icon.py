@@ -244,6 +244,13 @@ def load_mirror_frame(icon_path: Path) -> MirrorFrame:
         y for y in range(height) for x in range(width)
         if dark[y][x] or glass[y][x]
     ]
+    # NOTE: `content_xs` covers dark frame pixels too, not just glass
+    # - an image that's *entirely* dark (no light pixels anywhere, so
+    # nothing was ever eligible to become "glass" in the first place)
+    # still has non-empty `content_xs`, but zero glass pixels. Caught
+    # again, more specifically, once `glass_xs` is built below - this
+    # first check only rules out the "totally blank, nothing dark or
+    # light-and-enclosed at all" case.
     if not content_xs:
         raise MediaToolError(
             f"mirror icon {icon_path.name} has no enclosed glass "
@@ -274,9 +281,24 @@ def load_mirror_frame(icon_path: Path) -> MirrorFrame:
                 glass_xs.append(out_x)
                 glass_ys.append(out_y)
 
-    # glass_xs/glass_ys can't be empty here - the earlier `not
-    # content_xs` check already raised if there was no glass at all
-    # (glass pixels are always a subset of content pixels).
+    if not glass_xs:
+        # content_xs (checked above) only rules out a totally blank
+        # image - an image that's entirely dark (e.g. a --stitch
+        # -mirror-icon photo of a mirror re-fed one of its own
+        # already-segmented outputs back in as input: frame_overlay's
+        # own transparent "glass" pixels flatten to solid black once
+        # reloaded and stripped of alpha) has plenty of content but
+        # zero light-and-enclosed pixels, so glass_xs/glass_ys stay
+        # empty even though content_xs didn't.
+        raise MediaToolError(
+            f"mirror icon {icon_path.name} has no enclosed glass "
+            "area to composite footage into - is this a plain photo "
+            "of a mirror on a light background? (if this file is "
+            "itself a --stitch-mirror-icon output, e.g. a saved "
+            "frame_overlay preview, point --stitch-mirror-icon at "
+            "the original source photo instead)"
+        )
+
     glass_bbox = (min(glass_xs), min(glass_ys), max(glass_xs), max(glass_ys))
 
     return MirrorFrame(
