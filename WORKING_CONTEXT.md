@@ -2959,7 +2959,80 @@ more confident gap where GPS evidence genuinely helps, like a long
 traffic light or a tunnel) - just off by default until there's a
 ceiling number worth trusting.
 
-This closes out all three items from Christer's original message: the
-per-trip trip.log (previous section), the trip-detection bug
-investigation (still deferred pending Christer's own real-archive
-trip.log), and now stitch.mp4 audio.
+---
+
+## gsensor.mp4 render: fix an O(samples x frames) interpolation hang (done, this session)
+
+Christer reported bv-export appearing stuck again, this time at a
+different `trip.log` line: `starting gsensor.mp4 render`, with no
+completion after a long wait. Same investigative discipline as the
+trip-detection bug: read the actual code rather than guess, via a
+research-only subagent pass over `gsensor_video.py`, `gsensor_render.py`,
+and `gsensor_reader.py`.
+
+**Confirmed cause**: `render_gsensor_video()`'s frame loop called
+`interpolate_sample()` once per output frame; that function does a
+full linear rescan of *every* g-sensor sample from the start on every
+single call. Both the sample count and the frame count scale with
+trip duration (g-sensor samples land roughly every 100ms - see
+gsensor_reader.py - and the render deliberately matches that at
+`DEFAULT_FPS = 10`), so the loop's total cost was O(samples x frames)
+- quadratic in trip length. A short test trip never surfaces this; a
+real multi-hour trip (very plausible per the previous section -
+Christer estimated the camera is offline/idle a majority of the time,
+implying long continuous or parking-mode recordings aren't rare)
+turns into billions of inner-loop timedelta comparisons, indistinguishable
+from a hang without watching CPU usage.
+
+**The fix**: added `_advance_search_index()`/`_interpolate_from_index()`
+(gsensor_video.py) - a forward-only two-pointer approach exploiting
+the one property `interpolate_sample()`'s public, general-purpose
+signature doesn't get to assume: within `render_gsensor_video()`'s own
+loop, `elapsed` only ever increases frame over frame. Carrying a
+single `search_index` across iterations (never resetting it) means
+each frame's lookup only scans forward past whatever the previous
+frame already passed, turning the loop's cost from O(samples x frames)
+into O(samples + frames). `interpolate_sample()` itself is untouched
+- still correct, still public, still used by its own tests below, just
+no longer called by the hot per-frame loop.
+
+Also added the sample count to the "starting gsensor.mp4 render"
+`trip.log` line (`trip_export.py`) - so a future run that looks stuck
+at this same step can tell straight from the log whether it's a
+genuinely huge trip or something worth investigating further, the
+same reasoning behind bracketing every slow phase with a "starting"
+line in the first place.
+
+**Known related risk, not fixed here**: `map_video.py`'s
+`interpolate_position()` has the identical unindexed-rescan shape.
+It's not currently painful in practice - GPS fixes land around 1Hz and
+`map_video.py`'s own `DEFAULT_FPS` is 5, so both `n` and frame count
+stay far smaller than g-sensor's 10Hz/10fps combination - but the same
+class of bug is latent there for a long enough trip. Flagged here
+rather than fixed proactively, to keep this change scoped to the
+actual reported problem; worth revisiting if a similarly slow map.mp4
+render is ever reported.
+
+Tested: 4 new `test_gsensor_video.py` tests confirming
+`_advance_search_index()`/`_interpolate_from_index()` reproduce
+`interpolate_sample()`'s exact clamp-before/clamp-after/midpoint
+behavior, plus a monotonic-sweep test that walks both the fast
+indexed path and the original full-rescan function across the same
+elapsed values and asserts identical results at every step (the real
+correctness guarantee - "faster" is only worth having if it's still
+exactly right). One new performance regression test: simulates a
+synthetic 4-hour trip at g-sensor's native 10Hz (14,400 samples/
+frames - old path would be on the order of 2x10^8 inner-loop
+iterations) using just the two new functions directly (not the full
+PIL/ffmpeg render, which has its own real, expected per-frame cost
+unrelated to this bug) and asserts it finishes in well under 5
+seconds. Also ran a real end-to-end `render_gsensor_video()` call for
+a realistic 10-minute/6,000-sample trip outside the test suite -
+completed in ~31s (real PIL+ffmpeg cost, not a hang) - and confirmed
+the existing `test_render_gsensor_video_centers_positions_on_the_trips_
+median_reading` and `test_render_gsensor_video_produces_a_real_video_
+end_to_end` tests (which exercise the actual frame loop's output, not
+just the isolated helpers) still pass unchanged, confirming the fix
+didn't alter rendered output. All green: `test_gsensor_video` 14
+passed (10 existing + 4 new), `test_trip_export` 47 passed (unaffected,
+regression check only), 0 failed.

@@ -567,7 +567,13 @@ def export_trip(
 
     gsensor_video_path = None
     if render_gsensor and samples:
-        log.step("starting gsensor.mp4 render")
+        # Sample count logged here on purpose - the render loop's own
+        # cost scales with it (see gsensor_video.py's
+        # _advance_search_index()/_interpolate_from_index()), so a
+        # future run that looks stuck at this same line can tell from
+        # trip.log alone whether it's a huge trip genuinely taking a
+        # while, or something worth investigating further.
+        log.step(f"starting gsensor.mp4 render ({len(samples)} sample(s))")
         try:
             gsensor_video_path = render_gsensor_video(
                 samples, destination / "gsensor.mp4"
