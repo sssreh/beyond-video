@@ -37,10 +37,13 @@ SSH in first: `ssh <your-dsm-user>@<nas-ip>`
 ```
 mkdir -p /volume1/beyond-video
 cd /volume1/beyond-video
-git clone https://github.com/sssreh/beyond-video.git .
+git init
+git remote add origin https://github.com/sssreh/beyond-video.git
+git fetch
+git checkout main
 ```
 
-The trailing `.` matters - it tells git "clone *into* this already-existing folder," not "create a new `beyond-video` folder inside it." Skip the `.` and you'd end up with `/volume1/beyond-video/beyond-video`, which is the nesting you were asking about.
+`git clone https://github.com/sssreh/beyond-video.git .` looks simpler and would also avoid the nesting problem (the trailing `.` means "clone *into* this already-existing folder," not "create a new `beyond-video` folder inside it") - but Synology shared folders aren't actually empty even when File Station shows nothing in them: DSM auto-creates a hidden `@eaDir` housekeeping folder (and sometimes `#recycle`) at the root of every shared folder, and `git clone` refuses to clone into any directory that isn't genuinely empty. Check with `ls -la /volume1/beyond-video` if curious - that's normally all that's there. `git init` + `fetch` + `checkout` doesn't have that restriction, so it's the one to use here.
 
 **Without git**: zip your local checkout, upload it via File Station into `/volume1/beyond-video`, and extract it so the files listed above land directly in that folder (not inside a subfolder the zip creates - check the zip's top level before extracting, or extract elsewhere and move the contents up one level).
 
