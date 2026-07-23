@@ -3316,3 +3316,43 @@ to avoid the crosshair itself - and confirms the outermost ring's own
 run of consecutive non-background pixels is at least `RING_LINE_WIDTH`
 thick, not just one), `test_gsensor_video` 16 passed (unaffected,
 regression check only), 0 failed.
+
+## map.mp4: fix the same O(fixes x frames) interpolation risk gsensor.mp4 had (done, this session)
+
+Flagged as a latent risk when gsensor.mp4's identical bug was fixed
+earlier this session ("worth revisiting if a similarly slow map.mp4
+render is ever reported") - Christer's own trip.log showed map.mp4
+taking ~2m54s for a 5,402-fix trip, close enough to the scale where
+this starts to matter, so fixed proactively rather than waiting for
+an actual hang report.
+
+Root cause, identical to gsensor's: `render_map_video()`'s frame loop
+called `interpolate_position()` once per frame, which does a full
+linear rescan of every GPS fix on every call - O(fixes x frames),
+quadratic in trip duration. GPS's own ~1Hz rate is slower than
+g-sensor's ~10Hz, which is why this hadn't yet turned into an obvious
+"hang" the way gsensor's did - but the shape of the bug is the same,
+and a long enough/fix-dense-enough trip would eventually hit it too.
+
+Fix: mirrors gsensor_video.py's own fix exactly. New
+`_advance_fix_index()`/`_interpolate_position_from_index()` (forward
+-only index advance + interpolation from an already-known bracketing
+index, same two-function split) replace the per-frame
+`interpolate_position()` call; a `position_index` cursor is carried
+across the frame loop's iterations, kept deliberately separate from
+the loop's pre-existing `fix_index` (which tracks a different thing -
+how many fixes have been folded into `route_so_far`, not the
+interpolation bracket). `interpolate_position()` itself is untouched
+and still used by its own tests and any one-off lookups - just no
+longer called by the hot per-frame loop, same "old function stays,
+new one takes over the loop" pattern as gsensor's fix.
+
+Tested: `test_map_video` 30 passed (24 existing + 6 new: exact
+-timestamp/midpoint/clamp-before/clamp-after tests for the new indexed
+functions, a monotonic-sweep test confirming they match
+`interpolate_position()`'s own answer at every step across a full
+sweep, and a performance regression test - a synthetic 4-hour trip at
+a real ~1Hz GPS rate, 14,400 fixes x ~72,000 frames at map.mp4's
+default 5fps - old path would be on the order of 3x10^8 inner-loop
+iterations; new path finishes in well under 5 seconds), `test_trip_
+export` 49 passed (unaffected, regression check only), 0 failed.

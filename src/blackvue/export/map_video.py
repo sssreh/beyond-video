@@ -94,6 +94,18 @@ def interpolate_position(
     `fixes` must be sorted by timestamp and non-empty. A timestamp
     outside the fixes' own range clamps to the nearest end fix rather
     than extrapolating.
+
+    Scans `fixes` from the start every call - fine for a one-off
+    lookup, but render_map_video()'s own per-frame loop does NOT call
+    this anymore - see _advance_fix_index()/_interpolate_position_
+    from_index() for the O(fixes + frames) path it uses instead. Same
+    bug class (and same fix) as gsensor_video.py's interpolate_sample()/
+    _advance_search_index()/_interpolate_from_index() - flagged as a
+    latent risk here when that fix landed (a long enough trip would
+    hit the same O(fixes x frames) cost, just at GPS's slower ~1Hz
+    rate rather than g-sensor's ~10Hz), fixed here once a real trip
+    (Christer's own, ~5,400 fixes) actually reached the point where it
+    started to matter.
     """
 
     if timestamp <= fixes[0].timestamp:
@@ -134,6 +146,75 @@ def interpolate_position(
     # type honest if it's ever reached.
     last = fixes[-1]
     return last.latitude, last.longitude, last.speed_kmh, last.course
+
+
+def _advance_fix_index(
+    fixes: tuple[GpsFix, ...], timestamp: datetime, index: int
+) -> int:
+    """Move `index` forward (never backward) to the largest index i
+    such that fixes[i].timestamp <= timestamp - or len(fixes) - 1 if
+    `timestamp` is past every fix.
+
+    Only correct when called with a non-decreasing sequence of
+    `timestamp` values across successive calls, each time passing back
+    in the index the previous call returned - exactly the shape of
+    render_map_video()'s own per-frame loop below, where `timestamp`
+    is start + frame_number/fps and only ever increases. Identical
+    pattern to gsensor_video.py's _advance_search_index() - see that
+    function's own docstring for why the distinction matters in
+    practice.
+    """
+
+    last = len(fixes) - 1
+    while index < last and fixes[index + 1].timestamp <= timestamp:
+        index += 1
+    return index
+
+
+def _interpolate_position_from_index(
+    fixes: tuple[GpsFix, ...], timestamp: datetime, index: int
+) -> tuple[float, float, float | None, float | None]:
+    """Same interpolation result as interpolate_position(fixes,
+    timestamp) - identical clamp-before-first/clamp-after-last/linear
+    -interpolate (course uses the same circular interpolation) behavior
+    - but taking an already-known bracketing `index` (see
+    _advance_fix_index()) instead of scanning `fixes` for one.
+
+    This exists because interpolate_position() rescans `fixes` from
+    its own start on every call - fine for an occasional one-off
+    lookup, but render_map_video()'s frame loop below calls it once
+    per output frame, and both fix count and frame count scale with
+    trip duration - the same O(fixes x frames) shape
+    gsensor_video.py's interpolate_sample() had before
+    _advance_search_index()/_interpolate_from_index() fixed it there.
+    """
+
+    current = fixes[index]
+
+    if index == 0 and timestamp <= current.timestamp:
+        return current.latitude, current.longitude, current.speed_kmh, current.course
+
+    if index == len(fixes) - 1:
+        return current.latitude, current.longitude, current.speed_kmh, current.course
+
+    nxt = fixes[index + 1]
+    span = (nxt.timestamp - current.timestamp).total_seconds()
+
+    if span <= 0:
+        return current.latitude, current.longitude, current.speed_kmh, current.course
+
+    t = (timestamp - current.timestamp).total_seconds() / span
+    lat = current.latitude + (nxt.latitude - current.latitude) * t
+    lon = current.longitude + (nxt.longitude - current.longitude) * t
+
+    if current.speed_kmh is not None and nxt.speed_kmh is not None:
+        speed = current.speed_kmh + (nxt.speed_kmh - current.speed_kmh) * t
+    else:
+        speed = current.speed_kmh or nxt.speed_kmh
+
+    course = _interpolate_course(current.course, nxt.course, t)
+
+    return lat, lon, speed, course
 
 
 def render_map_video(
@@ -252,6 +333,16 @@ def render_map_video(
         frame_dir = Path(frame_dir_name)
         route_so_far: list[tuple[float, float]] = []
         fix_index = 0
+        # Separate from fix_index above (which tracks how many fixes
+        # have been folded into route_so_far) - this is the
+        # interpolation bracket's own forward-only cursor (see
+        # _advance_fix_index()/_interpolate_position_from_index()),
+        # carried across iterations the same way gsensor_video.py's
+        # render_gsensor_video() carries its own search_index, so each
+        # frame's lookup resumes where the last one left off instead
+        # of interpolate_position()'s full rescan from fixes[0] every
+        # time.
+        position_index = 0
 
         for frame_number in range(frame_count):
             elapsed = min(frame_number / fps, total_seconds)
@@ -269,7 +360,10 @@ def render_map_video(
                 route_so_far.append((fix.latitude, fix.longitude))
                 fix_index += 1
 
-            lat, lon, speed, course = interpolate_position(positioned, timestamp)
+            position_index = _advance_fix_index(positioned, timestamp, position_index)
+            lat, lon, speed, course = _interpolate_position_from_index(
+                positioned, timestamp, position_index
+            )
             position = (lat, lon)
 
             frame_bbox = (
