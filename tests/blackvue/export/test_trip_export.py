@@ -662,6 +662,35 @@ def test_export_trip_stitch_layout_produces_a_video(tmp_path):
     assert result.warnings == ()
 
 
+def test_export_trip_stitch_scale_and_max_dimensions_are_forwarded(
+    tmp_path, monkeypatch
+):
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side",
+        stitch_scale=50.0, stitch_max_width=1920, stitch_max_height=1080,
+    )
+
+    assert captured["scale"] == 50.0
+    assert captured["max_width"] == 1920
+    assert captured["max_height"] == 1080
+
+
 def test_export_trip_stitch_muxes_this_trips_own_concatenated_audio(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()

@@ -3477,3 +3477,91 @@ for NVDEC/CPU decode. Silent by default, same as everything else under
 Tested: `test_stitch` 89 passed (87 existing + 2 new: a `--debug` test
 asserting "stitch: map panel render took" appears, a silent-by-default
 test), 0 failed.
+
+## --stitch: --stitch-scale/--stitch-max-width/--stitch-max-height, a padding-free way to shrink stitch.mp4 (done, this session)
+
+Christer: a native `--stitch` with neither `--stitch-resolution` nor
+`--stitch-bitrate` given came out 3.5GB at 5422x4320, 20 minutes to
+render - wanted a way to reduce the resolution "without specifying a
+--stitch-resolution that might add extra black spaces in the video".
+Real concern: `--stitch-resolution`'s exact-WxH fit-and-pad
+letterboxes/pillarboxes whenever the requested resolution doesn't
+happen to match the natural composite's own aspect ratio (the exact
+bug fixed for the default layout earlier this session).
+
+Asked Christer to confirm the shape of the fix (AskUserQuestion):
+a direct percentage scale, a max-dimension cap, or both. Answer: build
+all three - `--stitch-scale PERCENT`, `--stitch-max-width PIXELS`, and
+`--stitch-max-height PIXELS`.
+
+**Design.** All three are always-proportional - they scale the whole
+final frame (camera composite plus any `--stitch-map` panel) down by
+a uniform factor, computed *after* everything else in `_stack()`'s
+filter graph is assembled (camera stack, any `--stitch-resolution`
+fit-and-pad, gsensor overlay, map panel), so the aspect ratio is
+preserved exactly and no black bars are ever introduced - a
+fundamentally different mechanism from `--stitch-resolution`'s
+exact-WxH padding, not a wrapper around it. A single final
+`scale=-2:H` ffmpeg filter is enough regardless of which bound ends up
+tightest, since ffmpeg auto-derives the other, unspecified dimension
+to the nearest even number while preserving whatever aspect ratio the
+input already has.
+
+`--stitch-scale` (1-100, validated at the CLI layer - downscale only,
+matching "reduce resolution", not left open for upscaling) is a direct
+percentage of the natural size. `--stitch-max-width`/`--stitch-max
+-height` (positive pixel counts) instead cap one or both dimensions,
+scaling down - never up - just enough to fit. All three combine
+freely as independent upper bounds on one `output_scale_factor`
+(whichever produces the smallest result wins, floored at 1.0 so
+nothing ever upscales) - deliberately no mutual-exclusion validation
+between them, since "tightest cap wins" needs none.
+
+**Where `final_width`/`final_height` come from.** `_stack()` already
+computed the camera composite's own real pixel size (`content_width`/
+`content_height`) for the gsensor-overlay/mirror-inset/map-panel
+anchoring fix earlier this session, but only when one of those
+features was actually in play - conditional, not unconditional, on
+purpose (see the next paragraph). Widened that same condition to also
+cover scale/max_width/max_height, and added `final_width`/
+`final_height`, seeded from the camera portion's own size and grown by
+the map panel's own dimensions if one gets added alongside it -
+tracking the *whole* final frame, not just the camera portion, so
+`--stitch-scale` genuinely shrinks the panel too, confirmed by a test
+comparing scaled camera-only vs. scaled-with-panel output widths.
+
+**A real regression caught by the test suite, not just the manual
+verification script.** First pass made the `content_width`/
+`comp_width` computation fully unconditional (simpler code, and
+`final_width`/`final_height` need it regardless of whether gsensor/
+mirror/map are used) - immediately broke 7 `test_stack_*` tests with
+`ffprobe failed for front.mp4: moov atom not found`. Root cause: those
+tests mock `encode_with_nvenc_fallback` to write empty (0-byte)
+intermediate files and never needed a real `_video_dimensions()` probe
+on them before - the exact same failure mode already documented in
+this file's `--stitch-map` entry from an earlier session ("a real bug
+caught by actually running the test suite"), reintroduced by this
+change and caught again the same way. Fixed by keeping the computation
+conditional (now on scale/max_width/max_height too, not just gsensor/
+mirror/map), not making it unconditional - two cheap ffprobe calls
+skipped is still better than none when nothing downstream needs them.
+
+**Manual verification before writing formal tests** (real ffmpeg, a
+throwaway script, not the test suite): confirmed `scale=50` on a
+640x240 natural composite produces exactly 320x120 (aspect ratio
+preserved), `max_width=400` produces 400x150, `max_width=1000`
+(above natural) is a true no-op (640x240 unchanged), and
+`scale=90,max_width=200` correctly lets the tighter `max_width` win
+(202x76, not ~576x216) - before committing to the design.
+
+Tested: `test_stitch` 96 passed (89 existing + 7 new: scale halves
+both dimensions preserving aspect ratio, scale=100 is a no-op,
+max_width/max_height each cap without upscaling, a cap above the
+natural size is a no-op, scale+max_width combine with the tighter
+cap winning, and the panel is included in what gets scaled).
+`test_bv_export` 71 passed (67 existing + 4 new: `--stitch-scale`/
+`--stitch-max-width`/`--stitch-max-height` parse and forward
+correctly, default to None, an out-of-range scale and a zero
+max-width are both rejected). `test_trip_export` 55 passed (54
+existing + 1 new: all three forwarded to `stitch_cameras()` as
+`scale`/`max_width`/`max_height`). 0 failed across all three.

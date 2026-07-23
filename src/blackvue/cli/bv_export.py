@@ -31,9 +31,11 @@ from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
+from blackvue.export.stitch import MAX_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
+from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import read_duration_seconds
@@ -59,6 +61,37 @@ def _parse_resolution(value: str) -> tuple[int, int]:
             f"invalid resolution {value!r} (expected WIDTHxHEIGHT, "
             "e.g. 320x240)"
         )
+
+
+def _parse_stitch_scale(value: str) -> float:
+    try:
+        scale = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid scale {value!r} (expected a number)")
+
+    if not (MIN_STITCH_SCALE_PERCENT <= scale <= MAX_STITCH_SCALE_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"scale {value!r} out of range "
+            f"({MIN_STITCH_SCALE_PERCENT:g}-{MAX_STITCH_SCALE_PERCENT:g})"
+        )
+
+    return scale
+
+
+def _parse_positive_pixels(value: str) -> int:
+    try:
+        pixels = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid pixel value {value!r} (expected a whole number)"
+        )
+
+    if pixels <= 0:
+        raise argparse.ArgumentTypeError(
+            f"pixel value {value!r} must be positive"
+        )
+
+    return pixels
 
 
 def _parse_gsensor_size(value: str) -> float:
@@ -154,6 +187,9 @@ def bv_export(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    stitch_scale: float | None = None,
+    stitch_max_width: int | None = None,
+    stitch_max_height: int | None = None,
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
@@ -310,6 +346,9 @@ def bv_export(
                 stitch_layout=stitch_layout,
                 stitch_resolution=stitch_resolution,
                 stitch_bitrate=stitch_bitrate,
+                stitch_scale=stitch_scale,
+                stitch_max_width=stitch_max_width,
+                stitch_max_height=stitch_max_height,
                 stitch_mirror_size=stitch_mirror_size,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
@@ -615,6 +654,55 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-scale",
+        type=_parse_stitch_scale,
+        default=None,
+        metavar="PERCENT",
+        help=(
+            "Scale stitch.mp4's own natural resolution down to this "
+            f"percentage ({MIN_STITCH_SCALE_PERCENT:g}-"
+            f"{MAX_STITCH_SCALE_PERCENT:g}) - e.g. 50 halves both "
+            "dimensions. Unlike --stitch-resolution, this always "
+            "preserves the natural composite's own aspect ratio "
+            "exactly (camera composite plus any --stitch-map panel), "
+            "so it never adds letterbox/pillarbox black bars - use "
+            "this instead of guessing a --stitch-resolution that "
+            "happens to match. Combines with --stitch-max-width/"
+            "--stitch-max-height (whichever cap shrinks the output "
+            "most wins). Only used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-max-width",
+        type=_parse_positive_pixels,
+        default=None,
+        metavar="PIXELS",
+        help=(
+            "Cap stitch.mp4's own natural width at this many pixels, "
+            "scaling the whole frame down (never up) just enough to "
+            "fit - the natural aspect ratio is always preserved, so "
+            "this never adds black bars the way an exact "
+            "--stitch-resolution might. Combines with --stitch-scale/"
+            "--stitch-max-height (whichever cap shrinks the output "
+            "most wins). Only used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-max-height",
+        type=_parse_positive_pixels,
+        default=None,
+        metavar="PIXELS",
+        help=(
+            "Cap stitch.mp4's own natural height at this many pixels - "
+            "see --stitch-max-width. Combines with --stitch-scale/"
+            "--stitch-max-width (whichever cap shrinks the output most "
+            "wins). Only used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-map",
         nargs="?",
         choices=["map", "zoom"],
@@ -801,6 +889,9 @@ def main(argv: list[str] | None = None) -> int:
         stitch_layout=args.stitch_layout if args.stitch else None,
         stitch_resolution=args.stitch_resolution,
         stitch_bitrate=args.stitch_bitrate,
+        stitch_scale=args.stitch_scale,
+        stitch_max_width=args.stitch_max_width,
+        stitch_max_height=args.stitch_max_height,
         stitch_mirror_size=args.stitch_mirror_size,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,

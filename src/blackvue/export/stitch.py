@@ -143,6 +143,23 @@ MIN_GSENSOR_SIZE_PERCENT = 5.0
 MAX_GSENSOR_SIZE_PERCENT = 40.0
 DEFAULT_GSENSOR_SIZE_PERCENT = 15.0
 
+# --stitch-scale's range (percent of the composite's own natural
+# resolution to scale the final stitch.mp4 down to) - Christer: a
+# native two-camera composite with no --stitch-resolution/--stitch
+# -bitrate given came out 5422x4320, 3.5GB, 20 minutes to render, and
+# --stitch-resolution's exact-WxH padding risks introducing letterbox/
+# pillarbox black bars for any resolution that doesn't happen to match
+# the natural composite's own aspect ratio (see the --stitch default
+# -layout WORKING_CONTEXT.md entry earlier this session). --stitch
+# -scale (and --stitch-max-width/--stitch-max-height just below)
+# instead always scale proportionally from whatever the natural size
+# actually is, so the aspect ratio - and therefore the padding-free
+# guarantee - always holds. Downscale only (100 is a no-op, matching
+# "reduce resolution" - nothing in this feature's design needs
+# upscaling, so validated 1-100 rather than left open-ended).
+MIN_STITCH_SCALE_PERCENT = 1.0
+MAX_STITCH_SCALE_PERCENT = 100.0
+
 # --stitch-gsensor's default named position when neither --stitch
 # -gsensor-pos nor --stitch-gsensor-xy is given - not specified in the
 # agreed spec, picked here as a reasonable PIP-style default (a
@@ -331,6 +348,9 @@ def stitch_cameras(
     layout: str,
     resolution: tuple[int, int] | None = None,
     bitrate: str | None = None,
+    scale: float | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
@@ -388,6 +408,29 @@ def stitch_cameras(
     full-resolution encode. `bitrate`, if given, is passed straight to
     ffmpeg as `-b:v` (plus matching `-maxrate`/`-bufsize` to actually
     constrain it - e.g. "256k", "2M").
+
+    `scale`/`max_width`/`max_height` are a different, always-padding
+    -free way to shrink the output - Christer: a native composite with
+    neither `resolution` nor `bitrate` given came out 3.5GB at
+    5422x4320, 20 minutes to render, but picking a `resolution` risks
+    letterbox/pillarbox bars for any WxH that doesn't happen to match
+    the natural composite's own aspect ratio (see `_fit_and_pad()`).
+    These three instead scale the *whole final frame* (camera composite
+    plus any map panel, computed after everything else below - see
+    _stack()'s own `final_width`/`final_height`) down by a uniform
+    factor, so the aspect ratio - and therefore no black bars, ever -
+    is preserved exactly. `scale` is a direct percentage of the natural
+    size (MIN_/MAX_STITCH_SCALE_PERCENT, e.g. 50 halves both
+    dimensions); `max_width`/`max_height` instead cap one or both
+    dimensions at a pixel value, scaling down (never up) just enough to
+    fit. All three combine freely as independent upper bounds - whichever
+    produces the smallest result wins - so there's never a need to
+    choose only one or validate they don't conflict. A no-op (skipped
+    entirely, no extra encode pass) when none are given, or when
+    whatever's given wouldn't actually shrink the natural size. Only
+    meaningful when both front and rear exist - the single-camera
+    fallback below ignores all three, same known gap as `map_mode`/
+    `gsensor_video`/`audio_path`.
 
     Decoding the source video(s) tries NVIDIA's hardware decoder
     (NVDEC) first when available (see _nvdec_available()), falling
@@ -540,6 +583,7 @@ def stitch_cameras(
         return _stack(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
+            scale=scale, max_width=max_width, max_height=max_height,
             mirror_size=mirror_size,
             map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
@@ -1218,6 +1262,9 @@ def _stack(
     layout: str,
     resolution: tuple[int, int] | None,
     bitrate: str | None,
+    scale: float | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
@@ -1413,9 +1460,22 @@ def _stack(
         # see the real content size, never the padded one.
         comp_width = comp_height = None
         content_width = content_height = None
+        final_width = final_height = None
+        # Widened from the original "if is_mirror or gsensor_video is
+        # not None or (map_mode is not None and map_fixes)" to also
+        # cover scale/max_width/max_height, which need the real final
+        # composite size too - deliberately still conditional, not
+        # made unconditional: _video_dimensions() below probes the
+        # *decoded* intermediates with ffprobe, and several _stack()
+        # -level tests mock encode_with_nvenc_fallback to write empty
+        # (0-byte) intermediates that don't exist as real video at all
+        # (see the "real bug caught by actually running the test
+        # suite" note in WORKING_CONTEXT.md's --stitch-map entry - this
+        # is that exact same failure mode, reintroduced and caught
+        # again while building this feature).
         if is_mirror or gsensor_video is not None or (
             map_mode is not None and map_fixes
-        ):
+        ) or scale is not None or max_width is not None or max_height is not None:
             if is_mirror:
                 content_width, content_height = front_width, front_height
             else:
@@ -1436,6 +1496,17 @@ def _stack(
                 resolution if resolution is not None
                 else (content_width, content_height)
             )
+            # The whole final frame's own size, including any map
+            # panel added alongside the camera composite below -
+            # starts equal to the camera portion alone (comp_width/
+            # comp_height) and grows by the panel's own dimensions
+            # once/if one is actually added. See `scale`/`max_width`/
+            # `max_height`'s own application at the very end of this
+            # function, after `output_label` is final. Stays None here
+            # (and is never touched below) when none of scale/
+            # max_width/max_height were requested - see that block's
+            # own guard.
+            final_width, final_height = comp_width, comp_height
 
         if is_mirror:
             # Front stays full-frame (the primary content). Rear
@@ -1606,6 +1677,46 @@ def _stack(
                     )
                     output_label = "withmap"
                     extra_inputs += ["-i", str(rendered)]
+                    # The panel grows the final frame beyond the camera
+                    # portion alone (comp_width/comp_height) - see
+                    # `final_width`/`final_height`'s own note above,
+                    # used by `scale`/`max_width`/`max_height` below.
+                    if panel_side in ("left", "right"):
+                        final_width = comp_width + panel_size[0]
+                    else:
+                        final_height = comp_height + panel_size[1]
+
+        # `scale`/`max_width`/`max_height`: a final, always-proportional
+        # shrink of the *whole* frame (camera composite plus any map
+        # panel - `final_width`/`final_height` above), applied last so
+        # it scales down whatever ended up in `output_label`, panel
+        # included. All three are independent upper bounds on the
+        # scale factor - whichever is tightest wins - so they combine
+        # freely with no need to validate they don't conflict, and
+        # each is a no-op (1.0) when not given. Never upscales: capped
+        # at 1.0 even if `scale` alone (validated 1-100 at the CLI
+        # layer, so this only matters if called directly as a library
+        # function with something out of range) would ask for more.
+        # A single `scale=-2:H` ffmpeg filter is enough regardless of
+        # which bound was tightest - it's a uniform factor applied to
+        # both dimensions, so specifying just the target height and
+        # letting ffmpeg derive width (auto-rounded to even) preserves
+        # the exact same aspect ratio either way, never adding a black
+        # bar the way an exact --stitch-resolution WxH pair can.
+        output_scale_factor = 1.0
+        if scale is not None:
+            output_scale_factor = min(output_scale_factor, scale / 100)
+        if max_width is not None:
+            output_scale_factor = min(output_scale_factor, max_width / final_width)
+        if max_height is not None:
+            output_scale_factor = min(output_scale_factor, max_height / final_height)
+
+        if output_scale_factor < 1.0:
+            target_height = max(
+                2, round(final_height * output_scale_factor / 2) * 2
+            )
+            clauses.append(f"[{output_label}]scale=-2:{target_height}[scaled]")
+            output_label = "scaled"
 
         # audio_path is muxed in as a stream copy (no re-encode - the
         # source .aac is already compressed) alongside whatever the
