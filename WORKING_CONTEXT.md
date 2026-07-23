@@ -3455,3 +3455,25 @@ Fix: one `if debug: print(...)` added to the reuse branch -
 Tested: `test_trip_export` 54 passed (52 existing + 2 new: a `--debug`
 test asserting the reuse message appears, and a silent-by-default test
 with `--debug` omitted), 0 failed.
+
+## --stitch: the --stitch-map panel's own render time was invisible (done, this session)
+
+Christer, after confirming the panel is always rendered fresh (never
+reused from an existing map.mp4 - see the design decision two entries
+up): "but it doesnt report time for the map video build". True - the
+panel render (`_render_map_panel()`, inside `_stack()` in stitch.py)
+had no timing of its own; its cost was entirely folded into the
+overall "stitch phase took Xs" line from trip_export.py, with no way
+to tell how much of that was the panel specifically versus the camera
+decode/encode work.
+
+Fix: `_stack()`'s map-panel block now times the `_render_map_panel()`
+call with `time.monotonic()` and prints "stitch: map panel render took
+Xs" to stderr under `--debug` - same message style and stderr-only
+convention as stitch.py's existing `_report_decode_timing()` breadcrumb
+for NVDEC/CPU decode. Silent by default, same as everything else under
+`--debug`.
+
+Tested: `test_stitch` 89 passed (87 existing + 2 new: a `--debug` test
+asserting "stitch: map panel render took" appears, a silent-by-default
+test), 0 failed.
