@@ -330,6 +330,7 @@ def stitch_cameras(
     gsensor_xy: tuple[float, float] | None = None,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
+    audio_path: Path | None = None,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path | None:
@@ -396,9 +397,17 @@ def stitch_cameras(
     See _decode_camera()'s docstring and WORKING_CONTEXT.md's --stitch
     NVDEC follow-ups for the full investigation.
 
-    No audio track is carried into the stitched video yet - trip-level
-    audio already lives in its own audio.aac (see trip_export.py),
-    muxing that back in is a later --stitch pass, not this one.
+    `audio_path`, if given, is the trip's own already-concatenated
+    audio.aac (see trip_export.py) muxed into the final output as a
+    stream copy (`-c:a copy` - re-encoding would be wasted work, the
+    source is already a compressed AAC stream) alongside whatever the
+    camera filter_complex produces, rather than re-decoding/re
+    -encoding it. Only wired up for the two-camera `_stack()` path
+    below - the single-camera fallback just above (`concatenate_media`/
+    `_reencode_single`) ignores it entirely, a known gap rather than an
+    oversight: that path is a plain stream copy or single-source
+    re-encode with no filter_complex to add a second `-map` onto, and
+    Christer's own trips normally have both cameras anyway.
 
     `debug=True` prints which decode method (nvdec or cpu) was
     attempted, whether it succeeded or fell back, and how long that
@@ -498,6 +507,7 @@ def stitch_cameras(
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
             subtitles_path=subtitles_path,
             subtitles_background=subtitles_background,
+            audio_path=audio_path,
             debug=debug, warnings=warnings,
         )
 
@@ -1144,6 +1154,7 @@ def _stack(
     gsensor_xy: tuple[float, float] | None = None,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
+    audio_path: Path | None = None,
     debug: bool = False,
     warnings: list[str] | None = None,
 ) -> Path:
@@ -1288,7 +1299,9 @@ def _stack(
         # free index in whichever order they actually get added below
         # (gsensor first if both are requested) - not a fixed
         # [2:v]/[3:v] assignment, since either one alone still needs to
-        # land on index 2.
+        # land on index 2. audio_path (see below) always claims
+        # whatever index is left over after those, since it's added
+        # last, right before the final encode call.
         next_input_index = 2
 
         # The camera composite's own pixel dimensions - either exactly
@@ -1477,16 +1490,31 @@ def _stack(
             )
             output_label = "subtitled"
 
+        # audio_path is muxed in as a stream copy (no re-encode - the
+        # source .aac is already compressed) alongside whatever the
+        # filter_complex produced, via a second -map. Added last, right
+        # before the encode call, so it always claims whichever input
+        # index is left over after gsensor/the map panel have claimed
+        # theirs above.
+        map_args = ["-map", f"[{output_label}]"]
+        codec_args = _bitrate_args(effective_bitrate)
+        if audio_path is not None:
+            audio_index = next_input_index
+            next_input_index += 1
+            extra_inputs += ["-i", str(audio_path)]
+            map_args += ["-map", f"{audio_index}:a"]
+            codec_args = [*codec_args, "-c:a", "copy"]
+
         encode_with_nvenc_fallback(
             [
                 "-i", str(front_decoded),
                 "-i", str(rear_decoded),
                 *extra_inputs,
                 "-filter_complex", ";".join(clauses),
-                "-map", f"[{output_label}]",
+                *map_args,
             ],
             destination,
-            extra_codec_args=_bitrate_args(effective_bitrate),
+            extra_codec_args=codec_args,
         )
 
     return destination

@@ -51,6 +51,37 @@ def _video_size(path) -> tuple[int, int]:
     return stream["width"], stream["height"]
 
 
+def _make_audio(path, duration_seconds: float = 1.0) -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"sine=frequency=440:duration={duration_seconds}",
+            "-c:a", "aac",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _has_audio_stream(path) -> bool:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return bool(json.loads(result.stdout)["streams"])
+
+
 def _gsensor_bytes(*records) -> bytes:
     return b"".join(struct.pack(">Ihhh", ms, x, y, z) for ms, x, y, z in records)
 
@@ -562,6 +593,49 @@ def test_export_trip_stitch_layout_produces_a_video(tmp_path):
     assert result.stitch == dest_dir / "stitch.mp4"
     assert result.stitch.exists()
     assert result.warnings == ()
+
+
+def test_export_trip_stitch_muxes_this_trips_own_concatenated_audio(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    audio_a = source_dir / "audio_a.aac"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+    _make_audio(audio_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.AUDIO: AssetFile(Asset.AUDIO, audio_a),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert result.audio == dest_dir / "audio.aac"
+    assert result.stitch == dest_dir / "stitch.mp4"
+    assert _has_audio_stream(result.stitch)
+    assert result.warnings == ()
+
+
+def test_export_trip_stitch_has_no_audio_when_the_trip_has_none(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert result.audio is None
+    assert not _has_audio_stream(result.stitch)
 
 
 def test_export_trip_stitch_rearview_mirror_produces_a_video(tmp_path):
