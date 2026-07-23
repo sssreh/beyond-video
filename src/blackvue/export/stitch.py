@@ -1294,6 +1294,86 @@ def _stack(
     is_mirror = layout == _MIRROR_LAYOUT
     filter_name = None if is_mirror else STACK_LAYOUTS[layout]
 
+    # `effective_resolution`: what actually drives decode-time scaling
+    # and comp_width/comp_height below - `resolution` itself when the
+    # caller gave one explicitly, or (hstack/vstack only - see the
+    # `is_mirror` exclusion below) an equivalent resolution derived
+    # from `scale`/`max_width`/`max_height` against the *natural*,
+    # pre-decode composite size.
+    #
+    # Earlier version of this feature applied scale/max_width/
+    # max_height only as a trailing filter on the already-fully
+    # -built final frame - correct for never introducing black bars,
+    # but Christer found real --stitch runs "still slow even with
+    # --stitch-scale 10": a trailing-only filter can't reduce what
+    # actually costs the time - the map panel's own full-size PIL
+    # render, the two intermediates' own re-encode, and the final
+    # combine pass's own filter/encode work, all of which had already
+    # happened in full before the one shrink at the very end. (Source
+    # *decode* itself doesn't get faster either way - real,
+    # unavoidable per-frame work regardless of target size, same as
+    # `resolution` has always been documented to not help with - see
+    # this function's own decode-time-scaling comment below.)
+    #
+    # Computed here via two cheap ffprobe calls on the *source* files
+    # (not the decoded intermediates - no decode needed to know their
+    # own native size), then fed through the exact same code
+    # `resolution` already uses for decode-time scaling/comp sizing/
+    # fit-and-pad below - safe from `resolution`'s own black-bar risk
+    # specifically because this target is *derived* from the natural
+    # composite's own aspect ratio, never an arbitrary WxH a caller
+    # picked by hand.
+    effective_resolution = resolution
+    if resolution is None and not is_mirror and (
+        scale is not None or max_width is not None or max_height is not None
+    ):
+        probe_front_width, probe_front_height = _video_dimensions(front)
+        probe_rear_width, probe_rear_height = _video_dimensions(rear)
+        if filter_name == "hstack":
+            rear_scaled_width = round(
+                probe_rear_width * probe_front_height / probe_rear_height
+            )
+            natural_width = probe_front_width + rear_scaled_width
+            natural_height = probe_front_height
+        else:
+            rear_scaled_height = round(
+                probe_rear_height * probe_front_width / probe_rear_width
+            )
+            natural_width = probe_front_width
+            natural_height = probe_front_height + rear_scaled_height
+
+        pre_decode_scale_factor = 1.0
+        if scale is not None:
+            pre_decode_scale_factor = min(pre_decode_scale_factor, scale / 100)
+        if max_width is not None:
+            pre_decode_scale_factor = min(
+                pre_decode_scale_factor, max_width / natural_width
+            )
+        if max_height is not None:
+            pre_decode_scale_factor = min(
+                pre_decode_scale_factor, max_height / natural_height
+            )
+
+        if pre_decode_scale_factor < 1.0:
+            effective_resolution = (
+                max(2, round(natural_width * pre_decode_scale_factor / 2) * 2),
+                max(2, round(natural_height * pre_decode_scale_factor / 2) * 2),
+            )
+
+    # Whether scale/max_width/max_height (if given at all) were
+    # already folded into `effective_resolution` above - if so, the
+    # trailing scale filter near the end of this function (which
+    # historically was the *only* mechanism) must not also apply them,
+    # or the output would be shrunk twice. Not true for rearview
+    # -mirror (excluded above - front is never decode-time-scaled for
+    # that layout, `resolution` or not, so the trailing filter stays
+    # the only mechanism there) or when `resolution` was *also* given
+    # explicitly (a deliberate "shrink further, on top of an explicit
+    # resolution" combination - the trailing filter still applies on
+    # top of whatever `resolution` itself already produced, unchanged
+    # from this feature's first version).
+    pre_decode_scale_applied = effective_resolution is not resolution
+
     # hstack only requires matching *heights* (it concatenates
     # horizontally, combined width is whatever the two widths sum to);
     # vstack only requires matching *widths*. rearview_mirror doesn't
@@ -1328,10 +1408,18 @@ def _stack(
         front_scale_filter = None
         rear_scale_filter = None
         front_width, front_height = _video_dimensions(front)
-    elif resolution is not None:
-        out_width, out_height = resolution
-        front_width, front_height = _video_dimensions(front)
-        rear_width, rear_height = _video_dimensions(rear)
+    elif effective_resolution is not None:
+        out_width, out_height = effective_resolution
+        # `pre_decode_scale_applied` means front/rear were already
+        # probed above (to derive `effective_resolution` itself from
+        # their natural size) - reused here rather than probing the
+        # same two source files with ffprobe a second time.
+        if pre_decode_scale_applied:
+            front_width, front_height = probe_front_width, probe_front_height
+            rear_width, rear_height = probe_rear_width, probe_rear_height
+        else:
+            front_width, front_height = _video_dimensions(front)
+            rear_width, rear_height = _video_dimensions(rear)
         shared = _ideal_shared_dimension(
             front_width, front_height, rear_width, rear_height,
             filter_name=filter_name, out_width=out_width, out_height=out_height,
@@ -1493,7 +1581,7 @@ def _stack(
                     content_height = front_decoded_height + rear_decoded_height
 
             comp_width, comp_height = (
-                resolution if resolution is not None
+                effective_resolution if effective_resolution is not None
                 else (content_width, content_height)
             )
             # The whole final frame's own size, including any map
@@ -1577,8 +1665,8 @@ def _stack(
             )
             camera_label = "gsensored"
 
-        if resolution is not None:
-            out_width, out_height = resolution
+        if effective_resolution is not None:
+            out_width, out_height = effective_resolution
             clauses.append(
                 _fit_and_pad(camera_label, "camera", out_width, out_height)
             )
@@ -1703,20 +1791,48 @@ def _stack(
         # letting ffmpeg derive width (auto-rounded to even) preserves
         # the exact same aspect ratio either way, never adding a black
         # bar the way an exact --stitch-resolution WxH pair can.
-        output_scale_factor = 1.0
-        if scale is not None:
-            output_scale_factor = min(output_scale_factor, scale / 100)
-        if max_width is not None:
-            output_scale_factor = min(output_scale_factor, max_width / final_width)
-        if max_height is not None:
-            output_scale_factor = min(output_scale_factor, max_height / final_height)
+        #
+        # Skipped entirely when `pre_decode_scale_applied` (hstack/
+        # vstack, no explicit `resolution` given) - `effective_
+        # resolution` already folded scale/max_width/max_height into
+        # decode-time scaling above, so re-applying here would shrink
+        # the output twice. Still runs for rearview_mirror (front is
+        # never decode-time-scaled for that layout - see
+        # `effective_resolution`'s own `is_mirror` exclusion) and when
+        # `resolution` was *also* given explicitly (a deliberate
+        # "shrink further, on top of an explicit resolution"
+        # combination, unchanged from this feature's first version).
+        # One known imprecision, accepted rather than solved here (same
+        # spirit as `_map_panel_dimensions()`'s own documented
+        # composite-alone-not-total simplification): when
+        # `pre_decode_scale_applied` and a map panel are combined,
+        # `effective_resolution` was derived from the *camera-only*
+        # natural size, so the panel's own contribution isn't counted
+        # against `max_width`/`max_height` - the final frame can come
+        # out somewhat larger than the exact pixel cap in that specific
+        # combination, still shrunk substantially and still never
+        # padded.
+        if not pre_decode_scale_applied:
+            output_scale_factor = 1.0
+            if scale is not None:
+                output_scale_factor = min(output_scale_factor, scale / 100)
+            if max_width is not None:
+                output_scale_factor = min(
+                    output_scale_factor, max_width / final_width
+                )
+            if max_height is not None:
+                output_scale_factor = min(
+                    output_scale_factor, max_height / final_height
+                )
 
-        if output_scale_factor < 1.0:
-            target_height = max(
-                2, round(final_height * output_scale_factor / 2) * 2
-            )
-            clauses.append(f"[{output_label}]scale=-2:{target_height}[scaled]")
-            output_label = "scaled"
+            if output_scale_factor < 1.0:
+                target_height = max(
+                    2, round(final_height * output_scale_factor / 2) * 2
+                )
+                clauses.append(
+                    f"[{output_label}]scale=-2:{target_height}[scaled]"
+                )
+                output_label = "scaled"
 
         # audio_path is muxed in as a stream copy (no re-encode - the
         # source .aac is already compressed) alongside whatever the

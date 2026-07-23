@@ -3565,3 +3565,84 @@ correctly, default to None, an out-of-range scale and a zero
 max-width are both rejected). `test_trip_export` 55 passed (54
 existing + 1 new: all three forwarded to `stitch_cameras()` as
 `scale`/`max_width`/`max_height`). 0 failed across all three.
+
+## --stitch-scale was only shrinking the final file, not speeding up the render (done, this session)
+
+Christer's report after trying task #82's new flags: "is --stitch-scale
+applied in the end, because rear, front, panel and stitch are still slow
+even with --stitch-scale 10". He was right. The task #82 design applied
+`scale`/`max_width`/`max_height` as a single trailing `scale=` filter on
+the already-fully-composited final frame. That produces a genuinely
+smaller output file with the correct aspect ratio, which is what task #82
+promised, but every expensive step upstream of that final filter -
+decode-time scaling of the front/rear sources, the intermediate
+front/rear re-encode, and the map panel's own PIL render size - still ran
+at full native resolution regardless of `--stitch-scale`. Shrinking a
+5422x4320 render to 10% only shrank the file at the very last moment; it
+did nothing for render time, matching exactly what Christer observed.
+
+Fix: `_stack()` now computes an `effective_resolution` up front, before
+any decode happens, whenever `resolution` wasn't given explicitly but
+`scale`/`max_width`/`max_height` were (and the layout isn't
+`rearview_mirror`, which never gets decode-time scaling regardless -
+matching `--stitch-resolution`'s own pre-existing limitation there).  It
+probes the front/rear *source* files (not the eventual composite) via the
+existing `_video_dimensions()` helper to get their natural pre-decode
+size, works out what the natural composited width/height would be for the
+chosen layout (`hstack` or `vstack`), then applies the same
+tightest-cap-wins logic task #82 already used (`min` across scale as a
+fraction, `max_width / natural_width`, `max_height / natural_height`) to
+derive a target resolution. That derived `effective_resolution` is then
+fed through the *exact same* code paths `--stitch-resolution` already
+uses: `_ideal_shared_dimension()` for the decode-time `scale=` filters,
+`comp_width`/`comp_height` for the map panel's render size, and
+`_fit_and_pad()` for the final combine. Nothing new was built for the
+actual speedup - the redesign's job was just getting `scale`/
+`max_width`/`max_height` to produce a real target resolution early enough
+to reuse `--stitch-resolution`'s already-fast path, instead of bolting a
+filter on at the very end.
+
+A `pre_decode_scale_applied` flag tracks whether `effective_resolution`
+ended up different from the literal `resolution` argument (i.e. was
+auto-derived from scale/max_width/max_height rather than given directly).
+This guards the old trailing-scale block from double-applying: it still
+runs, unchanged, for `rearview_mirror` layouts and for the case where an
+explicit `--stitch-resolution` was combined with `--stitch-scale` (a
+deliberate "shrink further on top of an explicit resolution" combo that
+predates this task), but is skipped whenever the pre-decode path already
+produced the target size.
+
+One accepted imprecision, documented in the code rather than solved: when
+a map panel is combined with an auto-derived `effective_resolution`, the
+target is computed from the camera composite alone - the panel's own
+width/height isn't known yet at that point, since deriving it would need
+a full pre-decode size estimate for the panel too. So the final frame
+(camera + panel) can end up somewhat larger than `max_width`/
+`max_height` by roughly the panel's own share. This mirrors an existing,
+already-documented simplification in `_map_panel_dimensions()` (sizing
+off the composite alone, not composite+panel), so it's consistent with
+how the codebase already treats this class of problem rather than a new
+compromise invented for this task.
+
+What actually got faster: decode-time `scale=` filters on the front/rear
+sources now target the real (small) `effective_resolution` instead of
+native size, so ffmpeg decodes/scales less data per frame; the
+intermediate front/rear re-encode writes smaller files; and
+`_render_map_panel()` is called with the smaller `comp_width`/
+`comp_height`, so PIL renders fewer pixels per frame. What did NOT get
+faster, by design: raw source decode itself remains proportional to the
+source video's length regardless of target size, per the pre-existing,
+unchanged docstring note in `stitch.py` - `--stitch-scale` was never
+going to make that part faster, only the steps whose cost scales with
+output resolution.
+
+Tested: `test_stitch` 98 passed (96 existing from task #82 + 2 new: one
+confirms the decode-time `scale=` filter no longer contains the native
+"2160" dimension when `--stitch-scale 10` is given on 3840x2160 sources,
+i.e. that decode itself is now targeting the small size instead of just
+the final combine step; the other confirms `_render_map_panel()` is
+called with a smaller width/height when `--stitch-scale 25` is given vs.
+no scale at all). `test_trip_export` 55 passed and `test_bv_export` 71
+passed, both unchanged from task #82 since this was purely an internal
+`stitch.py` redesign - no CLI or `export_trip()` signature changes were
+needed. 0 failed across all three, 224 tests total.
