@@ -3952,3 +3952,46 @@ export). `test_bv_export` 81 passed (77 existing + 4 new:
 default/explicit-value for `--stitch-mirror-icon`, produces-a-video,
 and warns-without-failing-on-a-bad-path). 0 failed across all four
 modules, 259 tests total.
+
+## --stitch-mirror-icon crashed instead of warning on an all-dark source image (this session)
+
+Christer ran the real feature against his own trip footage and hit an
+unhandled `ValueError: min() iterable argument is empty` crashing the
+whole export, from `load_mirror_frame()`'s own `glass_bbox = (min
+(glass_xs), ...)` line. Root cause: he'd pointed `--stitch-mirror-icon`
+at `mirror_frame_overlay_final.png` - a debug preview I'd shared of
+`load_mirror_frame()`'s own *output* (an RGBA image, opaque frame,
+fully transparent "glass" region) - not the original source photo.
+`Image.open(...).convert("RGB")` strips alpha and keeps the underlying
+RGB, which for a region built via `Image.new("RGBA", ..., (0, 0, 0,
+0))` is solid black - so the reloaded image read as entirely "dark,"
+with plenty of content (the earlier `not content_xs` guard didn't
+catch it, since dark pixels count as content) but zero glass pixels.
+
+That's a real gap regardless of how the bad input arose: `glass_xs`/
+`glass_ys` could end up empty while `content_xs` wasn't, and nothing
+guarded against it before the `min()`/`max()` calls. Added a second,
+more specific check right before `glass_bbox` is built - `if not
+glass_xs: raise MediaToolError(...)` - with a message that also
+explicitly calls out the "did you point this at one of the tool's own
+outputs instead of the source photo" mistake, since that's the exact
+shape of error a user is likely to hit. This raises the same
+`MediaToolError` stitch.py's own `is_mirror` branch already catches
+and downgrades to a `warnings` entry - so this class of bad input now
+degrades gracefully (falls back to the plain procedural inset) instead
+of crashing the whole export, matching every other bad-`--stitch
+-mirror-icon` case.
+
+New `test_load_mirror_frame_raises_a_clear_error_when_the_image_is_entirely_dark`
+in test_mirror_icon.py reproduces this exact scenario (a plain solid
+-black source image - content, no glass) and confirms `MediaToolError`
+is raised with the expected message instead of an unguarded `ValueError`
+escaping. Manually reproduced the original crash against the actual
+file Christer used (`mirror_frame_overlay_final.png`, loaded via a
+real `Path` the way `bv_export.py` always calls it) and confirmed the
+fix now raises the intended `MediaToolError` there too.
+
+Tested: `test_mirror_icon` 8 passed (7 existing + 1 new). `test_stitch`
+112 passed (only the 4 mirror_icon-specific tests re-run directly,
+since this fix only touches mirror_icon.py's own error path).
+`test_trip_export` 59 passed (full module, no regressions). 0 failed.
