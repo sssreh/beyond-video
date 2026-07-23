@@ -324,6 +324,8 @@ def stitch_cameras(
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
     map_icon: Path | None = None,
+    map_video_start=None,
+    map_video_duration_seconds: float | None = None,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -446,6 +448,18 @@ def stitch_cameras(
     never a failed stitch - the camera composite alone is still worth
     having.
 
+    `map_video_start`/`map_video_duration_seconds`, if given, anchor
+    the map panel's own timeline to the trip's real start and the
+    camera composite's real duration (see trip_export.py, which passes
+    its own already-known `trip.start_timestamp`/probed video
+    duration) instead of to whichever GPS fixes happen to exist -
+    forwarded straight through to render_map_video() (see its own
+    docstring). Without these, a trip where GPS data doesn't start
+    until partway through comes out with a map panel that's both too
+    short and, once combined into stitch.mp4 below, playing the wrong
+    window of time - out of sync with the camera footage right next to
+    it, not just wrong on its own.
+
     `gsensor_video`, if given, is an *already-rendered* gsensor.mp4
     (see gsensor_video.py's --gsensor-video) composited as a
     transparent chroma-keyed overlay on top of the camera footage -
@@ -503,6 +517,8 @@ def stitch_cameras(
             map_mode=map_mode, map_side=map_side,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
+            map_video_start=map_video_start,
+            map_video_duration_seconds=map_video_duration_seconds,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
             subtitles_path=subtitles_path,
@@ -1039,6 +1055,8 @@ def _render_map_panel(
     height: int,
     zoom_meters: float | None,
     marker_image_path: Path | None,
+    video_start=None,
+    video_duration_seconds: float | None = None,
 ) -> Path | None:
     """Render --stitch-map's panel (mode 'map' or 'zoom') at exactly
     width x height, shaped so combining it with the camera composite
@@ -1052,6 +1070,16 @@ def _render_map_panel(
     same run - those stay whatever shape/size they've always been
     (square by default); this one is sized specifically to fit the
     stitch composite.
+
+    `video_start`/`video_duration_seconds` are forwarded straight to
+    render_map_video() - see its own docstring. Matters even more here
+    than for the standalone map.mp4/map_zoom_*m.mp4 outputs: this
+    panel gets combined directly into stitch.mp4 itself via hstack/
+    vstack (see _stack() below), so a panel whose own timeline is
+    derived from wherever GPS data happens to start/end - rather than
+    the trip's real start and the composite's own real duration - is
+    the exact "map isn't in sync" symptom, not just a standalone
+    output that's merely wrong on its own.
     """
 
     if mode == "zoom":
@@ -1071,6 +1099,8 @@ def _render_map_panel(
             marker_image_path=marker_image_path,
             zoom_meters=zoom_meters,
             width=width, height=height,
+            video_start=video_start,
+            video_duration_seconds=video_duration_seconds,
         )
 
     bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
@@ -1080,6 +1110,8 @@ def _render_map_panel(
         fixes, roads, bbox, destination,
         marker_image_path=marker_image_path,
         width=width, height=height,
+        video_start=video_start,
+        video_duration_seconds=video_duration_seconds,
     )
 
 
@@ -1148,6 +1180,8 @@ def _stack(
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
     map_icon: Path | None = None,
+    map_video_start=None,
+    map_video_duration_seconds: float | None = None,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -1445,6 +1479,8 @@ def _stack(
                         width=panel_size[0], height=panel_size[1],
                         zoom_meters=map_zoom_meters,
                         marker_image_path=map_icon,
+                        video_start=map_video_start,
+                        video_duration_seconds=map_video_duration_seconds,
                     ) if panel_size is not None else None
                 except MediaToolError as exc:
                     if warnings is not None:

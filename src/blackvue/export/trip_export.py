@@ -15,6 +15,7 @@ import concurrent.futures
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from ..archive.asset import Asset
@@ -203,6 +204,8 @@ def _render_map_variant(
     warning_label: str,
     map_icon: Path | None = None,
     zoom_meters: float | None = None,
+    video_start: datetime | None = None,
+    video_duration_seconds: float | None = None,
     log: TripLog | None = None,
 ) -> Path | None:
     """Render one map video (either the static map.mp4 or a zoomed
@@ -210,6 +213,13 @@ def _render_map_variant(
     failed export) on any image-loading or ffmpeg problem - the rest
     of the trip's export is still worth having even if this one
     output couldn't be built.
+
+    `video_start`/`video_duration_seconds`, if given, are forwarded
+    straight to render_map_video() - see its own docstring for why
+    this matters whenever a recording somewhere in the trip has no GPS
+    data: without them, the render's own timeline is derived purely
+    from whichever fixes exist, which can start later (and run
+    shorter) than the trip's real video, going out of sync with it.
     """
 
     if log is not None:
@@ -220,6 +230,8 @@ def _render_map_variant(
             fixes, roads, bbox, destination,
             marker_image_path=map_icon,
             zoom_meters=zoom_meters,
+            video_start=video_start,
+            video_duration_seconds=video_duration_seconds,
         )
     except MediaToolError as exc:
         warnings.append(f"{warning_label}: {exc}")
@@ -538,7 +550,10 @@ def export_trip(
             if render_map:
                 map_path = _render_map_variant(
                     fixes, bbox, roads, destination / "map.mp4", warnings,
-                    warning_label="map", map_icon=map_icon, log=log,
+                    warning_label="map", map_icon=map_icon,
+                    video_start=trip.start_timestamp,
+                    video_duration_seconds=video_duration_seconds,
+                    log=log,
                 )
 
             if map_zoom_meters is not None:
@@ -546,7 +561,10 @@ def export_trip(
                 map_zoom_path = _render_map_variant(
                     fixes, bbox, roads, destination / zoom_filename, warnings,
                     warning_label="map_zoom", map_icon=map_icon,
-                    zoom_meters=map_zoom_meters, log=log,
+                    zoom_meters=map_zoom_meters,
+                    video_start=trip.start_timestamp,
+                    video_duration_seconds=video_duration_seconds,
+                    log=log,
                 )
         if debug:
             print(
@@ -576,7 +594,8 @@ def export_trip(
         log.step(f"starting gsensor.mp4 render ({len(samples)} sample(s))")
         try:
             gsensor_video_path = render_gsensor_video(
-                samples, destination / "gsensor.mp4"
+                samples, destination / "gsensor.mp4",
+                duration_seconds=video_duration_seconds,
             )
         except MediaToolError as exc:
             warnings.append(f"gsensor video: {exc}")
@@ -676,6 +695,8 @@ def export_trip(
                 map_fixes=fixes if stitch_map is not None else (),
                 map_roads=stitch_map_roads,
                 map_icon=map_icon,
+                map_video_start=trip.start_timestamp,
+                map_video_duration_seconds=video_duration_seconds,
                 gsensor_video=stitch_gsensor_source,
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,

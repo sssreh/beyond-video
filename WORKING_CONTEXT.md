@@ -3036,3 +3036,90 @@ just the isolated helpers) still pass unchanged, confirming the fix
 didn't alter rendered output. All green: `test_gsensor_video` 14
 passed (10 existing + 4 new), `test_trip_export` 47 passed (unaffected,
 regression check only), 0 failed.
+
+## map.mp4/gsensor.mp4: fix timeline desync when a recording lacks GPS/g-sensor data (done, this session)
+
+Christer reported: a 3-recording trip (~3 min each) where the first
+recording has no GPS data but the other two do produces a map.mp4 only
+~6 minutes long that "starts from the beginning" out of sync with
+front/rear.mp4 - and guessed the same was probably true for
+gsensor.mp4.
+
+Root cause, map.mp4: `render_map_video()` anchored both frame 0 and
+the total render duration purely to the GPS fixes' own span
+(`positioned[0].timestamp` / `positioned[-1].timestamp`), with no
+knowledge of the trip's real start time or real video length. A
+leading gap (early recording with no GPS) shrinks the fix span from
+the left, so the render starts late and runs short at both ends
+relative to front/rear.mp4.
+
+Root cause, gsensor.mp4: only half of this bug applied.
+`trip_export.py`'s `_merge_gsensor()` already rebases each recording's
+g-sensor offsets against the trip start (`rebase = recording.id.
+timestamp - trip_start`), so a *leading* gap (no g-sensor data on the
+first recording) was already handled correctly - the samples that do
+exist already carry the right trip-relative offset. But
+`render_gsensor_video()`'s total duration was computed as
+`samples[-1].offset.total_seconds()`, so a *trailing* gap (no
+g-sensor data on the last recording) still cut the render short.
+
+Fix: threaded the trip's real start timestamp and its real probed
+video duration (`video_duration_seconds`, already computed in
+`export_trip()` for subtitle padding) into both renderers as new
+optional parameters, defaulting to the old fixes/samples-derived
+behavior when omitted.
+
+- `map_video.py`: `render_map_video()` gained `video_start` and
+  `video_duration_seconds` params. `start` now falls back to
+  `video_start` when given (instead of always `positioned[0].
+  timestamp`), and `total_seconds` to `video_duration_seconds` when
+  given. `interpolate_position()`'s existing clamp-to-nearest-fix
+  behavior does the rest for free: frames rendered during a real gap
+  just freeze on the nearest known fix instead of needing new clamp
+  logic.
+- `gsensor_video.py`: `render_gsensor_video()` gained
+  `duration_seconds`, used in place of `samples[-1].offset.
+  total_seconds()` when given.
+- `trip_export.py`: both map.mp4/map_zoom_*.mp4 render call sites and
+  the gsensor.mp4 call site now pass `trip.start_timestamp` /
+  `video_duration_seconds` through. `stitch_cameras()` call site
+  passes the same through as `map_video_start`/
+  `map_video_duration_seconds`.
+- `stitch.py`: `_render_map_panel()`, `stitch_cameras()`, and
+  `_stack()` all gained the same two params (prefixed `map_` at the
+  `stitch_cameras()`/`_stack()` level to disambiguate from other
+  stitch concepts) and forward them into the panel's own
+  `render_map_video()` call, so `--stitch-map` gets the identical fix.
+
+Scope decision: fixed both the standalone map.mp4/map_zoom.mp4 outputs
+and the `--stitch-map` panel path, not just whichever Christer's
+literal example most directly describes - leaving either half fixed
+and the other not would be an obviously incomplete fix for the same
+root cause.
+
+Test fixture fix: `test_trip_export.py`'s `_trip_with_two_gps_fixes()`
+used a hardcoded GPS epoch (`1700000000000`, Nov 2023) unrelated to
+its own `RecordingId` values (July 2026) - harmless before this
+change since nothing compared the two, but once `video_start=trip.
+start_timestamp` was wired in, the mismatch drove `total_seconds`
+deeply negative and tripped the `<= 0: return None` guard. Fixed with
+a new `_epoch_ms()` helper that derives GPS fix timestamps from the
+fixture's own `RecordingId` values instead of an arbitrary epoch.
+
+Tested: `test_map_video` 24 passed (20 existing + 4 new: video_start
+extends render across a leading gap, position clamps correctly during
+that gap, video_duration_seconds extends past a trailing gap, and
+default/no-params behavior is unchanged), `test_gsensor_video` 16
+passed (14 + 2 new: duration_seconds extends past a trailing gap,
+default behavior unchanged), `test_trip_export` 47 passed (5 of which
+only started passing again after the fixture epoch fix), `test_stitch`
+81 passed, `test_bv_export` 64 passed, 0 failed. Also ran a real,
+non-mocked end-to-end verification: a synthetic 3-recording archive
+shaped exactly like Christer's report (first recording with no GPS,
+next two with GPS, ~3s each) through the real `bv-export --map` CLI
+path (network calls to the OSM Overpass API monkeypatched out, since
+the sandbox has no network access) - confirmed via `ffprobe` that
+`front.mp4` (9.0s) and `map.mp4` (9.2s, the extra 0.2s being the
+render's own "+1 frame" convention) now match, where before the fix
+map.mp4 would have been ~6s long and started 3 seconds late relative
+to front.mp4.

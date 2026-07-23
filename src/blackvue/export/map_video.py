@@ -147,6 +147,8 @@ def render_map_video(
     zoom_meters: float | None = None,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
+    video_start: datetime | None = None,
+    video_duration_seconds: float | None = None,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
@@ -179,6 +181,31 @@ def render_map_video(
     transparency is recommended, drawn pointing "up"/north in its own
     file. Raises MediaToolError if the image can't be loaded.
 
+    `video_start`/`video_duration_seconds`, if given, anchor frame 0
+    and the total render length to the trip's own real start/duration
+    (its concatenated front/rear video's, typically - see
+    trip_export.py) instead of to whichever GPS fixes happen to exist.
+    This matters whenever an earlier (or later) recording in the trip
+    has no GPS data at all: without an explicit anchor, frame 0 falls
+    back to the *first available fix's own* timestamp - which, if GPS
+    data only starts partway through the trip, is already minutes into
+    the real video. The rendered map then comes out both too short
+    (only as long as the GPS-covered span) and, composited alongside
+    the real front/rear footage, out of sync - playing the GPS-covered
+    window starting at the wrong moment rather than starting blank/
+    frozen-at-the-first-fix for however long the real gap is.
+    `interpolate_position()`'s own clamp-to-nearest-fix behavior
+    already does the right thing for a timestamp before the first (or
+    after the last) fix - extending the rendered range via these two
+    params is what actually lets that clamping cover a real leading/
+    trailing no-data gap instead of it always being masked by
+    `start`/`end` themselves being derived from the fixes.
+
+    Falls back to the old fixes-derived start/duration when either is
+    left as None - e.g. no video exists at all for this trip (a GPS/
+    g-sensor-only "trip"), or the real video's own duration couldn't
+    be probed.
+
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - the same "nothing
     to work with" convention export_trip()'s other outputs use.
@@ -188,9 +215,11 @@ def render_map_video(
     if len(positioned) < 2:
         return None
 
-    start = positioned[0].timestamp
-    end = positioned[-1].timestamp
-    total_seconds = (end - start).total_seconds()
+    start = video_start if video_start is not None else positioned[0].timestamp
+    if video_duration_seconds is not None:
+        total_seconds = video_duration_seconds
+    else:
+        total_seconds = (positioned[-1].timestamp - start).total_seconds()
 
     if total_seconds <= 0:
         return None
