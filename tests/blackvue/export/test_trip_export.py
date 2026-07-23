@@ -1042,9 +1042,14 @@ def test_export_trip_stitch_gsensor_reuses_a_file_from_an_earlier_run(
     assert result.warnings == ()
 
 
-def test_export_trip_stitch_gsensor_warns_when_no_gsensor_mp4_exists(
+def test_export_trip_stitch_gsensor_warns_when_trip_has_no_gsensor_data(
     tmp_path
 ):
+    # This trip's recording has no GSENSOR asset at all - no flag can
+    # ever produce a gsensor.mp4 for it, so the warning should say so
+    # plainly rather than pointing at --gsensor-video, which would be
+    # wrong advice (see the sibling "not yet rendered" test below for
+    # the case where that advice is correct).
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -1056,7 +1061,47 @@ def test_export_trip_stitch_gsensor_warns_when_no_gsensor_mp4_exists(
 
     assert result.stitch.exists()
     assert len(result.warnings) == 1
+    assert "no g-sensor data for this trip" in result.warnings[0]
+    assert "--gsensor-video" not in result.warnings[0]
+
+
+def test_export_trip_stitch_gsensor_warns_when_gsensor_mp4_not_yet_rendered(
+    tmp_path
+):
+    # This trip DOES have g-sensor data (a GSENSOR asset), but this
+    # run neither rendered it (render_gsensor=False) nor has an
+    # earlier run's gsensor.mp4 sitting in the destination folder -
+    # here the "go run --gsensor-video" advice is the correct one.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    gsensor_a = source_dir / "a.3gf"
+    gsensor_a.write_bytes(_gsensor_bytes((0, 100, -50, 900), (100, 90, -40, 950)))
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a),
+            },
+        ),
+    ))
+
+    result = export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_gsensor=True,
+    )
+
+    assert result.stitch.exists()
+    assert len(result.warnings) == 1
     assert "gsensor.mp4 not found" in result.warnings[0]
+    assert "--gsensor-video" in result.warnings[0]
 
 
 def test_export_trip_stitch_gsensor_options_are_forwarded(tmp_path, monkeypatch):
