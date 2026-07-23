@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ trip.label }} - Beyond Video{% endblock %}
+{% block content %}
+<p><a href="/">&larr; All trips</a></p>
+<h2>{{ trip.label }}</h2>
+
+{% if trip.primary_video %}
+<video controls preload="metadata" src="/trips/{{ trip.id }}/files/{{ trip.primary_video }}"></video>
+{% else %}
+<p class="empty">No video available for this trip.</p>
+{% endif %}
+
+<ul class="asset-list">
+  {% for video in trip.videos %}
+  <li><a href="/trips/{{ trip.id }}/files/{{ video }}">{{ video }}</a></li>
+  {% endfor %}
+  {% if trip.map_video %}
+  <li><a href="/trips/{{ trip.id }}/files/{{ trip.map_video }}">{{ trip.map_video }}</a></li>
+  {% endif %}
+  {% for zoom_video in trip.map_zoom_videos %}
+  <li><a href="/trips/{{ trip.id }}/files/{{ zoom_video }}">{{ zoom_video }}</a></li>
+  {% endfor %}
+  {% if trip.gsensor_video %}
+  <li><a href="/trips/{{ trip.id }}/files/{{ trip.gsensor_video }}">{{ trip.gsensor_video }}</a></li>
+  {% endif %}
+  {% if trip.gpx %}
+  <li><a href="/trips/{{ trip.id }}/files/trip.gpx">trip.gpx</a></li>
+  {% endif %}
+  {% if trip.srt %}
+  <li><a href="/trips/{{ trip.id }}/files/trip.srt">trip.srt</a></li>
+  {% endif %}
+  {% if trip.lrc %}
+  <li><a href="/trips/{{ trip.id }}/files/trip.lrc">trip.lrc</a></li>
+  {% endif %}
+</ul>
+{% endblock %}

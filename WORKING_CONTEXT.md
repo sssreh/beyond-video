@@ -4162,3 +4162,119 @@ Also fixed the file's own stray literal backslash-escaping throughout
 looked like it had been pasted through something that over-escaped
 markdown - while rewriting it, since the replacement content needed
 writing from scratch anyway.
+
+## bv-web: scaffold the Beyond Video web app - roles, login, trip browsing (this session)
+
+Christer wants to replace an old WordPress site on his Synology NAS
+with a real web service for Beyond Video: browse/watch trips from a
+browser, with only him (the "owner") ever allowed to trigger
+download/generate/export, and a few family members as "viewer"
+(browse/watch only) - "I would not let anyone else than me to
+download, generate or even export, the caan browse and watch, maybe
+later i let simeone in as a manager too." Confirmed via two rounds of
+questions: Python + FastAPI + Jinja2 (server-rendered, no separate
+frontend build), living in this same repo as a new `blackvue.web`
+subpackage rather than a separate repo, deployed later via Synology
+Container Manager (Docker). This task is increment 1 only: project
+structure, the owner/viewer role model with login, and a first working
+trip-list + trip-detail page. Triggering download/generate/export from
+the browser is a separate, later increment - not built here.
+
+New `src/blackvue/web/` subpackage:
+
+- `users.py` - `UsersConfig`/`User`, TOML-file accounts (modeled on
+  `core/camera_config.py`'s own load/save pattern - plain,
+  hand-editable, one file under `~/.config/beyond-video/` by default).
+  Passwords are hashed with stdlib `hashlib.pbkdf2_hmac` (SHA-256,
+  600,000 iterations - OWASP's current minimum) + `secrets` for the
+  salt, not a `passlib`/`bcrypt` dependency - matches this codebase's
+  established minimal-dependency choices elsewhere (no numpy anywhere
+  despite early prototyping using it). `ROLES = ("owner", "viewer")`
+  only, for now - a third "manager" role is anticipated (Christer:
+  "maybe later i let simeone in as a manager too") but deliberately
+  not added until its permissions are actually decided.
+- `trips.py` - scans a bv-export `--target` directory for trip
+  folders, purely by looking at bv-export's own *output* (never
+  touches `blackvue.archive`/`blackvue.trip`, which model the
+  pre-export source recordings instead). A folder counts as a trip if
+  it has `trip.log` - the one file `export_trip()` always writes
+  first (see `export/trip_log.py`) - which also rules out unrelated
+  directories like `--map-cache-dir`'s `.osm_cache`. The trip's real
+  label is read back out of `trip.log`'s own header line rather than
+  guessed from the folder name, since the folder name may carry an
+  extra `--prefix` that isn't part of the trip's own label
+  (`folder_name_for_trip()`). `TripAssets.primary_video` prefers
+  `stitch.mp4` over `front.mp4`/`rear.mp4` (already has everything
+  composited together); `known_filenames` is the allow-list the
+  file-serving route checks a requested filename against, rather than
+  trusting anything read straight from a URL.
+- `auth.py` - `SessionStore` (in-memory session-id -> username map;
+  the cookie only ever carries an opaque random token, not a signed
+  JWT - avoids adding a signing dependency, at the cost of everyone
+  needing to log in again after a server restart, an acceptable
+  trade-off for a single-owner-plus-family deployment for now) plus
+  FastAPI dependencies `require_login` (401s if not logged in) and
+  `require_owner` (403s if logged in but not "owner" - this is where
+  the "only me can trigger jobs" rule will actually get enforced once
+  those routes exist).
+- `app.py` - `create_app(target, users_config) -> FastAPI`: `/login`
+  (GET/POST) and `/logout`, `/` (trip list), `/trips/{trip_id}` (detail
+  page with a `<video>` player), and `/trips/{trip_id}/files/{filename}`
+  (serves any file in `TripAssets.known_filenames` via Starlette's
+  `FileResponse`, which already handles HTTP Range requests for video
+  scrubbing with no extra code). A custom `HTTPException` handler turns
+  401s into a redirect to `/login?next=...` and 403s into a rendered
+  "forbidden" page, instead of a bare JSON error body, for anything a
+  real browser navigates to.
+- `templates/` - five small self-contained Jinja2 templates
+  (`base.html` with inline CSS, `login.html`, `trip_list.html`,
+  `trip_detail.html`, `forbidden.html`) - no CSS framework or CDN
+  dependency, so the UI doesn't depend on outside network access.
+
+New `src/blackvue/cli/bv_web.py`, mirroring `bv-lang`'s subcommand
+pattern: `bv-web serve TARGET [--users-file] [--host] [--port]` and
+`bv-web adduser USERNAME --role {owner,viewer} [--users-file]`
+(interactive `getpass` password prompt, confirmed twice). `serve`
+checks the users file has at least one account *before* even trying to
+import uvicorn, so a first-run mistake reports the more useful "no
+users yet, run adduser first" message rather than an unhelpful
+uvicorn-missing one when both are true at once. `web/app.py` is only
+ever imported lazily inside `_serve()`, not at module load time, so
+`bv-web adduser` and every other `bv-*` command keep working even on a
+machine that doesn't have fastapi/uvicorn installed at all.
+
+`pyproject.toml`: added `fastapi`, `uvicorn`, `python-multipart`,
+`Jinja2` to `dependencies`, and `bv-web = "blackvue.cli.bv_web:main"`
+to `[project.scripts]`.
+
+Tests: `tests/blackvue/web/test_users.py` (17 tests - hashing/salting,
+role validation, add/remove/authenticate, TOML save/load round-trip,
+malformed-file handling) and `test_trips.py` (12 tests - trip.log
+detection, label-from-log vs folder name, stitch/front/rear
+preference, map_zoom_*.mp4 globbing, known_filenames allow-list,
+newest-first sorting, missing-target handling), all passing against
+real temp-directory fixtures. `tests/blackvue/cli/test_bv_web.py` (6
+tests) covers `adduser` fully (success, mismatched passwords,
+duplicate username, bad role) and `serve`'s two clean-failure paths
+(no users yet; uvicorn missing) - both confirmed for real, since this
+sandbox genuinely has neither uvicorn nor a network connection to
+install it.
+
+**Important limitation, disclosed to Christer before starting:** this
+sandbox has no network access and does not have fastapi/uvicorn/
+python-multipart installed, and they can't be installed here either -
+so `app.py`'s actual FastAPI routes (login flow, trip list/detail
+rendering, file serving/range requests) have only been reviewed by
+hand, not exercised by a real HTTP request in this environment. Only
+the parts that don't need FastAPI itself - `users.py`, `trips.py`, and
+`bv_web.py`'s CLI argument handling/error paths - have real passing
+tests. This needs a genuine smoke test (`bv-web serve` against a real
+`--target` directory, then a browser hitting it) on a machine with
+network access - e.g. during the Docker build on the Synology NAS -
+before relying on it.
+
+Also had to work around this same Python 3.10 sandbox lacking the
+3.11+ stdlib `tomllib` that `web/users.py` imports (same issue
+`core/camera_config.py` already has here) - not a code problem, just
+this sandbox's own Python version; `pyproject.toml` already requires
+`>=3.13`, which has `tomllib` natively.
