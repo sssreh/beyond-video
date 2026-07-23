@@ -1,0 +1,35 @@
+# Runs the full bv-* pipeline (bv-config, bv-download, bv-generate,
+# bv-lang, bv-export) on the NAS itself - see docs/DEPLOY.md's
+# "Feeding it real trips" section. Separate from Dockerfile (bv-web)
+# on purpose: bv-web's image stays small and fast to build/rebuild
+# for its own iteration, while this one installs the full toolchain
+# (ffmpeg, faster-whisper, pyannote.audio, argostranslate - the
+# latter two pull in torch, so this image is large and slow to build
+# the first time; that's expected, not a sign something's stuck).
+#
+# No fixed ENTRYPOINT/CMD, unlike Dockerfile - there's no single
+# "bv-cli" binary, just five separate bv-* commands, so the full
+# command (bv-download Kirby, bv-export /data/archive --target
+# /data/trips --stitch ..., etc.) is given directly to `docker-compose
+# run --rm bv-cli ...` each time. This service is never meant to run
+# as a long-lived container the way bv-web is - see docker-compose.yml
+# (no `restart:` policy on this service).
+FROM python:3.13-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY src/ src/
+
+RUN pip install --no-cache-dir ".[speech,translate]"
+
+# Where docker-compose.yml's volumes land: /data/archive is
+# bv-download's target (raw recordings) and bv-config's "Target
+# (download path)" answer, /data/trips is bv-export's --target
+# (shared with the bv-web service, read-write here), /data/config is
+# where camera .cfg files go (bv-config --config-dir).
+RUN mkdir -p /data/archive /data/trips /data/config

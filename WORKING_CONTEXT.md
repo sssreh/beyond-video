@@ -4560,3 +4560,66 @@ a real trip folder lands in `data/trips`, since that path exercises
 Jinja2 template variables (`trip.videos`, `trip.map_zoom_videos`, etc.)
 and `FileResponse` range-request behavior that the login flow alone
 doesn't touch.
+
+## bv-cli: run the whole pipeline on the NAS itself (this session)
+
+Answered the "Feeding it real trips" question `docs/DEPLOY.md` had
+left open since bv-web's original deploy: Christer confirmed (1) the
+camera already reaches the NAS's network directly (bv-download's
+endpoint-based connection - see `core/camera_config.py`'s
+`Endpoint`/`bv-config`'s wizard - already works from there, no new
+networking to solve) and (2) he wants `bv-generate --transcribe/
+--translate` included despite the NAS having no GPU, accepting slower
+CPU-only faster-whisper/pyannote.audio runs rather than skipping them.
+
+New `Dockerfile.cli`: `python:3.13-slim` + `apt-get install ffmpeg` +
+`pip install .[speech,translate]` - deliberately a second image, kept
+separate from bv-web's (which stays on the `web` extra only, per this
+session's earlier decision) so bv-web's own build/rebuild cycle stays
+fast and small while this one can be as heavy as it needs to be
+(faster-whisper/pyannote.audio pull in torch - expect several minutes
+and a multi-GB image). No `ENTRYPOINT`/`CMD` at all, unlike bv-web's
+Dockerfile - there's no single "bv-cli" binary, just five separate
+`bv-*` commands, so the full command is given directly to `docker-
+compose run --rm bv-cli <command> ...` each time rather than baked in.
+
+`docker-compose.yml` gained a `bv-cli` service (no `restart:` policy -
+it's never meant to run as a long-lived container, only invoked via
+`run`) with three volumes: `./data/archive:/data/archive` (bv-
+download's target, not shared with bv-web at all - bv-web only ever
+reads finished trip folders, never raw recordings), `./data/trips:
+/data/trips` read-write (the *same* host folder bv-web's own `./data/
+trips:/data/trips:ro` mount already points at - a trip exported by
+bv-cli shows up in bv-web with no copying/syncing step), and `./data/
+camera-config:/data/config` (bv-config's `.cfg` files - deliberately a
+different host folder name than bv-web's own `./data/config`, which
+holds the unrelated `web-users.cfg`, even though both happen to land
+at `/data/config` inside their own separate containers).
+
+Rewrote `docs/DEPLOY.md`'s section 7 from the old "not solved yet"
+placeholder into the real walkthrough: build `bv-cli` once, run `bv-
+config Kirby --config-dir /data/config` interactively (answering
+`/data/archive` for the "Target (download path)" question), then
+`bv-download`/`bv-generate`/`bv-export` as needed, all via `docker-
+compose run --rm bv-cli <command> ...` against `/data/archive` and
+`/data/trips`. Also folded two lessons learned from bv-web's own real
+deploy back into the doc's main flow, so a future from-scratch deploy
+doesn't have to rediscover them live: every `docker-compose`/`docker`
+command now shown with `sudo` in front (Christer's SSH user has no
+direct Docker socket access), and `git config core.autocrlf false`
+added right after the initial checkout in step 2 (without it, every
+future `git pull` hits a spurious merge conflict from CRLF-converted
+files - hit three times in a row this session before being fixed at
+the source instead of worked around per-pull).
+
+**Not verified at all yet** - this is a bigger unknown than bv-web
+was: the `bv-cli` image has never been built (no docker, no network,
+same sandbox limitation as everywhere else in this session), so
+there's real risk in the untested parts specifically - `pip install
+.[speech,translate]` pulling in torch/pyannote.audio/faster-whisper
+successfully on Debian slim, `ffmpeg` from Debian's own apt repo being
+new enough for what `stitch.py`/`generate/speech.py` need, and the
+interactive `bv-config` wizard behaving correctly through `docker-
+compose run` (needs a real TTY - should be fine over an interactive
+SSH session, unconfirmed). Flagged to Christer as the next real test,
+same pattern as bv-web's own three-bug shakeout earlier this session.
