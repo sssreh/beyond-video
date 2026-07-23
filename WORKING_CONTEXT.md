@@ -4358,3 +4358,24 @@ rather than parsed by a real TOML library (none installable here -
 same no-network constraint noted throughout this session). Christer
 will need to actually run through `docs/DEPLOY.md` on the real NAS as
 the real test of all of this.
+
+## docs/DEPLOY.md: fixed the git-clone step, which failed on the real NAS (this session)
+
+First real-world result from `docs/DEPLOY.md`: `git clone ... .` failed
+on Christer's actual NAS with `fatal: destination path '.' already
+exists and is not an empty directory.` - even though `/volume1/beyond-
+video` looked empty in File Station. Root cause: Synology auto-creates
+a hidden `@eaDir` housekeeping folder (sometimes `#recycle` too) at the
+root of every shared folder, which `git clone` correctly refuses to
+clone into since the directory isn't genuinely empty - a real Synology-
+specific gotcha this doc's step 2 hadn't accounted for, only reasoned
+through in the abstract (see this session's earlier note that none of
+`docs/DEPLOY.md` had been run for real yet).
+
+Fixed by switching that step to `git init` + `git remote add origin`
++ `git fetch` + `git checkout main`, which doesn't require the target
+directory to be empty at all - `@eaDir` and all, it just adds the
+repo's files alongside whatever's already there. Kept a note
+explaining why the simpler-looking `git clone ... .` doesn't work here
+instead of just silently swapping it, so a future reader isn't left
+wondering why the doc doesn't use the more obvious command.
