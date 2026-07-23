@@ -28,3 +28,30 @@ services:
       # with `docker exec -it beyond-video-web bv-web adduser ...`
       # (see docs/DEPLOY.md).
       - ./data/config:/data/config
+
+  # The full bv-* pipeline (bv-config, bv-download, bv-generate,
+  # bv-lang, bv-export) - see docs/DEPLOY.md's "Feeding it real trips"
+  # section. Not a long-running service like bv-web: no `restart:`
+  # policy and no fixed command here on purpose - invoke it per
+  # command with `docker-compose run --rm bv-cli <command> ...`,
+  # e.g. `docker-compose run --rm bv-cli bv-download Kirby`.
+  bv-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+    volumes:
+      # bv-download's target / bv-config's "Target (download path)" -
+      # the raw camera archive. Not shared with bv-web at all; bv-web
+      # only ever reads finished trip folders, never raw recordings.
+      - ./data/archive:/data/archive
+      # bv-export's --target - the SAME host folder bv-web's own
+      # `./data/trips` mount above points at, so a trip exported here
+      # shows up in bv-web immediately. Read-write here (bv-export
+      # writes into it); bv-web mounts it read-only.
+      - ./data/trips:/data/trips
+      # Camera .cfg files (bv-config --config-dir) - deliberately a
+      # different host folder than bv-web's ./data/config above (that
+      # one holds web-users.cfg, an unrelated file); both happen to
+      # land at /data/config inside their own separate containers,
+      # which is fine since containers don't share a filesystem.
+      - ./data/camera-config:/data/config
