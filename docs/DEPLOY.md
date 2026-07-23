@@ -1,6 +1,6 @@
 # Deploying bv-web on a Synology NAS
 
-A step-by-step walkthrough for running `bv-web` in Container Manager, browsable at `http://<nas-ip>:19393`. Covers increment 1 only (browse/watch trips, owner/viewer login) - see `WORKING_CONTEXT.md` for what's not built yet.
+A step-by-step walkthrough for running `bv-web` in Container Manager, browsable at `http://<nas-ip>:19373`. Covers increment 1 only (browse/watch trips, owner/viewer login) - see `WORKING_CONTEXT.md` for what's not built yet.
 
 ## Layout on the NAS
 
@@ -82,9 +82,9 @@ Prompts for a password twice. This writes `data/config/web-users.cfg` on the hos
 
 ## 6. Verify
 
-From a browser on the same network: `http://<nas-ip>:19393`. Log in with the account from step 5. You should land on the trip list, showing "No trips found yet" until step 7 below.
+From a browser on the same network: `http://<nas-ip>:19373`. Log in with the account from step 5. You should land on the trip list, showing "No trips found yet" until step 7 below.
 
-If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Firewall**) isn't blocking port 19393, and `docker compose logs -f` from `/volume1/beyond-video` for errors.
+If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Firewall**) isn't blocking port 19373, and `docker compose logs -f` from `/volume1/beyond-video` for errors.
 
 ## 7. Feeding it real trips
 

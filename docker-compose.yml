@@ -4,7 +4,7 @@ services:
     container_name: beyond-video-web
     restart: unless-stopped
     ports:
-      - "19393:19393"
+      - "19373:19373"
     volumes:
       # The trip archive bv-export writes into (--target). Read-only:
       # this increment of bv-web only browses/plays existing trips,
