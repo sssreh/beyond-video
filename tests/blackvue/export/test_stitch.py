@@ -113,6 +113,38 @@ def _video_size(path) -> tuple[int, int]:
     return stream["width"], stream["height"]
 
 
+def _make_audio(path, duration_seconds=1.0):
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"sine=frequency=440:duration={duration_seconds}",
+            "-c:a", "aac",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _audio_stream(path) -> dict | None:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    streams = json.loads(result.stdout)["streams"]
+    return streams[0] if streams else None
+
+
 def test_stitch_cameras_side_by_side_doubles_the_width(tmp_path):
     front = tmp_path / "front.mp4"
     rear = tmp_path / "rear.mp4"
@@ -1392,6 +1424,58 @@ def test_stitch_cameras_without_gsensor_video_leaves_footage_untouched(
 
     assert _video_size(destination) == (320, 120)
     assert warnings == []
+
+
+def test_stitch_cameras_muxes_the_trip_audio_into_the_two_camera_output(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    audio = tmp_path / "audio.aac"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+    _make_audio(audio)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", audio_path=audio,
+    )
+
+    stream = _audio_stream(destination)
+    assert stream is not None
+    # Stream-copied, not re-encoded - the muxed track should still be
+    # the same codec the source .aac already was.
+    assert stream["codec_name"] == "aac"
+
+
+def test_stitch_cameras_without_audio_path_produces_no_audio_stream(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(front, rear, destination, layout="side_by_side")
+
+    assert _audio_stream(destination) is None
+
+
+def test_stitch_cameras_audio_path_ignored_for_single_camera_fallback(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    audio = tmp_path / "audio.aac"
+    _make_video(front, 160, 120)
+    _make_audio(audio)
+
+    destination = tmp_path / "stitch.mp4"
+    # Same "not built for the single-camera path yet" convention as the
+    # map panel/gsensor overlay - documented as a known gap, not a bug.
+    stitch_cameras(
+        front, None, destination, layout="side_by_side", audio_path=audio,
+    )
+
+    assert destination.exists()
 
 
 def test_escape_subtitles_filename_converts_backslashes_and_escapes_colons():

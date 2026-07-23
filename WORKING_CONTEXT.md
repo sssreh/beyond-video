@@ -2822,3 +2822,62 @@ bridge-with-no-ceiling hypothesis, which works in either direction.
 Next step on this: Christer re-runs `bv-export` for real and shares
 (or reads himself) the `trip.log` for the trip that grabbed the wrong
 recording.
+
+---
+
+## --stitch: mux the trip's own audio into stitch.mp4 (done, this session)
+
+Third and last item from Christer's original bug/feature message:
+stitch.mp4 had no sound. `stitch_cameras()`/`_stack()` (stitch.py)
+gained an `audio_path: Path | None = None` param - when given, muxed
+into the final output as a stream copy (`-c:a copy`, no re-encode -
+the source is already a compressed AAC stream, and this stage's job
+is combining video, not touching audio at all). Wired as an extra
+`-i` input added last, right before the final `encode_with_nvenc_
+fallback()` call, so it always claims whichever input index is left
+over after the gsensor overlay and/or map panel have claimed theirs
+(both of which, unlike audio, only exist when actually requested, so
+audio can't just be hardcoded to a fixed index). A second `-map`
+entry (`{index}:a`) sits alongside the existing `-map [output_label]`
+video map.
+
+Scoped to the two-camera `_stack()` path only, matching every other
+--stitch add-on's own scope this session (map panel/gsensor overlay/
+subtitles all skip the single-camera fallback too) - `stitch_cameras()`'s
+docstring documents this as a known, deliberate gap rather than an
+oversight: the single-camera path is a plain stream copy or single
+-source re-encode with no filter_complex to hang a second `-map` off
+of, and Christer's own trips normally have both cameras anyway.
+
+`trip_export.py`'s `export_trip()` needed no new parameter at all -
+the trip's own concatenated `audio` (the `audio.aac` local variable,
+already sitting there from the front/rear/audio concatenation block
+earlier in the same function) is simply forwarded into the existing
+`stitch_cameras()` call as `audio_path=audio`. Not a new opt-in flag:
+there's no reason anyone would want a silently muted stitch.mp4 when
+the trip's own audio is already sitting right there having just been
+concatenated moments earlier in the same run.
+
+Tested: 3 new `test_stitch.py` tests directly against `stitch_cameras()`
+(a real synthesized sine-wave AAC source ends up as a genuine `aac`
+audio stream in the output, confirmed via ffprobe, not just "ffmpeg
+didn't error"; no `audio_path` given produces no audio stream at all;
+`audio_path` is accepted but silently ignored for the single-camera
+fallback, matching the map panel/gsensor overlay's own "ignored for
+single camera" tests). 2 new `test_trip_export.py` tests (a trip with
+real front/rear/audio recordings produces a stitch.mp4 with an actual
+audio stream; a trip with no audio at all still produces a silent
+stitch.mp4, not a broken one). Also ran a real non-test `bv-export
+--stitch` end-to-end through `main()` against a synthetic front/rear/
+audio archive and confirmed via ffprobe that the resulting stitch.mp4
+genuinely has both an h264 video stream and an aac audio stream. All
+green: `test_stitch` 81 passed (78 existing + 3 new, run in batches
+again - too many real-ffmpeg tests for one harness call), `test_trip_
+export` 47 passed (45 + 2 new), `test_bv_export` 61 passed (unchanged -
+regression check only, --stitch's CLI surface itself didn't change),
+0 failed anywhere.
+
+This closes out all three items from Christer's original message: the
+per-trip trip.log (previous section), the trip-detection bug
+investigation (still deferred pending Christer's own real-archive
+trip.log), and now stitch.mp4 audio.

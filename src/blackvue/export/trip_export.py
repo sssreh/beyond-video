@@ -318,6 +318,15 @@ def export_trip(
     ignored for that single-camera path too. See WORKING_CONTEXT.md for
     the full --stitch spec.
 
+    This same call's own concatenated `audio` (see `audio.aac` above)
+    is always forwarded into stitch.mp4 as a stream-copied audio track
+    whenever both cameras exist (stitch.stitch_cameras()'s two-camera
+    `_stack()` path) - not a separate flag, since there's no reason to
+    ever want a silent stitch.mp4 when the trip's own audio is already
+    sitting right there. Only wired up for that two-camera path; the
+    single-camera fallback above stays silent, a known gap rather than
+    an oversight (see stitch.py's own docstring).
+
     `stitch_mirror_size` (percent of the composite's own width, 10-50,
     default stitch.DEFAULT_MIRROR_SIZE_PERCENT) controls the mirror
     inset's size when `stitch_layout='rearview_mirror'` - ignored for
@@ -667,6 +676,7 @@ def export_trip(
                 gsensor_xy=stitch_gsensor_xy,
                 subtitles_path=stitch_subtitles_source,
                 subtitles_background=stitch_subtitles_background,
+                audio_path=audio,
                 debug=debug,
                 warnings=warnings,
             )
