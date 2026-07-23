@@ -1,4 +1,5 @@
 from blackvue.export.gsensor_render import BACKGROUND_COLOR
+from blackvue.export.gsensor_render import RING_LINE_WIDTH
 from blackvue.export.gsensor_render import baseline_for_samples
 from blackvue.export.gsensor_render import render_frame
 from blackvue.export.gsensor_render import scale_for_samples
@@ -44,6 +45,45 @@ def test_render_frame_background_is_a_flat_chroma_key_green():
 
     assert image.getpixel((0, 0)) == BACKGROUND_COLOR
     assert BACKGROUND_COLOR == (0, 255, 0)
+
+
+def test_render_frame_ring_lines_are_at_least_two_pixels_thick():
+    # A single-pixel outline reads fine in this raw frame, but doesn't
+    # survive --stitch's own downscale-to-overlay-size + H.264 encode +
+    # colorkey by the time it's actually watched (confirmed on a real
+    # export: at a realistic overlay size, a 1px ring line came through
+    # at ~0% of its own pixels - Christer saw the dot but not the rings
+    # around it). RING_LINE_WIDTH is the fix; this walks outward along
+    # a ray from the gauge's center (avoiding the axis lines - offset
+    # 30 degrees off horizontal) and confirms the outermost ring is at
+    # least RING_LINE_WIDTH pixels thick, not just one.
+    import math
+
+    image = render_frame(1.0, trail_points=(), position=None)
+    width, height = image.size
+    cx, cy = width / 2, height / 2
+    radius = min(width, height) / 2 - 40  # DEFAULT_MARGIN_PX
+
+    angle = math.radians(30)
+    dx, dy = math.cos(angle), math.sin(angle)
+
+    def _is_ring_pixel(distance):
+        x = round(cx + dx * distance)
+        y = round(cy + dy * distance)
+        return image.getpixel((x, y)) != BACKGROUND_COLOR
+
+    # Scan a window around the outer ring's own radius for the longest
+    # run of consecutive non-background pixels.
+    run = 0
+    longest_run = 0
+    for distance in range(int(radius) - 5, int(radius) + 6):
+        if _is_ring_pixel(distance):
+            run += 1
+            longest_run = max(longest_run, run)
+        else:
+            run = 0
+
+    assert longest_run >= RING_LINE_WIDTH
 
 
 def test_render_frame_handles_a_single_trail_point_without_crashing():

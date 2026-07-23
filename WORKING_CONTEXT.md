@@ -3279,3 +3279,40 @@ pixel inspection: the gsensor overlay's red test-box lands at
 x∈[660,686], comfortably inside the real visible footage bounds
 (x∈[240,720) for this resolution/content combination) - not in the
 pillarbox to its right, where the pre-fix math would have placed it.
+
+## gsensor.mp4: ring/crosshair lines were too thin to survive the real --stitch pipeline (done, this session)
+
+After the anchor fix above, Christer looked at a real stitch.mp4 and
+could see the gsensor gauge's dot but said "i am missing the rings
+around" - the reference rings and crosshair that are supposed to
+frame it (gsensor_render.py's own docstring: "a circular dial with a
+dot ... and a short fading trail").
+
+Root cause: `render_frame()` drew both the three reference rings and
+the crosshair axes at `width=1` - a single pixel, on the source's own
+480x480 canvas. That's fine viewed on its own, but gsensor.mp4 is
+never watched on its own - by the time it reaches the screen it's
+been through --stitch's own downscale to a fraction of the camera
+composite's width (`gsensor_size`, default 15%) and a real H.264
+encode, both of which blur/discard single-pixel detail. Confirmed
+empirically outside the test suite: built a real gsensor.mp4 from
+`render_frame()`, ran it through the actual `stitch_cameras()` overlay
+(colorkey + scale, same as production) at a realistic overlay size,
+and sampled the composited result - a 1px ring line survived at
+essentially 0% of its own outline (2 stray pixels out of 9,216
+samples, indistinguishable from encoder noise), while the much bolder
+8px-radius dot came through fine. Re-ran the same test at ring widths
+2/3/4: 2px alone jumped survival to ~3.1%, clearly visible.
+
+Fix: new `RING_LINE_WIDTH = 2` constant in `gsensor_render.py`, used
+by both the three ring `draw.ellipse()` calls and the two crosshair
+`draw.line()` calls in `render_frame()` (previously hardcoded
+`width=1` in all five places).
+
+Tested: `test_gsensor_render` 11 passed (10 + 1 new -
+`test_render_frame_ring_lines_are_at_least_two_pixels_thick`, which
+walks outward along a ray from the gauge's center - offset 30 degrees
+to avoid the crosshair itself - and confirms the outermost ring's own
+run of consecutive non-background pixels is at least `RING_LINE_WIDTH`
+thick, not just one), `test_gsensor_video` 16 passed (unaffected,
+regression check only), 0 failed.
