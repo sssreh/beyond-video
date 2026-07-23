@@ -1,0 +1,11 @@
+.git
+.gitignore
+tests/
+docs/
+images/
+*.md
+!README.md
+**/__pycache__/
+**/*.pyc
+.osm_cache/
+data/

@@ -4278,3 +4278,83 @@ Also had to work around this same Python 3.10 sandbox lacking the
 `core/camera_config.py` already has here) - not a code problem, just
 this sandbox's own Python version; `pyproject.toml` already requires
 `>=3.13`, which has `tomllib` natively.
+
+## Docker deployment for bv-web: Dockerfile, docker-compose.yml, docs/DEPLOY.md (this session)
+
+Christer wants bv-web running on his Synology NAS from the start, on
+port 19393, with the app installed under `/volume1/beyond-video`.
+Confirmed via questions: Docker through Container Manager (the
+originally-planned deployment route), and specifically a lightweight
+bv-web-only image rather than one that also installs
+faster-whisper/pyannote.audio/argostranslate (and torch, transitively)
+just to serve browse/watch pages.
+
+Split `pyproject.toml`'s single `dependencies` list into
+`[project.optional-dependencies]` groups - `speech` (faster-whisper,
+pyannote.audio), `translate` (argostranslate), and `web` (fastapi,
+uvicorn, python-multipart, Jinja2) - leaving only `Pillow` as an
+unconditional base dependency. Safe to do because none of those three
+groups are ever imported at module level anywhere in `src/` (already
+true before this change - `cli/bv_lang.py`, `generate/speech.py`, etc.
+all import them lazily inside the function that needs them, raising a
+clean `MediaToolError` if missing) - confirmed with a repo-wide grep
+for top-level `import faster_whisper`/`pyannote`/`argostranslate`
+before making the change, and re-ran the fake-pytest harness across
+`test_speech`, `test_media`, `test_bv_lang`, plus the new web tests
+afterward to confirm nothing broke. Practical consequence for
+Christer's own dev machine: `pip install -e .` alone no longer pulls
+in faster-whisper/pyannote/argostranslate - `pip install -e
+".[speech,translate]"` (or just `.[speech]`/`.[translate]`
+individually) is now needed for `bv-generate --transcribe`/
+`--diarize`/`--translate` to work there, same as `bv-web` already
+needed `.[web]`.
+
+New `Dockerfile`: `python:3.13-slim`, installs `.[web]` only, creates
+`/data/trips` and `/data/config` (the two directories the compose
+file's volumes land on), `ENTRYPOINT ["bv-web"]` /
+`CMD ["serve", "/data/trips", "--users-file", "/data/config/web-users.cfg",
+"--host", "0.0.0.0", "--port", "19393"]`. `--host 0.0.0.0` matters
+inside a container - bv-web's own CLI default (`127.0.0.1`) would
+never be reachable through Container Manager's port mapping. New
+`.dockerignore` keeps the build context to just what setuptools needs
+(`pyproject.toml`, `README.md`, `src/`) so unrelated repo changes
+(tests/docs/images) don't bust the Docker layer cache.
+
+New `docker-compose.yml`: one `bv-web` service, `19393:19393`,
+`restart: unless-stopped`, two bind-mount volumes - `./data/trips`
+(read-only; bv-web never writes into the archive in this increment)
+and `./data/config` (read-write, holds `web-users.cfg` so accounts
+survive a rebuild). Both live under the repo checkout itself
+(`/volume1/beyond-video/data/...`) rather than elsewhere on the NAS,
+matching how Christer's laid out `/volume1/beyond-video` so far -
+added `/data/` to `.gitignore` since it holds real footage and a
+password-hash file, never meant to be committed.
+
+New `docs/DEPLOY.md`: full step-by-step NAS walkthrough - one-time
+host prep (Container Manager, SSH, optional Git Server package),
+getting the code onto the NAS (`git clone ... .` with the trailing
+`.` called out specifically, since Christer asked whether he'd end up
+with a nested `beyond-video/beyond-video` - he wouldn't, as long as
+the clone target is the already-created empty folder and the command
+ends in a bare `.`), creating the two `data/` folders, building/
+starting via `docker compose` or Container Manager's GUI, the one-time
+`docker exec ... bv-web adduser` to create the owner account, verifying
+in a browser, and updating later (`git pull` + `docker compose up -d
+--build`). Explicitly flagged, not solved: `data/trips` starts empty,
+and nothing yet moves `bv-export --target` output from wherever
+Christer actually runs `bv-export` onto the NAS - that depends on
+where he ends up running it day to day, deferred until that's decided
+rather than guessed at.
+
+**Not verified end-to-end**: this sandbox has no `docker` binary and
+no network access, so the actual `docker compose build`/`up` sequence,
+the container actually serving traffic on 19393, and the `git clone
+... .` no-nesting behavior have only been reasoned through by hand,
+not run for real. `docker-compose.yml`'s YAML was validated with
+`pyyaml` (parses cleanly); `pyproject.toml`'s new
+`[project.optional-dependencies]` TOML structure was eyeballed against
+the pre-existing, already-working `[project]` table's own syntax
+rather than parsed by a real TOML library (none installable here -
+same no-network constraint noted throughout this session). Christer
+will need to actually run through `docs/DEPLOY.md` on the real NAS as
+the real test of all of this.

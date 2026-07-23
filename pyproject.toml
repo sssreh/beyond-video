@@ -28,10 +28,33 @@ classifiers = [
 ]
 
 dependencies = [
-    "faster-whisper>=1.0",
-    "argostranslate>=1.9",
-    "pyannote.audio>=4.0",
     "Pillow>=10.0",
+]
+
+# bv-download/bv-config/bv-ls/bv-export's core (non-transcribe) work
+# only needs the base dependencies above (Pillow, for map/mirror-icon
+# image work) - none of these three groups are imported at module
+# level anywhere in src/ (see e.g. cli/bv_lang.py, generate/speech.py:
+# faster-whisper/pyannote.audio/argostranslate are always imported
+# lazily, inside the function that needs them, raising a clean
+# MediaToolError if missing), so a plain `pip install .` keeps working
+# without any of them - installing an extra only matters once you
+# actually run a command that needs it.
+[project.optional-dependencies]
+# bv-generate --transcribe/--diarize.
+speech = [
+    "faster-whisper>=1.0",
+    "pyannote.audio>=4.0",
+]
+# bv-generate --translate, bv-lang.
+translate = [
+    "argostranslate>=1.9",
+]
+# bv-web. Deliberately its own group, not bundled with the above -
+# the Docker image bv-web actually runs in (see Dockerfile) has no
+# need to pull in faster-whisper/pyannote.audio/argostranslate (and
+# torch, transitively) just to serve trip-browsing pages.
+web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "python-multipart>=0.0.9",
