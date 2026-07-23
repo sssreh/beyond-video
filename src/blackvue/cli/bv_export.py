@@ -11,12 +11,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import argparse
+import shlex
 import shutil
 import sys
 from datetime import timedelta
 from pathlib import Path
 
 from blackvue.archive import Archive
+from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
@@ -147,6 +149,7 @@ def bv_export(
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
+    command_line: str | None = None,
 ) -> int:
     """Export every detected trip in `path` to its own folder under
     `target`. Returns 0 on success, 1 if any trip failed.
@@ -185,6 +188,10 @@ def bv_export(
     bridging) now runs across the *entire* archive on every run, not
     just the requested range - a real cost on a very large archive,
     accepted here in favor of never silently truncating a trip.
+
+    `command_line`, if given, is written verbatim into every trip's
+    own trip.log as the exact command that produced it - main() below
+    reconstructs it from sys.argv/argv before calling here.
     """
 
     archive = Archive(path)
@@ -210,12 +217,19 @@ def bv_export(
     )
     bridge = movement_bridges_gap if movement else None
     recording_duration = read_duration_seconds if duration else None
+    # Populated in place by build() with one membership-reasoning
+    # entry per recording (see TripBuilder.build()'s own docstring) -
+    # forwarded to every trip's own trip.log below so a surprising
+    # trip membership decision (e.g. a recording that seems to belong
+    # to the wrong trip) can be checked against the real reasoning
+    # that produced it.
+    reasons: dict[RecordingId, str] = {}
     all_trips = TripBuilder(
         max_gap=max_gap,
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
-    ).build(archive.recordings)
+    ).build(archive.recordings, reasons=reasons)
 
     trips = [
         trip
@@ -287,6 +301,8 @@ def bv_export(
                 stitch_gsensor_xy=stitch_gsensor_xy,
                 stitch_subtitles=stitch_subtitles,
                 stitch_subtitles_background=stitch_subtitles_background,
+                command_line=command_line,
+                reasons=reasons,
                 debug=debug,
             )
         except MediaToolError as exc:
@@ -716,6 +732,14 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    # The exact invoking command, written verbatim into every trip's
+    # own trip.log (see export_trip()'s docstring) - reconstructed
+    # from argv rather than args, since args has already been through
+    # argparse's own parsing/defaulting and wouldn't necessarily read
+    # back as what Christer actually typed.
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    command_line = "bv-export " + shlex.join(raw_argv)
+
     return run_cli("bv-export", lambda: bv_export(
         path=args.path,
         target=args.target,
@@ -746,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         debug=args.debug,
+        command_line=command_line,
     ))
 
 

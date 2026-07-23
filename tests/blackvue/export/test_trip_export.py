@@ -1187,6 +1187,108 @@ def test_export_trip_skips_srt_lrc_when_no_recording_has_them(tmp_path):
     assert not (dest_dir / "trip.lrc").exists()
 
 
+def test_export_trip_always_writes_a_trip_log(tmp_path):
+    dest_dir = tmp_path / "export"
+    trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))
+
+    export_trip(trip, dest_dir)
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "=== bv-export trip log:" in log_text
+    assert trip.label in log_text
+    assert "Started:" in log_text
+    assert "Finished:" in log_text
+
+
+def test_export_trip_writes_the_given_command_line_into_the_trip_log(tmp_path):
+    dest_dir = tmp_path / "export"
+    trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))
+
+    export_trip(
+        trip, dest_dir, command_line="bv-export --target out --stitch"
+    )
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "Command: bv-export --target out --stitch" in log_text
+
+
+def test_export_trip_writes_membership_reasons_into_the_trip_log(tmp_path):
+    dest_dir = tmp_path / "export"
+    first = Recording(id=RecordingId("20260720_100000_N"))
+    second = Recording(id=RecordingId("20260720_100100_N"))
+    trip = Trip((first, second))
+
+    reasons = {
+        first.id: "first recording in the archive",
+        second.id: "continues the trip - gap since ... was 60.0s, within threshold",
+    }
+
+    export_trip(trip, dest_dir, reasons=reasons)
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "--- Trip membership ---" in log_text
+    assert f"{first.id}: first recording in the archive" in log_text
+    assert f"{second.id}: continues the trip" in log_text
+
+
+def test_export_trip_logs_concatenation_and_gpx_steps(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    _make_video(front_a, 1.0)
+    gps_a = source_dir / "a.gps"
+    gps_a.write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.GPS: AssetFile(Asset.GPS, gps_a),
+            },
+        ),
+    ))
+
+    export_trip(trip, dest_dir)
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "--- Export steps ---" in log_text
+    assert "starting concatenation (front/rear/audio)" in log_text
+    assert "concatenated front.mp4 from 1 recording(s)" in log_text
+    assert "no source recordings for rear.mp4 - skipped" in log_text
+    assert "wrote trip.gpx (1 fix(es))" in log_text
+
+
+def test_export_trip_logs_a_starting_line_before_the_stitch_render(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    _make_video(front_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)},
+        ),
+    ))
+
+    export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    # A "starting" line lets a hung run be diagnosed by which phase it
+    # was in, not just phases that finished (see trip_log.py's own
+    # docstring) - it must appear even for a fast test render.
+    assert "starting stitch.mp4 render (layout=side_by_side)" in log_text
+    assert "rendered stitch.mp4" in log_text
+
+
 def test_export_trip_pads_srt_lrc_to_match_the_real_video_length(tmp_path):
     # Christer's real-world case: the last stretch of a trip is quiet,
     # so Whisper's segments (and the resulting .srt/.lrc) end well

@@ -2661,3 +2661,164 @@ panel, the g-sensor overlay, subtitle burn-in, and now layout auto
 -pick. `rearview_mirror` remains explicit-only by design. No further
 --stitch work is currently planned - future requests would be new
 scope, not spec items still outstanding.
+
+---
+
+## bv-export: per-trip trip.log (done, this session)
+
+Christer reported three things in one message: bv-export needs a log
+file per trip (start time, the full invoking command, why each
+recording was judged to belong to the trip, what each phase is doing,
+end time); a trip pulled in a recording that shouldn't belong to it
+(originally described as "almost 6 days earlier", corrected to "6
+days later"); and stitch.mp4 has no audio. Order confirmed via
+AskUserQuestion: build the log first (so the trip-detection bug can be
+diagnosed against Christer's real archive instead of guessed at from
+code alone), then audio.
+
+**`TripBuilder.build()` gained an optional `reasons` out-param**
+(`export/trip_log.py`'s design needed *something* to log for "why does
+this recording belong here" - reconstructing that after the fact from
+the final trip list would mean re-deriving TripBuilder's own gap/
+bridge logic a second time, which could drift from what it actually
+decided). Same idiom the codebase already uses for `warnings: list[str]
+| None = None` throughout: `build(recordings, *, reasons:
+dict[RecordingId, str] | None = None)`, populated in place, one entry
+per recording, explaining whether it starts a new trip or continues
+one, the exact gap and threshold compared, and (if bridged) what
+evidence bridged it. Confirmed via grep this doesn't break anything -
+only `bv_export.py` and `bv_ls.py` call `TripBuilder.build()`, and
+`bv_ls.py` doesn't pass `reasons` at all, so it's unaffected.
+
+Feeding real evidence text into `reasons` needed `movement_bridges_gap()`
+(and its helper `_recording_shows_movement()`, telemetry/movement.py)
+to return more than a bare bool - changed from `bool` to `str | None`:
+a short human-readable description ("GPS speed at/above 5 km/h near
+the end of ...", "g-sensor variance near the start of ... exceeded its
+own stationary baseline") or `None` for no evidence. Backward
+compatible for both existing callers, which only ever check
+truthiness (`TripBuilder.build()`'s `if gap > threshold and
+self.bridge:` / `if ... and not bridge_reason:`) - never the exact
+type. Three existing tests that asserted `is True`/`is False` on the
+old bool return were renamed and rewritten to check `is not None` +
+the reason text, or `is None` - a deliberate, disclosed API-contract
+change, not a bug fix.
+
+**`TripBuilder._describe_gap(gap)`**, a new static method, renders a
+gap for `reasons` messages - and explicitly flags a *negative* gap
+("... BEFORE the previous recording's own end (overlapping or
+out-of-order timestamps)") rather than printing a bare, easy-to-miss
+negative number. This exists because a negative gap is exactly the
+shape a sort-order or duration-parsing bug would take - worth being
+loud about on principle, even though it turned out not to be this
+bug (see below).
+
+**`export/trip_log.py`** (new module) - `TripLog`, one instance per
+trip, opened via `TripLog.open(destination, trip_label=..., command=
+...)` right after `export_trip()` creates the destination folder.
+Writes `trip.log` incrementally: every `step()`/`membership()`/
+`warning()` call flushes to disk immediately, not buffered until
+close() - this is the direct answer to Christer's own "it hang on
+output: map phase took 181.3s" report. A log only written at the end
+would show nothing at all for a run stuck mid-phase; flushing per line
+means whatever's on disk when a hung process is checked is the real,
+current state. A `threading.Lock` guards every write, since front/
+rear/audio concatenation runs in three concurrent threads (see
+`export_trip()`) that can all call into the log around the same
+moment. Three sections, written in order, each header appearing only
+once and only if actually used (a run that fails immediately still
+produces a clean, readable trip.log rather than one with empty
+sections): a header (start time, trip label, invoking command) written
+immediately on `open()`; trip membership (`membership(recording_id,
+reason)`, sourced straight from `TripBuilder.build()`'s new `reasons`
+dict - never re-derived, so the log can't disagree with the actual
+decision); and export steps (`step(message, elapsed_seconds=None)`,
+timestamped `HH:MM:SS`). `close(failed=False)` writes the footer
+(finished/did-not-finish-cleanly, elapsed seconds) - also usable as a
+context manager (`with TripLog.open(...) as log:`) so `__exit__` sets
+`failed=True` automatically on an unhandled exception.
+
+**Bracketing slow phases with a "starting" line, not just a
+completion line** - the part of the design that actually serves the
+hang-diagnosis goal. A phase that only logs on success tells Christer
+nothing if the process is still inside it; `_render_map_variant()`,
+the gsensor.mp4 render, and the stitch.mp4 render (in `trip_export.py`)
+all now log `"starting <phase>"` immediately *before* the slow call,
+so a stuck run's trip.log shows exactly which phase it entered and how
+long ago, even without waiting for that phase to ever finish.
+
+**Wiring into `export_trip()`**: every phase (concatenation,
+text-asset merge, srt/lrc merge, GPX write, map/map-zoom render,
+g-sensor merge/render, stitch resolve+render) got a paired `log.step()`
+call for both the "did it" and "skipped, here's why" outcomes - not
+just the ones Christer explicitly listed, on the theory that a log
+with gaps in it ("why didn't gsensor run") is nearly as confusing as
+no log at all. Every `warnings.append(...)` call site also gets a
+matching `log.warning(...)` (itself just `step()` prefixed
+`"WARNING: "`), including a diff-based catch for warnings
+`stitch_cameras()` appends internally (map panel/gsensor overlay/
+subtitle issues) - captured by comparing the shared `warnings` list's
+length before/after the call, rather than threading `TripLog` into
+`stitch.py` itself, to keep this change scoped to trip_export.py/
+trip_log.py as agreed. `_concatenate_asset()`/`_load_trip_roads()`/
+`_render_map_variant()` all gained an optional `log` parameter for
+this same reason. `export_trip()` itself doesn't wrap its body in a
+try/finally around `log.close()` - every sub-call that could plausibly
+raise (`MediaToolError` from ffmpeg/OSM fetches) already catches its
+own exception internally and degrades to a warning rather than
+propagating, so an uncaught exception escaping `export_trip()` would
+be a genuine bug elsewhere, not an expected path; if that ever
+happens, trip.log still has every step logged up to that point (already
+flushed), just without a footer - a known, accepted small gap rather
+than restructuring the whole function's control flow for a case that
+shouldn't occur.
+
+**`bv_export.py`**: `TripBuilder(...).build(archive.recordings,
+reasons=reasons)` now passes a `reasons` dict through, forwarded
+unchanged to every trip's own `export_trip()` call (each trip only
+logs entries for its own recordings via `reasons.get(recording.id)`,
+so passing the whole archive-wide dict to every trip is fine - no
+per-trip filtering needed). `main()` reconstructs the exact invoking
+command from `argv`/`sys.argv[1:]` via `shlex.join()` (not from the
+already-parsed `args` Namespace, which has been through argparse's own
+defaulting and wouldn't necessarily read back as what Christer actually
+typed) and threads it through `bv_export()` as `command_line`.
+
+Tested: 11 new `test_trip_log.py` tests directly against `TripLog`
+(header/membership/step/warning/close/failed-close/context-manager
+behavior, including a mid-run read proving lines are flushed before
+`close()`). 5 new `test_trip_export.py` tests (`trip.log` always gets
+written; the given `command_line` and `reasons` show up verbatim;
+concatenation/GPX steps get logged with the right skip messages; a
+"starting stitch.mp4 render" line appears *before* "rendered
+stitch.mp4", not just after). 2 new `test_bv_export.py` CLI-level
+tests (`main()`'s reconstructed command line - path, `--target`,
+`--overwrite` - shows up in a real trip's `trip.log`; two recordings
+close enough to share a trip produce a real "continues the trip"
+membership line, not just the first-recording one). Also ran a real,
+non-test end-to-end `bv-export --stitch` against a tiny synthetic
+archive and read the resulting `trip.log` by eye to confirm it's
+actually readable, not just assertion-passing - it is (see this
+session's transcript for the full example output). All genuinely
+executed via the harness: `test_trip_log` 11 passed, `test_trip_export`
+45 passed, `test_bv_export` 61 passed, `test_trip_builder` 23 passed,
+`test_movement` 12 passed, `test_stitch` 78 passed (unchanged - this
+session never touched stitch.py, run anyway as a regression check
+since `_render_map_variant()`'s call site into it moved around),
+0 failed anywhere.
+
+**The trip-detection bug fix itself is still deferred** (see task
+list) - the log feature was step one specifically so the actual root
+cause (suspected: `movement_bridges_gap()`'s g-sensor sub-check
+producing a false-positive bridge when a recording's self-calibrated
+"stationary baseline" comes out to exactly 0, combined with no upper
+bound on how large a gap `bridge` is allowed to close) can be
+confirmed against Christer's real archive via the new `reasons`/
+trip.log output, not fixed blind. Christer corrected the direction
+mid-session: the stray recording was 6 days *later*, not earlier -
+this rules out a secondary sort-order/negative-gap hypothesis (which
+would need an earlier stray recording) but doesn't affect the primary
+bridge-with-no-ceiling hypothesis, which works in either direction.
+Next step on this: Christer re-runs `bv-export` for real and shares
+(or reads himself) the `trip.log` for the trip that grabbed the wrong
+recording.

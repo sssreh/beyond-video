@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..archive.asset import Asset
+from ..archive.recording_id import RecordingId
 from ..generate.media import MediaToolError
 from ..generate.media import probe
 from ..telemetry.gps_reader import read_gps
@@ -39,6 +40,7 @@ from .stitch import stitch_cameras
 from .subtitles import merge_lrc
 from .subtitles import merge_srt
 from .text import merge_text_assets
+from .trip_log import TripLog
 
 # (asset, output filename) pairs for every text asset bv-export knows
 # how to merge. Only assets that at least one recording in the trip
@@ -87,11 +89,14 @@ def _concatenate_asset(
     filename: str,
     destination: Path,
     warnings: list[str],
+    log: TripLog | None = None,
 ) -> Path | None:
     sources = [
         recording.file(asset).path for recording in trip if recording.has(asset)
     ]
     if not sources:
+        if log is not None:
+            log.step(f"no source recordings for {filename} - skipped")
         return None
 
     out = destination / filename
@@ -99,7 +104,12 @@ def _concatenate_asset(
         concatenate_media(sources, out)
     except MediaToolError as exc:
         warnings.append(str(exc))
+        if log is not None:
+            log.warning(str(exc))
         return None
+
+    if log is not None:
+        log.step(f"concatenated {filename} from {len(sources)} recording(s)")
 
     return out
 
@@ -147,7 +157,10 @@ def _merge_gsensor(trip: Trip) -> tuple[GSensorSample, ...]:
 
 
 def _load_trip_roads(
-    fixes: tuple, map_cache_dir: Path, warnings: list[str]
+    fixes: tuple,
+    map_cache_dir: Path,
+    warnings: list[str],
+    log: TripLog | None = None,
 ) -> tuple:
     """Fetch/cache OSM road geometry for a trip's whole bounding box -
     shared by both the static map.mp4 render and any zoomed
@@ -173,6 +186,8 @@ def _load_trip_roads(
         # rather than "map" specifically, since this failure isn't
         # about either one output file over the other.
         warnings.append(f"map data: {exc}")
+        if log is not None:
+            log.warning(f"map data: {exc}")
         return None, None
 
     return bbox, roads
@@ -188,6 +203,7 @@ def _render_map_variant(
     warning_label: str,
     map_icon: Path | None = None,
     zoom_meters: float | None = None,
+    log: TripLog | None = None,
 ) -> Path | None:
     """Render one map video (either the static map.mp4 or a zoomed
     map_zoom_*m.mp4) at `destination`, degrading to a warning (not a
@@ -196,15 +212,25 @@ def _render_map_variant(
     output couldn't be built.
     """
 
+    if log is not None:
+        log.step(f"starting {destination.name} render")
+
     try:
-        return render_map_video(
+        result = render_map_video(
             fixes, roads, bbox, destination,
             marker_image_path=map_icon,
             zoom_meters=zoom_meters,
         )
     except MediaToolError as exc:
         warnings.append(f"{warning_label}: {exc}")
+        if log is not None:
+            log.warning(f"{warning_label}: {exc}")
         return None
+
+    if log is not None:
+        log.step(f"rendered {destination.name}")
+
+    return result
 
 
 def export_trip(
@@ -228,6 +254,8 @@ def export_trip(
     stitch_gsensor_xy: tuple[float, float] | None = None,
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
+    command_line: str | None = None,
+    reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
@@ -353,14 +381,44 @@ def export_trip(
     -transparent bar behind the text for readability - see
     stitch.py's _subtitles_filter().
 
+    `command_line`, if given, is written verbatim into this trip's own
+    trip.log (see below) as the exact command that produced it - bv-
+    export's CLI reconstructs it from sys.argv (see bv_export.py's
+    main()).
+
+    `reasons`, if given, is TripBuilder.build()'s own per-recording
+    membership explanation (see trip_builder.py) - written into
+    trip.log so a surprising trip membership decision can be checked
+    against the real reasoning that produced it, not re-derived after
+    the fact.
+
+    Every call writes `destination/trip.log`: the invoking command,
+    why each of this trip's recordings was judged to belong to it, and
+    a timestamped account of every phase below as it happens -
+    including a line written *before* a slow phase (map/gsensor/stitch
+    rendering) starts, not just after it finishes, specifically so a
+    run that hangs still leaves a trail showing which phase it was in
+    and how long it had been running when it stopped. See
+    export/trip_log.py.
+
     `debug=True` prints wall-clock timing to stderr for the
     concatenation/map/stitch phases below, plus (from stitch.py)
     which decode method --stitch actually used - see bv_export.py's
-    --debug flag.
+    --debug flag. Independent of trip.log, which always records this
+    same timing (and more) regardless of --debug.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
+
+    log = TripLog.open(
+        destination, trip_label=trip.label, command=command_line or "(not recorded)"
+    )
+    if reasons is not None:
+        for recording in trip:
+            reason = reasons.get(recording.id)
+            if reason is not None:
+                log.membership(recording.id, reason)
 
     # front/rear/audio concatenation are three independent ffmpeg
     # subprocess calls - none reads another's output - so running them
@@ -374,16 +432,17 @@ def export_trip(
     # three for now - map/gsensor rendering do real CPU-bound Python
     # work (PIL frame drawing) that would contend for the GIL if also
     # threaded alongside each other, a separate change if wanted later.
+    log.step("starting concatenation (front/rear/audio)")
     concat_start = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         front_future = executor.submit(
-            _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings
+            _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log
         )
         rear_future = executor.submit(
-            _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings
+            _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log
         )
         audio_future = executor.submit(
-            _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings
+            _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log
         )
         front_video = front_future.result()
         rear_video = rear_future.result()
@@ -403,6 +462,12 @@ def export_trip(
         out = destination / filename
         out.write_text(merged, encoding="utf-8")
         text_paths.append(out)
+    if text_paths:
+        log.step(
+            "merged text asset(s): " + ", ".join(p.name for p in text_paths)
+        )
+    else:
+        log.step("no text assets for this trip - skipped")
 
     # Whisper only emits segments for actual speech, so a trip with a
     # quiet stretch at the end (nobody talking for the last couple of
@@ -418,24 +483,34 @@ def export_trip(
             video_duration_seconds = probe(video_for_duration).duration_seconds
         except MediaToolError as exc:
             warnings.append(f"subtitle padding: {exc}")
+            log.warning(f"subtitle padding: {exc}")
 
     srt_path = None
     merged_srt = merge_srt(trip, total_duration_seconds=video_duration_seconds)
     if merged_srt is not None:
         srt_path = destination / "trip.srt"
         srt_path.write_text(merged_srt + "\n", encoding="utf-8")
+        log.step("merged trip.srt")
+    else:
+        log.step("no transcript data for this trip - trip.srt skipped")
 
     lrc_path = None
     merged_lrc = merge_lrc(trip, total_duration_seconds=video_duration_seconds)
     if merged_lrc is not None:
         lrc_path = destination / "trip.lrc"
         lrc_path.write_text(merged_lrc + "\n", encoding="utf-8")
+        log.step("merged trip.lrc")
+    else:
+        log.step("no transcript data for this trip - trip.lrc skipped")
 
     gpx_path = None
     fixes = _merge_gps(trip)
     if fixes:
         gpx_path = destination / "trip.gpx"
         write_gpx(fixes, gpx_path, name=trip.label)
+        log.step(f"wrote trip.gpx ({len(fixes)} fix(es))")
+    else:
+        log.step("no GPS data for this trip - trip.gpx skipped")
 
     map_path = None
     map_zoom_path = None
@@ -444,16 +519,17 @@ def export_trip(
     # dedicated size (see the stitch_cameras() call below).
     stitch_map_roads: tuple = ()
     if (render_map or map_zoom_meters is not None or stitch_map is not None) and fixes:
+        log.step("starting map data phase (fetch/cache OSM roads)")
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
-        bbox, roads = _load_trip_roads(fixes, cache_dir, warnings)
+        bbox, roads = _load_trip_roads(fixes, cache_dir, warnings, log)
 
         if bbox is not None and roads is not None:
             stitch_map_roads = roads
             if render_map:
                 map_path = _render_map_variant(
                     fixes, bbox, roads, destination / "map.mp4", warnings,
-                    warning_label="map", map_icon=map_icon,
+                    warning_label="map", map_icon=map_icon, log=log,
                 )
 
             if map_zoom_meters is not None:
@@ -461,28 +537,37 @@ def export_trip(
                 map_zoom_path = _render_map_variant(
                     fixes, bbox, roads, destination / zoom_filename, warnings,
                     warning_label="map_zoom", map_icon=map_icon,
-                    zoom_meters=map_zoom_meters,
+                    zoom_meters=map_zoom_meters, log=log,
                 )
         if debug:
             print(
                 f"bv-export: map phase took {time.monotonic() - map_start:.1f}s",
                 file=sys.stderr,
             )
+    else:
+        log.step("no map/map-zoom/stitch-map requested or no GPS data - map phase skipped")
 
     gsensor_path = None
     samples = _merge_gsensor(trip)
     if samples:
         gsensor_path = destination / "trip.3gf"
         write_gsensor(samples, gsensor_path)
+        log.step(f"wrote trip.3gf ({len(samples)} sample(s))")
+    else:
+        log.step("no g-sensor data for this trip - trip.3gf skipped")
 
     gsensor_video_path = None
     if render_gsensor and samples:
+        log.step("starting gsensor.mp4 render")
         try:
             gsensor_video_path = render_gsensor_video(
                 samples, destination / "gsensor.mp4"
             )
         except MediaToolError as exc:
             warnings.append(f"gsensor video: {exc}")
+            log.warning(f"gsensor video: {exc}")
+        else:
+            log.step("rendered gsensor.mp4")
 
     # --stitch-gsensor never generates gsensor.mp4 itself - it only
     # checks whether one already exists on disk (this run's own
@@ -495,8 +580,13 @@ def export_trip(
         candidate = destination / "gsensor.mp4"
         if candidate.exists():
             stitch_gsensor_source = candidate
+            log.step("using existing gsensor.mp4 for stitch overlay")
         else:
             warnings.append(
+                "stitch gsensor overlay: gsensor.mp4 not found - run "
+                "bv-export --gsensor-video first"
+            )
+            log.warning(
                 "stitch gsensor overlay: gsensor.mp4 not found - run "
                 "bv-export --gsensor-video first"
             )
@@ -511,8 +601,13 @@ def export_trip(
     if stitch_subtitles and stitch_layout is not None:
         if srt_path is not None:
             stitch_subtitles_source = srt_path
+            log.step("using trip.srt for stitch subtitle burn-in")
         else:
             warnings.append(
+                "stitch subtitles: no transcript data for this trip - "
+                "trip.srt was not written - skipped"
+            )
+            log.warning(
                 "stitch subtitles: no transcript data for this trip - "
                 "trip.srt was not written - skipped"
             )
@@ -534,12 +629,25 @@ def export_trip(
                 "stitch: no GPS data to auto-pick a layout from - "
                 "defaulting to side_by_side"
             )
+            log.warning(
+                "stitch: no GPS data to auto-pick a layout from - "
+                "defaulting to side_by_side"
+            )
         else:
             resolved_stitch_layout = picked_layout
+            log.step(f"auto-picked stitch layout: {resolved_stitch_layout}")
 
     stitch_path = None
     if stitch_layout is not None:
+        log.step(f"starting stitch.mp4 render (layout={resolved_stitch_layout})")
         stitch_start = time.monotonic() if debug else None
+        # Diffing warnings' own length across the call, rather than
+        # threading `log` into stitch_cameras() itself, catches both
+        # its own internal degraded-feature warnings (map panel/
+        # gsensor overlay/subtitle issues - see stitch_cameras()'s own
+        # docstring) and the `except` below, in one place, without
+        # widening stitch.py's own scope in this same change.
+        warnings_before_stitch = len(warnings)
         try:
             stitch_path = stitch_cameras(
                 front_video, rear_video, destination / "stitch.mp4",
@@ -564,12 +672,18 @@ def export_trip(
             )
         except MediaToolError as exc:
             warnings.append(f"stitch: {exc}")
+        for new_warning in warnings[warnings_before_stitch:]:
+            log.warning(new_warning)
+        if stitch_path is not None:
+            log.step("rendered stitch.mp4")
         if debug:
             print(
                 f"bv-export: stitch phase took "
                 f"{time.monotonic() - stitch_start:.1f}s",
                 file=sys.stderr,
             )
+
+    log.close()
 
     return ExportResult(
         front_video=front_video,

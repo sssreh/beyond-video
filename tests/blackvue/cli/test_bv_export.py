@@ -1348,3 +1348,44 @@ def test_bv_export_without_map_flag_never_touches_roads(tmp_path, monkeypatch):
     exit_code = bv_export(str(archive), target=str(target))
 
     assert exit_code == 0
+
+
+def test_main_writes_the_full_invoking_command_into_the_trip_log(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    exit_code = main([str(archive), "--target", str(target), "--overwrite"])
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    log_text = (folder / "trip.log").read_text(encoding="utf-8")
+    assert "Command: bv-export" in log_text
+    assert str(archive) in log_text
+    assert "--target" in log_text
+    assert str(target) in log_text
+    assert "--overwrite" in log_text
+
+
+def test_bv_export_forwards_trip_membership_reasons_into_the_trip_log(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    # Two recordings close enough together to land in the same trip -
+    # TripBuilder.build()'s own reasoning for that ("continues the
+    # trip - ... within the ... threshold") should show up verbatim in
+    # this trip's trip.log, not just be computed and discarded.
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100200_NF.mp4")
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100200"
+    log_text = (folder / "trip.log").read_text(encoding="utf-8")
+    assert "--- Trip membership ---" in log_text
+    assert "first recording in the archive" in log_text
+    assert "continues the trip" in log_text
