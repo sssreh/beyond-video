@@ -5,6 +5,7 @@ from blackvue.export import map_render as map_render_module
 from blackvue.export.map_render import _arrow_points
 from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
+from blackvue.export.map_render import render_base_map
 from blackvue.export.map_render import render_frame
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
@@ -125,6 +126,51 @@ def test_render_frame_handles_a_degenerate_bounding_box():
     )
 
     assert image.size == (640, 640)
+
+
+def test_render_base_map_draws_roads_on_a_blank_background():
+    blank = render_frame(_BBOX, roads=(), route_points=(), position=None)
+
+    roads = (Road(points=((59.30, 18.00), (59.34, 18.08))),)
+    base = render_base_map(_BBOX, roads)
+
+    assert base.size == blank.size
+    assert list(base.getdata()) != list(blank.getdata())
+
+
+def test_render_frame_with_base_image_ignores_the_roads_argument():
+    # render_map_video()'s whole point in passing base_image is to
+    # skip re-drawing roads every frame - confirmed here by giving
+    # render_frame a `roads` argument that draws nothing (empty tuple)
+    # alongside a base_image that already has a road baked in, and
+    # checking the road still shows up in the result.
+    baked_in_road = (Road(points=((59.30, 18.00), (59.34, 18.08))),)
+    base = render_base_map(_BBOX, baked_in_road)
+
+    frame = render_frame(
+        _BBOX, roads=(), route_points=(), position=None, base_image=base
+    )
+
+    assert list(frame.getdata()) == list(base.getdata())
+
+
+def test_render_frame_with_base_image_does_not_mutate_it():
+    base = render_base_map(_BBOX, roads=())
+    base_pixels_before = list(base.getdata())
+
+    render_frame(
+        _BBOX,
+        roads=(),
+        route_points=((59.31, 18.02), (59.33, 18.06)),
+        position=(59.33, 18.06),
+        heading=45.0,
+        base_image=base,
+    )
+
+    # render_frame() must copy base_image, not draw onto it directly -
+    # otherwise every frame's route/marker would permanently scar the
+    # one base image render_map_video() reuses for every later frame.
+    assert list(base.getdata()) == base_pixels_before
 
 
 def test_load_font_only_opens_the_font_file_once(monkeypatch):

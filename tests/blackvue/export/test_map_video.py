@@ -238,6 +238,122 @@ def test_render_map_video_interpolation_stays_fast_for_a_large_fix_count():
     assert elapsed_wall < 5.0
 
 
+def test_render_map_video_computes_the_base_image_once_and_reuses_it(
+    tmp_path, monkeypatch
+):
+    # Christer: "map phase took 186.2s / Still slow" even after the
+    # interpolation fix above - profiling showed the real cost was
+    # render_frame() re-projecting and re-drawing the same static
+    # `roads` from scratch on every frame (see render_base_map()'s own
+    # docstring). This confirms render_map_video() only ever builds
+    # that base image once, then hands the exact same object to every
+    # frame - not a fresh equal-but-different one each time, which
+    # would defeat the point.
+    base_calls = []
+    sentinel_base = object()
+
+    def fake_render_base_map(*args, **kwargs):
+        base_calls.append((args, kwargs))
+        return sentinel_base
+
+    captured_base_images = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured_base_images.append(kwargs.get("base_image"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_base_map", fake_render_base_map)
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert len(base_calls) == 1
+    assert len(captured_base_images) >= 2
+    assert all(image is sentinel_base for image in captured_base_images)
+
+
+def test_render_map_video_skips_the_base_image_when_zoomed(tmp_path, monkeypatch):
+    # --map-zoom recomputes bbox/roads fresh every frame (see
+    # test_render_map_video_filters_roads_to_each_frames_bbox_when_
+    # zoomed) - there's no single static base to precompute, so
+    # render_base_map() should never be called in this mode, and every
+    # render_frame() call should get base_image=None (falling back to
+    # its own per-frame road drawing).
+    def fail_render_base_map(*_args, **_kwargs):
+        raise AssertionError("render_base_map() should not be called when zoomed")
+
+    captured_base_images = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured_base_images.append(kwargs.get("base_image"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_base_map", fail_render_base_map)
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2, zoom_meters=50.0,
+    )
+
+    assert len(captured_base_images) >= 2
+    assert all(image is None for image in captured_base_images)
+
+
+def test_render_map_video_stays_fast_with_many_roads_in_static_mode(tmp_path):
+    # End-to-end regression guard (real render_base_map()/render_frame()
+    # calls, no mocking) for the bug above: with the fix, road cost is
+    # paid once via render_base_map(), not once per frame. Without it,
+    # this synthetic case (1,000 roads x 20 points, 150 frames) took
+    # noticeably longer in manual profiling - well past this bound.
+    import random
+    import time
+
+    random.seed(1234)
+    roads = tuple(
+        Road(
+            points=tuple(
+                (59.0 + random.uniform(-0.05, 0.05), 18.0 + random.uniform(-0.05, 0.05))
+                for _ in range(20)
+            )
+        )
+        for _ in range(1000)
+    )
+
+    fixes = (_fix(0, 59.0, 18.0), _fix(30, 59.01, 18.01))
+    static_bbox = BoundingBox(
+        min_lat=58.9, min_lon=17.9, max_lat=59.1, max_lon=18.1
+    )
+
+    start_time = time.monotonic()
+    render_map_video(
+        fixes, roads=roads, bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=5,
+    )
+    elapsed_wall = time.monotonic() - start_time
+
+    assert elapsed_wall < 15.0
+
+
 class _FakeFrameImage:
     def save(self, _path):
         pass

@@ -24,6 +24,7 @@ from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
 from .map_render import DEFAULT_HEIGHT
 from .map_render import DEFAULT_WIDTH
+from .map_render import render_base_map
 from .map_render import render_frame
 from .media import encode_frame_sequence
 from .osm_roads import BoundingBox
@@ -327,6 +328,24 @@ def render_map_video(
     indexed_roads = index_roads(roads) if zoom_meters is not None else None
     zoom_aspect_ratio = width / height
 
+    # Static (non-`--map-zoom`) mode draws the exact same `roads`
+    # against the exact same `bbox` on every single frame - profiling
+    # confirmed that re-projecting and re-drawing them from scratch
+    # each time (render_frame()'s old behavior) was the dominant cost
+    # of a real-scale render, well past the interpolation cost
+    # render_map_video()'s own O(fixes x frames) fix already addressed
+    # (see render_base_map()'s own docstring). Rendered once here and
+    # handed to every render_frame() call below as a base to copy
+    # instead. Follow-camera (`--map-zoom`) mode gets a fresh bbox/
+    # road-set every frame, so there's no single base image to
+    # precompute - stays None there, and render_frame() falls back to
+    # its own per-frame road drawing.
+    base_image = (
+        None
+        if zoom_meters is not None
+        else render_base_map(bbox, roads, width=width, height=height)
+    )
+
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as frame_dir_name:
@@ -390,6 +409,7 @@ def render_map_video(
                 timestamp_text=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                 width=width,
                 height=height,
+                base_image=base_image,
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 

@@ -3389,3 +3389,49 @@ Tested: `test_trip_export` 52 passed (49 existing + 3 new: a `--debug`
 a silent-by-default test with `--debug` omitted, and a trip.log test
 asserting the "rendered gsensor.mp4 (X.Xs)" line's elapsed-seconds
 suffix), 0 failed.
+
+## map.mp4: the real render bottleneck was re-drawing roads every frame, not interpolation (done, this session)
+
+Christer, after the interpolation fix above: "map phase took 186.2s /
+Still slow" - the O(fixes x frames) interpolation fix didn't meaningfully
+help, so the interpolation theory was wrong and needed real profiling,
+not another guess.
+
+Profiled `render_map_video()` with cProfile against a synthetic trip at
+Christer's real scale (5,402 fixes, 3,000 roads x 15 points, a 600
+-frame slice): the dominant cost by far was `render_frame()` itself -
+specifically `_project()`, called ~27 million times for that one
+slice alone. Root cause: `render_map_video()`'s default (non-`--map-
+zoom`) mode draws the exact same `bbox` and `roads` on every single
+frame - the whole-trip overview never changes - but `render_frame()`
+was re-projecting and re-drawing every one of those roads from scratch
+on every frame regardless, paying (roads x frames) cost for an answer
+that's identical every time. `--map-zoom` mode is unaffected - it
+already gets a fresh bbox/road-set every frame (see task #51's
+`index_roads()`/`roads_within_bbox()` filtering), so there's nothing
+static there to cache.
+
+Fix: new `render_base_map()` in `map_render.py` draws just the
+background + road network once, returning a plain `Image`.
+`render_frame()` gained an optional `base_image` parameter - when
+given, it's copied (never mutated - a route/marker baked into frame 1
+must not leak into frame 2) as the starting canvas instead of drawing
+`roads` from scratch, and the old road-drawing loop is skipped
+entirely. `render_map_video()` now calls `render_base_map()` once,
+before the frame loop, only when not in `--map-zoom` mode, and passes
+the same image object to every `render_frame()` call. Profiling the
+same 600-frame slice after the fix: 36.0s -> 10.2s (~3.5x), with the
+remaining cost now dominated by PNG encode/save (unavoidable per-frame
+I/O) rather than wasted road math.
+
+Tested: `test_map_render` 13 passed (10 existing + 3 new: render_
+base_map() draws roads onto an otherwise-blank background,
+render_frame(base_image=...) reuses it instead of the `roads` argument
+passed alongside it, and confirms the base image itself is never
+mutated), `test_map_video` 33 passed (30 existing + 3 new: render_
+base_map() is called exactly once and the same object is handed to
+every frame in static mode, it's never called at all in `--map-zoom`
+mode, and an end-to-end 1,000-road/150-frame render finishes well
+under a generous 15s bound), `test_trip_export` 52 passed and
+`test_stitch` 87 passed (both regression-only, map panel path
+unaffected), 0 failed.
