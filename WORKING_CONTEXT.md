@@ -4733,3 +4733,27 @@ completed a build in either its original or this now-restored form.
 Next concrete step once this is pushed/pulled to the NAS:
 `sudo docker-compose build bv-cli` and watch it through to completion
 this time.
+
+## Both delivery paths confirmed working end to end (this session)
+
+`sudo docker-compose build bv-cli` on the NAS completed successfully
+(all 7 steps, tagged `beyond-video_bv-cli:latest`) - reusing cached
+layers from the earlier full-toolchain build attempt that had been
+abandoned mid-way during the first pivot, so it finished quickly
+rather than taking the several minutes a cold build would.
+
+Christer then ran `bv-export` natively on his PC, `--target` pointed
+at the SMB-mapped NAS drive, and confirmed the resulting trip shows up
+correctly in `bv-web` at `http://<nas-ip>:19373`. This is the first
+real confirmation of the PC/SMB path working end to end (write over
+the mapped drive -> land in the NAS's `data/trips` -> served by
+`bv-web`) - previously only reasoned about, now proven.
+
+Both delivery paths described in `docs/DEPLOY.md`'s "Two ways to run
+bv-generate/bv-export" are now confirmed working: `bv-cli` builds
+cleanly on the NAS (though a full `bv-config`/`bv-download`/
+`bv-generate`/`bv-export` run through `bv-cli` itself hasn't been
+exercised yet - only the build), and the PC/SMB route has produced a
+real trip visible in `bv-web`. Remaining unverified: an actual
+`bv-generate`/`bv-export` run driven through `bv-cli` on the NAS
+itself (as opposed to just the image build).
