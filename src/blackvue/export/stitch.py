@@ -378,6 +378,7 @@ def stitch_cameras(
     max_height: int | None = None,
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
+    mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_size: float | None = None,
@@ -428,8 +429,17 @@ def stitch_cameras(
     own decode-time intermediate - an intermediate re-encoded to H.264
     has no alpha channel to carry the mask through, so this has to
     happen after decode, right before the overlay (see _stack()'s own
-    `is_mirror` block for exactly where). Everything below (gsensor
-    overlay, map panel, subtitle burn-in) treats the resulting
+    `is_mirror` block for exactly where). `mirror_zoom` (0-95, default
+    0 - see MIN_/MAX_/DEFAULT_MIRROR_ZOOM_PERCENT) crops the rear
+    source toward its own center, by that percent of each edge, before
+    it's scaled into the inset - 0 (the default) shows the whole rear
+    frame, unchanged; higher values show progressively less of it, a
+    tighter/more "zoomed in" mirror view. Applied at rear's own decode
+    step (unlike `mirror_radius` above, a plain crop carries no alpha
+    -channel problem), right before the scale+hflip already baked in
+    there - see this function's own decode-scale-filter comment.
+    Everything below (gsensor overlay, map panel, subtitle burn-in)
+    treats the resulting
     front+inset frame exactly like 'side_by_side'/'top_down' treat
     their own hstack/vstack result - same `warnings`-degrading
     behavior, same ordering. The one difference: a map panel alongside
@@ -622,6 +632,7 @@ def stitch_cameras(
             layout=layout, resolution=resolution, bitrate=bitrate,
             scale=scale, max_width=max_width, max_height=max_height,
             mirror_size=mirror_size, mirror_radius=mirror_radius,
+            mirror_zoom=mirror_zoom,
             map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
@@ -1356,6 +1367,7 @@ def _stack(
     max_height: int | None = None,
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
+    mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_size: float | None = None,
@@ -1541,7 +1553,17 @@ def _stack(
         # would need an alpha channel the intermediate's own H.264
         # encode can't carry.
         mirror_width = max(2, round(front_width * mirror_size / 100 / 2) * 2)
-        rear_scale_filter = f"scale={mirror_width}:-2,hflip"
+        # `mirror_zoom`: crops rear toward its own center by that
+        # percent of each edge *before* the scale+hflip above - a
+        # uniform fraction off both iw/ih preserves rear's own aspect
+        # ratio exactly, so it doesn't interact with `mirror_width`'s
+        # own -2 auto-height sizing. A no-op (no crop clause at all)
+        # when 0, the unchanged default.
+        rear_crop_filter = ""
+        if mirror_zoom > 0:
+            keep_fraction = 1 - mirror_zoom / 100
+            rear_crop_filter = f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
+        rear_scale_filter = f"{rear_crop_filter}scale={mirror_width}:-2,hflip"
     elif effective_resolution is not None:
         out_width, out_height = effective_resolution
         # `pre_decode_scale_applied` means front/rear were already

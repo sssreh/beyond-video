@@ -864,6 +864,62 @@ def test_main_rejects_an_out_of_range_stitch_mirror_radius(tmp_path):
         ])
 
 
+def test_main_uses_the_default_stitch_mirror_zoom_when_not_given(
+    tmp_path, monkeypatch
+):
+    from blackvue.export.stitch import DEFAULT_MIRROR_ZOOM_PERCENT
+
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_mirror_zoom"] == DEFAULT_MIRROR_ZOOM_PERCENT
+
+
+def test_main_parses_an_explicit_stitch_mirror_zoom(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-layout", "rearview_mirror",
+        "--stitch-mirror-zoom", "40",
+    ])
+
+    assert captured["stitch_mirror_zoom"] == 40.0
+
+
+def test_main_rejects_an_out_of_range_stitch_mirror_zoom(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-mirror-zoom", "100",
+        ])
+
+
 def test_bv_export_stitch_rearview_mirror_flag_produces_a_video(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()

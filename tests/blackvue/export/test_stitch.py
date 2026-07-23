@@ -2367,6 +2367,74 @@ def test_stitch_cameras_rearview_mirror_radius_rounds_the_corners(tmp_path):
     assert center[0] > 150 and center[1] < 100
 
 
+def _make_rear_zoom_probe(path, size=320, border=20, duration_seconds=1.0):
+    # A yellow border around a solid blue center - zooming in (cropping
+    # toward the center before the inset is scaled/flipped) should
+    # eventually crop the yellow border away entirely, leaving the
+    # inset's own edge solid blue instead.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"color=c=yellow:size={size}x{size}:rate=5",
+            "-vf",
+            f"drawbox=x={border}:y={border}:w={size - 2 * border}:"
+            f"h={size - 2 * border}:color=blue:t=fill",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_stitch_cameras_rearview_mirror_zoom_zero_is_a_no_op(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_zoom_probe(rear, size=320, border=20)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=0.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # Default mirror_size=25% of 640 -> 160x160 inset (rear's 1:1
+    # aspect preserved) at (240, 10). A pixel right at its own edge
+    # should still show the source's yellow border, unchanged from
+    # today's existing (pre-mirror_zoom) behavior.
+    edge = image.getpixel((240 + 2, 10 + 80))
+    assert edge[0] > 150 and edge[1] > 150 and edge[2] < 100
+
+
+def test_stitch_cameras_rearview_mirror_zoom_crops_toward_the_center(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "black")
+    _make_rear_zoom_probe(rear, size=320, border=20)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_zoom=30.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # mirror_zoom=30 crops 30% off each edge before scaling (keep
+    # fraction 0.7 of 320 = 224, i.e. 48px removed from each side) -
+    # comfortably past the source's own 20px yellow border, so the
+    # inset's own edge should now be solid blue instead.
+    edge = image.getpixel((240 + 2, 10 + 80))
+    assert edge[2] > edge[0] and edge[2] > edge[1]
+
+
 def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
     tmp_path
 ):
