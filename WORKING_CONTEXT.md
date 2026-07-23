@@ -3646,3 +3646,65 @@ no scale at all). `test_trip_export` 55 passed and `test_bv_export` 71
 passed, both unchanged from task #82 since this was purely an internal
 `stitch.py` redesign - no CLI or `export_trip()` signature changes were
 needed. 0 failed across all three, 224 tests total.
+
+## rearview_mirror was left out of the --stitch-scale decode speedup, plus a request for rounded corners and mirror zoom (this session)
+
+Christer, right after confirming task #83's fix: "Same time for
+rendering / i would like that the mirror have round edges and a zoom in
+percent". Two things in one message - the second sentence gave away the
+first: he's exporting with `--stitch-layout rearview_mirror`, and task
+#83's `effective_resolution` fix explicitly excluded `is_mirror` from
+decode-time scaling (documented at the time as "front is never
+decode-time-scaled for that layout, resolution or not"). So his mirror
+exports genuinely didn't get faster - not a regression, but a real gap
+task #83 left open by design, now closed.
+
+Fix (task #84): `effective_resolution`'s own natural-size computation
+now branches on `is_mirror` - front IS the whole composite for
+rearview_mirror (rear never contributes to the frame's own dimensions,
+it's just a small inset overlaid on top), so the "natural size" is
+simply front's own native size, no front+rear summing needed the way
+hstack/vstack requires. When `scale`/`max_width`/`max_height` (and not
+an explicit `--stitch-resolution`, same carve-out as before) derive a
+smaller `effective_resolution`, front's own decode now targets that
+size directly via `scale={width}:{height}` - exact, not `-2`-derived,
+since the target was already computed preserving front's own aspect
+ratio.
+
+Separately, and unconditionally (not gated behind scale/max_width/
+max_height at all): the rear inset is now always decoded pre-scaled to
+`mirror_size` percent of front's own width and pre-flipped, instead of
+decoding at full native resolution only to be shrunk down in the final
+combine pass. This was real waste even in the plain default case with
+no shrink flags at all - Christer's "rear ... still slow" was pointing
+partly at this. The final combine's own `is_mirror` filter_complex
+clause is now just a plain overlay of `[0:v][1:v]` - no more
+`scale=...,hflip` step there, since input 1 (rear_decoded) already
+arrives in exactly the shape needed.
+
+Two new tests: `test_stitch_cameras_rearview_mirror_scale_shrinks_front_decode_time_scaling`
+confirms front's decode-time scale filter no longer contains the native
+"2160" dimension when `--stitch-scale 10` is given on 3840x2160 sources
+under `rearview_mirror`, mirroring the equivalent hstack/vstack test
+from task #83. `test_stitch_cameras_rearview_mirror_rear_is_always_decoded_pre_scaled`
+confirms rear's own decode-time filter is exactly `scale=160:-2,hflip`
+(25% of a 640-wide front, mirror_size's own default) even with no scale/
+resolution flags given at all. All 5 existing rearview_mirror pixel
+-level tests (flip direction, inset placement, configurable mirror_size,
+resolution scaling, map-panel-capped-at-30%) still pass unchanged,
+confirming the decode-time refactor didn't shift any visible output.
+
+Also requested this same message, tracked as their own follow-up tasks
+rather than folded into this fix: `--stitch-mirror-radius` (rounded
+corners on the mirror inset, as a percent of the inset's own size) and
+`--stitch-mirror-zoom` (a center-crop zoom on the mirror inset before
+it's scaled in, as a percent - 0 meaning today's full rear frame,
+higher cropping in tighter). Design confirmed with Christer via
+AskUserQuestion (percent-of-inset-size for the radius, "0=full frame,
+higher=tighter crop" for the zoom - both his own recommended options).
+
+Tested: `test_stitch` 100 passed (98 existing from task #83 + 2 new).
+`test_trip_export` 55 passed and `test_bv_export` 71 passed, both
+unchanged - no CLI or `export_trip()` signature changes, purely an
+internal `stitch.py` decode-path refactor. 0 failed across all three,
+226 tests total.

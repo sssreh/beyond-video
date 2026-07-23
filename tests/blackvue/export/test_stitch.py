@@ -2226,6 +2226,94 @@ def test_stitch_cameras_rearview_mirror_scales_to_a_requested_resolution(
     assert _video_size(destination) == (320, 240)
 
 
+def test_stitch_cameras_rearview_mirror_scale_shrinks_front_decode_time_scaling(
+    tmp_path, monkeypatch
+):
+    # Same parity check as
+    # test_stitch_cameras_scale_shrinks_decode_time_scaling_not_just_the_final_pass
+    # (hstack/vstack), but for rearview_mirror - task #84's fix.
+    # Christer's report ("front, rear, panel and stitch are still slow
+    # even with --stitch-scale 10") was against a rearview_mirror
+    # export specifically, and the first version of this feature
+    # (task #83) explicitly excluded is_mirror from decode-time
+    # scaling, so this exact scenario stayed slow even after that fix.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    scale_filters = {}
+
+    def fake_decode_camera(source, destination, *, scale_filter, debug=False):
+        import shutil
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        scale_filters[destination.name] = scale_filter
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "_decode_camera", fake_decode_camera)
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 3840, 2160, duration_seconds=0.1)
+    _make_video(rear, 3840, 2160, duration_seconds=0.1)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="rearview_mirror", scale=10,
+    )
+
+    # front: decode-time scale filter should target the small 10%
+    # size, not the native 3840x2160.
+    assert scale_filters["front.mp4"] is not None
+    assert "2160" not in scale_filters["front.mp4"]
+    # rear: always decoded straight to its own small inset size
+    # (mirror_size% of front, default 25%) and flipped, regardless of
+    # whether --stitch-scale was even given - see the unconditional
+    # rear_scale_filter note in _stack().
+    assert "hflip" in scale_filters["rear.mp4"]
+    assert "2160" not in scale_filters["rear.mp4"]
+
+
+def test_stitch_cameras_rearview_mirror_rear_is_always_decoded_pre_scaled(
+    tmp_path, monkeypatch
+):
+    # Even with no --stitch-scale/--stitch-resolution at all (today's
+    # existing full-native-quality default), rear should never be
+    # decoded at full native size just to be shrunk down to
+    # `mirror_size` percent afterward - that was wasted decode+encode
+    # work on detail immediately discarded, and part of what Christer's
+    # "rear ... still slow" report was pointing at.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    scale_filters = {}
+
+    def fake_decode_camera(source, destination, *, scale_filter, debug=False):
+        import shutil
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        scale_filters[destination.name] = scale_filter
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "_decode_camera", fake_decode_camera)
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 640, 480, duration_seconds=0.1)
+    _make_video(rear, 640, 480, duration_seconds=0.1)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4", layout="rearview_mirror",
+    )
+
+    assert scale_filters["front.mp4"] is None
+    # Default mirror_size=25% of front's 640 -> 160.
+    assert scale_filters["rear.mp4"] == "scale=160:-2,hflip"
+
+
 def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
     tmp_path
 ):
