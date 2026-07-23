@@ -4075,3 +4075,62 @@ values are forwarded to `stitch_cameras()`). `test_bv_export` 86
 passed (81 existing + 5 new: default/explicit-both-flags/out-of-range
 -each-flag, and a produces-a-video integration test). 0 failed across
 all three modules, 260 tests total.
+
+## Man-page-style docs for every bv-* command, plus a pipeline overview (this session)
+
+Christer asked for "something close to or real man pages for all our
+bv-*" plus an overview document showing the order they're normally
+run in, from bv-download through bv-export, "maybe with a nice
+diagram." Confirmed format via AskUserQuestion first: markdown
+man-page-style docs (not real troff `.1` files - GitHub-readable,
+matches the rest of `docs/` which is all markdown already) in a new
+`docs/man/` directory, and a Mermaid diagram (renders natively on
+GitHub, no image asset to maintain) in a new `docs/PIPELINE.md`.
+
+Deliberately did NOT reuse the existing `docs/CLI.md` as source
+material - it describes an aspirational/stale design (references
+`bv-find`/`bv-transcribe`, commands that don't exist in `pyproject.toml`'s
+actual `[project.scripts]`, and a `--last-hours`/`--last-minutes`/
+`--last-days` selector family that was never actually implemented -
+the real selectors are `--from`/`--until`/`--timestamp` only). Caught
+this the hard way: an early draft of `bv-download.md`'s own EXAMPLES
+section used `--last-hours 2`, copied from `docs/CLI.md`'s own stale
+example, before cross-checking it against the command's actual
+`--help` output and catching that the flag doesn't exist - fixed
+before it shipped. Every OPTIONS table and EXAMPLES command in the
+final six man pages was built from real `--help` output (extracted by
+shimming a fake `tomllib` module into `sys.modules` so `bv_config.py`'s
+own `import tomllib` - a 3.11+ stdlib module the sandbox's Python 3.10
+doesn't have, and no network access to install a backport - didn't
+block importing every CLI module) and cross-checked against source
+(exit code constants, exact output filenames from `trip_export.py`,
+the real lexical timestamp-prefix expansion rules).
+
+Six new files under `docs/man/`: `bv-config.md`, `bv-download.md`,
+`bv-ls.md`, `bv-lang.md`, `bv-generate.md`, `bv-export.md` - each
+NAME/SYNOPSIS/DESCRIPTION/ARGUMENTS/OPTIONS(grouped into logical
+subsections for bv-export, which has ~35 flags)/EXIT
+STATUS(where the command defines exit codes)/EXAMPLES/SEE ALSO.
+`bv-export.md` also documents the exact output folder naming
+(`[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP`) and which file
+(`front.mp4`, `trip.gpx`, `trip.log`, `map.mp4`, `stitch.mp4`, etc.)
+gets written by which flag - pulled directly from `trip_export.py`'s
+own `destination / "..."` call sites, not guessed.
+
+New `docs/PIPELINE.md`: a Mermaid flowchart (`bv-config` → `bv-download`
+→ `bv-generate` → `bv-export` as the solid-line core path, `bv-ls` and
+`bv-lang` as dotted-line optional/anytime branches) plus prose walking
+through each of the six steps in the order they're normally run, why
+`bv-generate` is worth running before `bv-export` even though it's
+optional (feeds trip-gap detection via `--get-duration`, feeds
+`--stitch-subtitles` via merged transcript/subtitle files), and a
+realistic end-to-end four-command example.
+
+Also fixed a one-line import-ordering slip from task #89's own commit
+(`DEFAULT_MIRROR_PAN_PERCENT` landed out of alphabetical order in
+`bv_export.py`'s import block) noticed while reading through that file
+for `bv-export.md` - no functional change, committed separately.
+
+No test suite covers documentation content directly; verification was
+manual cross-referencing against real `--help` output and `trip_export.py`'s
+own source (see above) rather than an automated test.
