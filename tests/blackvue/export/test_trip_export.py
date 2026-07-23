@@ -772,6 +772,31 @@ def test_export_trip_stitch_mirror_size_is_forwarded(tmp_path, monkeypatch):
     assert captured["mirror_size"] == 40.0
 
 
+def test_export_trip_stitch_mirror_radius_is_forwarded(tmp_path, monkeypatch):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="rearview_mirror", stitch_mirror_radius=50.0,
+    )
+
+    assert captured["mirror_radius"] == 50.0
+
+
 def _trip_with_front_rear_and_gps_shape(source_dir, *, east_west: bool):
     front_a = source_dir / "front_a.mp4"
     rear_a = source_dir / "rear_a.mp4"

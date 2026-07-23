@@ -2314,6 +2314,59 @@ def test_stitch_cameras_rearview_mirror_rear_is_always_decoded_pre_scaled(
     assert scale_filters["rear.mp4"] == "scale=160:-2,hflip"
 
 
+def test_stitch_cameras_rearview_mirror_radius_zero_leaves_square_corners(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "blue")
+    _make_solid_video(rear, 320, 320, "red")
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=40.0, mirror_radius=0.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # 40% of 640 = 256 wide/tall (rear is square). inset top-left is at
+    # (192, 10) - a pixel right at that corner should still be solidly
+    # red (mirror_radius=0, the unchanged default, leaves corners
+    # square).
+    corner = image.getpixel((192 + 2, 10 + 2))
+    assert corner[0] > 150 and corner[1] < 100
+
+
+def test_stitch_cameras_rearview_mirror_radius_rounds_the_corners(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "blue")
+    _make_solid_video(rear, 320, 320, "red")
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=40.0, mirror_radius=100.0, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # Same 256x256 square inset at (192, 10) as the zero-radius test
+    # above. mirror_radius=100 rounds each corner to a quarter-circle
+    # of radius min(256,256)/2=128 - for a square inset that's a full
+    # inscribed circle, so a pixel right at the corner should now be
+    # transparent (front's blue showing through instead of rear's red).
+    corner = image.getpixel((192 + 2, 10 + 2))
+    assert corner[2] > corner[0] and corner[2] > corner[1]
+    # The inset's own center should still be fully opaque red - the
+    # rounding only carves away the four corners, not the whole shape.
+    center = image.getpixel((192 + 128, 10 + 128))
+    assert center[0] > 150 and center[1] < 100
+
+
 def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
     tmp_path
 ):

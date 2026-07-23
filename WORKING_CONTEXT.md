@@ -3708,3 +3708,65 @@ Tested: `test_stitch` 100 passed (98 existing from task #83 + 2 new).
 unchanged - no CLI or `export_trip()` signature changes, purely an
 internal `stitch.py` decode-path refactor. 0 failed across all three,
 226 tests total.
+
+## --stitch-mirror-radius: rounded corners on the mirror inset (this session)
+
+First of the two follow-up requests from task #84's own message
+("i would like that the mirror have round edges"). Design confirmed via
+AskUserQuestion (percent of the inset's own size, Christer's own
+recommended option) before writing any code, per the working agreement.
+
+`mirror_radius` (0-100, default 0 - see MIN_/MAX_/DEFAULT_MIRROR_RADIUS_PERCENT)
+rounds the rear inset's four corners to a radius of `mirror_radius`
+percent of the inset's own min(width, height)/2. 0 leaves them square -
+the layout's original, unchanged look; 100 rounds each corner all the
+way to a quarter-circle of that radius, producing a "stadium"/pill shape
+for a non-square inset or a full circle for a square one.
+
+Can't be baked into the rear inset's own decode-time intermediate the
+way task #84's scale+hflip optimization was - an H.264 intermediate has
+no alpha channel to carry a transparency mask through. So this happens
+in the final combine's own filter_complex instead, right before the
+`[0:v][1:v]overlay=...` clause: `[1:v]format=rgba,geq=r='r(X,Y)':
+g='g(X,Y)':b='b(X,Y)':a='<rounded-corner expression>'[mirror_rounded]`,
+then the overlay reads from `[mirror_rounded]` instead of `[1:v]`
+directly. Only added when `mirror_radius > 0` - a plain `[0:v][1:v]`
+overlay otherwise, matching task #84's default-case behavior exactly
+(no perf cost for anyone not using this).
+
+The alpha expression itself (`_mirror_radius_alpha_expr()`) is a classic
+four-corner rounded-rectangle mask: for each of the four `radius`x
+`radius` corner squares, a pixel is transparent only if it's also
+farther than `radius` from that corner's own rounding-circle center;
+everything else stays opaque. Distances compared as squared values
+(`pow(...,2)`) rather than via `hypot`/`sqrt`, both to avoid a square
+root per pixel and because `hypot` isn't universally available across
+ffmpeg builds' eval parsers. Wrapped in single quotes when embedded in
+the geq option value - same escaping idiom `_subtitles_filter()`'s own
+`force_style='...'` already uses, protecting the expression's internal
+commas from ffmpeg's top-level filter-chain comma splitting without
+needing to backslash-escape each one.
+
+Wired through the same three layers every --stitch flag goes through:
+`_stack()`/`stitch_cameras()` (stitch.py), `export_trip()`
+(trip_export.py, `stitch_mirror_radius` param), and `--stitch-mirror
+-radius PERCENT` (bv_export.py, `_parse_mirror_radius()` validator,
+range-checked at the CLI layer same as every other percent flag here).
+
+Two new pixel-level tests in test_stitch.py, both against a 320x320
+solid-red rear scaled to a 256x256 square inset (mirror_size=40% of a
+640-wide front) so the corner math is easy to reason about by hand:
+`test_stitch_cameras_rearview_mirror_radius_zero_leaves_square_corners`
+confirms a pixel right at the inset's corner is still solid red with
+the unchanged default. `test_stitch_cameras_rearview_mirror_radius_rounds_the_corners`
+confirms that same corner pixel is now transparent (front's blue shows
+through) at `mirror_radius=100`, while the inset's own center pixel
+stays solid red - the rounding only carves away the four corners, not
+the whole shape.
+
+Tested: `test_stitch` 102 passed (100 existing from task #84 + 2 new).
+`test_trip_export` 56 passed (55 existing + 1 new: `mirror_radius` is
+forwarded to `stitch_cameras()`). `test_bv_export` 74 passed (71
+existing + 3 new: default/explicit-value/out-of-range-rejection for
+`--stitch-mirror-radius`, mirroring `--stitch-mirror-size`'s own three).
+0 failed across all three, 232 tests total.
