@@ -7,6 +7,8 @@ import pytest
 from PIL import Image
 
 from blackvue.export import map_video as map_video_module
+from blackvue.export.map_video import _advance_fix_index
+from blackvue.export.map_video import _interpolate_position_from_index
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
@@ -129,6 +131,111 @@ def test_interpolate_position_falls_back_to_whichever_course_is_present():
     )
 
     assert course == 123.0
+
+
+def test_advance_and_interpolate_from_index_matches_exact_timestamp():
+    fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
+
+    index = _advance_fix_index(fixes, fixes[0].timestamp, 0)
+    lat, lon, speed, course = _interpolate_position_from_index(
+        fixes, fixes[0].timestamp, index
+    )
+
+    assert (lat, lon, speed, course) == (59.30, 18.00, 50.0, 45.0)
+
+
+def test_advance_and_interpolate_from_index_matches_midpoint():
+    fixes = (
+        _fix(0, 59.30, 18.00, speed_kmh=40.0, course=0.0),
+        _fix(10, 59.32, 18.02, speed_kmh=60.0, course=90.0),
+    )
+    timestamp = fixes[0].timestamp + timedelta(seconds=5)
+
+    index = _advance_fix_index(fixes, timestamp, 0)
+    lat, lon, speed, course = _interpolate_position_from_index(fixes, timestamp, index)
+
+    assert round(lat, 5) == 59.31
+    assert round(lon, 5) == 18.01
+    assert speed == 50.0
+    assert round(course, 5) == 45.0
+
+
+def test_advance_and_interpolate_from_index_clamps_before_first_fix():
+    fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
+    timestamp = fixes[0].timestamp - timedelta(seconds=5)
+
+    index = _advance_fix_index(fixes, timestamp, 0)
+    lat, lon, speed, course = _interpolate_position_from_index(fixes, timestamp, index)
+
+    assert (lat, lon, speed, course) == (59.30, 18.00, 50.0, 45.0)
+
+
+def test_advance_and_interpolate_from_index_clamps_after_last_fix():
+    fixes = (_fix(0, 59.30, 18.00, course=45.0), _fix(10, 59.31, 18.02, course=90.0))
+    timestamp = fixes[-1].timestamp + timedelta(seconds=5)
+
+    index = _advance_fix_index(fixes, timestamp, 0)
+    lat, lon, speed, course = _interpolate_position_from_index(fixes, timestamp, index)
+
+    assert (lat, lon, speed, course) == (59.31, 18.02, 50.0, 90.0)
+
+
+def test_advance_and_interpolate_from_index_matches_interpolate_position_over_a_monotonic_sweep():
+    # The exact usage shape render_map_video()'s own frame loop relies
+    # on: timestamp only ever increases, and the index returned from
+    # one call is fed straight back in as the next call's starting
+    # point. Every result along the way should match
+    # interpolate_position()'s own (slower, full-rescan) answer
+    # exactly - same guarantee gsensor_video.py's equivalent test
+    # gives for _advance_search_index()/_interpolate_from_index().
+    fixes = tuple(
+        _fix(s, 59.0 + s * 0.0001, 18.0 + s * 0.0002, course=(s * 7) % 360)
+        for s in range(0, 200, 3)
+    )
+
+    index = 0
+    for s in range(-50, 210, 1):
+        timestamp = fixes[0].timestamp + timedelta(seconds=s)
+        index = _advance_fix_index(fixes, timestamp, index)
+        fast = _interpolate_position_from_index(fixes, timestamp, index)
+        slow = interpolate_position(fixes, timestamp)
+        assert fast == slow
+
+
+def test_render_map_video_interpolation_stays_fast_for_a_large_fix_count():
+    # Regression guard for the O(fixes x frames) bug interpolate_
+    # position()'s full rescan-per-frame produced (see map_video.py's
+    # _advance_fix_index()/_interpolate_position_from_index()
+    # docstrings) - same shape as the bug gsensor_video.py's
+    # interpolate_sample() had before it was fixed, just at GPS's own
+    # slower ~1Hz rate. Simulates just the interpolation cost of
+    # render_map_video()'s frame loop directly (not the PIL/ffmpeg
+    # parts, which have their own real, expected cost at this frame
+    # count) for a synthetic 4-hour trip at a real ~1Hz GPS rate - the
+    # old O(n^2) path would be on the order of 3*10^8 inner-loop
+    # iterations here (14,400 fixes x ~72,000 frames at map.mp4's
+    # default 5fps); the fixed O(n) path should finish in well under a
+    # second.
+    import time
+
+    fixes = tuple(
+        _fix(s, 59.0 + s * 0.00001, 18.0 + s * 0.00002, course=(s * 3) % 360)
+        for s in range(0, 4 * 60 * 60, 1)  # 4 hours at 1Hz
+    )
+    total_seconds = (fixes[-1].timestamp - fixes[0].timestamp).total_seconds()
+    fps = 5
+    frame_count = int(total_seconds * fps) + 1
+
+    start_time = time.monotonic()
+    index = 0
+    for frame_number in range(frame_count):
+        elapsed = min(frame_number / fps, total_seconds)
+        timestamp = fixes[0].timestamp + timedelta(seconds=elapsed)
+        index = _advance_fix_index(fixes, timestamp, index)
+        _interpolate_position_from_index(fixes, timestamp, index)
+    elapsed_wall = time.monotonic() - start_time
+
+    assert elapsed_wall < 5.0
 
 
 class _FakeFrameImage:
