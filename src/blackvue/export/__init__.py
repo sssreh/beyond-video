@@ -17,6 +17,7 @@ from .text import merge_text_assets
 from .trip_export import ExportResult
 from .trip_export import export_trip
 from .trip_export import folder_name_for_trip
+from .trip_log import TripLog
 
 __all__ = [
     "BoundingBox",
@@ -37,5 +38,6 @@ __all__ = [
     "render_gsensor_video",
     "render_map_video",
     "stitch_cameras",
+    "TripLog",
     "write_gpx",
 ]
