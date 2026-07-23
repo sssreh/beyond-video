@@ -1,6 +1,8 @@
+import calendar
 import json
 import struct
 import subprocess
+from datetime import datetime
 from datetime import timedelta
 
 from blackvue.archive.asset import Asset
@@ -245,24 +247,44 @@ def test_export_trip_skips_missing_assets_cleanly(tmp_path):
     assert dest_dir.exists()
 
 
+def _epoch_ms(timestamp: datetime) -> int:
+    """Convert a naive datetime (RecordingId.timestamp/GpsFix.timestamp
+    - see gps_reader.py's own docstring on why the two are directly
+    comparable, both "UTC-equivalent" naive datetimes) into the Unix
+    epoch milliseconds a raw .gps file's own [timestamp] bracket would
+    encode for it - so a fixture's GPS fix timestamps land at a
+    realistic offset from its recording's own filename timestamp,
+    rather than some unrelated fixed epoch. That distinction matters
+    for anything exercising render_map_video()'s trip-start-anchored
+    timeline (see map_video.py) - an arbitrary, unrelated GPS epoch
+    would make the trip's real start look wildly earlier/later than
+    every GPS fix, not just "GPS data starts a bit into the trip".
+    """
+
+    return calendar.timegm(timestamp.timetuple()) * 1000
+
+
 def _trip_with_two_gps_fixes(source_dir):
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100010_N")
+
     gps_a = source_dir / "a.gps"
     gps_a.write_text(
-        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
-        "10.00,45.00,010124,,,A*6D\n"
+        f"[{_epoch_ms(first_id.timestamp)}]$GPRMC,120000.00,A,4807.038,N,"
+        "01131.000,E,10.00,45.00,010124,,,A*6D\n"
     )
     gps_b = source_dir / "b.gps"
     gps_b.write_text(
-        "[1700000010000]$GPRMC,120010.00,A,4808.038,N,01132.000,E,"
-        "12.00,45.00,010124,,,A*6D\n"
+        f"[{_epoch_ms(second_id.timestamp)}]$GPRMC,120010.00,A,4808.038,N,"
+        "01132.000,E,12.00,45.00,010124,,,A*6D\n"
     )
 
     first = Recording(
-        id=RecordingId("20260720_100000_N"),
+        id=first_id,
         assets={Asset.GPS: AssetFile(Asset.GPS, gps_a)},
     )
     second = Recording(
-        id=RecordingId("20260720_100010_N"),
+        id=second_id,
         assets={Asset.GPS: AssetFile(Asset.GPS, gps_b)},
     )
     return Trip((first, second))

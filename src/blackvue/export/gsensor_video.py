@@ -158,6 +158,7 @@ def render_gsensor_video(
     destination: Path,
     *,
     fps: int = DEFAULT_FPS,
+    duration_seconds: float | None = None,
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into an overlay video
     at `destination`: a dot moving around a gauge (see
@@ -165,6 +166,28 @@ def render_gsensor_video(
     reading rather than raw (0, 0) (see baseline_for_samples()), with
     a fading trail, on a flat chroma-key green background meant to be
     keyed out when composited over the front/rear footage later.
+
+    `samples` are already trip-relative (see trip_export.py's
+    _merge_gsensor(), which rebases each recording's own offsets by
+    how far that recording started after the trip's first recording),
+    so a recording with no g-sensor data at the *start* of a trip is
+    already handled correctly - the merged samples simply begin
+    partway through, at the right offset, and the render's own frame 0
+    still lines up with the trip's real start once frame timestamps
+    are computed relative to that shared trip-relative zero.
+
+    What isn't handled by the merge alone: `total_seconds` used to
+    decide how many frames to render was, before `duration_seconds`
+    existed, always just the *last* sample's own offset - so a
+    recording with no g-sensor data at the *end* of a trip made the
+    render stop short of the real video's own length, going out of
+    sync once composited (or just played) alongside it. Pass
+    `duration_seconds` (typically the trip's real concatenated front/
+    rear video duration - see trip_export.py) to render the full real
+    length instead, holding the dot at its last known position for
+    whatever trailing gap there is - falls back to the old samples
+    -derived length when left as None (no video to match, or its
+    duration couldn't be probed).
 
     Returns None (and writes nothing) if there aren't at least two
     samples, or they span zero time - the same "nothing to work with"
@@ -174,7 +197,11 @@ def render_gsensor_video(
     if len(samples) < 2:
         return None
 
-    total_seconds = samples[-1].offset.total_seconds()
+    total_seconds = (
+        duration_seconds
+        if duration_seconds is not None
+        else samples[-1].offset.total_seconds()
+    )
     if total_seconds <= 0:
         return None
 

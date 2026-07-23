@@ -149,6 +149,42 @@ def test_render_gsensor_video_interpolation_stays_fast_for_a_large_sample_count(
     assert elapsed_wall < 5.0
 
 
+def test_render_gsensor_video_duration_seconds_extends_past_a_trailing_gap(
+    tmp_path
+):
+    # A recording at the *end* of a trip with no g-sensor data at all
+    # makes the merged samples stop short of the trip's real end (see
+    # trip_export.py's _merge_gsensor(), which already correctly
+    # rebases a LEADING gap via each recording's own trip-relative
+    # offset - it's only the render's own total duration, previously
+    # always just the last sample's offset, that fell short for a
+    # trailing one). duration_seconds overrides that with the trip's
+    # real video length instead.
+    samples = (_sample(0, 10, 20), _sample(1000, 30, 40))
+    destination = tmp_path / "gsensor.mp4"
+
+    result = render_gsensor_video(samples, destination, fps=2, duration_seconds=5.0)
+
+    assert result == destination
+    # 5 real seconds requested, well past the samples' own 1-second
+    # span - a range rather than an exact round() match, since frame_
+    # count's own "+1 frame" convention means the actual encoded
+    # length is never quite exactly the requested value.
+    assert _video_duration_seconds(destination) >= 4.5
+
+
+def test_render_gsensor_video_falls_back_to_samples_derived_duration_by_default(
+    tmp_path
+):
+    samples = (_sample(0, 0, 0), _sample(2000, 100, -100))
+    destination = tmp_path / "gsensor.mp4"
+
+    result = render_gsensor_video(samples, destination, fps=2)
+
+    assert result == destination
+    assert round(_video_duration_seconds(destination)) == 2
+
+
 def test_render_gsensor_video_returns_none_for_fewer_than_two_samples(tmp_path):
     result = render_gsensor_video((_sample(0, 10, 20),), tmp_path / "gsensor.mp4")
 

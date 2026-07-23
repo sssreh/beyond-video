@@ -460,6 +460,114 @@ def test_render_map_video_uses_a_custom_marker_image_when_given(tmp_path):
     assert destination.exists()
 
 
+def test_render_map_video_video_start_extends_render_to_cover_a_leading_gap(
+    tmp_path
+):
+    # GPS data doesn't begin until 3s into the real video (e.g. an
+    # earlier recording in the trip had no GPS data at all) - without
+    # video_start, frame 0 would be anchored to the first GPS fix
+    # itself, making the render start "late" relative to the real
+    # video and come out too short to match it. video_start/
+    # video_duration_seconds anchor frame 0 (and the render's total
+    # length) to the trip's own real start/duration instead.
+    video_start = datetime(2026, 7, 15, 13, 0, 0)
+    fixes = (
+        _fix(3, 59.300, 18.000),
+        _fix(4, 59.302, 18.004),
+        _fix(5, 59.304, 18.008),
+    )
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+    destination = tmp_path / "map.mp4"
+
+    result = render_map_video(
+        fixes, roads=(), bbox=bbox, destination=destination, fps=2,
+        video_start=video_start, video_duration_seconds=6.0,
+    )
+
+    assert result == destination
+    # 6 real seconds requested, not the 2-second span the fixes
+    # themselves happen to cover.
+    assert round(_video_duration_seconds(destination)) == 6
+
+
+def test_render_map_video_video_start_clamps_position_during_the_leading_gap(
+    tmp_path, monkeypatch
+):
+    captured = []
+
+    def fake_render_frame(_bbox, _roads, _route, position, **_kwargs):
+        captured.append(position)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    video_start = datetime(2026, 7, 15, 13, 0, 0)
+    fixes = (_fix(3, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
+        video_start=video_start, video_duration_seconds=4.0,
+    )
+
+    # Frame 0 (elapsed=0s from video_start) is well before the first
+    # real fix (at 3s past video_start) - should clamp to the first
+    # fix's own position, the same clamp-before-first-fix behavior
+    # interpolate_position() already has, just now actually reachable
+    # for a real leading gap instead of always being masked by `start`
+    # itself being derived from the fixes.
+    assert captured[0] == (59.300, 18.000)
+
+
+def test_render_map_video_video_duration_seconds_extends_past_a_trailing_gap(
+    tmp_path
+):
+    # Same idea as the leading-gap test above, but for a recording at
+    # the *end* of a trip with no GPS data - without an explicit
+    # duration, the render stops as soon as the fixes run out, ending
+    # early relative to the real video.
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+    destination = tmp_path / "map.mp4"
+
+    result = render_map_video(
+        fixes, roads=(), bbox=bbox, destination=destination, fps=2,
+        video_duration_seconds=5.0,
+    )
+
+    assert result == destination
+    # 5 real seconds requested, well past the fixes' own 1-second span
+    # - a range rather than an exact round() match, since frame_count's
+    # own "+1 frame" convention (see render_map_video()) means the
+    # actual encoded length is never quite exactly the requested value.
+    assert _video_duration_seconds(destination) >= 4.5
+
+
+def test_render_map_video_falls_back_to_fixes_derived_timeline_without_video_start(
+    tmp_path
+):
+    # Unchanged default behavior when video_start/video_duration_seconds
+    # aren't given - e.g. no video exists for this trip at all (a GPS
+    # -only "trip"), or the real video's duration couldn't be probed.
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(1, 59.302, 18.004),
+        _fix(2, 59.304, 18.008),
+    )
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+    destination = tmp_path / "map.mp4"
+
+    result = render_map_video(
+        fixes, roads=(), bbox=bbox, destination=destination, fps=2,
+    )
+
+    assert result == destination
+    assert round(_video_duration_seconds(destination)) == 2
+
+
 def test_render_map_video_raises_for_a_missing_marker_image(tmp_path):
     fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
     bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
