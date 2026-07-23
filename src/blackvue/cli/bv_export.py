@@ -29,8 +29,10 @@ from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
+from blackvue.export.stitch import MIN_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
@@ -89,6 +91,21 @@ def _parse_mirror_size(value: str) -> float:
     return size
 
 
+def _parse_map_size(value: str) -> float:
+    try:
+        size = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid size {value!r} (expected a number)")
+
+    if not (MIN_MAP_SIZE_PERCENT <= size <= MAX_MAP_SIZE_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"size {value!r} out of range "
+            f"({MIN_MAP_SIZE_PERCENT:g}-{MAX_MAP_SIZE_PERCENT:g})"
+        )
+
+    return size
+
+
 def _parse_gsensor_position(value: str) -> str:
     try:
         parse_gsensor_position(value)
@@ -140,6 +157,7 @@ def bv_export(
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
+    stitch_map_size: float | None = None,
     stitch_gsensor: bool = False,
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
@@ -295,6 +313,7 @@ def bv_export(
                 stitch_mirror_size=stitch_mirror_size,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
+                stitch_map_size=stitch_map_size,
                 stitch_gsensor=stitch_gsensor,
                 stitch_gsensor_size=stitch_gsensor_size,
                 stitch_gsensor_pos=stitch_gsensor_pos,
@@ -623,6 +642,21 @@ def main(argv: list[str] | None = None) -> int:
             "rearview_mirror specifically, vs. the general 50%%)."
         ),
     )
+    parser.add_argument(
+        "--stitch-map-size",
+        type=_parse_map_size,
+        default=None,
+        help=(
+            "Override --stitch-map's panel width/height as a percent "
+            f"of the camera composite's matching dimension "
+            f"({MIN_MAP_SIZE_PERCENT:g}-{MAX_MAP_SIZE_PERCENT:g}). "
+            "Default: sized automatically from the trip's own real "
+            "-world aspect ratio, clamped to 20-50%% (30%% for "
+            "rearview_mirror) - a near-straight-line trip can land "
+            "right at that floor and read as too thin; this asks for "
+            "an exact size instead."
+        ),
+    )
 
     parser.add_argument(
         "--stitch-gsensor",
@@ -770,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_mirror_size=args.stitch_mirror_size,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
+        stitch_map_size=args.stitch_map_size,
         stitch_gsensor=args.stitch_gsensor if args.stitch else False,
         stitch_gsensor_size=args.stitch_gsensor_size,
         stitch_gsensor_pos=args.stitch_gsensor_pos,

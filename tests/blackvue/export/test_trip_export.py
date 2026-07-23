@@ -950,6 +950,35 @@ def test_export_trip_stitch_map_side_is_forwarded(tmp_path, monkeypatch):
     assert len(captured["map_roads"]) == 1
 
 
+def test_export_trip_stitch_map_size_is_forwarded(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps(source_dir)
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="top_down", stitch_map="map", stitch_map_size=35.0,
+    )
+
+    assert captured["map_size"] == 35.0
+
+
 def test_export_trip_stitch_map_skipped_without_stitch_map_flag(
     tmp_path, monkeypatch
 ):

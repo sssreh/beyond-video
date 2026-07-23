@@ -260,6 +260,7 @@ def export_trip(
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
+    stitch_map_size: float | None = None,
     stitch_gsensor: bool = False,
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
@@ -369,6 +370,11 @@ def export_trip(
     (rather than the general 50%) when `stitch_layout='rearview_mirror'`
     specifically - most of that frame still needs to stay the primary
     front view, with the mirror inset already claiming some of it too.
+    `stitch_map_size`, if given (a percent, MIN_/MAX_MAP_SIZE_PERCENT
+    in stitch.py), overrides the panel's own automatic geography
+    -aspect-ratio sizing (which otherwise floors at 20% of the
+    composite's matching dimension - can read as "too thin" for a
+    near-straight-line trip) with an exact fraction instead.
 
     `stitch_gsensor=True` (also requires `stitch_layout`) composites
     an *already-rendered* gsensor.mp4 as a transparent chroma-keyed
@@ -708,6 +714,7 @@ def export_trip(
                 mirror_size=stitch_mirror_size,
                 map_mode=stitch_map,
                 map_side=stitch_map_side,
+                map_size=stitch_map_size,
                 map_zoom_meters=map_zoom_meters,
                 map_fixes=fixes if stitch_map is not None else (),
                 map_roads=stitch_map_roads,

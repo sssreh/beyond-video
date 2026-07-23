@@ -1057,6 +1057,47 @@ def test_map_panel_dimensions_returns_none_for_no_gps_data():
     assert _map_panel_dimensions(1000, 400, side="left", fixes=()) is None
 
 
+def test_map_panel_dimensions_size_fraction_overrides_the_geography_sizing():
+    # A near-straight-line trip (same shape as the "clamps" test above)
+    # would auto-size right at the 20% floor - --stitch-map-size
+    # (size_fraction, a raw 0-1 fraction here) bypasses that entirely,
+    # for a trip a user wants a bigger panel for than the auto sizing
+    # would ever give them.
+    fixes = (_fix(0, 0.0, 0.0), _fix(10, 10.0, 0.0001))
+
+    width, height = _map_panel_dimensions(
+        1000, 400, side="left", fixes=fixes, size_fraction=0.7,
+    )
+
+    assert width == 700
+    assert height == 400
+
+
+def test_map_panel_dimensions_size_fraction_is_not_clamped_to_the_auto_range():
+    # Deliberately outside [_MIN_MAP_PANEL_FRACTION,
+    # _MAX_MAP_PANEL_FRACTION] (0.2-0.5) - an explicit size_fraction is
+    # an override, not a suggestion the auto-sizing clamp should still
+    # apply to. Range validation belongs at the CLI layer (see
+    # bv_export.py's _parse_map_size()/MIN_/MAX_MAP_SIZE_PERCENT), not
+    # here.
+    fixes = (_fix(0, 0.0, 0.0), _fix(10, 10.0, 0.0001))
+
+    width, _height = _map_panel_dimensions(
+        1000, 400, side="top", fixes=fixes, size_fraction=0.05,
+    )
+
+    assert width == 1000
+    assert round(_map_panel_dimensions(
+        1000, 400, side="top", fixes=fixes, size_fraction=0.05,
+    )[1] / 400, 3) == 0.05
+
+
+def test_map_panel_dimensions_size_fraction_still_requires_gps_data():
+    assert _map_panel_dimensions(
+        1000, 400, side="left", fixes=(), size_fraction=0.7,
+    ) is None
+
+
 def test_stitch_cameras_map_panel_defaults_to_down_for_side_by_side(tmp_path):
     front = tmp_path / "front.mp4"
     rear = tmp_path / "rear.mp4"
@@ -1125,6 +1166,32 @@ def test_stitch_cameras_map_panel_side_can_be_overridden(tmp_path):
     width, height = _video_size(destination)
     assert height == 120
     assert width > 320
+
+
+def test_stitch_cameras_map_size_overrides_the_auto_panel_width(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    # A near-straight-line trip - the same shape that hits the auto
+    # -sizing's 20% floor in _map_panel_dimensions()'s own unit tests.
+    fixes = (_fix(0, 0.0, 0.0), _fix(10, 10.0, 0.0001))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="top_down",
+        map_mode="map", map_fixes=fixes, map_roads=(), map_size=40.0,
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # top_down's camera composite is 160 wide (two 160x120 stacked
+    # vertically) - 40% of that, rounded to an even pixel count.
+    assert height == 240
+    assert width == 160 + max(2, round(160 * 0.40 / 2) * 2)
 
 
 def test_stitch_cameras_map_panel_zoom_requires_a_radius(tmp_path):
@@ -1387,6 +1454,59 @@ def test_stitch_cameras_gsensor_overlay_combines_with_a_map_panel(tmp_path):
     assert height > 120
 
 
+def test_stitch_cameras_gsensor_overlay_lands_on_real_footage_not_resolution_padding(
+    tmp_path
+):
+    # Regression test for a real issue Christer found: a
+    # --stitch-resolution whose aspect ratio doesn't match the camera
+    # composite's own (a 320x180 landscape box here, vs. top_down's
+    # portrait 160x240 stack) makes _fit_and_pad() pillarbox the
+    # footage - the overlay used to be sized/positioned against the
+    # *padded* box's own full width/height, landing "top-right" deep
+    # in the black bars instead of anywhere near the real footage.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "blue")
+    _make_solid_video(rear, 160, 120, "blue")
+    gsensor = tmp_path / "gsensor.mp4"
+    _make_gsensor_fake(gsensor)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="top_down",
+        resolution=(320, 180),
+        gsensor_video=gsensor, gsensor_pos="top-right",
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    assert _video_size(destination) == (320, 180)
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+
+    def _has_red(x_range, y_range):
+        return any(
+            image.getpixel((x, y))[0] > 120 and image.getpixel((x, y))[1] < 100
+            for x in x_range for y in y_range
+        )
+
+    # 160x240 content scaled by 0.75 (height-constrained: 240*0.75=180
+    # exactly) into the 320x180 box, centered with 100px of black
+    # pillarbox on each side (320-120)/2=100 - real footage occupies
+    # x in [100, 220). The pre-pad overlay (comp=160x240, default 15%
+    # size/2% margin) lands its fake gauge's red box around x=[140,
+    # 150), y=[12,22) *before* that same 0.75 scale+offset is applied,
+    # landing around x=[205,213), y=[9,17) - comfortably inside the
+    # real footage, near its right edge.
+    assert _has_red(range(203, 216, 2), range(6, 20, 2))
+
+    # Where the *old*, buggy math (sized/positioned against the padded
+    # 320x180 box directly) would have placed it instead - deep in the
+    # right pillarbox, nowhere near the real footage at all.
+    assert not _has_red(range(275, 305, 3), range(15, 40, 3))
+
+
 def test_stitch_cameras_gsensor_overlay_ignored_for_single_camera_fallback(
     tmp_path
 ):
@@ -1604,14 +1724,79 @@ def test_stitch_cameras_subtitles_combines_with_gsensor_and_a_map_panel(
     )
 
     # Correct bookkeeping across all three extra pieces (gsensor input,
-    # map panel input, and the subtitle burn-in applied last onto
-    # whatever "withmap" ends up being) is the real thing being tested
-    # here - a wrong label/index anywhere in that chain would fail the
-    # ffmpeg call outright rather than silently produce a wrong image.
+    # map panel input, and the subtitle burn-in - applied to the
+    # camera composite alone, *before* the map panel is combined in;
+    # see test_stitch_cameras_subtitles_are_confined_to_the_camera_
+    # region_not_the_map_panel below for that scoping itself) is the
+    # real thing being tested here - a wrong label/index anywhere in
+    # this chain would fail the ffmpeg call outright rather than
+    # silently produce a wrong image.
     assert warnings == []
     width, height = _video_size(destination)
     assert width == 320
     assert height > 120
+
+
+def test_stitch_cameras_subtitles_are_confined_to_the_camera_region_not_the_map_panel(
+    tmp_path
+):
+    # Confirms a real issue found on Christer's own --stitch-map
+    # export: subtitles used to be burned onto the *final* composed
+    # frame (camera + map panel combined), so a full-width subtitle
+    # bar stretched underneath the map panel too, with nothing to do
+    # with it. Fixed by applying the subtitle burn-in to the camera
+    # composite alone, before the map panel is ever hstacked/vstacked
+    # alongside it - same "confined to the footage region" scoping the
+    # gsensor overlay already had.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 160, 120, "0xdddddd")
+    _make_solid_video(rear, 160, 120, "0xdddddd")
+    srt = tmp_path / "trip.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nHello world subtitle\n\n"
+    )
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="top_down",
+        map_mode="map", map_fixes=fixes, map_roads=(), map_size=30.0,
+        subtitles_path=srt, subtitles_background=True,
+        warnings=warnings,
+    )
+    assert warnings == []
+
+    # top_down's default map panel side is "left"; front/rear are
+    # already both 160 wide (vstack matches width, so no rescale is
+    # needed), and --stitch-map-size=30 forces the panel to exactly
+    # 30% of that camera width, rounded to the nearest even pixel
+    # count (same convention _map_panel_dimensions() itself uses).
+    width, height = _video_size(destination)
+    map_width = max(2, round(160 * 0.30 / 2) * 2)
+    assert width == 160 + map_width
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+
+    # The map panel's own bottom strip - its light off-white
+    # map_render.BACKGROUND_COLOR, ~(247, 244, 238) - should be
+    # completely unaffected by the subtitle burn-in, which was applied
+    # before the map panel was ever combined in.
+    map_bottom_brightness = _average_brightness(
+        image,
+        range(2, max(4, map_width - 2), 2),
+        range(height - 40, height - 5, 2),
+    )
+    assert map_bottom_brightness > 210
+
+    # The camera region's own bottom strip should show *some* dark
+    # pixels from the subtitle's background bar - confirming the
+    # subtitle still rendered at all, just confined to this region.
+    camera_dark_fraction = _dark_pixel_fraction(
+        image, range(map_width, width, 2), range(height - 40, height - 5, 2),
+    )
+    assert camera_dark_fraction > 0.05
 
 
 def test_stitch_cameras_subtitles_ignored_for_single_camera_fallback(
