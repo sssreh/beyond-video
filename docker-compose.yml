@@ -1,0 +1,20 @@
+services:
+  bv-web:
+    build: .
+    container_name: beyond-video-web
+    restart: unless-stopped
+    ports:
+      - "19393:19393"
+    volumes:
+      # The trip archive bv-export writes into (--target). Read-only:
+      # this increment of bv-web only browses/plays existing trips,
+      # it never writes here itself. Point bv-export --target at the
+      # same host path (left of the colon) so newly exported trips
+      # show up here too.
+      - ./data/trips:/data/trips:ro
+      # bv-web's accounts file (web-users.cfg) - read-write, and kept
+      # outside the image so it survives `docker compose build`/
+      # container recreation. Created empty on first run; populate it
+      # with `docker exec -it beyond-video-web bv-web adduser ...`
+      # (see docs/DEPLOY.md).
+      - ./data/config:/data/config

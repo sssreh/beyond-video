@@ -219,3 +219,8 @@ __marimo__/
 .streamlit/secrets.toml
 out.txt
 set_env.txt
+
+# bv-web's Docker deployment data (see docker-compose.yml/docs/DEPLOY.md)
+# - real trip footage and the accounts file, created on the host, never
+# meant to be committed.
+/data/
