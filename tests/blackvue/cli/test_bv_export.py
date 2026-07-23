@@ -220,6 +220,67 @@ def test_bv_export_respects_max_gap(tmp_path):
     ).exists()
 
 
+def test_bv_export_does_not_bridge_a_gap_by_default(tmp_path):
+    # Movement-based bridging is off by default - confirmed on a real
+    # archive to have no ceiling on how large a gap it'll bridge (a
+    # single GPS speed reading bridged a genuine 6-day gap into one
+    # trip). Even with real movement evidence at the edge of the gap,
+    # a bare bv_export() call should still split on --max-gap alone.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "30.00,45.00,010124,,,A*6D\n"
+    )
+    _make_video(archive / "20260720_103000_NF.mp4")
+
+    bv_export(str(archive), target=str(target))
+
+    assert (target / "trip_20260720_100000_20260720_100000").is_dir()
+    assert (target / "trip_20260720_103000_20260720_103000").is_dir()
+    assert not (
+        target / "trip_20260720_100000_20260720_103000"
+    ).exists()
+
+
+def test_bv_export_movement_flag_bridges_a_gap_with_gps_evidence(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "30.00,45.00,010124,,,A*6D\n"
+    )
+    _make_video(archive / "20260720_103000_NF.mp4")
+
+    bv_export(str(archive), target=str(target), movement=True)
+
+    assert (target / "trip_20260720_100000_20260720_103000").is_dir()
+
+
+def test_main_movement_flag_bridges_a_gap_with_gps_evidence(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "30.00,45.00,010124,,,A*6D\n"
+    )
+    _make_video(archive / "20260720_103000_NF.mp4")
+
+    exit_code = main([str(archive), "--target", str(target), "--movement"])
+
+    assert exit_code == 0
+    assert (target / "trip_20260720_100000_20260720_103000").is_dir()
+
+
 def test_bv_export_uses_duration_file_to_avoid_a_false_split(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()

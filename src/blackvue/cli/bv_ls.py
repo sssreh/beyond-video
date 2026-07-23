@@ -83,7 +83,7 @@ def print_trips(
     recordings,
     *,
     max_gap: timedelta,
-    use_movement: bool = True,
+    use_movement: bool = False,
     use_duration: bool = True,
     gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
 ) -> None:
@@ -97,11 +97,15 @@ def print_trips(
     real .duration.txt span (if bv-generate --get-duration has been
     run for it) is folded in before that gap is compared to max_gap,
     so a long recording isn't mistaken for a gap to the one after it.
-    When use_movement is True (the default), a gap that still exceeds
-    max_gap after that can be bridged into one trip if GPS or
-    g-sensor data shows the vehicle was still moving at the edge of
-    the gap (see blackvue.telemetry.movement) - e.g. the camera
-    briefly stopped recording at a long light or in a tunnel.
+    When use_movement is True (off by default - see --movement),
+    a gap that still exceeds max_gap after that can be bridged into
+    one trip if GPS or g-sensor data shows the vehicle was still
+    moving at the edge of the gap (see blackvue.telemetry.movement) -
+    e.g. the camera briefly stopped recording at a long light or in a
+    tunnel. Off by default: this heuristic has no ceiling on how large
+    a gap it'll bridge - confirmed on a real archive to bridge a
+    genuine 6-day gap into one trip off a single GPS speed reading at
+    the very start of a later recording.
     """
 
     bridge = movement_bridges_gap if use_movement else None
@@ -155,7 +159,7 @@ def bv_ls(
     timestamp: str | None = None,
     trips: bool = False,
     max_gap_minutes: int | None = None,
-    movement: bool = True,
+    movement: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
 ) -> int:
@@ -329,15 +333,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
-        "--no-movement",
+        "--movement",
         dest="movement",
-        action="store_false",
+        action="store_true",
+        default=False,
         help=(
-            "With --trips, ignore GPS/g-sensor data and use the pure "
-            "--max-gap time rule only. By default, a gap over "
-            "--max-gap is still bridged into one trip if GPS speed "
-            "or g-sensor variance shows the vehicle was still moving "
-            "at the edge of the gap."
+            "With --trips, use GPS/g-sensor data to bridge a gap over "
+            "--max-gap into one trip anyway, if the vehicle looks "
+            "like it was still moving at the edge of the gap. Off by "
+            "default: this heuristic has no ceiling on how large a "
+            "gap it'll bridge - confirmed on a real archive to bridge "
+            "a genuine 6-day gap into one trip off a single GPS speed "
+            "reading. Until that has a fix, --max-gap (plus "
+            "--gap-tolerance and --duration) is the sole trip "
+            "-splitting rule unless you opt into this."
         ),
     )
 

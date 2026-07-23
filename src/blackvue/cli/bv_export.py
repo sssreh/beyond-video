@@ -127,7 +127,7 @@ def bv_export(
     until: str | None = None,
     timestamp: str | None = None,
     max_gap_minutes: int | None = None,
-    movement: bool = True,
+    movement: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     render_map: bool = False,
@@ -408,12 +408,21 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
-        "--no-movement",
+        "--movement",
         dest="movement",
-        action="store_false",
+        action="store_true",
+        default=False,
         help=(
-            "Ignore GPS/g-sensor data and use the pure --max-gap "
-            "time rule only when detecting trips."
+            "Use GPS/g-sensor data to bridge a gap over --max-gap into "
+            "one trip anyway, if the vehicle looks like it was still "
+            "moving at the edge of the gap. Off by default: this "
+            "heuristic has no ceiling on how large a gap it'll bridge "
+            "- a single GPS speed reading right at the start of a "
+            "recording was found to bridge a genuine 6-day gap into "
+            "one trip on a real archive, folding in an unrelated "
+            "day's footage. Until that has a fix, --max-gap (plus "
+            "--gap-tolerance and --duration's real-span adjustment) is "
+            "the sole trip-splitting rule unless you opt into this."
         ),
     )
 

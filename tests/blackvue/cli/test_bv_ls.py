@@ -134,11 +134,36 @@ def test_trips_respects_max_gap_override(tmp_path, capsys):
     assert "trip_20260715_100000_20260715_100500" not in out
 
 
-def test_trips_bridges_a_gap_when_gps_shows_movement(tmp_path, capsys):
+def test_trips_bridges_a_gap_when_gps_shows_movement_and_movement_flag_given(
+    tmp_path, capsys
+):
     # 30 minutes apart - would be two trips under the default 10-minute
     # gap, but the first recording's .gps file shows the vehicle still
     # moving right at the end of the recording, so they should bridge
-    # into one trip.
+    # into one trip - only when movement=True is explicitly given
+    # (opt-in - see test_trips_does_not_bridge_by_default below for
+    # why this isn't the default anymore).
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "30.00,45.00,010124,,,A*6D\n"
+    )
+    (tmp_path / "20260715_103000_NF.mp4").write_bytes(b"x")
+
+    exit_code = bv_ls(str(tmp_path), trips=True, movement=True)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "trip_20260715_100000_20260715_103000" in out
+
+
+def test_trips_does_not_bridge_by_default(tmp_path, capsys):
+    # Movement-based bridging is off by default - confirmed on a real
+    # archive to have no ceiling on how large a gap it'll bridge (a
+    # single GPS speed reading bridged a genuine 6-day gap into one
+    # trip), so the plain --max-gap time rule is the only splitting
+    # rule unless --movement is explicitly given.
     (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
     (tmp_path / "20260715_100000_N.gps").write_text(
         "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
@@ -151,10 +176,12 @@ def test_trips_bridges_a_gap_when_gps_shows_movement(tmp_path, capsys):
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "trip_20260715_100000_20260715_103000" in out
+    assert "trip_20260715_100000_20260715_100000" in out
+    assert "trip_20260715_103000_20260715_103000" in out
+    assert "trip_20260715_100000_20260715_103000" not in out
 
 
-def test_no_movement_flag_disables_gps_bridging(tmp_path, capsys):
+def test_main_movement_flag_enables_gps_bridging(tmp_path, capsys):
     (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
     (tmp_path / "20260715_100000_N.gps").write_text(
         "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
@@ -162,13 +189,27 @@ def test_no_movement_flag_disables_gps_bridging(tmp_path, capsys):
     )
     (tmp_path / "20260715_103000_NF.mp4").write_bytes(b"x")
 
-    exit_code = bv_ls(str(tmp_path), trips=True, movement=False)
+    exit_code = main([str(tmp_path), "--trips", "--movement"])
 
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "trip_20260715_100000_20260715_100000" in out
-    assert "trip_20260715_103000_20260715_103000" in out
+    assert "trip_20260715_100000_20260715_103000" in out
+
+
+def test_main_leaves_movement_false_without_the_flag(tmp_path, capsys):
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "30.00,45.00,010124,,,A*6D\n"
+    )
+    (tmp_path / "20260715_103000_NF.mp4").write_bytes(b"x")
+
+    exit_code = main([str(tmp_path), "--trips"])
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
     assert "trip_20260715_100000_20260715_103000" not in out
 
 

@@ -2877,6 +2877,88 @@ export` 47 passed (45 + 2 new), `test_bv_export` 61 passed (unchanged -
 regression check only, --stitch's CLI surface itself didn't change),
 0 failed anywhere.
 
+---
+
+## Trip detection: movement-based bridging disabled by default (done, this session)
+
+Christer re-ran `bv-export` and shared the real `trip.log` line for
+the trip that grabbed a recording days apart from the rest:
+
+    20260721_124108_N: continues the trip - gap since 20260715_144844_N
+    was 510744.0s, over the 610.0s max_gap+gap_tolerance threshold,
+    but bridged by: GPS speed at/above 5 km/h near the start of
+    20260721_124108_N
+
+This confirms the primary hypothesis from the earlier investigation
+exactly: a single GPS fix showing ~5+ km/h right at the start of a
+recording bridged a 510744-second (~5.9 day) gap into one trip - the
+`bridge` mechanism has no ceiling on how large a gap it's willing to
+close, so *any* amount of GPS/g-sensor movement evidence at either
+edge overrides the entire `--max-gap` rule, regardless of how far
+apart the two recordings actually are.
+
+Asked Christer what ceiling would be right; his answer: he doesn't
+know a good number, and estimates the camera is offline (not
+recording at all) roughly 80% of the time between trips - meaning long
+gaps between recordings are the *normal* case for his archive, not a
+rare brief-stop exception the heuristic's whole premise assumes. Given
+that, picking any specific ceiling number would be a guess dressed up
+as a fix. His decision: disable movement-based bridging by default
+rather than invent a number neither of us was confident in.
+
+**The fix**: flipped the sense of the CLI flag in both `bv-export` and
+`bv-ls` - `--no-movement` (opt-out, previously default-on) became
+`--movement` (opt-in, default off). `bv_export()`'s and `bv_ls()`'s own
+`movement`/`use_movement` parameter defaults changed from `True` to
+`False` to match. With no flag given, `bridge` is `None` and
+`TripBuilder.build()` falls back to its pure time-gap rule
+(`--max-gap` + `--gap-tolerance`, optionally duration-adjusted via
+`--duration`, which stays on by default and is unaffected by any of
+this) - the same reliable, well-tested logic this session's earlier
+`_describe_gap()`/`reasons` work was built on. `movement_bridges_gap()`
+itself (telemetry/movement.py) is untouched - still available, still
+correct for what it does, just no longer consulted unless explicitly
+asked for.
+
+Applied to **both** `bv-export` and `bv-ls --trips`, not just
+bv-export - both call sites share the exact same `TripBuilder`+
+`movement_bridges_gap()` machinery and the exact same flaw, and
+leaving them inconsistent (bv-export's default trips disagreeing with
+bv-ls's) would be confusing for the same archive. Not something
+Christer asked for explicitly, but a direct, same-root-cause
+consequence of his answer, called out here rather than left silent.
+
+Verified against the exact real scenario: a synthetic two-recording
+archive ~6 days apart, the later recording carrying a GPS fix showing
+movement at its start (the identical shape of Christer's real trip.log
+line above) - confirmed via a real `bv-export` run through `main()`
+that the two recordings now land in separate trip folders by default,
+where before this fix they'd have merged.
+
+Tested: `test_bv_ls.py` - renamed/fixed the one existing test that
+relied on the old default-on behavior (now passes `movement=True`
+explicitly), added a new default-off test, and two new `main()`-level
+CLI tests for `--movement`. `test_bv_export.py` - two new `bv_export()`
+-level tests (default doesn't bridge even with real GPS evidence;
+`movement=True` does) plus a `main()`-level `--movement` CLI test.
+`movement_bridges_gap()`/`TripBuilder` themselves are unchanged, so
+`test_movement.py` (12) and `test_trip_builder.py` (23) still pass
+unmodified - this was purely a default-value/CLI-flag change at the
+two command layers, not a change to the underlying detection logic.
+All green: `test_bv_ls` 17 passed (0 failed - some PASS lines don't
+print to the visible harness log for tests using the `capsys`
+fixture, a known harness quirk, not a test failure), `test_bv_export`
+64 passed (61 + 3 new), `test_trip_export`/`test_trip_builder`/
+`test_movement` unaffected and re-run clean anyway, 0 failed
+anywhere.
+
+The root cause is now fixed for real trip detection, not just
+diagnosed. `movement_bridges_gap()` remains available behind
+`--movement` for whoever wants to opt back in (e.g. for a shorter,
+more confident gap where GPS evidence genuinely helps, like a long
+traffic light or a tunnel) - just off by default until there's a
+ceiling number worth trusting.
+
 This closes out all three items from Christer's original message: the
 per-trip trip.log (previous section), the trip-detection bug
 investigation (still deferred pending Christer's own real-archive
