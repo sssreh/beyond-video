@@ -69,3 +69,14 @@ bv-generate = "blackvue.cli.bv_generate:main"
 bv-lang = "blackvue.cli.bv_lang:main"
 bv-export = "blackvue.cli.bv_export:main"
 bv-web = "blackvue.cli.bv_web:main"
+
+# setuptools only bundles .py files into the installed wheel by
+# default - without this, web/templates/*.html (login.html,
+# trip_list.html, ...) silently get left out of `pip install .`,
+# which is exactly what happened on the real NAS install: bv-web
+# imported and ran fine, but every page 500'd with
+# jinja2.exceptions.TemplateNotFound the moment it tried to render
+# one, since site-packages/blackvue/web/templates/ didn't exist at
+# all.
+[tool.setuptools.package-data]
+"blackvue.web" = ["templates/*.html"]

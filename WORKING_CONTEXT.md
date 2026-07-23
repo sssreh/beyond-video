@@ -4488,3 +4488,53 @@ Christer provided rather than reproduced locally. Templates themselves
 (`login.html`, etc.) are unaffected - they already just reference
 `{{ user }}`/`{{ trips }}`/etc. by name, agnostic to which calling
 convention put them there.
+
+## bv-web's second real bug: templates weren't actually being packaged (this session)
+
+Same rebuild-and-retry cycle, next layer down: after the
+`TemplateResponse()` fix above, `GET /login` still 500'd. New
+traceback this time:
+
+```
+jinja2.exceptions.TemplateNotFound: 'login.html' not found in search
+path: '/usr/local/lib/python3.13/site-packages/blackvue/web/templates'
+```
+
+Root cause: `pyproject.toml` never told setuptools that
+`web/templates/*.html` are package data. setuptools only bundles
+`.py` files into an installed wheel by default - non-Python files
+inside a package directory (templates, static assets, fixtures, ...)
+have to be declared explicitly via `[tool.setuptools.package-data]`
+or they're silently dropped. `app.py` and the CLI both imported and
+ran fine (proving the *code* packaged correctly), which is exactly
+why this only surfaced the moment a route actually tried to render a
+template rather than at import time or in `bv-web --help` - a gap
+none of this session's `ast.parse()`-only verification could have
+caught, since the templates directory really was present and
+syntactically fine on disk, just never copied into the wheel.
+
+Fixed by adding to `pyproject.toml`:
+
+```toml
+[tool.setuptools.package-data]
+"blackvue.web" = ["templates/*.html"]
+```
+
+Checked the rest of `src/` for the same gap (`find src -type f -not
+-name "*.py"`) - `web/templates/*.html` are the only non-Python
+runtime files anywhere in the package, so nothing else needs the same
+treatment. Verified the TOML's brackets balance and the file parses
+sanely by eye - still can't run a real `pip install .[web]` to fully
+confirm in this sandbox (no network), so, as with the two bugs before
+it, Christer's next rebuild on the NAS is the actual test.
+
+Also worth noting for future deploy cycles: each of the last three
+`git pull`s on the NAS has hit the same "your local changes would be
+overwritten" error on unrelated files, caused by the NAS's git
+`core.autocrlf` converting checked-out files to CRLF against this
+repo's LF-normalized blobs. Had Christer set `git config core.autocrlf
+false` in the NAS checkout this time, which should stop it recurring
+on every future pull (previously worked around per-pull with `git
+reset --hard origin/main`, which is safe here since nothing on the
+NAS checkout is meant to be hand-edited, but shouldn't be necessary
+going forward).
