@@ -148,6 +148,48 @@ def _paste_marker_image(
     image.paste(rotated, (x, y), rotated)
 
 
+def render_base_map(
+    bbox: BoundingBox,
+    roads: tuple[Road, ...],
+    *,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    margin: int = DEFAULT_MARGIN_PX,
+) -> Image.Image:
+    """Render just the background + road network for `bbox` - the
+    part of render_frame()'s output that's identical on every frame of
+    a *static*-bbox render (map.mp4's default whole-trip overview
+    mode, as opposed to --map-zoom's follow-camera mode, where bbox/
+    roads are freshly recomputed every frame and there's no single
+    base image to reuse).
+
+    render_map_video() calls this once for a static-bbox render and
+    passes the result back into render_frame() as `base_image`, so
+    each frame draws only its own route/position/text on a copy of
+    this instead of every frame re-projecting and re-drawing the same
+    `roads` from scratch. Confirmed via profiling (a synthetic
+    5,402-fix/3,000-road trip) to be the dominant cost of a static
+    -mode map.mp4 render - well past interpolation, which
+    render_map_video()'s own O(fixes x frames) fix already addressed -
+    ~27 million road-point projections for a mere 600-frame slice, all
+    recomputing an answer that never changes since `bbox` and `roads`
+    are the same object on every call.
+    """
+
+    image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
+    draw = ImageDraw.Draw(image)
+
+    def proj(lat: float, lon: float) -> tuple[float, float]:
+        return _project(lat, lon, bbox, width, height, margin)
+
+    for road in roads:
+        pixels = [proj(lat, lon) for lat, lon in road.points]
+        if len(pixels) >= 2:
+            draw.line(pixels, fill=ROAD_COLOR, width=2)
+
+    return image
+
+
 def render_frame(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
@@ -161,6 +203,7 @@ def render_frame(
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
+    base_image: Image.Image | None = None,
 ) -> Image.Image:
     """Render one map-overlay frame: background roads, the route
     driven so far, a position marker, and an optional speed/timestamp
@@ -172,18 +215,32 @@ def render_frame(
     instead, or a plain dot when neither is available (e.g. a
     single-fix/stationary trip with no course data to point an arrow
     in).
+
+    `base_image`, if given, is used as the starting canvas (copied, not
+    mutated) instead of a fresh background with `roads` drawn onto it
+    - see render_base_map(). `roads` is then only used by callers that
+    still need it for something else; this function itself won't
+    re-draw it. Passing `base_image` only makes sense when `bbox`
+    matches whatever bbox `base_image` was rendered with - it's the
+    caller's responsibility to keep those in sync (render_map_video()
+    only does this in its static, non-`--map-zoom` mode, where `bbox`
+    is the same object on every call).
     """
 
-    image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
+    if base_image is not None:
+        image = base_image.copy()
+    else:
+        image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
 
     def proj(lat: float, lon: float) -> tuple[float, float]:
         return _project(lat, lon, bbox, width, height, margin)
 
-    for road in roads:
-        pixels = [proj(lat, lon) for lat, lon in road.points]
-        if len(pixels) >= 2:
-            draw.line(pixels, fill=ROAD_COLOR, width=2)
+    if base_image is None:
+        for road in roads:
+            pixels = [proj(lat, lon) for lat, lon in road.points]
+            if len(pixels) >= 2:
+                draw.line(pixels, fill=ROAD_COLOR, width=2)
 
     if len(route_points) >= 2:
         pixels = [proj(lat, lon) for lat, lon in route_points]
