@@ -3356,3 +3356,36 @@ a real ~1Hz GPS rate, 14,400 fixes x ~72,000 frames at map.mp4's
 default 5fps - old path would be on the order of 3x10^8 inner-loop
 iterations; new path finishes in well under 5 seconds), `test_trip_
 export` 49 passed (unaffected, regression check only), 0 failed.
+
+## bv-export: gsensor.mp4 render phase had no timing output (done, this session)
+
+Christer: "i dont se output from bv-export about timing for gsensor
+rendering". Root cause: concat/map/stitch phases in `export_trip()`
+each wrap their work in `time.monotonic()` and print `"bv-export:
+{phase} phase took {X}s"` to stderr under `--debug` - gsensor's render
+block never got the same treatment when it was written, so a `--debug`
+run gave no visibility into how long gsensor.mp4 took, and `trip.log`'s
+own `TripLog.step()` already has an `elapsed_seconds` parameter for
+exactly this (its docstring even names "map/stitch rendering" as the
+motivating case) but nothing called it anywhere in `trip_export.py`.
+
+Fix, in `trip_export.py`'s gsensor render block: added
+`gsensor_start = time.monotonic()` (unconditional, like the
+concatenation phase - trip.log should always get this, not just
+`--debug` runs) right after the existing "starting gsensor.mp4 render"
+log line; on success, `log.step("rendered gsensor.mp4", elapsed_
+seconds=...)` now records the duration into trip.log; a `--debug`
+-gated stderr print ("bv-export: gsensor phase took Xs") mirrors the
+map/stitch pattern exactly, placed after the try/except so it prints
+whether the render succeeded or was caught and turned into a warning.
+`export_trip()`'s own docstring updated to list gsensor alongside
+concat/map/stitch in the `--debug` phases it times. Scoped to gsensor
+only, per Christer's specific report - map/stitch/concat's own
+`log.step()` calls still don't pass `elapsed_seconds` (their `--debug`
+stderr timing already existed and is unaffected).
+
+Tested: `test_trip_export` 52 passed (49 existing + 3 new: a `--debug`
+-gated stderr test asserting "bv-export: gsensor phase took" appears,
+a silent-by-default test with `--debug` omitted, and a trip.log test
+asserting the "rendered gsensor.mp4 (X.Xs)" line's elapsed-seconds
+suffix), 0 failed.

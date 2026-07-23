@@ -429,7 +429,7 @@ def export_trip(
     export/trip_log.py.
 
     `debug=True` prints wall-clock timing to stderr for the
-    concatenation/map/stitch phases below, plus (from stitch.py)
+    concatenation/map/gsensor/stitch phases below, plus (from stitch.py)
     which decode method --stitch actually used - see bv_export.py's
     --debug flag. Independent of trip.log, which always records this
     same timing (and more) regardless of --debug.
@@ -598,6 +598,7 @@ def export_trip(
         # trip.log alone whether it's a huge trip genuinely taking a
         # while, or something worth investigating further.
         log.step(f"starting gsensor.mp4 render ({len(samples)} sample(s))")
+        gsensor_start = time.monotonic()
         try:
             gsensor_video_path = render_gsensor_video(
                 samples, destination / "gsensor.mp4",
@@ -607,7 +608,16 @@ def export_trip(
             warnings.append(f"gsensor video: {exc}")
             log.warning(f"gsensor video: {exc}")
         else:
-            log.step("rendered gsensor.mp4")
+            log.step(
+                "rendered gsensor.mp4",
+                elapsed_seconds=time.monotonic() - gsensor_start,
+            )
+        if debug:
+            print(
+                f"bv-export: gsensor phase took "
+                f"{time.monotonic() - gsensor_start:.1f}s",
+                file=sys.stderr,
+            )
 
     # --stitch-gsensor never generates gsensor.mp4 itself - it only
     # checks whether one already exists on disk (this run's own

@@ -1,5 +1,6 @@
 import calendar
 import json
+import re
 import struct
 import subprocess
 from datetime import datetime
@@ -549,6 +550,50 @@ def test_export_trip_render_gsensor_produces_a_video(tmp_path):
     assert result.gsensor_video == dest_dir / "gsensor.mp4"
     assert result.gsensor_video.exists()
     assert result.warnings == ()
+
+
+def test_export_trip_render_gsensor_debug_prints_phase_timing_to_stderr(
+    tmp_path, capsys
+):
+    # Matches the existing concatenation/map/stitch pattern - Christer
+    # noticed gsensor rendering was the one phase --debug said nothing
+    # about.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    export_trip(trip, dest_dir, render_gsensor=True, debug=True)
+
+    err = capsys.readouterr().err
+    assert "bv-export: gsensor phase took" in err
+
+
+def test_export_trip_render_gsensor_is_silent_by_default(tmp_path, capsys):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    export_trip(trip, dest_dir, render_gsensor=True)
+
+    assert capsys.readouterr().err == ""
+
+
+def test_export_trip_render_gsensor_logs_elapsed_seconds_to_trip_log(tmp_path):
+    # trip.log records this regardless of --debug (see export_trip()'s
+    # own docstring) - unlike the stderr print above, which only
+    # happens under --debug.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    export_trip(trip, dest_dir, render_gsensor=True)
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    match = re.search(r"rendered gsensor\.mp4 \((\d+\.\d)s\)", log_text)
+    assert match is not None
 
 
 def test_export_trip_render_gsensor_warns_instead_of_failing_on_encode_error(
