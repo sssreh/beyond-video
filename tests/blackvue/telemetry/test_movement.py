@@ -143,7 +143,7 @@ def _recording(
     return Recording(id=RecordingId(f"{ts}_{label}"), assets=assets)
 
 
-def test_movement_bridges_gap_true_when_gps_shows_speed_at_previous_end(
+def test_movement_bridges_gap_returns_a_reason_when_gps_shows_speed_at_previous_end(
     tmp_path,
 ):
     gps_path = tmp_path / "prev.gps"
@@ -155,17 +155,25 @@ def test_movement_bridges_gap_true_when_gps_shows_speed_at_previous_end(
     previous = _recording("N", "20260720_100000", gps_path=gps_path)
     current = _recording("N", "20260720_101500")
 
-    assert movement_bridges_gap(previous, current) is True
+    # A truthy, human-readable reason - not a bare bool - so
+    # TripBuilder's own trip log can show *what* evidence bridged the
+    # gap, not just that something did.
+    result = movement_bridges_gap(previous, current)
+    assert result is not None
+    assert "GPS speed" in result
+    assert str(previous.id) in result
 
 
-def test_movement_bridges_gap_false_when_no_telemetry_files():
+def test_movement_bridges_gap_returns_none_when_no_telemetry_files():
     previous = _recording("N", "20260720_100000")
     current = _recording("N", "20260720_101500")
 
-    assert movement_bridges_gap(previous, current) is False
+    assert movement_bridges_gap(previous, current) is None
 
 
-def test_movement_bridges_gap_false_when_files_show_no_movement(tmp_path):
+def test_movement_bridges_gap_returns_none_when_files_show_no_movement(
+    tmp_path
+):
     gps_path = tmp_path / "prev.gps"
     gps_path.write_text(
         "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
@@ -184,4 +192,4 @@ def test_movement_bridges_gap_false_when_files_show_no_movement(tmp_path):
     previous = _recording("N", "20260720_100000", gps_path=gps_path)
     current = _recording("N", "20260720_101500", gsensor_path=gsensor_path)
 
-    assert movement_bridges_gap(previous, current) is False
+    assert movement_bridges_gap(previous, current) is None

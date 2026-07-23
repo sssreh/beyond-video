@@ -273,4 +273,71 @@ def test_trip_builder_works_against_real_recordings():
     assert len(trips) == 2
     assert trips[0].label == "trip_20260715_100000_20260715_100500"
     assert trips[1].label == "trip_20260715_103000_20260715_103000"
+
+
+def test_reasons_records_the_first_recording_in_the_archive():
+    recording = Recording(id=RecordingId("20260715_100000_N"))
+
+    reasons = {}
+    TripBuilder().build([recording], reasons=reasons)
+
+    assert reasons[recording.id] == "first recording in the archive"
+
+
+def test_reasons_records_a_within_threshold_continuation():
+    first = Recording(id=RecordingId("20260715_100000_N"))
+    second = Recording(id=RecordingId("20260715_100500_N"))
+
+    reasons = {}
+    TripBuilder(max_gap=timedelta(minutes=10)).build(
+        [first, second], reasons=reasons
+    )
+
+    reason = reasons[second.id]
+    assert "continues the trip" in reason
+    assert "within" in reason
+    assert str(first.id) in reason
+
+
+def test_reasons_records_a_gap_that_starts_a_new_trip():
+    first = Recording(id=RecordingId("20260715_100000_N"))
+    second = Recording(id=RecordingId("20260715_103000_N"))
+
+    reasons = {}
+    TripBuilder(max_gap=timedelta(minutes=10)).build(
+        [first, second], reasons=reasons
+    )
+
+    reason = reasons[second.id]
+    assert "starts a new trip" in reason
+    assert "no movement evidence bridged it" in reason
+
+
+def test_reasons_records_the_bridges_own_reason_text():
+    first = Recording(id=RecordingId("20260715_100000_N"))
+    second = Recording(id=RecordingId("20260715_103000_N"))
+
+    reasons = {}
+    TripBuilder(
+        max_gap=timedelta(minutes=10),
+        bridge=lambda prev, cur: "GPS speed at 42 km/h",
+    ).build([first, second], reasons=reasons)
+
+    reason = reasons[second.id]
+    assert "continues the trip" in reason
+    assert "bridged by: GPS speed at 42 km/h" in reason
+
+
+def test_describe_gap_flags_a_negative_gap_explicitly():
+    description = TripBuilder._describe_gap(timedelta(seconds=-5))
+
+    assert "BEFORE" in description
+    assert "5.0s" in description
+
+
+def test_describe_gap_renders_a_positive_gap_plainly():
+    description = TripBuilder._describe_gap(timedelta(seconds=45))
+
+    assert description == "45.0s"
+    assert "BEFORE" not in description
     

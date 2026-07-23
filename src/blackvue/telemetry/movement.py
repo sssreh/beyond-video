@@ -188,7 +188,18 @@ def _recording_shows_movement(
     speed_threshold_kmh: float,
     window: timedelta,
     variance_ratio_threshold: float,
-) -> bool:
+) -> str | None:
+    """Return a short, human-readable description of the movement
+    evidence found at this recording's start/end edge (GPS speed or
+    g-sensor variance - whichever fired first), or None if neither
+    shows any. The description is meant to end up in bv-export's own
+    trip log (see trip_builder.TripBuilder's `reasons` output) so a
+    surprising bridge decision can be traced back to exactly which
+    signal caused it, not just that "something" did.
+    """
+
+    edge = "start" if at_start else "end"
+
     gps_file = recording.file(Asset.GPS)
     if gps_file is not None:
         try:
@@ -204,7 +215,10 @@ def _recording_shows_movement(
             fixes, window=window, speed_threshold_kmh=speed_threshold_kmh
         )
         if result:
-            return True
+            return (
+                f"GPS speed at/above {speed_threshold_kmh:g} km/h near the "
+                f"{edge} of {recording.id}"
+            )
 
     gsensor_file = recording.file(Asset.GSENSOR)
     if gsensor_file is not None:
@@ -223,9 +237,12 @@ def _recording_shows_movement(
             variance_ratio_threshold=variance_ratio_threshold,
         )
         if result:
-            return True
+            return (
+                f"g-sensor variance near the {edge} of {recording.id} "
+                "exceeded its own stationary baseline"
+            )
 
-    return False
+    return None
 
 
 def movement_bridges_gap(
@@ -235,24 +252,28 @@ def movement_bridges_gap(
     speed_threshold_kmh: float = DEFAULT_SPEED_THRESHOLD_KMH,
     window: timedelta = DEFAULT_EDGE_WINDOW,
     variance_ratio_threshold: float = DEFAULT_VARIANCE_RATIO_THRESHOLD,
-) -> bool:
-    """Return True if GPS or g-sensor evidence suggests the vehicle
-    was still moving at the end of `previous` or the start of
-    `current` - meaning the gap between them should be bridged into
-    one trip instead of splitting.
+) -> str | None:
+    """Return a short description of the GPS or g-sensor evidence
+    suggesting the vehicle was still moving at the end of `previous` or
+    the start of `current` - meaning the gap between them should be
+    bridged into one trip instead of splitting - or None if neither
+    recording shows any such evidence. Still usable as a plain bool
+    (any non-None string is truthy, None is falsy) by callers that
+    only care about the yes/no answer, like TripBuilder.build().
 
     Missing or unreadable GPS/g-sensor files are treated as "no
     evidence" and never force a split on their own.
     """
 
-    if _recording_shows_movement(
+    reason = _recording_shows_movement(
         previous,
         at_start=False,
         speed_threshold_kmh=speed_threshold_kmh,
         window=window,
         variance_ratio_threshold=variance_ratio_threshold,
-    ):
-        return True
+    )
+    if reason is not None:
+        return reason
 
     return _recording_shows_movement(
         current,
