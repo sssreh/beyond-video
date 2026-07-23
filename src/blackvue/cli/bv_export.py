@@ -29,15 +29,18 @@ from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
+from blackvue.export.stitch import DEFAULT_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
+from blackvue.export.stitch import MAX_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
+from blackvue.export.stitch import MIN_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
@@ -144,6 +147,23 @@ def _parse_mirror_radius(value: str) -> float:
     return radius
 
 
+def _parse_mirror_zoom(value: str) -> float:
+    try:
+        zoom = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid zoom {value!r} (expected a number)"
+        )
+
+    if not (MIN_MIRROR_ZOOM_PERCENT <= zoom <= MAX_MIRROR_ZOOM_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"zoom {value!r} out of range "
+            f"({MIN_MIRROR_ZOOM_PERCENT:g}-{MAX_MIRROR_ZOOM_PERCENT:g})"
+        )
+
+    return zoom
+
+
 def _parse_map_size(value: str) -> float:
     try:
         size = float(value)
@@ -212,6 +232,7 @@ def bv_export(
     stitch_max_height: int | None = None,
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
+    stitch_mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
@@ -372,6 +393,7 @@ def bv_export(
                 stitch_max_height=stitch_max_height,
                 stitch_mirror_size=stitch_mirror_size,
                 stitch_mirror_radius=stitch_mirror_radius,
+                stitch_mirror_zoom=stitch_mirror_zoom,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
                 stitch_map_size=stitch_map_size,
@@ -667,6 +689,23 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-mirror-zoom",
+        type=_parse_mirror_zoom,
+        default=DEFAULT_MIRROR_ZOOM_PERCENT,
+        metavar="PERCENT",
+        help=(
+            f"Zoom the mirror inset in, by cropping this percentage off "
+            f"each edge of the rear source (toward its own center) "
+            f"before it's scaled in "
+            f"({MIN_MIRROR_ZOOM_PERCENT:g}-{MAX_MIRROR_ZOOM_PERCENT:g}) "
+            f"- 0 shows the whole rear frame unchanged, higher values "
+            f"show progressively less of it. Only meaningful with "
+            f"--stitch-layout rearview_mirror. Default: "
+            f"{DEFAULT_MIRROR_ZOOM_PERCENT:g}."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-resolution",
         type=_parse_resolution,
         default=None,
@@ -932,6 +971,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_max_height=args.stitch_max_height,
         stitch_mirror_size=args.stitch_mirror_size,
         stitch_mirror_radius=args.stitch_mirror_radius,
+        stitch_mirror_zoom=args.stitch_mirror_zoom,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
         stitch_map_size=args.stitch_map_size,

@@ -3770,3 +3770,52 @@ forwarded to `stitch_cameras()`). `test_bv_export` 74 passed (71
 existing + 3 new: default/explicit-value/out-of-range-rejection for
 `--stitch-mirror-radius`, mirroring `--stitch-mirror-size`'s own three).
 0 failed across all three, 232 tests total.
+
+## --stitch-mirror-zoom: center-crop zoom on the mirror inset (this session)
+
+Second of the two follow-up requests from task #84's own message
+("a zoom in percent"). Design confirmed via the same AskUserQuestion
+call as `--stitch-mirror-radius` (0=full rear frame, higher=tighter
+crop, Christer's own recommended reading).
+
+`mirror_zoom` (0-95, default 0 - see MIN_/MAX_/DEFAULT_MIRROR_ZOOM_PERCENT)
+crops the rear source toward its own center, by that percent of each
+edge, before it's scaled into the inset - 0 (the default) shows the
+whole rear frame unchanged; higher values show progressively less of
+it. Capped below 100 (95) since cropping the entire frame away is
+degenerate, not a meaningful "maximum zoom."
+
+Unlike `mirror_radius`, this is a plain crop with no alpha-channel
+concerns, so it's baked straight into rear's own decode-time
+intermediate from task #84 - prepended to the scale+hflip filter
+already built there: `crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},
+scale={mirror_width}:-2,hflip`, where `keep_fraction = 1 -
+mirror_zoom/100`. A uniform fraction off both `iw`/`ih` preserves
+rear's own aspect ratio exactly, so it doesn't interact with
+`mirror_width`'s own `-2` auto-height sizing - no reordering or
+recomputation needed elsewhere. A no-op (no crop clause at all, not
+even a redundant `crop=w=iw:h=ih`) when `mirror_zoom` is 0, the
+unchanged default.
+
+Wired through the same three layers as `mirror_radius`: `_stack()`/
+`stitch_cameras()` (stitch.py), `export_trip()` (trip_export.py,
+`stitch_mirror_zoom` param), and `--stitch-mirror-zoom PERCENT`
+(bv_export.py, `_parse_mirror_zoom()` validator).
+
+Two new pixel-level tests in test_stitch.py, using a new
+`_make_rear_zoom_probe()` helper (a 320x320 yellow frame with a solid
+blue center, 20px border) so cropping is easy to verify by sampling a
+pixel right at the inset's own edge: `test_stitch_cameras_rearview_mirror_zoom_zero_is_a_no_op`
+confirms that edge pixel is still the source's yellow border at
+`mirror_zoom=0`. `test_stitch_cameras_rearview_mirror_zoom_crops_toward_the_center`
+confirms the same edge pixel becomes solid blue at `mirror_zoom=30`
+(keep_fraction 0.7 removes 48px from each side of a 320px source,
+comfortably past the 20px yellow border, so none of it survives into
+the cropped/scaled inset).
+
+Tested: `test_stitch` 104 passed (102 existing from the radius task +
+2 new). `test_trip_export` 57 passed (56 existing + 1 new:
+`mirror_zoom` is forwarded to `stitch_cameras()`). `test_bv_export` 77
+passed (74 existing + 3 new: default/explicit-value/out-of-range
+-rejection for `--stitch-mirror-zoom`). 0 failed across all three, 238
+tests total.
