@@ -29,6 +29,8 @@ from ..telemetry.gps_reader import GpsFix
 from .map_video import render_map_video
 from .media import concatenate_media
 from .media import encode_with_nvenc_fallback
+from .mirror_icon import MirrorFrame
+from .mirror_icon import load_mirror_frame
 from .osm_roads import Road
 from .osm_roads import aspect_ratio_of
 from .osm_roads import bounding_box_for_fixes
@@ -379,6 +381,7 @@ def stitch_cameras(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    mirror_icon: Path | None = None,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_size: float | None = None,
@@ -438,6 +441,28 @@ def stitch_cameras(
     step (unlike `mirror_radius` above, a plain crop carries no alpha
     -channel problem), right before the scale+hflip already baked in
     there - see this function's own decode-scale-filter comment.
+
+    `mirror_icon`, if given, is a path to a photo of a real physical
+    rearview mirror - see mirror_icon.py's own module docstring for
+    the segmentation approach. Replaces the plain procedural inset
+    entirely: rear footage is scaled/cropped to exactly fill the
+    photo's own "glass" area (a flood-fill-derived silhouette, not
+    necessarily a plain rectangle), alpha-clipped to that silhouette,
+    and the photo's own frame/bezel/mount is composited on top - so
+    the result reads as footage playing inside the actual photographed
+    mirror. `mirror_radius` is ignored when this is given (the photo's
+    own glass shape already defines the silhouette); `mirror_zoom`
+    still applies, cropping the rear source toward its center before
+    it's fit to the glass area. Positioned flush against the front
+    composite's own top edge (not `mirror_size`'s usual small top
+    margin) - Christer: "i want it to be attached to the top of front
+    image", matching how a real dashcam's own windshield mount would
+    anchor it. A load failure (missing file, unreadable image, no
+    enclosed glass area found) degrades to a `warnings` entry and
+    falls back to the plain procedural inset, same "don't fail the
+    whole stitch over an optional cosmetic input" convention `map_icon`
+    already follows for --map/--map-zoom's own custom marker image.
+
     Everything below (gsensor overlay, map panel, subtitle burn-in)
     treats the resulting
     front+inset frame exactly like 'side_by_side'/'top_down' treat
@@ -632,7 +657,7 @@ def stitch_cameras(
             layout=layout, resolution=resolution, bitrate=bitrate,
             scale=scale, max_width=max_width, max_height=max_height,
             mirror_size=mirror_size, mirror_radius=mirror_radius,
-            mirror_zoom=mirror_zoom,
+            mirror_zoom=mirror_zoom, mirror_icon=mirror_icon,
             map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
@@ -1302,6 +1327,101 @@ def _ideal_shared_dimension(
     return max(2, round(shared / 2) * 2)
 
 
+# The extra amount (as a fraction of the icon-based mirror inset's
+# own target height) to nudge it up past a literal flush-with-the-top
+# placement - picked by eye against Christer's own reference mirror
+# photo during this feature's mockup phase ("move the mirror up a
+# couple of pixels so we dont see the small top"): the mount's own
+# topmost pixel already lands at y=0 once MirrorFrame's content bbox
+# crop removes the source photo's surrounding margin (see
+# mirror_icon.py), but the mount's rounded dome shape means only a
+# single point actually touches y=0 - most of its width at that row
+# is still transparent, so a plain y=0 placement reads as a thin
+# rounded sliver poking out rather than a clean flat cut-off. Nudging
+# up by a further ~4% of the inset's own height moves the crop line
+# down to a wider part of the dome instead.
+_MIRROR_ICON_TOP_NUDGE_FRACTION = 15 / 358
+
+
+def _mirror_icon_layout(
+    mirror_frame: MirrorFrame,
+    *,
+    front_width: int,
+    mirror_size: float,
+) -> tuple[int, int, int, int, int, int]:
+    """The pixel geometry for compositing `mirror_frame` (a loaded
+    --stitch-mirror-icon - see mirror_icon.py) at `mirror_size`
+    percent of `front_width`, preserving its own frame_overlay/
+    glass_mask aspect ratio (never distorted - same "always scale
+    proportionally" convention every other --stitch sizing knob in
+    this module follows).
+
+    Returns (content_width, content_height, glass_width, glass_height,
+    glass_offset_x, glass_offset_y) - the whole icon canvas's own
+    target size, and the glass sub-region's target size/position
+    within that canvas (see MirrorFrame.glass_bbox) - everything the
+    caller needs to build both the rear camera's own decode-time
+    scale filter (targeting glass_width x glass_height directly, see
+    _stack()'s own is_mirror branch) and the final combine's overlay
+    positioning (targeting content_width x content_height).
+    """
+
+    content_width = max(
+        2, round(front_width * mirror_size / 100 / 2) * 2
+    )
+    native_width, native_height = mirror_frame.frame_overlay.size
+    content_height = max(
+        2, round(content_width * native_height / native_width / 2) * 2
+    )
+
+    scale_x = content_width / native_width
+    scale_y = content_height / native_height
+    gx0, gy0, gx1, gy1 = mirror_frame.glass_bbox
+    glass_width = max(2, round((gx1 - gx0 + 1) * scale_x / 2) * 2)
+    glass_height = max(2, round((gy1 - gy0 + 1) * scale_y / 2) * 2)
+    glass_offset_x = round(gx0 * scale_x)
+    glass_offset_y = round(gy0 * scale_y)
+
+    return (
+        content_width, content_height,
+        glass_width, glass_height,
+        glass_offset_x, glass_offset_y,
+    )
+
+
+def _cover_crop_filter(source_width: int, source_height: int, *, target_width: int, target_height: int) -> str:
+    """A `crop=...` filter fragment (no trailing comma) that crops
+    `source_width` x `source_height` down to `target_width`/
+    `target_height`'s own aspect ratio, centered (ffmpeg's `crop`
+    filter defaults x/y to centered when omitted) - so a later
+    `scale=target_width:target_height` never has to distort the
+    picture to reach an exact size, the same "fit without warping"
+    idiom `_fit_and_pad()` uses elsewhere in this module, just without
+    the padding half (this is a *cover* crop - filling the target
+    completely and cropping the excess - not a *contain* fit that
+    would leave letterbox bars).
+
+    Expressed as a fraction of ffmpeg's own runtime `iw`/`ih`
+    variables, not literal pixel counts - safe to chain after an
+    earlier crop (e.g. --stitch-mirror-zoom's own center-crop) whose
+    exact output pixel size isn't known in Python, since a uniform
+    fractional crop preserves aspect ratio regardless of the frame's
+    actual size at that point in the filter chain.
+    """
+
+    source_aspect = source_width / source_height
+    target_aspect = target_width / target_height
+
+    if source_aspect > target_aspect:
+        width_fraction = target_aspect / source_aspect
+        height_fraction = 1.0
+    else:
+        width_fraction = 1.0
+        height_fraction = source_aspect / target_aspect
+
+    return f"crop=w=iw*{width_fraction}:h=ih*{height_fraction}"
+
+
 def _mirror_radius_alpha_expr(radius_percent: float) -> str:
     """The ffmpeg geq `a=` (alpha) expression rounding a rectangle's
     four corners to a radius of `radius_percent` percent of
@@ -1368,6 +1488,7 @@ def _stack(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    mirror_icon: Path | None = None,
     map_mode: str | None = None,
     map_side: str | None = None,
     map_size: float | None = None,
@@ -1535,35 +1656,104 @@ def _stack(
         else:
             front_scale_filter = None
             front_width, front_height = _video_dimensions(front)
-        # The rear inset only ever needs to end up `mirror_size`
-        # percent of front's own (possibly already-scaled) width -
-        # decoding it at full native size just to immediately shrink it
-        # down in the final combine pass wastes real decode+encode time
-        # on detail that gets discarded one step later, the same class
-        # of waste `_ideal_shared_dimension()` exists to avoid for
-        # hstack/vstack. This runs unconditionally (not just when scale/
-        # max_width/max_height/resolution are given) - Christer's own
-        # report ("front, rear, panel and stitch are still slow") named
-        # rear specifically, and this was wasted work even at full
-        # native quality with no shrink flags at all. Scaled and
-        # flipped right here at decode time instead of in the final
-        # combine's own filter_complex (see the `is_mirror` overlay
-        # clause below, now much simpler) - both ops are safe to bake
-        # into the intermediate, unlike a rounded-corner mask, which
-        # would need an alpha channel the intermediate's own H.264
-        # encode can't carry.
-        mirror_width = max(2, round(front_width * mirror_size / 100 / 2) * 2)
-        # `mirror_zoom`: crops rear toward its own center by that
-        # percent of each edge *before* the scale+hflip above - a
-        # uniform fraction off both iw/ih preserves rear's own aspect
-        # ratio exactly, so it doesn't interact with `mirror_width`'s
-        # own -2 auto-height sizing. A no-op (no crop clause at all)
-        # when 0, the unchanged default.
-        rear_crop_filter = ""
-        if mirror_zoom > 0:
-            keep_fraction = 1 - mirror_zoom / 100
-            rear_crop_filter = f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
-        rear_scale_filter = f"{rear_crop_filter}scale={mirror_width}:-2,hflip"
+
+        # `mirror_icon` (--stitch-mirror-icon): a real mirror photo,
+        # segmented into a frame overlay + glass clipping mask by
+        # mirror_icon.py - see MirrorFrame's own docstring. Loaded
+        # here (not inside the tempfile.TemporaryDirectory() block
+        # below) because the rear camera's own decode-time scale
+        # filter needs to target the glass region's exact size, which
+        # depends on this - but the two derived images themselves
+        # (mirror_frame.frame_overlay/glass_mask) are only written to
+        # disk later, once tmp_path exists (see the is_mirror overlay
+        # -clause block further down). A load failure (missing file,
+        # unreadable image, no enclosed glass area) degrades to a
+        # `warnings` entry and the plain procedural rounded-rectangle
+        # inset instead - same "don't fail the whole stitch over an
+        # optional cosmetic input" convention `map_icon` already
+        # follows for --map/--map-zoom's own custom marker image.
+        mirror_frame: MirrorFrame | None = None
+        if mirror_icon is not None:
+            try:
+                mirror_frame = load_mirror_frame(mirror_icon)
+            except MediaToolError as exc:
+                if warnings is not None:
+                    warnings.append(f"stitch mirror icon: {exc}")
+
+        if mirror_frame is not None:
+            (
+                mirror_content_width, mirror_content_height,
+                mirror_glass_width, mirror_glass_height,
+                mirror_glass_offset_x, mirror_glass_offset_y,
+            ) = _mirror_icon_layout(
+                mirror_frame, front_width=front_width, mirror_size=mirror_size,
+            )
+            # The glass region's own target aspect ratio rarely
+            # matches the rear camera's native one exactly (a 16:9
+            # dashcam against, say, a wider mirror-glass shape) -
+            # cover-crop first (centered, no distortion - see
+            # _cover_crop_filter()) so the final `scale=` below can
+            # target the glass's exact pixel size without stretching
+            # the picture. Needs rear's own native aspect ratio, which
+            # nothing upstream in this branch has probed yet (unlike
+            # front, rear is otherwise only ever probed for the
+            # hstack/vstack branches below).
+            probe_rear_mirror_width, probe_rear_mirror_height = _video_dimensions(rear)
+            cover_crop = _cover_crop_filter(
+                probe_rear_mirror_width, probe_rear_mirror_height,
+                target_width=mirror_glass_width, target_height=mirror_glass_height,
+            )
+            rear_crop_filter = ""
+            if mirror_zoom > 0:
+                keep_fraction = 1 - mirror_zoom / 100
+                rear_crop_filter = (
+                    f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
+                )
+            # No `format=rgba`/padding/alpha-clip here - those need an
+            # alpha channel this decode-time intermediate's own H.264
+            # encode can't carry, so they happen in the final
+            # combine's filter_complex instead (see the is_mirror
+            # overlay-clause block further down), operating on this
+            # already-glass-sized, already-flipped intermediate.
+            rear_scale_filter = (
+                f"{rear_crop_filter}{cover_crop},"
+                f"scale={mirror_glass_width}:{mirror_glass_height},hflip"
+            )
+        else:
+            # The plain procedural rounded-rectangle inset (--stitch
+            # -mirror-radius, or a perfectly square-cornered rect at
+            # its default 0). The rear inset only ever needs to end up
+            # `mirror_size` percent of front's own (possibly already
+            # -scaled) width - decoding it at full native size just to
+            # immediately shrink it down in the final combine pass
+            # wastes real decode+encode time on detail that gets
+            # discarded one step later, the same class of waste
+            # `_ideal_shared_dimension()` exists to avoid for hstack/
+            # vstack. This runs unconditionally (not just when scale/
+            # max_width/max_height/resolution are given) - Christer's
+            # own report ("front, rear, panel and stitch are still
+            # slow") named rear specifically, and this was wasted work
+            # even at full native quality with no shrink flags at all.
+            # Scaled and flipped right here at decode time instead of
+            # in the final combine's own filter_complex (see the
+            # `is_mirror` overlay clause below, now much simpler) -
+            # both ops are safe to bake into the intermediate, unlike
+            # a rounded-corner mask, which would need an alpha channel
+            # the intermediate's own H.264 encode can't carry.
+            mirror_width = max(2, round(front_width * mirror_size / 100 / 2) * 2)
+            # `mirror_zoom`: crops rear toward its own center by that
+            # percent of each edge *before* the scale+hflip above - a
+            # uniform fraction off both iw/ih preserves rear's own
+            # aspect ratio exactly, so it doesn't interact with
+            # `mirror_width`'s own -2 auto-height sizing. A no-op (no
+            # crop clause at all) when 0, the unchanged default.
+            rear_crop_filter = ""
+            if mirror_zoom > 0:
+                keep_fraction = 1 - mirror_zoom / 100
+                rear_crop_filter = (
+                    f"crop=w=iw*{keep_fraction}:h=ih*{keep_fraction},"
+                )
+            rear_scale_filter = f"{rear_crop_filter}scale={mirror_width}:-2,hflip"
     elif effective_resolution is not None:
         out_width, out_height = effective_resolution
         # `pre_decode_scale_applied` means front/rear were already
@@ -1753,41 +1943,119 @@ def _stack(
             final_width, final_height = comp_width, comp_height
 
         if is_mirror:
-            # Front stays full-frame (the primary content). Rear (input
-            # 1) arrives here already scaled to `mirror_size` percent
-            # of front's own width and flipped (a real rearview mirror
-            # shows things reversed, not raw footage) - both baked into
-            # its own decode step above (see the `is_mirror` branch
-            # there) rather than done here in the final combine's
-            # filter_complex. Reuses input 1 directly rather than
-            # claiming a new index - unlike gsensor.mp4/the map panel,
-            # which are separate already-rendered files. Any --stitch
-            # -resolution fit-and-pad happens *after* this overlay (see
-            # `output_label` below), not to front alone first, so the
-            # inset is always sized/placed against real visible
-            # footage.
-            rear_label = "1:v"
-            if mirror_radius > 0:
-                # Can't bake this into rear's own decode-time
-                # intermediate (see this function's own is_mirror
-                # decode-scale-filter comment) - an H.264 intermediate
-                # has no alpha channel, so the rounding has to happen
-                # here, right before the overlay, on the already-small
-                # decoded inset (cheap regardless of the per-pixel geq
-                # cost, since it's a small region, not the full frame).
+            if mirror_frame is not None:
+                # --stitch-mirror-icon: composite the segmented mirror
+                # photo (see mirror_icon.py) instead of the plain
+                # procedural rounded-rectangle inset. Rear (input 1)
+                # already arrives scaled to exactly the glass region's
+                # own target size and flipped (see this function's own
+                # is_mirror decode-scale-filter branch) - what's left
+                # is: pad it out to the full mirror-icon canvas size at
+                # the glass region's own offset (transparent padding,
+                # so the parts of the canvas outside the glass show
+                # whatever's behind them, not black), alpha-clip it to
+                # the glass's own non-rectangular silhouette (a plain
+                # rectangular pad alone would still poke out past a
+                # rounded/oval glass shape into the frame/mount's own
+                # corners), overlay that clipped footage onto front,
+                # then overlay the frame/mount graphic on top of that
+                # so it reads as footage playing inside the actual
+                # photographed mirror rather than the video itself.
+                frame_overlay_path = tmp_path / "mirror_frame_overlay.png"
+                glass_mask_path = tmp_path / "mirror_glass_mask.png"
+                mirror_frame.frame_overlay.save(frame_overlay_path)
+                mirror_frame.glass_mask.save(glass_mask_path)
+
+                frame_index = next_input_index
+                next_input_index += 1
+                mask_index = next_input_index
+                next_input_index += 1
+                extra_inputs += [
+                    "-i", str(frame_overlay_path), "-i", str(glass_mask_path),
+                ]
+
                 clauses.append(
-                    "[1:v]format=rgba,geq="
-                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-                    f"a='{_mirror_radius_alpha_expr(mirror_radius)}'"
-                    "[mirror_rounded]"
+                    f"[{mask_index}:v]scale="
+                    f"{mirror_content_width}:{mirror_content_height}"
+                    "[mirror_glass_mask_scaled]"
                 )
-                rear_label = "mirror_rounded"
-            margin_y = round(content_height * _MIRROR_MARGIN_FRACTION)
-            clauses.append(
-                f"[0:v][{rear_label}]overlay="
-                f"x=(main_w-overlay_w)/2:y={margin_y}[withmirror]"
-            )
-            camera_label = "withmirror"
+                clauses.append(
+                    "[1:v]format=rgba,pad="
+                    f"{mirror_content_width}:{mirror_content_height}:"
+                    f"{mirror_glass_offset_x}:{mirror_glass_offset_y}:"
+                    "color=black@0.0[mirror_rear_padded]"
+                )
+                clauses.append(
+                    "[mirror_rear_padded][mirror_glass_mask_scaled]"
+                    "alphamerge[mirror_rear_clipped]"
+                )
+                # A negative y pushes the whole mirror graphic up past
+                # a literal flush-with-the-top placement - see
+                # _MIRROR_ICON_TOP_NUDGE_FRACTION's own docstring note
+                # on why the mount's rounded dome needs this to avoid
+                # showing as a thin sliver. Both overlays below share
+                # the same x/y (ffmpeg's own `main_w`/`main_h` runtime
+                # vars refer to the *base* input's size in each case -
+                # front's own real dimensions either way, since overlay
+                # never changes its base input's canvas size) so the
+                # clipped rear footage and the frame graphic on top of
+                # it land in exactly the same place.
+                mirror_pos_y = -round(
+                    mirror_content_height * _MIRROR_ICON_TOP_NUDGE_FRACTION
+                )
+                clauses.append(
+                    "[0:v][mirror_rear_clipped]overlay="
+                    f"x=(main_w-overlay_w)/2:y={mirror_pos_y}"
+                    "[mirror_with_footage]"
+                )
+                clauses.append(
+                    f"[{frame_index}:v]scale="
+                    f"{mirror_content_width}:{mirror_content_height}"
+                    "[mirror_frame_scaled]"
+                )
+                clauses.append(
+                    "[mirror_with_footage][mirror_frame_scaled]overlay="
+                    f"x=(main_w-overlay_w)/2:y={mirror_pos_y}[withmirror]"
+                )
+                camera_label = "withmirror"
+            else:
+                # Front stays full-frame (the primary content). Rear
+                # (input 1) arrives here already scaled to
+                # `mirror_size` percent of front's own width and
+                # flipped (a real rearview mirror shows things
+                # reversed, not raw footage) - both baked into its own
+                # decode step above (see the `is_mirror` branch there)
+                # rather than done here in the final combine's filter
+                # _complex. Reuses input 1 directly rather than
+                # claiming a new index - unlike gsensor.mp4/the map
+                # panel, which are separate already-rendered files. Any
+                # --stitch-resolution fit-and-pad happens *after* this
+                # overlay (see `output_label` below), not to front
+                # alone first, so the inset is always sized/placed
+                # against real visible footage.
+                rear_label = "1:v"
+                if mirror_radius > 0:
+                    # Can't bake this into rear's own decode-time
+                    # intermediate (see this function's own is_mirror
+                    # decode-scale-filter comment) - an H.264
+                    # intermediate has no alpha channel, so the
+                    # rounding has to happen here, right before the
+                    # overlay, on the already-small decoded inset
+                    # (cheap regardless of the per-pixel geq cost,
+                    # since it's a small region, not the full frame).
+                    clauses.append(
+                        "[1:v]format=rgba,geq="
+                        "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                        f"a='{_mirror_radius_alpha_expr(mirror_radius)}'"
+                        "[mirror_rounded]"
+                    )
+                    rear_label = "mirror_rounded"
+                margin_y = round(content_height * _MIRROR_MARGIN_FRACTION)
+                clauses.append(
+                    f"[0:v][{rear_label}]overlay="
+                    f"x=(main_w-overlay_w)/2:y={margin_y}[withmirror]"
+                )
+                camera_label = "withmirror"
         else:
             clauses.append(f"[0:v][1:v]{filter_name}=inputs=2[stacked]")
             camera_label = "stacked"

@@ -233,6 +233,7 @@ def bv_export(
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     stitch_mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    stitch_mirror_icon: str | Path | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
@@ -344,6 +345,7 @@ def bv_export(
     # export_trip()'s map_cache_dir docstring.
     map_cache_dir = target_path / ".osm_cache"
     map_icon_path = Path(map_icon) if map_icon else None
+    stitch_mirror_icon_path = Path(stitch_mirror_icon) if stitch_mirror_icon else None
     exit_code = 0
     # Cached on the first existing trip folder this run encounters,
     # then reused for every other one - so an interactive run only
@@ -394,6 +396,7 @@ def bv_export(
                 stitch_mirror_size=stitch_mirror_size,
                 stitch_mirror_radius=stitch_mirror_radius,
                 stitch_mirror_zoom=stitch_mirror_zoom,
+                stitch_mirror_icon=stitch_mirror_icon_path,
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
                 stitch_map_size=stitch_map_size,
@@ -706,6 +709,30 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-mirror-icon",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Composite the mirror inset into a photo of a real physical "
+            "rearview mirror instead of the plain procedural rounded "
+            "rectangle - the rear camera's footage is clipped into that "
+            "photo's own glass area, and the photo's frame/mount is "
+            "drawn on top, so the inset reads as footage playing inside "
+            "an actual mirror. A plain product-style photo works best "
+            "(a clearly darker frame/mount around a lighter glass area, "
+            "on a light background) - the image is segmented "
+            "automatically, no transparency or pre-editing required. "
+            "Only meaningful with --stitch-layout rearview_mirror. "
+            "--stitch-mirror-radius is ignored when this is given (the "
+            "photo's own frame shape is used instead); --stitch-mirror "
+            "-zoom still applies to how much of the rear frame is shown. "
+            "Falls back to the plain procedural inset with a warning if "
+            "the image can't be read or segmented. Default: none (uses "
+            "the procedural inset)."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-resolution",
         type=_parse_resolution,
         default=None,
@@ -972,6 +999,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_mirror_size=args.stitch_mirror_size,
         stitch_mirror_radius=args.stitch_mirror_radius,
         stitch_mirror_zoom=args.stitch_mirror_zoom,
+        stitch_mirror_icon=args.stitch_mirror_icon,
         stitch_map=args.stitch_map if args.stitch else None,
         stitch_map_side=args.stitch_map_side,
         stitch_map_size=args.stitch_map_size,

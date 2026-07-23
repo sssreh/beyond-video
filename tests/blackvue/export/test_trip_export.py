@@ -822,6 +822,63 @@ def test_export_trip_stitch_mirror_zoom_is_forwarded(tmp_path, monkeypatch):
     assert captured["mirror_zoom"] == 40.0
 
 
+def test_export_trip_stitch_mirror_icon_is_forwarded(tmp_path, monkeypatch):
+    from PIL import Image
+    from PIL import ImageDraw
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    icon_path = tmp_path / "mirror.png"
+    image = Image.new("RGB", (40, 40), (0, 0, 0))
+    ImageDraw.Draw(image).rectangle((10, 10, 29, 29), fill=(255, 255, 255))
+    image.save(icon_path)
+
+    export_trip(
+        trip, dest_dir,
+        stitch_layout="rearview_mirror", stitch_mirror_icon=icon_path,
+    )
+
+    assert captured["mirror_icon"] == icon_path
+
+
+def test_export_trip_stitch_mirror_icon_warns_instead_of_failing_on_a_bad_icon_path(
+    tmp_path
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    result = export_trip(
+        trip, dest_dir,
+        stitch_layout="rearview_mirror",
+        stitch_mirror_icon=tmp_path / "does-not-exist.png",
+    )
+
+    # Unlike a bad --map-icon (which fails the map entirely), a bad
+    # --stitch-mirror-icon still produces a full stitch.mp4 - it just
+    # falls back to the plain procedural inset instead of the photo
+    # composite. See stitch.py's own is_mirror/mirror_icon handling.
+    assert result.stitch == dest_dir / "stitch.mp4"
+    assert result.stitch.exists()
+    assert len(result.warnings) == 1
+    assert "mirror icon" in result.warnings[0]
+
+
 def _trip_with_front_rear_and_gps_shape(source_dir, *, east_west: bool):
     front_a = source_dir / "front_a.mp4"
     rear_a = source_dir / "rear_a.mp4"
