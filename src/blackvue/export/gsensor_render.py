@@ -47,6 +47,20 @@ DEFAULT_MARGIN_PX = 40
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
+# A single-pixel outline reads fine on this module's own 480x480
+# canvas, viewed on its own - but by the time gsensor.mp4 actually
+# reaches the screen, it's been through --stitch's own downscale (the
+# overlay is composited at a fraction of the camera composite's own
+# width - see stitch.py's gsensor_size) and a real H.264 encode, both
+# of which blur/discard thin single-pixel detail. Confirmed on a real
+# export: at a realistic overlay size, a 1px ring survived at ~0% of
+# its own outline (a handful of stray pixels, indistinguishable from
+# encoder noise) while the much bolder 8px-radius dot came through
+# fine - Christer saw the dot but not the rings around it. 2px roughly
+# triples that survival rate in the same test; the rings/crosshair
+# both use it, not just the outer ring.
+RING_LINE_WIDTH = 2
+
 
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
@@ -142,18 +156,18 @@ def render_frame(
                 center[0] + ring_radius, center[1] + ring_radius,
             ),
             outline=RING_COLOR,
-            width=1,
+            width=RING_LINE_WIDTH,
         )
 
     draw.line(
         (center[0] - radius, center[1], center[0] + radius, center[1]),
         fill=AXIS_COLOR,
-        width=1,
+        width=RING_LINE_WIDTH,
     )
     draw.line(
         (center[0], center[1] - radius, center[0], center[1] + radius),
         fill=AXIS_COLOR,
-        width=1,
+        width=RING_LINE_WIDTH,
     )
 
     if len(trail_points) >= 2:
