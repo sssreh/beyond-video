@@ -938,6 +938,98 @@ def test_bv_export_stitch_rearview_mirror_flag_produces_a_video(tmp_path):
     assert (trip_folder / "stitch.mp4").exists()
 
 
+def test_main_uses_the_default_stitch_mirror_icon_when_not_given(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_mirror_icon"] is None
+
+
+def test_main_parses_an_explicit_stitch_mirror_icon(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+    icon_path = tmp_path / "mirror.png"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-layout", "rearview_mirror",
+        "--stitch-mirror-icon", str(icon_path),
+    ])
+
+    assert captured["stitch_mirror_icon"] == str(icon_path)
+
+
+def test_bv_export_stitch_mirror_icon_flag_composites_a_photo(tmp_path):
+    from PIL import Image
+    from PIL import ImageDraw
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    icon_path = tmp_path / "mirror.png"
+    image = Image.new("RGB", (40, 40), (0, 0, 0))
+    ImageDraw.Draw(image).rectangle((10, 10, 29, 29), fill=(255, 255, 255))
+    image.save(icon_path)
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="rearview_mirror", stitch_mirror_icon=str(icon_path),
+    )
+
+    assert exit_code == 0
+    trip_folder = target / "trip_20260720_100000_20260720_100000"
+    assert (trip_folder / "stitch.mp4").exists()
+
+
+def test_bv_export_stitch_mirror_icon_flag_warns_instead_of_failing_on_a_bad_path(
+    tmp_path
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="rearview_mirror",
+        stitch_mirror_icon=str(tmp_path / "does-not-exist.png"),
+    )
+
+    # A bad --stitch-mirror-icon degrades to a warning (falls back to
+    # the plain procedural inset) rather than failing the export.
+    assert exit_code == 0
+    trip_folder = target / "trip_20260720_100000_20260720_100000"
+    assert (trip_folder / "stitch.mp4").exists()
+
+
 def test_main_defaults_stitch_layout_to_auto(tmp_path, monkeypatch):
     captured = {}
 

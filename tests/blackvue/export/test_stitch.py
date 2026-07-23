@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from PIL import ImageDraw
 
 from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import ALL_LAYOUTS
@@ -2433,6 +2434,170 @@ def test_stitch_cameras_rearview_mirror_zoom_crops_toward_the_center(tmp_path):
     # inset's own edge should now be solid blue instead.
     edge = image.getpixel((240 + 2, 10 + 80))
     assert edge[2] > edge[0] and edge[2] > edge[1]
+
+
+def _make_mirror_icon(path):
+    # A minimal synthetic --stitch-mirror-icon photo: a solid black
+    # 40x40 square (the "frame," touching every edge of the canvas so
+    # there's no white margin to crop away) with a 20x20 white square
+    # cut into its exact center at (10,10)-(29,29) - the "glass."
+    # Deliberately square and axis-aligned so the resulting on-screen
+    # geometry (content size, glass bbox/offset, final placement) is
+    # exactly reproducible by hand from _mirror_icon_layout()'s own
+    # formula, the same math this test's own pixel coordinates below
+    # were derived from and cross-checked against an actual rendered
+    # frame.
+    image = Image.new("RGB", (40, 40), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 29, 29), fill=(255, 255, 255))
+    image.save(path)
+
+
+def test_stitch_cameras_rearview_mirror_icon_composites_rear_into_the_glass(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 400, 300, "blue")
+    _make_solid_video(rear, 200, 200, "red")
+    icon_path = tmp_path / "mirror.png"
+    _make_mirror_icon(icon_path)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=50.0, mirror_icon=icon_path, warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # mirror_size=50% of front's 400 -> content 200x200 (native 40x40,
+    # scale x5). Glass (10,10)-(29,29) in source coords scales to a
+    # 100x100 square at content-local offset (50,50). The inset itself
+    # is centered horizontally (x=(400-200)/2=100) and nudged up by
+    # _MIRROR_ICON_TOP_NUDGE_FRACTION of its own 200px height (~8px),
+    # so its content-local origin lands at screen (100,-8).
+    #
+    # A pixel far outside the inset entirely should still be the
+    # front's own blue.
+    outside = image.getpixel((10, 10))
+    assert outside[2] > outside[0] and outside[2] > outside[1]
+    # A pixel in the middle of the glass (content-local (150,150) ->
+    # screen (100+150, -8+150) = (250,142); using (200,91), safely
+    # inside the glass's own (150,42)-(249,141) screen rectangle)
+    # should be the rear's own red, composited through the glass mask.
+    glass = image.getpixel((200, 91))
+    assert glass[0] > 150 and glass[1] < 100 and glass[2] < 100
+    # A pixel in the icon's own dark frame (content-local (2,15) ->
+    # screen (102,7), left of the glass's own x-range) should be
+    # opaque black - the photo's frame drawn on top, not front or
+    # rear footage.
+    frame_pixel = image.getpixel((102, 7))
+    assert sum(frame_pixel) < 30
+
+
+def test_stitch_cameras_rearview_mirror_icon_falls_back_with_a_warning_on_a_bad_path(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 400, 300, "blue")
+    _make_solid_video(rear, 200, 200, "red")
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=50.0,
+        mirror_icon=tmp_path / "does-not-exist.png",
+        warnings=warnings,
+    )
+
+    assert len(warnings) == 1
+    assert "stitch mirror icon" in warnings[0]
+    # Still produces a usable stitch.mp4 - falls back to the plain
+    # procedural rounded-rectangle inset instead of failing outright,
+    # same "warn and degrade, don't fail the whole export" convention
+    # --map-icon already follows for a bad marker image.
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    inset_center = image.getpixel((200, 110))
+    assert inset_center[0] > 150 and inset_center[1] < 100
+
+
+def test_stitch_cameras_rearview_mirror_icon_ignores_mirror_radius(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 400, 300, "blue")
+    _make_solid_video(rear, 200, 200, "red")
+    icon_path = tmp_path / "mirror.png"
+    _make_mirror_icon(icon_path)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        mirror_size=50.0, mirror_radius=100.0, mirror_icon=icon_path,
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    # Same frame-corner pixel as the happy-path test above - if
+    # mirror_radius were mistakenly applied on top of the icon's own
+    # shape, this corner of the icon's own square frame would get
+    # carved away to transparent (showing front's blue) the way it
+    # does for the plain procedural inset. It should still be the
+    # icon's own opaque black frame instead - mirror_radius is a
+    # no-op once mirror_icon is given.
+    frame_pixel = image.getpixel((102, 7))
+    assert sum(frame_pixel) < 30
+
+
+def test_stitch_cameras_rearview_mirror_icon_still_respects_mirror_zoom(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 400, 300, "black")
+    _make_rear_zoom_probe(rear, size=100, border=10)
+    icon_path = tmp_path / "mirror.png"
+    _make_mirror_icon(icon_path)
+
+    warnings_zero = []
+    destination_zero = tmp_path / "stitch_zoom0.mp4"
+    stitch_cameras(
+        front, rear, destination_zero, layout="rearview_mirror",
+        mirror_size=50.0, mirror_zoom=0.0, mirror_icon=icon_path,
+        warnings=warnings_zero,
+    )
+    warnings_thirty = []
+    destination_thirty = tmp_path / "stitch_zoom30.mp4"
+    stitch_cameras(
+        front, rear, destination_thirty, layout="rearview_mirror",
+        mirror_size=50.0, mirror_zoom=30.0, mirror_icon=icon_path,
+        warnings=warnings_thirty,
+    )
+
+    assert warnings_zero == []
+    assert warnings_thirty == []
+    # Near the glass's own top-left corner (content-local (52,52) ->
+    # screen (152,44), 2px inside the glass's own (150,42) corner):
+    # with mirror_zoom=0 the rear source's 10px yellow border is still
+    # there (unchanged, matches the plain-inset mirror_zoom=0 test's
+    # own convention); with mirror_zoom=30 (crops 15px off each edge,
+    # more than the 10px border) that same spot is inside the rear
+    # source's own solid blue center instead.
+    zero_image = _extract_first_frame(
+        destination_zero, tmp_path / "frame_zero.png"
+    )
+    thirty_image = _extract_first_frame(
+        destination_thirty, tmp_path / "frame_thirty.png"
+    )
+    zero_pixel = zero_image.getpixel((152, 44))
+    thirty_pixel = thirty_image.getpixel((152, 44))
+    assert zero_pixel[0] > 150 and zero_pixel[1] > 150 and zero_pixel[2] < 100
+    assert thirty_pixel[2] > thirty_pixel[0] and thirty_pixel[2] > thirty_pixel[1]
 
 
 def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(

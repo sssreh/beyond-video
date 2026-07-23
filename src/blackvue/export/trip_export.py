@@ -265,6 +265,7 @@ def export_trip(
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     stitch_mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
+    stitch_mirror_icon: Path | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
@@ -358,7 +359,12 @@ def export_trip(
     source cropped away from each edge toward its center before
     scaling, 0-95, default stitch.DEFAULT_MIRROR_ZOOM_PERCENT) zooms
     the mirror inset in - 0 (the default) shows the whole rear frame,
-    unchanged.
+    unchanged. `stitch_mirror_icon`, if given, is a path to a photo of
+    a real physical rearview mirror - replaces the plain procedural
+    inset with rear footage composited into that photo's own glass
+    area, see stitch.stitch_cameras()'s own docstring for the full
+    mechanism. `stitch_mirror_radius` is ignored when this is given;
+    `stitch_mirror_zoom` still applies.
 
     `stitch_resolution` (a (width, height) pixel pair) and
     `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)
@@ -758,6 +764,7 @@ def export_trip(
                 mirror_size=stitch_mirror_size,
                 mirror_radius=stitch_mirror_radius,
                 mirror_zoom=stitch_mirror_zoom,
+                mirror_icon=stitch_mirror_icon,
                 map_mode=stitch_map,
                 map_side=stitch_map_side,
                 map_size=stitch_map_size,

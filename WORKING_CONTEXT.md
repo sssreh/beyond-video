@@ -3819,3 +3819,136 @@ Tested: `test_stitch` 104 passed (102 existing from the radius task +
 passed (74 existing + 3 new: default/explicit-value/out-of-range
 -rejection for `--stitch-mirror-zoom`). 0 failed across all three, 238
 tests total.
+
+## --stitch-mirror-icon: composite a real mirror photo as the inset frame (this session)
+
+Christer pasted a photo of his own physical rearview mirror and asked
+"Can you use that image as a realistic mirror" - after confirming via
+AskUserQuestion that he wanted the photo genuinely composited (not
+just used as loose visual inspiration) and getting the actual file
+(`mirror.avif`, converted to PNG via ImageMagick since the sandbox's
+ffmpeg 4.4.2 build can't decode AVIF), built `--stitch-mirror-icon`: a
+path to a plain product-style photo of a real mirror, composited so
+the rear camera's footage reads as playing inside that photo's own
+glass, with the photo's own frame/mount drawn on top - a replacement
+for the plain procedural rounded-rectangle inset, not an addition to
+it.
+
+Segmentation (new `blackvue/export/mirror_icon.py`, `load_mirror_frame()`):
+a plain-photo-on-light-background source (Christer's own reference
+image) splits cleanly into three regions with nothing but a luminance
+threshold and a flood fill - no ML, no user-drawn mask. Any pixel
+below `_DARK_LUMINANCE_THRESHOLD` (120, picked from the reference
+photo's own sharply bimodal histogram) is "dark" - the frame/bezel
+/mount. A BFS flood fill from every border pixel, through light
+territory only, marks every light pixel reachable from the image's
+own edge as "background." Whatever light territory the flood fill
+never reaches - fully enclosed by the dark frame - is "glass." A real
+photo's frame can enclose small light spots that aren't the actual
+glass (a reflective logo on Christer's own mount's label segmented
+this way too, confirmed visually during this feature's own mockup
+phase) - `_largest_connected_component()` keeps only the biggest
+enclosed blob, discarding the rest as noise. The result is cropped to
+its own content bounding box (dark ∪ glass, discarding the source
+photo's white margin) and returned as a `MirrorFrame`: an RGBA
+`frame_overlay` (opaque original color where dark, transparent
+elsewhere), an `L`-mode `glass_mask` (white where glass, black
+elsewhere), and the glass region's own `glass_bbox` within that shared
+canvas.
+
+Compositing (stitch.py, `_stack()`'s `is_mirror` branch): rear footage
+has to land inside the glass's own non-rectangular silhouette, not
+just its bounding rectangle, and an H.264 decode-time intermediate
+can't carry an alpha channel - so this reuses `mirror_radius`'s own
+established rule (task #85) of keeping every alpha-dependent step
+(`format=rgba`, `pad` with a transparent color, `alphamerge`) in the
+FINAL combine's filter_complex only. New `_mirror_icon_layout()` scales
+the icon's own native size up to `mirror_size`'s target content width
+(same percent-of-front-width sizing every mirror inset uses) and maps
+the glass bbox into that scaled canvas. New `_cover_crop_filter()`
+center-crops the rear source to the glass bbox's own aspect ratio
+before an exact `scale=` - fitting without distortion, the same
+philosophy `_fit_and_pad()`/`--stitch-resolution` already follow -
+expressed as ffmpeg runtime `iw`/`ih` fractions rather than Python
+-computed literal pixels, so it composes safely after `mirror_zoom`'s
+own upstream crop (still respected here - `mirror_zoom` zooms the rear
+source same as always, `_cover_crop_filter()` just handles the
+leftover aspect mismatch). The final combine: scale+crop rear to the
+glass bbox's exact size, `pad` it out to the full icon canvas at the
+bbox's own offset (transparent padding), `alphamerge` against the
+glass mask to clip away everything outside the true silhouette, then
+overlay the icon's own `frame_overlay` on top so the frame/mount reads
+as physically in front of the footage. `mirror_radius` is a no-op once
+`mirror_icon` is given (the photo's own shape replaces the rounded
+-rectangle math entirely) - documented in `stitch_cameras()`'s own
+docstring and confirmed by a dedicated test.
+
+The mount needing to look physically attached to the top of the frame
+(not floating) took an extra offset beyond the plain content-bbox
+crop: a new `_MIRROR_ICON_TOP_NUDGE_FRACTION = 15/358` constant, empirically
+derived from the approved mockup (a small negative y-offset,
+proportional to the inset's own height, compensating for the mount's
+rounded dome shape leaving a thin curved sliver visible even at a
+literal y=0 placement). Before landing on the real pipeline, iterated
+on this and several other visual decisions (50% wider without
+changing height, moved up "a couple more pixels," "20 percent bigger"
+overall) across 7 rounds against a disposable PIL-based mockup - cheap
+to reshoot per round, versus the much more expensive real ffmpeg
+pipeline - only building the real thing once Christer said "perfect."
+
+Wired through the same three layers as every other `--stitch-mirror-*`
+flag: `_stack()`/`stitch_cameras()` (stitch.py, `mirror_icon: Path |
+None = None`), `export_trip()` (trip_export.py, `stitch_mirror_icon`
+param, forwarded as-is - already caught inside stitch.py's own
+`is_mirror` branch so no separate try/except needed at this layer),
+and `--stitch-mirror-icon PATH` (bv_export.py - a plain string/Path
+arg with no custom validator, following `--map-icon`'s own established
+pattern: `metavar="PATH"`, default `None`, converted to `Path` inside
+`bv_export()`'s own body). A bad or missing path degrades to a
+`warnings` entry ("stitch mirror icon: ...") and falls back to the
+plain procedural inset rather than failing the export - the same
+"don't fail the whole export over an optional cosmetic input"
+convention `--map-icon` already follows, though notably gentler than
+`--map-icon`'s own failure mode (a bad map icon fails the whole map;
+a bad mirror icon just loses the fancy frame, stitch.mp4 still comes
+out complete).
+
+New `tests/blackvue/export/test_mirror_icon.py` (7 tests) covers
+`load_mirror_frame()`/`_largest_connected_component()` directly against
+small synthetic PIL-drawn images (a main frame+glass block plus a
+disconnected stray "logo" block, mirroring the real photo's own logo
+-artifact issue) - content-bbox cropping, only-the-largest-component
+survives, frame pixels painted opaque, glass pixels marked in the
+mask, a missing file raises `MediaToolError`, an all-light image with
+no enclosed glass raises `MediaToolError` too. Four new pixel-level
+tests in test_stitch.py, against a simple synthetic square icon (solid
+black 40x40 with a white 20x20 hole cut dead center, so the on-screen
+math is reproducible by hand and was cross-checked against an actual
+rendered frame before being written into the assertions):
+`test_stitch_cameras_rearview_mirror_icon_composites_rear_into_the_glass`
+confirms front shows outside the inset, rear shows inside the glass,
+and the icon's own frame paints opaque black over both;
+`test_stitch_cameras_rearview_mirror_icon_falls_back_with_a_warning_on_a_bad_path`
+confirms a missing icon file produces exactly one warning and still
+renders the plain procedural inset; `test_stitch_cameras_rearview_mirror_icon_ignores_mirror_radius`
+confirms the icon's own frame corner stays opaque (not rounded away)
+even with `mirror_radius=100`; `test_stitch_cameras_rearview_mirror_icon_still_respects_mirror_zoom`
+confirms a bordered rear probe's edge color still changes between
+`mirror_zoom=0` and `mirror_zoom=30`, same as the plain-inset zoom
+tests from task #86. Also manually verified the full real pipeline
+end-to-end with synthetic 1920x1080/1280x720 test-pattern front/rear
+videos and the actual reference mirror photo (not just the synthetic
+test assets) - confirmed by direct pixel inspection that the mount
+sits flush to the top edge, the frame/mount render opaque, and the
+rear test pattern (including its own checkerboard corner marker) is
+visible clipped to the glass's real oval silhouette rather than a
+plain rectangle.
+
+Tested: `test_mirror_icon` 7 passed (new file). `test_stitch` 112
+passed (108 existing from the zoom task + 4 new). `test_trip_export`
+59 passed (57 existing + 2 new: `mirror_icon` is forwarded to
+`stitch_cameras()`, and a bad path warns without failing the whole
+export). `test_bv_export` 81 passed (77 existing + 4 new:
+default/explicit-value for `--stitch-mirror-icon`, produces-a-video,
+and warns-without-failing-on-a-bad-path). 0 failed across all four
+modules, 259 tests total.
