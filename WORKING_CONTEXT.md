@@ -4623,3 +4623,51 @@ interactive `bv-config` wizard behaving correctly through `docker-
 compose run` (needs a real TTY - should be fine over an interactive
 SSH session, unconfirmed). Flagged to Christer as the next real test,
 same pattern as bv-web's own three-bug shakeout earlier this session.
+
+## Architecture pivot: bv-cli scoped down to download/config only, bv-generate/bv-export moved to Christer's PC via SMB (this session)
+
+While `bv-cli`'s first real build was underway (already visibly slow -
+apt/debconf noise during the `ffmpeg` install, then sitting in the
+`pip install .[speech,translate]` step), Christer reconsidered: "i
+will run heavy stuff like bv-export transcribe and translate at my pc
+and send it to my nas via smb." Confirmed via follow-up questions:
+`bv-download` stays on the NAS (the camera already reaches it there),
+but `bv-generate`/`bv-export` move to his PC - which already has a
+proven-fast native install with GPU acceleration (see this session's
+earlier "GPU auto-detect + CPU fallback" work) - reaching the NAS's
+`data/archive` (read) and `data/trips` (write) over an SMB-mapped
+network drive rather than running inside a container on the NAS at
+all.
+
+This actually simplifies `bv-cli` rather than complicating it: once
+`bv-generate`/`bv-export` are off the table, the image only ever needs
+to run `bv-download` and `bv-config` - neither of which imports
+ffmpeg or any ML library at all (confirmed by grepping `bv_download.py`
+for `ffmpeg`/`PIL` - no matches). Rewrote `Dockerfile.cli` to drop the
+`apt-get install ffmpeg` step and the `.[speech,translate]` extras
+entirely, installing just the base package (`pip install .`, Pillow
+only) - explaining in hindsight why the original build was slow: it
+was installing torch for a container that, under this new
+architecture, would never actually run anything that needs it.
+
+`docker-compose.yml`'s `bv-cli` service lost its `./data/trips` mount
+(no longer needed - `bv-export` doesn't run there anymore) and gained
+an updated comment explaining the split. `docs/DEPLOY.md`'s section 7
+rewritten again: a new "Split across two machines" explainer up front,
+then "On the NAS: download the archive" (build `bv-cli`, `bv-config`,
+`bv-download`, same commands as before) and a new "On your PC: enrich
+and export" section - map the NAS as a Windows network drive, then run
+`bv-generate`/`bv-export` exactly as documented elsewhere in this repo
+(`docs/man/bv-generate.md`, `docs/man/bv-export.md`) against the
+mapped drive letter, no Docker involved on the PC side at all. Also
+noted in the "Layout on the NAS" section that `data/archive`/
+`data/trips` need to actually be SMB-reachable - i.e. `/volume1/
+beyond-video` needs to be a real DSM Shared Folder, not just a plain
+directory - flagged as a prerequisite to check rather than assumed.
+
+Not yet verified: the now-simplified `bv-cli` image (should be much
+faster to build than the abandoned heavy version, but not confirmed),
+and the SMB-mapped-drive path end to end (share reachability, and
+`bv-generate`/`bv-export` actually running correctly against a mapped
+network drive rather than a local path - untested territory, though
+both commands just take a path and shouldn't care where it points).
