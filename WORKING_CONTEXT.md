@@ -4390,3 +4390,41 @@ change. Updated all three files (Dockerfile, docker-compose.yml,
 docs/DEPLOY.md) to 19373 consistently; left the earlier WORKING_CONTEXT.md
 entries above referencing 19393 as-is, since they're a log of what was
 actually built/discussed at the time, not living documentation.
+
+## docs/DEPLOY.md/docker-compose.yml: fixed for the real docker-compose 1.28.5 on Christer's NAS (this session)
+
+Second real-world failure from `docs/DEPLOY.md`: `docker compose up -d
+--build` failed with `unknown shorthand flag: 'd' in -d` followed by
+plain `docker --help` output. Diagnosed by asking Christer to run
+`docker compose version` (got `'compose' is not a docker command`) and
+`docker-compose --version` (got `docker-compose version 1.28.5`) -
+confirmed Synology's Container Manager only puts the old standalone
+`docker-compose` 1.x CLI (hyphenated) on the SSH `$PATH`, not the
+newer `docker compose` (space) v2 plugin the doc had assumed
+throughout. All commands in `docs/DEPLOY.md` switched from `docker
+compose ...` to `docker-compose ...`, with a note explaining the
+distinction and how to check which one's actually available, since
+the failure mode (a confusing top-level flag-parsing error, not a
+clear "compose: not found") makes this an easy trap to fall into
+again elsewhere.
+
+Also fixed `docker-compose.yml` itself, which had no top-level
+`version:` key (matching modern Compose v2's "Compose Specification"
+convention, where it's optional/ignored). Confirmed via a web search
+that omitting `version:` makes old Compose v1 CLIs like 1.28.5 read
+the file as the *legacy* v1 format instead (top-level keys are
+service names directly, no `services:` wrapper) - which would have
+misread this file's `services:` key as an oddly-named service rather
+than the wrapper it's meant to be, once Christer got past the
+docker-compose-vs-docker-compose naming issue. Added `version: "3.8"`
+(a format docker-compose 1.28.5 supports, and which covers everything
+this file uses - `build`, `container_name`, `restart`, `ports`,
+`volumes`) with a comment explaining why it's there, rather than
+letting Christer hit a second, harder-to-diagnose failure on his next
+attempt.
+
+Re-validated `docker-compose.yml` parses as YAML (`pyyaml`) after both
+changes - still can't run a real `docker-compose build` in this
+sandbox (no docker binary, no network), so this remains dependent on
+Christer's own NAS as the real test, same limitation noted in the two
+prior deploy-related commits.
