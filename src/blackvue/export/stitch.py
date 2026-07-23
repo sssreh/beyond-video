@@ -121,6 +121,20 @@ _REARVIEW_MAP_PANEL_MAX_FRACTION = 0.3
 _MIN_MAP_PANEL_FRACTION = 0.2
 _MAX_MAP_PANEL_FRACTION = 0.5
 
+# --stitch-map-size's range (percent of the camera composite's own
+# matching dimension the map panel's free axis is forced to) - an
+# explicit user override for _map_panel_dimensions()'s otherwise
+# fully-automatic geography-aspect-ratio sizing (see
+# _MIN_MAP_PANEL_FRACTION/_MAX_MAP_PANEL_FRACTION above). Deliberately
+# not clamped to that same 20-50% auto range once given explicitly -
+# those exist to keep the *automatic* sizing from going degenerate for
+# a near-straight-line trip, not to second-guess a size Christer
+# actually asked for. Still range-checked at the CLI layer (same
+# pattern as MIN_/MAX_GSENSOR_SIZE_PERCENT) so a typo is a clear
+# argument error rather than a silently degenerate panel.
+MIN_MAP_SIZE_PERCENT = 5.0
+MAX_MAP_SIZE_PERCENT = 80.0
+
 # --stitch-gsensor's size range/default (percent of the camera
 # composite's own width the overlay is scaled to) - per the agreed
 # spec, its own separate range from the (not yet built) rearview
@@ -320,6 +334,7 @@ def stitch_cameras(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
+    map_size: float | None = None,
     map_zoom_meters: float | None = None,
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
@@ -435,8 +450,15 @@ def stitch_cameras(
     meaningful when both front and rear exist (the single-camera
     fallback below ignores it entirely, same as `layout` - not yet
     built for that simpler path). `map_side` overrides the panel's
-    default side (see _DEFAULT_MAP_SIDE_FOR_LAYOUT); `map_zoom_meters`
-    is required when `map_mode == "zoom"` (reused as the panel's
+    default side (see _DEFAULT_MAP_SIDE_FOR_LAYOUT); `map_size`
+    (--stitch-map-size, a percent, MIN_/MAX_MAP_SIZE_PERCENT) overrides
+    the panel's own automatic geography-aspect-ratio sizing with an
+    exact fraction of the camera composite's matching dimension - see
+    _map_panel_dimensions()'s own docstring for why this exists (the
+    automatic sizing's 20% floor can read as "too thin" for a
+    near-straight-line trip with no way to ask for more).
+    `map_zoom_meters` is required when `map_mode == "zoom"` (reused as
+    the panel's
     follow-camera radius - normally whatever --map-zoom METERS was
     also given). `map_fixes`/`map_roads` are the trip's already-loaded
     GPS fixes/OSM road geometry (see trip_export.py's
@@ -478,35 +500,40 @@ def stitch_cameras(
     given, `gsensor_xy` wins (bv_export.py's CLI treats them as
     mutually exclusive, but this function doesn't re-enforce that).
     Applied to the footage region only, *before* any map panel is
-    added alongside it - a named position is defined relative to just
-    the camera composite, never the map panel's own space. Only
-    meaningful when both front and rear exist, same as `map_mode`.
+    added alongside it and *before* any --stitch-resolution fit-and
+    -pad - a named position (and `gsensor_size`) is computed against
+    the camera composite's own real pixel size, never the map panel's
+    own space or any letterbox/pillarbox padding a mismatched
+    `resolution` would otherwise introduce (confirmed as a real
+    problem on an actual export - see _stack()'s own `content_width`/
+    `content_height` note). Only meaningful when both front and rear
+    exist, same as `map_mode`.
 
     `subtitles_path`, if given, is an already-written trip.srt (see
     trip_export.py, which always writes one whenever the trip has any
     transcript data - not gated behind its own render flag the way
     gsensor.mp4/map.mp4 are, so there's no separate "missing, go
     render it first" warning path here the way there is for
-    `gsensor_video`) burned directly into the *final* frame via
-    ffmpeg's `subtitles` filter - after both the gsensor overlay and
-    the map panel, if either is also present, rather than confined to
-    just the camera footage region the way the gsensor overlay is.
-    Subtitles are dialogue captions for the whole video being watched,
-    not something tied to one particular visual region, so "centered,
-    near the bottom" is read here as the bottom of the final composed
-    frame, map panel included - this hasn't been checked against a
-    layout where that lands the text on top of the map panel itself
-    (e.g. side_by_side's default down-side panel), which is a known,
-    undecided gap, not an oversight. `subtitles_background` (default
-    True) draws a solid, semi-transparent bar behind the text for
-    readability - see _subtitles_filter(). Unlike the map panel/
-    gsensor overlay, a problem here (a malformed .srt, a libass build
-    without support) isn't caught into its own `warnings` entry - it
-    surfaces as a normal MediaToolError failing the whole stitch, since
-    by this point it's the very last stage of one already-large ffmpeg
-    command and there's no cheap way to isolate just this piece
-    without a second full encode. Only meaningful when both front and
-    rear exist, same as `map_mode`/`gsensor_video`.
+    `gsensor_video`) burned into the camera footage via ffmpeg's
+    `subtitles` filter - onto the camera composite alone (after any
+    gsensor overlay and any --stitch-resolution fit-and-pad, before
+    the map panel is added alongside it), the same "confined to the
+    footage region" scoping the gsensor overlay already gets, not
+    stretched across the final frame including the map panel.
+    Originally applied to the whole final frame on the reasoning that
+    dialogue captions belong to the whole video being watched, not one
+    region - reversed after a real --stitch-map export showed a full
+    -width subtitle bar reading as clearly wrong, spanning underneath
+    the map too. `subtitles_background` (default True) draws a solid,
+    semi-transparent bar behind the text for readability - see
+    _subtitles_filter(). Unlike the map panel/gsensor overlay, a
+    problem here (a malformed .srt, a libass build without support)
+    isn't caught into its own `warnings` entry - it surfaces as a
+    normal MediaToolError failing the whole stitch, since by this
+    point it's the very last stage of one already-large ffmpeg command
+    and there's no cheap way to isolate just this piece without a
+    second full encode. Only meaningful when both front and rear
+    exist, same as `map_mode`/`gsensor_video`.
     """
 
     if front is not None and rear is not None:
@@ -514,7 +541,7 @@ def stitch_cameras(
             front, rear, destination,
             layout=layout, resolution=resolution, bitrate=bitrate,
             mirror_size=mirror_size,
-            map_mode=map_mode, map_side=map_side,
+            map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
             map_roads=map_roads, map_icon=map_icon,
             map_video_start=map_video_start,
@@ -994,6 +1021,7 @@ def _map_panel_dimensions(
     side: str,
     fixes: tuple[GpsFix, ...],
     max_fraction: float = _MAX_MAP_PANEL_FRACTION,
+    size_fraction: float | None = None,
 ) -> tuple[int, int] | None:
     """The (width, height) --stitch-map's panel should render at so it
     slots onto `side` of a comp_width x comp_height camera composite
@@ -1002,43 +1030,60 @@ def _map_panel_dimensions(
     The axis matching the composite is matched exactly (panel height
     == comp_height for hstack, panel width == comp_width for vstack -
     hstack/vstack both require that shared axis to line up). The other,
-    *free* axis is sized from the trip's own real-world aspect ratio
-    (see osm_roads.aspect_ratio_of()) - a north-south trip wants a
-    taller panel, an east-west trip a wider one - clamped to between
-    _MIN_MAP_PANEL_FRACTION and `max_fraction` (defaults to
-    _MAX_MAP_PANEL_FRACTION; _stack() passes the tighter
-    _REARVIEW_MAP_PANEL_MAX_FRACTION for rearview_mirror instead, per
-    the agreed spec's own 30% cap for that layout) of the composite's
-    own corresponding dimension, so a near-straight-line trip can't ask
-    for a degenerate sliver or an oversized panel.
+    *free* axis is sized one of two ways:
 
-    That clamp is relative to the camera composite alone, not the
-    eventual composite+panel total (which would make this circular) -
-    a deliberate simplification: when a map panel is also requested,
-    --stitch-resolution bounds the camera portion, not necessarily the
-    final file's own total dimensions, since the panel adds to it.
+    - `size_fraction` given (--stitch-map-size, as a 0-1 fraction, not
+      a percent) - used directly, no clamping. An explicit request
+      from Christer, not something this function should second-guess.
+    - `size_fraction` omitted (the default) - sized from the trip's own
+      real-world aspect ratio (see osm_roads.aspect_ratio_of()) - a
+      north-south trip wants a taller panel, an east-west trip a wider
+      one - clamped to between _MIN_MAP_PANEL_FRACTION and
+      `max_fraction` (defaults to _MAX_MAP_PANEL_FRACTION; _stack()
+      passes the tighter _REARVIEW_MAP_PANEL_MAX_FRACTION for
+      rearview_mirror instead, per the agreed spec's own 30% cap for
+      that layout) of the composite's own corresponding dimension, so
+      a near-straight-line trip can't produce a degenerate sliver or
+      an oversized panel on its own. Confirmed on a real export that
+      this floor can bind in practice - a near-straight-line trip
+      landed right at the 20% minimum, reading as "thin" with no way
+      to ask for more; `size_fraction` exists for exactly that case.
+
+    Either way, the clamp/fraction is relative to the camera composite
+    alone, not the eventual composite+panel total (which would make
+    this circular) - a deliberate simplification: when a map panel is
+    also requested, --stitch-resolution bounds the camera portion, not
+    necessarily the final file's own total dimensions, since the panel
+    adds to it.
 
     Returns None if there isn't enough GPS data to compute a real
     -world bounding box at all (mirrors bounding_box_for_fixes()'s own
-    "nothing to bound" convention).
+    "nothing to bound" convention) - true even with `size_fraction`
+    given, since there's nothing to render in the panel either way.
     """
 
     bbox = bounding_box_for_fixes(fixes)
     if bbox is None:
         return None
 
-    trip_ratio = aspect_ratio_of(bbox)
-
-    if side in ("left", "right"):
-        low = comp_width * _MIN_MAP_PANEL_FRACTION
-        high = comp_width * max_fraction
-        free_dimension = max(low, min(comp_height * trip_ratio, high))
-        width, height = free_dimension, comp_height
+    if size_fraction is not None:
+        if side in ("left", "right"):
+            width, height = comp_width * size_fraction, comp_height
+        else:
+            width, height = comp_width, comp_height * size_fraction
     else:
-        low = comp_height * _MIN_MAP_PANEL_FRACTION
-        high = comp_height * max_fraction
-        free_dimension = max(low, min(comp_width / trip_ratio, high))
-        width, height = comp_width, free_dimension
+        trip_ratio = aspect_ratio_of(bbox)
+
+        if side in ("left", "right"):
+            low = comp_width * _MIN_MAP_PANEL_FRACTION
+            high = comp_width * max_fraction
+            free_dimension = max(low, min(comp_height * trip_ratio, high))
+            width, height = free_dimension, comp_height
+        else:
+            low = comp_height * _MIN_MAP_PANEL_FRACTION
+            high = comp_height * max_fraction
+            free_dimension = max(low, min(comp_width / trip_ratio, high))
+            width, height = comp_width, free_dimension
 
     # Even dimensions for yuv420p encoding - same rounding convention
     # as _ideal_shared_dimension().
@@ -1176,6 +1221,7 @@ def _stack(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     map_mode: str | None = None,
     map_side: str | None = None,
+    map_size: float | None = None,
     map_zoom_meters: float | None = None,
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
@@ -1338,58 +1384,79 @@ def _stack(
         # last, right before the final encode call.
         next_input_index = 2
 
-        # The camera composite's own pixel dimensions - either exactly
-        # `resolution` (a fit-and-pad below guarantees that for every
-        # layout), or, with no `resolution` given, computed from what's
-        # already been probed above. Needed *unconditionally* for
-        # rearview_mirror (the mirror inset's own size is a percent of
-        # it, computed before the inset's overlay clause even exists);
-        # for side_by_side/top_down it's only worth the extra ffprobe
-        # call when the gsensor overlay or a map panel is actually
-        # requested too - shared by both features below, computed once
-        # either way, not once each.
+        # `content_width`/`content_height`: the camera composite's own
+        # *real* pixel dimensions, before any --stitch-resolution
+        # fit-and-pad (see _fit_and_pad()) ever touches it. Distinct
+        # from `comp_width`/`comp_height` just below (the eventual
+        # *padded* box size - `resolution` itself when given): the map
+        # panel is added *alongside* the camera portion, so it needs to
+        # match the file's own final camera-portion size including any
+        # padding - but the gsensor overlay and the rearview-mirror
+        # inset are composited *onto* the footage itself, so their own
+        # sizing and named-position placement need to land on the real
+        # visible footage, never on the letterbox/pillarbox padding
+        # around it.
+        #
+        # Confirmed as a real bug on a real export, not just in theory:
+        # a --stitch-resolution 1920x1080 (16:9 landscape) combined
+        # with an auto-picked top_down layout (a portrait-shaped front/
+        # rear stack) pillarboxed the camera composite down to roughly
+        # half of 1920's width - a --stitch-gsensor "top-right" (the
+        # default position) computed against the full padded 1920
+        # landed deep in the black bars, nowhere near the actual
+        # footage. Fixed by computing gsensor/mirror overlay geometry
+        # from `content_width`/`content_height` and only fit-and
+        # -padding to `resolution` *after* those overlays are already
+        # composited on - so ffmpeg's own overlay `main_w`/`main_h`
+        # runtime variables, and this module's own Python-side pixel
+        # math for --stitch-gsensor-xy/gsensor_size/mirror_size, always
+        # see the real content size, never the padded one.
         comp_width = comp_height = None
+        content_width = content_height = None
         if is_mirror or gsensor_video is not None or (
             map_mode is not None and map_fixes
         ):
-            if resolution is not None:
-                comp_width, comp_height = resolution
-            elif is_mirror:
-                comp_width, comp_height = front_width, front_height
+            if is_mirror:
+                content_width, content_height = front_width, front_height
             else:
-                comp_width, comp_height = front_width, front_height
+                front_decoded_width, front_decoded_height = _video_dimensions(
+                    front_decoded
+                )
                 rear_decoded_width, rear_decoded_height = _video_dimensions(
                     rear_decoded
                 )
                 if filter_name == "hstack":
-                    comp_width += rear_decoded_width
+                    content_width = front_decoded_width + rear_decoded_width
+                    content_height = front_decoded_height
                 else:
-                    comp_height += rear_decoded_height
+                    content_width = front_decoded_width
+                    content_height = front_decoded_height + rear_decoded_height
+
+            comp_width, comp_height = (
+                resolution if resolution is not None
+                else (content_width, content_height)
+            )
 
         if is_mirror:
-            # Front stays full-frame (the primary content) - fit-and
-            # -padded to `resolution` if given, same as hstack/vstack's
-            # own composite is, just applied to front alone here since
-            # there's no second full-size camera to combine it with
-            # first. Rear becomes a small flipped inset (a real
-            # rearview mirror shows things reversed, not raw footage)
-            # scaled to `mirror_size` percent of the composite's own
-            # width - computed just above - and overlaid top-center
+            # Front stays full-frame (the primary content). Rear
+            # becomes a small flipped inset (a real rearview mirror
+            # shows things reversed, not raw footage) scaled to
+            # `mirror_size` percent of the *real* composite width
+            # (content_width - see this block's own note above, not
+            # the eventual padded comp_width) and overlaid top-center
             # with a small margin so it doesn't sit flush against the
             # very top edge. Reuses input 1 (rear) directly rather than
             # claiming a new index - unlike gsensor.mp4/the map panel,
-            # which are separate already-rendered files.
-            front_label = "0:v"
-            if resolution is not None:
-                out_width, out_height = resolution
-                clauses.append(_fit_and_pad("0:v", "camera", out_width, out_height))
-                front_label = "camera"
-
-            mirror_width = max(2, round(comp_width * mirror_size / 100 / 2) * 2)
-            margin_y = round(comp_height * _MIRROR_MARGIN_FRACTION)
+            # which are separate already-rendered files. Any
+            # --stitch-resolution fit-and-pad happens *after* this
+            # overlay (see `output_label` below), not to front alone
+            # first, so the inset is always sized/placed against real
+            # visible footage.
+            mirror_width = max(2, round(content_width * mirror_size / 100 / 2) * 2)
+            margin_y = round(content_height * _MIRROR_MARGIN_FRACTION)
             clauses.append(f"[1:v]scale={mirror_width}:-2,hflip[mirrored]")
             clauses.append(
-                f"[{front_label}][mirrored]overlay="
+                "[0:v][mirrored]overlay="
                 f"x=(main_w-overlay_w)/2:y={margin_y}[withmirror]"
             )
             camera_label = "withmirror"
@@ -1397,36 +1464,30 @@ def _stack(
             clauses.append(f"[0:v][1:v]{filter_name}=inputs=2[stacked]")
             camera_label = "stacked"
 
-            if resolution is not None:
-                out_width, out_height = resolution
-                clauses.append(
-                    _fit_and_pad("stacked", "camera", out_width, out_height)
-                )
-                camera_label = "camera"
-
-        output_label = camera_label
-
         if gsensor_video is not None:
             # Unlike the map panel, this is an *already-rendered* file
             # (trip_export.py's job to check it exists before ever
             # calling this) - just scaled, chroma-keyed, and overlaid
             # onto the camera footage, no rendering here. Applied
-            # *before* any map panel is added alongside camera_label,
-            # so a named position is relative to the footage region
-            # alone - see gsensor_pos's docstring note in
-            # stitch_cameras().
+            # *before* both any map panel (so a named position is
+            # relative to the footage region alone - see gsensor_pos's
+            # docstring note in stitch_cameras()) and any
+            # --stitch-resolution fit-and-pad (see this block's own
+            # note above) - sized/positioned against `content_width`/
+            # `content_height`, the real footage size, never the
+            # padded `comp_width`/`comp_height`.
             gsensor_index = next_input_index
             next_input_index += 1
             extra_inputs += ["-i", str(gsensor_video)]
 
-            overlay_width = max(2, round(comp_width * gsensor_size / 100 / 2) * 2)
-            margin_x = round(comp_width * _GSENSOR_MARGIN_FRACTION)
-            margin_y = round(comp_height * _GSENSOR_MARGIN_FRACTION)
+            overlay_width = max(2, round(content_width * gsensor_size / 100 / 2) * 2)
+            margin_x = round(content_width * _GSENSOR_MARGIN_FRACTION)
+            margin_y = round(content_height * _GSENSOR_MARGIN_FRACTION)
 
             if gsensor_xy is not None:
                 x_percent, y_percent = gsensor_xy
-                x_expr = str(round(comp_width * x_percent / 100))
-                y_expr = str(round(comp_height * y_percent / 100))
+                x_expr = str(round(content_width * x_percent / 100))
+                y_expr = str(round(content_height * y_percent / 100))
             else:
                 horizontal, vertical = parse_gsensor_position(
                     gsensor_pos or DEFAULT_GSENSOR_POSITION
@@ -1444,7 +1505,34 @@ def _stack(
                 "[gsensored]"
             )
             camera_label = "gsensored"
-            output_label = camera_label
+
+        if resolution is not None:
+            out_width, out_height = resolution
+            clauses.append(
+                _fit_and_pad(camera_label, "camera", out_width, out_height)
+            )
+            camera_label = "camera"
+
+        if subtitles_path is not None:
+            # Applied here - onto the camera footage alone, before any
+            # map panel gets hstacked/vstacked alongside it - not at
+            # the very end onto the whole final frame. Dialogue
+            # captions belong over the footage they're transcribed
+            # from, not stretched across a map panel that has nothing
+            # to do with them; a --stitch-map user confirmed on a real
+            # export that a full-width subtitle bar reads as clearly
+            # wrong. No try/except here (unlike the map panel/gsensor
+            # blocks above) - see stitch_cameras()'s own docstring for
+            # why a subtitle-burn failure is allowed to fail the whole
+            # stitch rather than degrading to a warning.
+            clauses.append(
+                f"[{camera_label}]"
+                + _subtitles_filter(subtitles_path, background=subtitles_background)
+                + "[subtitled]"
+            )
+            camera_label = "subtitled"
+
+        output_label = camera_label
 
         if map_mode is not None and map_fixes:
             panel_side = map_side or _DEFAULT_MAP_SIDE_FOR_LAYOUT.get(layout)
@@ -1469,6 +1557,9 @@ def _stack(
                     max_fraction=(
                         _REARVIEW_MAP_PANEL_MAX_FRACTION
                         if is_mirror else _MAX_MAP_PANEL_FRACTION
+                    ),
+                    size_fraction=(
+                        map_size / 100 if map_size is not None else None
                     ),
                 )
                 panel_path = tmp_path / "map_panel.mp4"
@@ -1508,23 +1599,6 @@ def _stack(
                     )
                     output_label = "withmap"
                     extra_inputs += ["-i", str(rendered)]
-
-        if subtitles_path is not None:
-            # Applied last, onto whatever the final composed frame is
-            # at this point (camera-only, +gsensor, +map, or both) -
-            # subtitles are dialogue captions for the whole video, not
-            # scoped to one visual region the way the gsensor overlay
-            # deliberately is. No try/except here (unlike the map
-            # panel/gsensor blocks above) - see stitch_cameras()'s
-            # docstring for why a subtitle-burn failure is allowed to
-            # fail the whole stitch rather than degrading to a
-            # warning.
-            clauses.append(
-                f"[{output_label}]"
-                + _subtitles_filter(subtitles_path, background=subtitles_background)
-                + "[subtitled]"
-            )
-            output_label = "subtitled"
 
         # audio_path is muxed in as a stream copy (no re-encode - the
         # source .aac is already compressed) alongside whatever the

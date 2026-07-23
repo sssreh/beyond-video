@@ -3199,3 +3199,83 @@ suites rather than trying to eyeball every case.
 Tested: `test_trip_builder` 23 passed (all pass `max_gap` explicitly,
 unaffected by the constant), `test_bv_ls` 17 passed, `test_bv_export`
 64 passed, 0 failed.
+
+## --stitch default layout: subtitle scoping, --stitch-map-size, gsensor-vs-padding bug (done, this session)
+
+Christer shared a real stitch.mp4 screenshot (top_down, auto-picked,
+`--stitch-map --stitch-gsensor --stitch-subtitles --stitch-resolution
+1920x1080`) with three visible problems: the subtitle bar spans the
+full frame width including underneath the map panel; the map panel
+reads as too thin with no way to ask for more; the gsensor gauge
+floats alone in empty space, disconnected from the footage. Confirmed
+via the actual trip.log's captured command line that `--stitch
+-resolution 1920x1080` (16:9 landscape) was combined with an
+auto-picked `top_down` layout (a portrait-shaped front/rear stack) -
+the exact mismatch behind problem three.
+
+**1. Subtitles now confined to the camera footage, not the map panel.**
+`stitch.py`'s subtitle burn-in used to apply to the *final* composed
+frame (camera + map panel combined) - moved to apply to the camera
+composite alone, right after any gsensor overlay/--stitch-resolution
+padding and *before* the map panel is ever hstacked/vstacked
+alongside it. Same scoping the gsensor overlay already had. This was
+a deliberate earlier design decision (the old code had a comment
+explicitly defending "the whole video, not one region") - reversed
+with Christer's go-ahead after seeing it in practice.
+
+**2. New `--stitch-map-size PERCENT` flag.** The map panel's free
+dimension was always auto-sized from the trip's own real-world
+geographic aspect ratio, clamped to 20-50% (30% for
+`rearview_mirror`) of the camera composite's matching dimension - a
+near-straight-line trip can land right at that 20% floor with no way
+to ask for more. `_map_panel_dimensions()` gained a `size_fraction`
+param that, when given, is used directly with no clamping (an
+explicit request isn't second-guessed) - threaded through as
+`map_size` (`stitch.py`'s `_stack()`/`stitch_cameras()`),
+`stitch_map_size` (`trip_export.py`'s `export_trip()`), and
+`--stitch-map-size` (`bv_export.py`, range-validated via
+`_parse_map_size()`/`MIN_MAP_SIZE_PERCENT`-`MAX_MAP_SIZE_PERCENT`,
+5-80, same pattern as `--stitch-gsensor-size`).
+
+**3. Fixed gsensor overlay (and rearview_mirror inset) landing in
+--stitch-resolution's padding instead of on real footage.** Root
+cause: `_fit_and_pad()` letterboxes/pillarboxes the camera composite
+to fit a mismatched `resolution` - but the gsensor overlay's own
+sizing/position math (and the mirror inset's own `mirror_size`) used
+to run against `comp_width`/`comp_height`, which *is* `resolution`
+itself once padding is in play, not the real content size inside it.
+A "top-right" position computed against the full padded box lands in
+the black bars, nowhere near the actual footage. Fixed by introducing
+`content_width`/`content_height` (the composite's real pre-pad pixel
+size - probed from the decoded intermediates for hstack/vstack,
+reused from the already-known native front dims for
+`rearview_mirror`) and reordering `_stack()`'s filter graph: the
+gsensor overlay (or mirror inset) is now composited *before* any
+`--stitch-resolution` fit-and-pad runs, sized/positioned against
+`content_width`/`content_height` - so ffmpeg's own overlay `main_w`/
+`main_h` runtime variables, and this module's own Python-side pixel
+math, always see the real content, never the padding. `comp_width`/
+`comp_height` keep their old meaning (the padded/final camera-portion
+size) for the map panel, which genuinely does need to match the
+file's own eventual size since it sits alongside it, outside the pad.
+
+Tested: `test_stitch` 87 passed (81 existing + 6 new: two
+`_map_panel_dimensions()` `size_fraction` unit tests plus one
+confirming it still requires GPS data, an end-to-end `map_size=`
+stitch_cameras() test, a subtitle-confined-to-camera-region regression
+test - map panel's own bottom strip stays bright while the camera
+region's darkens, precise pixel math - and a gsensor-lands-on-real
+-footage regression test reproducing the exact `--stitch-resolution`
++ `top_down` mismatch, confirming the overlay's red test-box lands
+inside the real visible content bounds and *not* where the old,
+buggy math would have placed it, deep in the pillarbox), `test_trip_
+export` 49 passed (48 + 1 new: `stitch_map_size` forwarding),
+`test_bv_export` 67 passed (64 + 3 new: `--stitch-map-size` parsing,
+default-None, and out-of-range rejection), 0 failed. Also ran a real,
+non-mocked end-to-end encode (320x180 front/rear, top_down,
+`resolution=(960, 540)` - a real aspect mismatch, same shape as
+Christer's report) outside the test suite and confirmed via direct
+pixel inspection: the gsensor overlay's red test-box lands at
+x∈[660,686], comfortably inside the real visible footage bounds
+(x∈[240,720) for this resolution/content combination) - not in the
+pillarbox to its right, where the pre-fix math would have placed it.

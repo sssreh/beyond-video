@@ -1023,6 +1023,57 @@ def test_main_parses_an_explicit_stitch_map_mode_and_side(tmp_path, monkeypatch)
     assert captured["stitch_map_side"] == "right"
 
 
+def test_main_parses_stitch_map_size(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-map", "--stitch-map-size", "35",
+    ])
+
+    assert captured["stitch_map_size"] == 35.0
+
+
+def test_main_leaves_stitch_map_size_none_by_default(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch", "--stitch-map"])
+
+    assert captured["stitch_map_size"] is None
+
+
+def test_main_rejects_an_out_of_range_stitch_map_size(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-map", "--stitch-map-size", "99",
+        ])
+
+
 def test_main_leaves_stitch_gsensor_false_when_stitch_flag_is_absent(
     tmp_path, monkeypatch
 ):
