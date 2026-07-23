@@ -4379,3 +4379,14 @@ repo's files alongside whatever's already there. Kept a note
 explaining why the simpler-looking `git clone ... .` doesn't work here
 instead of just silently swapping it, so a future reader isn't left
 wondering why the doc doesn't use the more obvious command.
+
+## Port correction: 19393 -> 19373 (this session)
+
+Christer's original ask was port 19393, used throughout the Dockerfile
+(`EXPOSE`, the `bv-web serve --port` in `CMD`), `docker-compose.yml`
+(`19393:19393`), and `docs/DEPLOY.md`. He corrected it to 19373 after
+already deploying successfully with 19393 - a typo, not a design
+change. Updated all three files (Dockerfile, docker-compose.yml,
+docs/DEPLOY.md) to 19373 consistently; left the earlier WORKING_CONTEXT.md
+entries above referencing 19393 as-is, since they're a log of what was
+actually built/discussed at the time, not living documentation.

@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir ".[web]"
 # `bv-web adduser` needs to create/update it via `docker exec`).
 RUN mkdir -p /data/trips /data/config
 
-EXPOSE 19393
+EXPOSE 19373
 
 ENTRYPOINT ["bv-web"]
-CMD ["serve", "/data/trips", "--users-file", "/data/config/web-users.cfg", "--host", "0.0.0.0", "--port", "19393"]
+CMD ["serve", "/data/trips", "--users-file", "/data/config/web-users.cfg", "--host", "0.0.0.0", "--port", "19373"]
