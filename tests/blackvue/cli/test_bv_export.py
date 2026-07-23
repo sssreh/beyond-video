@@ -958,6 +958,76 @@ def test_main_parses_stitch_resolution_from_the_command_line(
     assert captured["stitch_bitrate"] == "256k"
 
 
+def test_main_parses_stitch_scale_and_max_dimensions(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-scale", "50",
+        "--stitch-max-width", "1920", "--stitch-max-height", "1080",
+    ])
+
+    assert captured["stitch_scale"] == 50.0
+    assert captured["stitch_max_width"] == 1920
+    assert captured["stitch_max_height"] == 1080
+
+
+def test_main_leaves_stitch_scale_and_max_dimensions_none_by_default(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch"])
+
+    assert captured["stitch_scale"] is None
+    assert captured["stitch_max_width"] is None
+    assert captured["stitch_max_height"] is None
+
+
+def test_main_rejects_an_out_of_range_stitch_scale(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-scale", "150",
+        ])
+
+
+def test_main_rejects_a_zero_stitch_max_width(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-max-width", "0",
+        ])
+
+
 def test_main_leaves_stitch_map_as_none_when_stitch_flag_is_absent(
     tmp_path, monkeypatch
 ):

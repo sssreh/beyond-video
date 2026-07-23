@@ -294,6 +294,150 @@ def test_stitch_cameras_scales_the_stacked_output_to_a_requested_resolution(
     assert _video_size(destination) == (320, 240)
 
 
+def test_stitch_cameras_scale_shrinks_the_output_preserving_aspect_ratio(
+    tmp_path
+):
+    # Christer: a native side_by_side composite with no --stitch
+    # -resolution/--stitch-bitrate given came out 3.5GB at 5422x4320,
+    # 20 minutes to render - --stitch-scale is a padding-free way to
+    # shrink it that always keeps the natural aspect ratio, unlike an
+    # exact --stitch-resolution WxH pair (which can introduce
+    # letterbox/pillarbox bars for a size that doesn't happen to match).
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", scale=50,
+    )
+
+    # Natural size is 640x240 (two 320x240 hstacked) - scale=50 halves
+    # both dimensions, so the aspect ratio (640/240 == 320/120) is
+    # exactly preserved, not just "smaller".
+    width, height = _video_size(destination)
+    assert (width, height) == (320, 120)
+
+
+def test_stitch_cameras_scale_100_is_a_no_op(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(front, rear, destination, layout="side_by_side", scale=100)
+
+    assert _video_size(destination) == (640, 240)
+
+
+def test_stitch_cameras_max_width_caps_width_without_upscaling(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    # Natural width is 640 (two 320-wide cameras hstacked) - capped at
+    # 400, so both dimensions scale down together (never up) to fit.
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", max_width=400,
+    )
+
+    width, height = _video_size(destination)
+    assert width <= 400
+    # Aspect ratio (640/240 == 2.667) preserved, not distorted.
+    assert abs(width / height - 640 / 240) < 0.05
+
+
+def test_stitch_cameras_max_width_larger_than_natural_size_is_a_no_op(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    # Natural width is 640 - a cap above that should never upscale.
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", max_width=2000,
+    )
+
+    assert _video_size(destination) == (640, 240)
+
+
+def test_stitch_cameras_max_height_caps_height_without_upscaling(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    # Natural height is 240 - capped at 100.
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side", max_height=100,
+    )
+
+    width, height = _video_size(destination)
+    assert height <= 100
+    assert abs(width / height - 640 / 240) < 0.05
+
+
+def test_stitch_cameras_scale_and_max_width_combine_tightest_wins(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    destination = tmp_path / "stitch.mp4"
+    # Natural width 640: scale=90 alone would ask for ~576, but
+    # max_width=200 is the tighter cap and should win instead - no
+    # validation/error needed, they just combine as independent bounds.
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        scale=90, max_width=200,
+    )
+
+    width, _height = _video_size(destination)
+    # scale=90 alone would land near 576 (90% of the natural 640) -
+    # max_width=200 being the tighter cap should win instead. A couple
+    # of pixels' slack accounts for ffmpeg's own even-number rounding
+    # on the auto-derived width (only the target height is set
+    # explicitly - see _stack()'s own note on why one `scale=-2:H`
+    # filter is enough for either bound).
+    assert width <= 202
+
+
+def test_stitch_cameras_scale_includes_the_map_panel(tmp_path):
+    # The scale/max_width/max_height shrink applies to the *whole*
+    # final frame, not just the camera portion - confirmed here by
+    # checking the scaled-down output still has a map panel's worth of
+    # extra width beyond a plain camera-only stitch at the same scale.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+
+    camera_only = tmp_path / "camera_only.mp4"
+    stitch_cameras(
+        front, rear, camera_only, layout="side_by_side", scale=50,
+    )
+    camera_only_width, _h1 = _video_size(camera_only)
+
+    with_map = tmp_path / "with_map.mp4"
+    stitch_cameras(
+        front, rear, with_map, layout="side_by_side", scale=50,
+        map_mode="map", map_side="right", map_fixes=fixes, map_roads=(),
+    )
+    with_map_width, _h2 = _video_size(with_map)
+
+    assert with_map_width > camera_only_width
+
+
 def test_stitch_cameras_letterboxes_instead_of_distorting_a_mismatched_aspect(
     tmp_path
 ):

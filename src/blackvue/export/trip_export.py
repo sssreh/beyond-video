@@ -257,6 +257,9 @@ def export_trip(
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
+    stitch_scale: float | None = None,
+    stitch_max_width: int | None = None,
+    stitch_max_height: int | None = None,
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
@@ -350,6 +353,16 @@ def export_trip(
     scale/constrain stitch.mp4 - handy for a fast, small test render
     instead of waiting on a full-resolution encode. Both only apply
     when `stitch_layout` is also given.
+
+    `stitch_scale` (percent, 1-100), `stitch_max_width`, and
+    `stitch_max_height` (pixels) are a padding-free alternative to
+    `stitch_resolution` for just shrinking the output - they scale the
+    whole final frame (camera composite plus any map panel) down by a
+    uniform factor instead of fitting it into an exact WxH, so the
+    aspect ratio is always preserved and no letterbox/pillarbox bars
+    are ever added. All three combine freely (whichever produces the
+    smallest result wins) - see stitch.py's own docstring for the full
+    reasoning. Also only apply when `stitch_layout` is given.
 
     `stitch_map` ('map' or 'zoom'), if given (also requires
     `stitch_layout`), additionally composes a map panel alongside the
@@ -727,6 +740,9 @@ def export_trip(
                 layout=resolved_stitch_layout,
                 resolution=stitch_resolution,
                 bitrate=stitch_bitrate,
+                scale=stitch_scale,
+                max_width=stitch_max_width,
+                max_height=stitch_max_height,
                 mirror_size=stitch_mirror_size,
                 map_mode=stitch_map,
                 map_side=stitch_map_side,
