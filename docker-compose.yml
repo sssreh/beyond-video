@@ -29,16 +29,18 @@ services:
       # (see docs/DEPLOY.md).
       - ./data/config:/data/config
 
-  # bv-download (fetch from the camera) and bv-config (one-time camera
-  # setup) - see docs/DEPLOY.md's "Feeding it real trips" section.
-  # bv-generate/bv-export deliberately do NOT run here - they run
-  # natively on Christer's PC instead (GPU acceleration, already
-  # proven to work there), reading data/archive and writing data/trips
-  # over an SMB-mapped drive to this same NAS folder rather than
-  # inside a container. Not a long-running service like bv-web: no
-  # `restart:` policy and no fixed command here on purpose - invoke it
-  # per command with `docker-compose run --rm bv-cli <command> ...`,
-  # e.g. `docker-compose run --rm bv-cli bv-download Kirby`.
+  # The full bv-* pipeline (bv-config, bv-download, bv-generate,
+  # bv-lang, bv-export) - see docs/DEPLOY.md's "Feeding it real trips"
+  # section. Christer also runs bv-generate/bv-export natively on his
+  # PC against these same folders over an SMB-mapped drive (faster -
+  # GPU acceleration) - that's a second, complementary way to do the
+  # heavy lifting, not a replacement for this service; this one lets
+  # the NAS do the whole pipeline on its own too, e.g. for scheduled/
+  # unattended exports when the PC isn't on. Not a long-running
+  # service like bv-web: no `restart:` policy and no fixed command
+  # here on purpose - invoke it per command with `docker-compose run
+  # --rm bv-cli <command> ...`, e.g. `docker-compose run --rm bv-cli
+  # bv-download Kirby`.
   bv-cli:
     build:
       context: .
@@ -46,10 +48,16 @@ services:
     volumes:
       # bv-download's target / bv-config's "Target (download path)" -
       # the raw camera archive. This is the SAME host folder Christer's
-      # PC reaches over SMB to run bv-generate/bv-export against - see
-      # docs/DEPLOY.md. Not shared with bv-web at all; bv-web only
-      # ever reads finished trip folders, never raw recordings.
+      # PC also reaches over SMB - see docs/DEPLOY.md. Not shared with
+      # bv-web at all; bv-web only ever reads finished trip folders,
+      # never raw recordings.
       - ./data/archive:/data/archive
+      # bv-export's --target - the SAME host folder bv-web's own
+      # `./data/trips` mount above points at (and that Christer's PC
+      # also reaches over SMB), so a trip exported from here shows up
+      # in bv-web immediately. Read-write here (bv-export writes into
+      # it); bv-web mounts it read-only.
+      - ./data/trips:/data/trips
       # Camera .cfg files (bv-config --config-dir) - deliberately a
       # different host folder than bv-web's ./data/config above (that
       # one holds web-users.cfg, an unrelated file); both happen to
