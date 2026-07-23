@@ -4671,3 +4671,65 @@ and the SMB-mapped-drive path end to end (share reachability, and
 `bv-generate`/`bv-export` actually running correctly against a mapped
 network drive rather than a local path - untested territory, though
 both commands just take a path and shouldn't care where it points).
+
+## Second pivot: bv-cli regains full pipeline capability (this session)
+
+Christer, after the "Split across two machines" pivot above: "No, i
+want the NAS to be able to do it aswell." Not a reversal of the PC/SMB
+path - both are now meant to coexist. `bv-download`/`bv-config` still
+always run on the NAS (camera reachable there directly), and
+`bv-generate`/`bv-export` can now run in *either* place: on the PC
+over the SMB-mapped drive (faster - GPU acceleration), or on the NAS
+itself via `bv-cli` (self-contained, useful for scheduled/unattended
+exports that shouldn't depend on the PC being on). Both write into
+the exact same `data/trips` host folder, so there's nothing to
+reconcile - a trip exported from either source shows up in `bv-web`
+identically.
+
+`Dockerfile.cli` reverted back to the full toolchain: `apt-get install
+ffmpeg` restored, and `pip install ".[speech,translate]"` (pulling in
+faster-whisper, pyannote.audio, argostranslate, and their shared torch
+dependency) replaces the base-only install from the prior pivot. This
+is the same slow, multi-GB build the very first version of this file
+had - expected, not a regression - except this time the comments
+explicitly frame it as complementary to the PC path rather than the
+only option.
+
+`docker-compose.yml`'s `bv-cli` service regained its `./data/trips`
+mount (removed in the prior pivot) alongside its existing
+`./data/archive` and `./data/camera-config` mounts, so `bv-export` can
+write trips from the NAS side again. Comments on both the `bv-web` and
+`bv-cli` service blocks rewritten to describe the PC/SMB route as "a
+second, complementary way to do the heavy lifting, not a replacement."
+
+`docs/DEPLOY.md` section 7 rewritten a third time: the "Split across
+two machines" framing is gone, replaced by "Two ways to run
+bv-generate/bv-export" which states plainly that the NAS and PC paths
+are not exclusive - use whichever fits a given moment. The "On the
+NAS: the full pipeline" subsection (build `bv-cli`, `bv-config`,
+`bv-download`, `bv-generate`, `bv-export`, all via `docker-compose run
+--rm bv-cli ...`) is back, sitting alongside the still-current "On
+your PC: the faster path for enrich/export" (SMB-mapped drive)
+subsection from the prior pivot. Every other stale "split-only"
+reference introduced by the prior pivot was tracked down and reverted:
+the intro paragraph (line 3), the "Layout on the NAS" file tree's
+comments for `Dockerfile.cli`/`data/trips`/`data/archive` (now
+describe both the NAS and PC as valid writers/readers again), step 3's
+`data/trips` description, and step 4's `bv-web`-build note (which had
+briefly claimed "neither image installs the heavy ML stack" - `bv-cli`
+does again, so that line now correctly attributes the heavy build to
+`bv-cli` alone).
+
+Net effect versus the prior pivot: nothing about the PC/SMB path was
+undone - it's exactly as documented before. What changed is that
+`bv-cli` and the NAS's own pipeline capability, briefly stripped down
+to just `bv-download`/`bv-config`, are fully restored alongside it.
+
+Not yet verified (unchanged from before, plus one addition): the
+SMB-mapped-drive path end to end (still untested), and now also the
+restored full-toolchain `bv-cli` build itself - it was mid-build when
+Christer first pivoted away from it, so it has never actually
+completed a build in either its original or this now-restored form.
+Next concrete step once this is pushed/pulled to the NAS:
+`sudo docker-compose build bv-cli` and watch it through to completion
+this time.

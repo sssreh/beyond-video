@@ -1,36 +1,42 @@
-# Runs bv-download/bv-config on the NAS - see docs/DEPLOY.md's
-# "Feeding it real trips" section. Deliberately narrow: bv-generate
-# (--transcribe/--translate/--diarize) and bv-export run on Christer's
-# PC instead, via a native install with GPU acceleration already
-# proven to work there, reading/writing the NAS's data/archive and
-# data/trips over an SMB-mapped drive rather than inside a Docker
-# container on the NAS - see the "Split across two machines" note in
-# docs/DEPLOY.md for why. That split means this image only ever needs
-# to run bv-download (fetch from the camera) and bv-config (one-time
-# camera setup), neither of which touches ffmpeg or any of the
-# faster-whisper/pyannote.audio/argostranslate stack - so, unlike an
-# earlier version of this file, it stays on the base dependencies only
-# (just Pillow) and installs no system packages beyond Python itself.
+# Runs the full bv-* pipeline (bv-config, bv-download, bv-generate,
+# bv-lang, bv-export) on the NAS itself - see docs/DEPLOY.md's
+# "Feeding it real trips" section. Christer also runs bv-generate/
+# bv-export natively on his PC against these same NAS folders over an
+# SMB-mapped drive (faster - GPU acceleration, already proven to work
+# there) - that's a second, complementary way to do the heavy lifting,
+# not a replacement for this image. This image exists so the NAS can
+# do the whole pipeline on its own too, e.g. for scheduled/unattended
+# exports when the PC isn't on.
 #
-# No fixed ENTRYPOINT/CMD, same reasoning as before: the full command
-# (e.g. `bv-download Kirby --config-dir /data/config`) is given
-# directly to `docker-compose run --rm bv-cli ...` each time. This
-# service is never meant to run as a long-lived container the way
-# bv-web is - see docker-compose.yml (no `restart:` policy here).
+# Installs the full toolchain: ffmpeg, faster-whisper, pyannote.audio,
+# argostranslate - the latter two pull in torch, so this image is
+# large and slow to build the first time; that's expected, not a sign
+# something's stuck. The NAS has no GPU, so faster-whisper/
+# pyannote.audio run on CPU here - slower than the PC path, an
+# accepted trade-off for having the NAS able to do this unattended.
+#
+# No fixed ENTRYPOINT/CMD - there's no single "bv-cli" binary, just
+# five separate bv-* commands, so the full command (bv-download Kirby,
+# bv-export /data/archive --target /data/trips --stitch ..., etc.) is
+# given directly to `docker-compose run --rm bv-cli ...` each time.
+# This service is never meant to run as a long-lived container the
+# way bv-web is - see docker-compose.yml (no `restart:` policy here).
 FROM python:3.13-slim
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[speech,translate]"
 
 # Where docker-compose.yml's volumes land: /data/archive is
 # bv-download's target (raw recordings) and bv-config's "Target
-# (download path)" answer, /data/config is where camera .cfg files go
-# (bv-config --config-dir). /data/trips isn't created here anymore -
-# this image no longer writes trips at all (bv-export moved to
-# Christer's PC), so it's not mounted into this container either; see
-# docker-compose.yml.
-RUN mkdir -p /data/archive /data/config
+# (download path)" answer, /data/trips is bv-export's --target
+# (shared with the bv-web service, read-write here), /data/config is
+# where camera .cfg files go (bv-config --config-dir).
+RUN mkdir -p /data/archive /data/trips /data/config

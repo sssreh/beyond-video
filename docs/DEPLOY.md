@@ -1,6 +1,6 @@
 # Deploying bv-web (and the bv-* pipeline) on a Synology NAS
 
-A step-by-step walkthrough for running `bv-web` in Container Manager, browsable at `http://<nas-ip>:19373`, plus getting real trips into it. The pipeline is split across two machines (see "Split across two machines" below step 6): `bv-download`/`bv-config` run on the NAS itself, while `bv-generate`/`bv-export` - the GPU-heavy, ffmpeg-heavy parts - run natively on Christer's PC, reaching the NAS's archive/trips folders over SMB. `bv-web` itself covers increment 1 only (browse/watch trips, owner/viewer login) - see `WORKING_CONTEXT.md` for what's not built yet.
+A step-by-step walkthrough for running `bv-web` in Container Manager, browsable at `http://<nas-ip>:19373`, plus getting real trips into it. `bv-download`/`bv-config` always run on the NAS; `bv-generate`/`bv-export` can run either on the NAS (via the `bv-cli` service, self-contained) or natively on Christer's PC over an SMB-mapped drive (faster - GPU acceleration) - see step 7's "Two ways to run bv-generate/bv-export" for both. `bv-web` itself covers increment 1 only (browse/watch trips, owner/viewer login) - see `WORKING_CONTEXT.md` for what's not built yet.
 
 ## Layout on the NAS
 
@@ -9,19 +9,19 @@ Everything lives under one folder, `/volume1/beyond-video`:
 ```
 /volume1/beyond-video/          <- this repo, checked out directly (not nested)
     Dockerfile                  <- bv-web's image
-    Dockerfile.cli              <- bv-download/bv-config's image (nothing heavier - see below)
+    Dockerfile.cli              <- the full pipeline's image (bv-download/bv-generate/bv-export/...)
     docker-compose.yml
     pyproject.toml
     src/
     ...
     data/
-        trips/                  <- bv-export --target output - bv-web browses it (read-only); written by Christer's PC over SMB
+        trips/                  <- bv-export --target output - bv-web browses it (read-only); written by bv-cli and/or Christer's PC over SMB
         config/                 <- bv-web's web-users.cfg (accounts file)
-        archive/                <- bv-download's target - the raw camera archive; also read by Christer's PC over SMB
+        archive/                <- bv-download's target - the raw camera archive; also reachable from Christer's PC over SMB
         camera-config/          <- bv-config's camera .cfg files (e.g. Kirby.cfg)
 ```
 
-`data/` isn't part of the git repo (see `.gitignore`) - it's created once, on the NAS, and holds everything that needs to persist across container rebuilds (accounts, camera config, the raw archive, and exported trips). `data/archive` and `data/trips` also need to be reachable from Christer's PC over SMB (see step 7) - if `/volume1/beyond-video` itself isn't already a browsable network share, set that up in **Control Panel -> Shared Folder** first.
+`data/` isn't part of the git repo (see `.gitignore`) - it's created once, on the NAS, and holds everything that needs to persist across container rebuilds (accounts, camera config, the raw archive, and exported trips). `data/archive` and `data/trips` also need to be reachable from Christer's PC over SMB if using the PC path for `bv-generate`/`bv-export` (see step 7) - if `/volume1/beyond-video` itself isn't already a browsable network share, set that up in **Control Panel -> Shared Folder** first.
 
 ## 1. One-time host prep
 
@@ -66,7 +66,7 @@ mkdir -p /volume1/beyond-video/data/archive
 mkdir -p /volume1/beyond-video/data/camera-config
 ```
 
-All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` (run from Christer's PC over SMB, see step 7) writes into - leaving it empty for now is fine, `bv-web` just shows "No trips found yet."
+All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` writes into, whether run on the NAS or from Christer's PC over SMB (see step 7) - leaving it empty for now is fine, `bv-web` just shows "No trips found yet."
 
 ## 4. Build and start bv-web
 
@@ -80,7 +80,7 @@ sudo docker-compose up -d bv-web
 
 Note the hyphen: Synology's Container Manager only puts the old standalone `docker-compose` 1.x CLI on the SSH `$PATH`, not the newer `docker compose` (space) v2 plugin - `docker compose ...` will fail with a confusing `unknown shorthand flag` error rather than a clear "not found." Check which one you have with `docker-compose --version` (v1, hyphenated) vs `docker compose version` (v2 plugin) if unsure; every command in this doc uses the hyphenated form to match Christer's actual NAS.
 
-`bv-web`'s image only installs the `web` extra (fastapi/uvicorn/jinja2) - it does not pull in faster-whisper/pyannote.audio/argostranslate/torch, so this build should be quick (so should `bv-cli`'s, in step 7 - neither image installs the heavy ML stack; see "Split across two machines" for why). `sudo docker-compose ps` should show `beyond-video-web` as `Up`.
+`bv-web`'s image only installs the `web` extra (fastapi/uvicorn/jinja2) - it does not pull in faster-whisper/pyannote.audio/argostranslate/torch, so this build should be quick (the `bv-cli` image in step 7 is the heavy one). `sudo docker-compose ps` should show `beyond-video-web` as `Up`.
 
 ## 5. Create your owner account
 
@@ -100,15 +100,18 @@ If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Fir
 
 ## 7. Feeding it real trips
 
-### Split across two machines
+### Two ways to run bv-generate/bv-export
 
-The camera reaches the NAS's network directly, so `bv-download`/`bv-config` run there. But `bv-generate --transcribe/--translate/--diarize` (faster-whisper/pyannote.audio/argostranslate - all much happier with a GPU) and `bv-export` (ffmpeg-heavy) run natively on Christer's PC instead, where GPU acceleration and the full toolchain are already set up and proven fast - see `WORKING_CONTEXT.md`'s earlier "GPU auto-detect + CPU fallback" work. The PC reaches the NAS's `data/archive` (to read) and `data/trips` (to write) over an SMB-mapped network drive, so nothing needs copying or syncing by hand - `bv-generate`/`bv-export` just point straight at the mapped drive letters.
+`bv-download`/`bv-config` always run on the NAS (the camera reaches its network directly). For `bv-generate`/`bv-export` there are two options, and they're not exclusive - use whichever fits a given moment:
 
-This is why `Dockerfile.cli`/the `bv-cli` service stays deliberately narrow: it only ever runs `bv-download` and `bv-config`, neither of which needs ffmpeg or any ML library, so the image is small and fast to build - not the multi-GB torch-pulling image an earlier version of this doc described.
+- **On the NAS**, via the `bv-cli` service (below) - works standalone, good for scheduled/unattended exports that shouldn't depend on the PC being on.
+- **On Christer's PC**, natively, reaching the NAS's `data/archive`/`data/trips` over an SMB-mapped network drive - faster (GPU acceleration, already proven to work there - see `WORKING_CONTEXT.md`'s "GPU auto-detect + CPU fallback" work), good for anything time-sensitive or GPU-hungry (`--transcribe`/`--diarize` in particular).
 
-### On the NAS: download the archive
+Either way writes into the exact same `data/trips` folder `bv-web` browses, so there's nothing to reconcile between them - a trip exported from the NAS and a trip exported from the PC show up in `bv-web` identically.
 
-**Build the image once:**
+### On the NAS: the full pipeline
+
+**Build the image once** (this one's slow - faster-whisper/pyannote.audio pull in torch, expect several minutes and a multi-GB image; that's normal, not stuck):
 
 ```
 cd /volume1/beyond-video
@@ -135,27 +138,34 @@ Safe to re-run repeatedly (only fetches what's new). Once you're happy it works,
 sudo docker-compose run --rm bv-cli bv-download Kirby --config-dir /data/config --yes --trace
 ```
 
-### On your PC: enrich and export
-
-Map the NAS as a network drive first (**This PC -> Map network drive** in Windows Explorer, or `net use`), pointing at `\\<nas-ip>\beyond-video\data` (or wherever DSM's share path resolves to) - say it lands on `Z:\`. Then `data\archive` and `data\trips` are just `Z:\archive` and `Z:\trips`.
-
-**Enrich recordings** (optional but recommended before export - see `docs/PIPELINE.md`):
+**Enrich recordings** (optional but recommended before export - see `docs/PIPELINE.md`; slow on the NAS's CPU-only hardware for `--transcribe`/`--diarize` - the PC path below is faster for those):
 
 ```
-bv-generate Z:\archive --get-duration --transcribe --srt
+sudo docker-compose run --rm bv-cli bv-generate /data/archive --get-duration --transcribe --srt
 ```
 
-Add `--translate` / `--diarize` as wanted; both need real setup of their own (`bv-lang install` for translation packages, `--hf-token` for diarization) - see `docs/man/bv-generate.md`. This runs with your PC's normal `bv-generate` install (GPU and all) - nothing Docker-specific here.
+Add `--translate` / `--diarize` as wanted; both need real setup of their own (`bv-lang install` for translation packages, `--hf-token` for diarization) - see `docs/man/bv-generate.md`.
 
 **Export trips** (this is what makes them show up in `bv-web`):
 
 ```
+sudo docker-compose run --rm bv-cli bv-export /data/archive --target /data/trips --map --stitch --stitch-layout rearview_mirror
+```
+
+`/data/trips` here is the *same* host folder `bv-web`'s container has mounted - no copying, no syncing. The moment this finishes, refresh `bv-web`'s trip list and the new trip is there.
+
+`bv-lang install`, `bv-ls`, and any other `bv-*` command work the same way - `sudo docker-compose run --rm bv-cli <command> <args...>`.
+
+### On your PC: the faster path for enrich/export
+
+Map the NAS as a network drive (**This PC -> Map network drive** in Windows Explorer, or `net use`), pointing at `\\<nas-ip>\beyond-video\data` (or wherever DSM's share path resolves to) - say it lands on `Z:\`. Then `data\archive` and `data\trips` are just `Z:\archive` and `Z:\trips`. Run `bv-generate`/`bv-export` exactly as you would locally, just pointed at the mapped drive:
+
+```
+bv-generate Z:\archive --get-duration --transcribe --srt
 bv-export Z:\archive --target Z:\trips --map --stitch --stitch-layout rearview_mirror
 ```
 
-`Z:\trips` here maps to the *same* host folder (`./data/trips`) that `bv-web`'s container has mounted on the NAS - no separate copy step. The moment this command finishes, refresh `bv-web`'s trip list and the new trip is there.
-
-`bv-lang install`, `bv-ls`, and anything else that only touches the archive/trips (not the camera itself) can run from your PC the same way, against the mapped drive.
+Nothing Docker-specific here - this is your PC's normal `bv-generate`/`bv-export` install, GPU and all, just reading/writing over the network instead of a local path. `Z:\trips` maps to the same `data/trips` folder the NAS-side path above writes into, so the two are fully interchangeable trip by trip.
 
 ## Updating later
 
