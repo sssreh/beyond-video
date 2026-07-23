@@ -3123,3 +3123,46 @@ the sandbox has no network access) - confirmed via `ffprobe` that
 render's own "+1 frame" convention) now match, where before the fix
 map.mp4 would have been ~6s long and started 3 seconds late relative
 to front.mp4.
+
+## --stitch-gsensor: fix misleading warning when a trip has no g-sensor data (done, this session)
+
+Christer's trip.log showed:
+
+```
+no g-sensor data for this trip - trip.3gf skipped
+WARNING: stitch gsensor overlay: gsensor.mp4 not found - run bv-export --gsensor-video first
+```
+
+He'd guessed correctly that the trip simply had no g-sensor data at
+all. The bug: `--stitch-gsensor`'s "gsensor.mp4 not found" check in
+`trip_export.py` only ever looked at whether the file existed on disk
+- it had no way to tell "not rendered yet, but could be" apart from
+"can never be rendered, there's no data for this trip" (`samples`,
+from `_merge_gsensor(trip)`, is already computed earlier in
+`export_trip()` for the trip.3gf write). The former case's advice
+("run bv-export --gsensor-video first") is actively wrong for the
+latter - running with that flag would still produce nothing, since
+`render_gsensor_video()` is only ever called `if render_gsensor and
+samples`.
+
+Fix: `trip_export.py`'s stitch-gsensor check now branches three ways
+instead of two - existing gsensor.mp4 found (unchanged), no g-sensor
+data for this trip at all (new: "stitch gsensor overlay: no g-sensor
+data for this trip - skipped"), or data exists but hasn't been
+rendered yet (unchanged "gsensor.mp4 not found - run bv-export
+--gsensor-video first" message, now only shown when it's actually
+correct advice).
+
+Test fixture note: the pre-existing
+`test_export_trip_stitch_gsensor_warns_when_no_gsensor_mp4_exists` used
+`_trip_with_front_and_rear()`, which has no GSENSOR asset at all - so
+it was actually already exercising the "no data" case, just asserting
+the old (now-wrong-for-this-case) message. Renamed to
+`test_export_trip_stitch_gsensor_warns_when_trip_has_no_gsensor_data`
+and updated its assertion. Added a new sibling test,
+`test_export_trip_stitch_gsensor_warns_when_gsensor_mp4_not_yet_rendered`,
+using a trip that does have a GSENSOR asset (so `samples` is
+non-empty) but no rendered gsensor.mp4 on disk, to cover the case
+where the original "go run --gsensor-video" message is still correct.
+
+Tested: `test_trip_export` 48 passed (47 + 1 new test), 0 failed.

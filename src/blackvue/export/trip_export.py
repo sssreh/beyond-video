@@ -609,12 +609,29 @@ def export_trip(
     # same "compose only what's already there" convention --stitch's
     # camera/subtitle inputs already follow (unlike the map panel,
     # which is a deliberate, confirmed exception to that rule).
+    #
+    # Two distinct reasons the file can be missing, and they need two
+    # different messages: `samples` (computed above from
+    # _merge_gsensor()) being empty means this trip has no g-sensor
+    # data at all - no flag will ever produce a gsensor.mp4 for it, so
+    # telling the user to "run --gsensor-video first" is actively
+    # wrong advice. Only when samples exist but no gsensor.mp4 is on
+    # disk does the "go render it" message actually apply.
     stitch_gsensor_source = None
     if stitch_gsensor and stitch_layout is not None:
         candidate = destination / "gsensor.mp4"
         if candidate.exists():
             stitch_gsensor_source = candidate
             log.step("using existing gsensor.mp4 for stitch overlay")
+        elif not samples:
+            warnings.append(
+                "stitch gsensor overlay: no g-sensor data for this "
+                "trip - skipped"
+            )
+            log.warning(
+                "stitch gsensor overlay: no g-sensor data for this "
+                "trip - skipped"
+            )
         else:
             warnings.append(
                 "stitch gsensor overlay: gsensor.mp4 not found - run "
