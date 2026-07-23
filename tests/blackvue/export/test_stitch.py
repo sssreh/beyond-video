@@ -438,6 +438,106 @@ def test_stitch_cameras_scale_includes_the_map_panel(tmp_path):
     assert with_map_width > camera_only_width
 
 
+def test_stitch_cameras_scale_shrinks_decode_time_scaling_not_just_the_final_pass(
+    tmp_path, monkeypatch
+):
+    # Christer: "rear, front, panel and stitch are still slow even
+    # with --stitch-scale 10" - the first version of this feature only
+    # applied scale/max_width/max_height as a trailing filter on the
+    # already-fully-built final frame, so front/rear still decoded and
+    # re-encoded at full native size regardless. Fixed by deriving an
+    # equivalent `effective_resolution` from the natural (pre-decode
+    # -probed) size and feeding it through the same decode-time
+    # -scaling path --stitch-resolution already uses. Confirmed here
+    # the same way test_stack_scales_both_cameras_toward_the_target_
+    # resolution_not_native_size does: front's own native height
+    # (2160) must not show up in either scale filter.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    scale_filters = {}
+
+    def fake_decode_camera(source, destination, *, scale_filter, debug=False):
+        # Copies the real source through rather than writing an empty
+        # placeholder (unlike test_stack_scales_both_cameras_toward_
+        # the_target_resolution_not_native_size's own fake) - `scale`
+        # (unlike a bare `resolution`) also makes _stack() probe the
+        # *decoded* intermediates afterward (see content_width/
+        # comp_width below _decode_camera's own call site), which
+        # needs a real, ffprobe-able file to succeed against.
+        import shutil
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        scale_filters[destination.name] = scale_filter
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "_decode_camera", fake_decode_camera)
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 3840, 2160, duration_seconds=0.1)
+    _make_video(rear, 3840, 2160, duration_seconds=0.1)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side", scale=10,
+    )
+
+    for name, scale_filter in scale_filters.items():
+        assert "2160" not in scale_filter, (
+            f"{name}'s scale filter ({scale_filter!r}) still targets "
+            "front's full native height - --stitch-scale isn't "
+            "reducing decode-time work"
+        )
+
+
+def test_stitch_cameras_scale_shrinks_the_map_panels_own_render_size(
+    tmp_path, monkeypatch
+):
+    # Same complaint, the map-panel half: rendering the panel at full
+    # native size regardless of --stitch-scale was real, wasted PIL
+    # -rendering work (map.mp4's own per-frame road-drawing cost -
+    # see map_video.py/map_render.py) - not just a bigger final file.
+    captured_sizes = []
+    original_render_map_panel = stitch_module._render_map_panel
+
+    def _capture_render_map_panel(*args, **kwargs):
+        captured_sizes.append((kwargs.get("width"), kwargs.get("height")))
+        return original_render_map_panel(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stitch_module, "_render_map_panel", _capture_render_map_panel
+    )
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 640, 480)
+    _make_video(rear, 640, 480)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+
+    stitch_cameras(
+        front, rear, tmp_path / "full.mp4",
+        layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+    )
+    stitch_cameras(
+        front, rear, tmp_path / "scaled.mp4",
+        layout="side_by_side", scale=25,
+        map_mode="map", map_fixes=fixes, map_roads=(),
+    )
+
+    assert len(captured_sizes) == 2
+    full_width, full_height = captured_sizes[0]
+    scaled_width, scaled_height = captured_sizes[1]
+    assert scaled_width < full_width
+    assert scaled_height < full_height
+
+
 def test_stitch_cameras_letterboxes_instead_of_distorting_a_mismatched_aspect(
     tmp_path
 ):
