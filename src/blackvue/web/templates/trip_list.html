@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Trips - Beyond Video{% endblock %}
+{% block content %}
+{% if trips %}
+<table>
+  <thead>
+    <tr><th>Trip</th><th>Video</th><th>Extras</th></tr>
+  </thead>
+  <tbody>
+    {% for trip in trips %}
+    <tr>
+      <td><a href="/trips/{{ trip.id }}">{{ trip.label }}</a></td>
+      <td>{{ trip.primary_video or "-" }}</td>
+      <td>
+        {% if trip.map_video %}<span class="badge">map</span>{% endif %}
+        {% if trip.gsensor_video %}<span class="badge">gsensor</span>{% endif %}
+        {% if trip.gpx %}<span class="badge">gpx</span>{% endif %}
+        {% if trip.srt %}<span class="badge">srt</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No trips found yet.</p>
+{% endif %}
+{% endblock %}

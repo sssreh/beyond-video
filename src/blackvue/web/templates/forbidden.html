@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}Forbidden - Beyond Video{% endblock %}
+{% block content %}
+<p class="error">{{ detail or "You don't have permission to do that." }}</p>
+<p><a href="/">&larr; Back to trips</a></p>
+{% endblock %}
