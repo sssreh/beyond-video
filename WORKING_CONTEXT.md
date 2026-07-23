@@ -4538,3 +4538,25 @@ on every future pull (previously worked around per-pull with `git
 reset --hard origin/main`, which is safe here since nothing on the
 NAS checkout is meant to be hand-edited, but shouldn't be necessary
 going forward).
+
+## bv-web confirmed working end-to-end on the real NAS (this session)
+
+After the two bug-fix rounds above (`TemplateResponse()`'s calling
+convention, then missing `templates/*.html` package data), Christer
+rebuilt once more and logged in successfully - `GET /login` renders,
+credential check against the real `web-users.cfg` works, and the
+session cookie carries him through to an authenticated page. This is
+the first real confirmation of anything in `blackvue.web` actually
+working over HTTP, closing out the limitation disclosed since task
+#92's original commit ("only reviewed by hand, not exercised by a
+real HTTP request").
+
+Not yet exercised for real: the trip list/detail pages with actual
+trip data (`data/trips` is still empty - nothing has fed it real
+`bv-export` output yet, see the still-open "Feeding it real trips"
+question in `docs/DEPLOY.md`), and file serving/video playback via
+`/trips/{trip_id}/files/{filename}`. Worth a follow-up smoke test once
+a real trip folder lands in `data/trips`, since that path exercises
+Jinja2 template variables (`trip.videos`, `trip.map_zoom_videos`, etc.)
+and `FileResponse` range-request behavior that the login flow alone
+doesn't touch.
