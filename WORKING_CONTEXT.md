@@ -4886,3 +4886,51 @@ verified, particularly `test_stitch.py`'s ~20 `rearview_mirror` call
 sites that don't pass `mirror_zoom`/`mirror_pan_y` explicitly (these
 should all be unaffected now that the library defaults were reverted,
 but a real run is the actual confirmation).
+
+## --map-icon defaults to a bundled red car, arrow still selectable (this session)
+
+Christer, right after the mirror-icon default work: "i would also like
+to have images/red_car.png as default as a map icon, but arrow should
+be selectable." Same shape as `--stitch-mirror-icon`'s new default,
+applied to `--map`/`--map-zoom`'s position marker instead of the
+rearview-mirror inset - and applied the lesson from that feature's own
+false start immediately, without repeating it.
+
+`images/red_car.png` (128x128 RGBA, already pointing "up" - confirmed
+via PIL) copied into `src/blackvue/export/assets/red_car.png`, covered
+by the same `pyproject.toml` package-data glob (`"blackvue.export" =
+["assets/*.png"]`) added for `mirror.png` earlier, no pyproject.toml
+change needed. `map_video.py` gained `DEFAULT_MAP_ICON_PATH` (`Path
+(__file__).parent`-relative, same convention as `mirror_icon.py`'s
+`DEFAULT_MIRROR_ICON_PATH`) - `render_map_video()`'s own
+`marker_image_path` parameter default stays plain `None` (arrow),
+unchanged, so direct library/test callers keep their existing
+behavior.
+
+The omitted/`"none"`/custom-path three-way resolution logic itself
+(previously duplicated inline for `stitch_mirror_icon`) was pulled out
+into a new shared `_resolve_icon_path(value, default_path)` helper in
+`bv_export.py`, now used for both `--map-icon` and `--stitch-mirror
+-icon`. `--map-icon` omitted -> `DEFAULT_MAP_ICON_PATH` (the bundled
+car), the literal string `"none"` -> `None` (the plain rotating
+arrow, still fully reachable), anything else -> that custom path.
+Updated the `--map`/`--map-icon` CLI help text and `docs/man/
+bv-export.md`'s options table to describe the new default and the
+`none` opt-out.
+
+Verified against the real pipeline, not mocked out: monkeypatched
+`trip_export.load_or_fetch_roads` (network-free, same trick this
+project's own `test_bv_export.py` uses for its map tests) with a
+2-point fake road, wrote two real GPS fixes, and ran `bv_export()`
+three ways - `map_icon` omitted, `map_icon="none"`, and an explicit
+custom path - all three produced a working `map.mp4` with no
+fallback warning in `trip.log`. No existing test asserts the old
+"omitted --map-icon -> arrow" default at the CLI/`bv_export()` layer
+(the one existing `--map-icon` test already passes an explicit custom
+path), so nothing needed fixing there this time - unlike the mirror
+-icon defaults work just before this, which required reverting a
+wrong first attempt.
+
+Not yet run through the full test suite for the same reason as the
+mirror-icon work above - no network access in this sandbox to install
+pytest.

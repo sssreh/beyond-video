@@ -22,6 +22,7 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
+from blackvue.export.map_video import DEFAULT_MAP_ICON_PATH
 from blackvue.export.mirror_icon import DEFAULT_MIRROR_ICON_PATH
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from blackvue.export.stitch import ALL_LAYOUTS
@@ -70,6 +71,34 @@ from blackvue.trip.trip_builder import TripBuilder
 _DEFAULT_CLI_MIRROR_SIZE_PERCENT = 40.0
 _DEFAULT_CLI_MIRROR_ZOOM_PERCENT = 40.0
 _DEFAULT_CLI_MIRROR_PAN_Y_PERCENT = -30.0
+
+
+def _resolve_icon_path(
+    value: str | Path | None, default_path: Path
+) -> Path | None:
+    """Shared three-state resolution for --map-icon and --stitch-mirror
+    -icon, both of which now default to a bundled image rather than
+    plain procedural drawing (an arrow / a rounded rectangle). Omitted
+    (`None`, argparse's own default when the flag isn't given) ->
+    `default_path` - a bundled image this package ships (see
+    map_video.DEFAULT_MAP_ICON_PATH / mirror_icon.DEFAULT_MIRROR_ICON
+    _PATH). The literal string `"none"` -> `None`, explicitly opting
+    back out to whichever procedural fallback the caller uses instead.
+    Anything else -> that path, for a custom image. Kept as bv_export.py
+    's own resolution step (not pushed into map_video.py/mirror_icon.py
+    /stitch.py's own function defaults, which stay plain `None`/"no
+    icon" as before) - same reasoning as this module's own
+    _DEFAULT_CLI_MIRROR_SIZE_PERCENT and friends: other direct callers
+    of those lower-level functions (including this project's own test
+    suite) shouldn't have their default behavior changed by bv-export's
+    own CLI preferences.
+    """
+
+    if value is None:
+        return default_path
+    if isinstance(value, str) and value.strip().lower() == "none":
+        return None
+    return Path(value)
 
 
 def _interactive() -> bool:
@@ -383,22 +412,14 @@ def bv_export(
     # even a --overwrite wipe of an individual trip folder - see
     # export_trip()'s map_cache_dir docstring.
     map_cache_dir = target_path / ".osm_cache"
-    map_icon_path = Path(map_icon) if map_icon else None
-    # stitch_mirror_icon has three states, not two: omitted (None) uses
-    # the bundled default photo (DEFAULT_MIRROR_ICON_PATH - Christer's
-    # own reference mirror), the literal string "none" explicitly opts
-    # back out to the plain procedural rounded-rectangle inset (passed
-    # down as None from here on), and anything else is a real path to
-    # a custom photo. See mirror_icon.py's own DEFAULT_MIRROR_ICON_PATH
-    # docstring for why this can't just be a plain Python default
-    # value (the image has to be resolved relative to the installed
-    # package, not this file's cwd).
-    if stitch_mirror_icon is None:
-        stitch_mirror_icon_path = DEFAULT_MIRROR_ICON_PATH
-    elif isinstance(stitch_mirror_icon, str) and stitch_mirror_icon.strip().lower() == "none":
-        stitch_mirror_icon_path = None
-    else:
-        stitch_mirror_icon_path = Path(stitch_mirror_icon)
+    # Both --map-icon and --stitch-mirror-icon now default to a bundled
+    # image rather than plain procedural drawing (an arrow / a rounded
+    # rectangle) - see _resolve_icon_path()'s own docstring for the
+    # omitted/"none"/custom-path three-way split.
+    map_icon_path = _resolve_icon_path(map_icon, DEFAULT_MAP_ICON_PATH)
+    stitch_mirror_icon_path = _resolve_icon_path(
+        stitch_mirror_icon, DEFAULT_MIRROR_ICON_PATH
+    )
     exit_code = 0
     # Cached on the first existing trip folder this run encounters,
     # then reused for every other one - so an interactive run only
@@ -630,9 +651,10 @@ def main(argv: list[str] | None = None) -> int:
             "rendering adds real time per trip. See --map-zoom for a "
             "closer, scrolling 'follow camera' view instead (a "
             "separate file, works with or without --map). The "
-            "current-position marker is an arrow rotated to match "
-            "the GPS course over ground by default - see --map-icon "
-            "to use a custom image instead."
+            "current-position marker is a bundled red car icon, "
+            "rotated to match the GPS course over ground - see "
+            "--map-icon to use a custom image or the plain arrow "
+            "instead."
         ),
     )
 
@@ -642,10 +664,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Use a custom image as the position marker on --map and/or "
-            "--map-zoom instead of the default arrow, rotated each "
-            "frame to match the GPS course over ground. A PNG with "
-            "transparency, drawn pointing 'up'/north in its own file, "
-            "works best."
+            "--map-zoom, rotated each frame to match the GPS course "
+            "over ground. A PNG with transparency, drawn pointing "
+            "'up'/north in its own file, works best. Default: a "
+            "bundled red car icon - pass the literal value 'none' to "
+            "use a plain rotating arrow instead, or a path to use your "
+            "own image."
         ),
     )
 
