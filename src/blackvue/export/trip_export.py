@@ -32,6 +32,7 @@ from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
 from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
+from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
 from .stitch import AUTO_LAYOUT
 from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
@@ -167,22 +168,31 @@ def _load_trip_roads(
     warnings: list[str],
     log: TripLog | None = None,
 ) -> tuple:
-    """Fetch/cache OSM road geometry for a trip's whole bounding box -
-    shared by both the static map.mp4 render and any zoomed
-    map_zoom_*m.mp4 render, so a network/cache failure produces one
-    "map" warning rather than one per map output requested. Returns
-    (bbox, roads); both None if there's no bbox to fetch for (no
-    positioned fixes) or the fetch itself failed.
+    """Fetch/cache OSM road geometry (and water/green-area geometry)
+    for a trip's whole bounding box - shared by both the static
+    map.mp4 render and any zoomed map_zoom_*m.mp4 render, so a
+    network/cache failure produces one "map" warning rather than one
+    per map output requested. Returns (bbox, roads, areas); bbox and
+    roads are both None if there's no bbox to fetch for (no positioned
+    fixes) or the road fetch itself failed.
 
     Always fetched for the *whole* trip's bounding box, even for a
     zoomed "follow camera" render - the camera only frames a small
-    area at once, but which small area varies every frame, so road
-    data has to be available anywhere along the route.
+    area at once, but which small area varies every frame, so road/
+    area data has to be available anywhere along the route.
+
+    A failed area fetch degrades separately from a failed road fetch:
+    roads are load-bearing for the whole map phase (no roads, no
+    point rendering a map at all), but water/green areas are a purely
+    cosmetic addition on top of an otherwise-working map - so an area
+    fetch failure produces its own "map areas" warning and falls back
+    to `areas = ()` (background renders exactly as it did before this
+    feature existed) rather than aborting the map phase.
     """
 
     bbox = bounding_box_for_fixes(fixes)
     if bbox is None:
-        return None, None
+        return None, None, None
 
     try:
         roads = load_or_fetch_roads(bbox, map_cache_dir)
@@ -193,9 +203,17 @@ def _load_trip_roads(
         warnings.append(f"map data: {exc}")
         if log is not None:
             log.warning(f"map data: {exc}")
-        return None, None
+        return None, None, None
 
-    return bbox, roads
+    try:
+        areas = load_or_fetch_areas(bbox, map_cache_dir)
+    except MediaToolError as exc:
+        warnings.append(f"map areas: {exc}")
+        if log is not None:
+            log.warning(f"map areas: {exc}")
+        areas = ()
+
+    return bbox, roads, areas
 
 
 def _render_map_variant(
@@ -206,6 +224,7 @@ def _render_map_variant(
     warnings: list[str],
     *,
     warning_label: str,
+    areas: tuple = (),
     map_icon: Path | None = None,
     zoom_meters: float | None = None,
     video_start: datetime | None = None,
@@ -232,6 +251,7 @@ def _render_map_variant(
     try:
         result = render_map_video(
             fixes, roads, bbox, destination,
+            areas=areas,
             marker_image_path=map_icon,
             zoom_meters=zoom_meters,
             video_start=video_start,
@@ -585,21 +605,23 @@ def export_trip(
     map_path = None
     map_zoom_path = None
     # Also loaded for --stitch-map, not just --map/--map-zoom - the
-    # panel it renders needs the same fixes/roads, just at its own
-    # dedicated size (see the stitch_cameras() call below).
+    # panel it renders needs the same fixes/roads/areas, just at its
+    # own dedicated size (see the stitch_cameras() call below).
     stitch_map_roads: tuple = ()
+    stitch_map_areas: tuple = ()
     if (render_map or map_zoom_meters is not None or stitch_map is not None) and fixes:
         log.step("starting map data phase (fetch/cache OSM roads)")
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
-        bbox, roads = _load_trip_roads(fixes, cache_dir, warnings, log)
+        bbox, roads, areas = _load_trip_roads(fixes, cache_dir, warnings, log)
 
         if bbox is not None and roads is not None:
             stitch_map_roads = roads
+            stitch_map_areas = areas
             if render_map:
                 map_path = _render_map_variant(
                     fixes, bbox, roads, destination / "map.mp4", warnings,
-                    warning_label="map", map_icon=map_icon,
+                    warning_label="map", areas=areas, map_icon=map_icon,
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
                     log=log,
@@ -609,7 +631,7 @@ def export_trip(
                 zoom_filename = f"map_zoom_{map_zoom_meters:g}m.mp4"
                 map_zoom_path = _render_map_variant(
                     fixes, bbox, roads, destination / zoom_filename, warnings,
-                    warning_label="map_zoom", map_icon=map_icon,
+                    warning_label="map_zoom", areas=areas, map_icon=map_icon,
                     zoom_meters=map_zoom_meters,
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
@@ -785,6 +807,7 @@ def export_trip(
                 map_zoom_meters=map_zoom_meters,
                 map_fixes=fixes if stitch_map is not None else (),
                 map_roads=stitch_map_roads,
+                map_areas=stitch_map_areas,
                 map_icon=map_icon,
                 map_video_start=trip.start_timestamp,
                 map_video_duration_seconds=video_duration_seconds,

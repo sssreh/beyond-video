@@ -2,13 +2,21 @@
 Map-overlay frame rendering for bv-export.
 
 Draws one frame of a trip's route on a simple basemap built from OSM
-road geometry (blackvue.export.osm_roads) - no live map tiles are
-fetched or drawn here, this module only draws lines/dots/text with
-Pillow from data already in memory. Roads are projected from lat/lon
-into pixel space with a simple equirectangular projection (longitude
-scaled by cos(mean latitude)); a full Mercator projection would be
-overkill at the scale a single driving trip covers and adds
-complexity for no visible benefit.
+road/water/green-area geometry (blackvue.export.osm_roads) - no live
+map tiles are fetched or drawn here, this module only draws filled
+polygons/lines/dots/text with Pillow from data already in memory.
+Roads and areas are projected from lat/lon into pixel space with a
+simple equirectangular projection (longitude scaled by cos(mean
+latitude)); a full Mercator projection would be overkill at the scale
+a single driving trip covers and adds complexity for no visible
+benefit.
+
+Water/green areas (osm_roads.Area) are drawn as filled polygons
+*before* roads, so road lines stay visible on top of them - the same
+background-then-foreground layering a real map uses. Optional (an
+empty `areas` tuple, the default everywhere below, draws nothing new
+and looks exactly like before this was added) - see osm_roads.py's
+fetch_areas()/load_or_fetch_areas().
 
 The current-position marker is an arrow rotated to the GPS course
 over ground by default, or a custom image (also rotated) when one is
@@ -28,11 +36,14 @@ from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 
+from .osm_roads import Area
 from .osm_roads import BoundingBox
 from .osm_roads import Road
 
 BACKGROUND_COLOR = (247, 244, 238)
 ROAD_COLOR = (140, 134, 122)
+WATER_COLOR = (176, 205, 219)
+GREEN_COLOR = (199, 217, 178)
 ROUTE_COLOR = (230, 57, 70)
 POSITION_DOT_COLOR = (230, 57, 70)
 POSITION_DOT_OUTLINE = (255, 255, 255)
@@ -152,6 +163,7 @@ def render_base_map(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
     *,
+    areas: tuple[Area, ...] = (),
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
@@ -182,6 +194,12 @@ def render_base_map(
     def proj(lat: float, lon: float) -> tuple[float, float]:
         return _project(lat, lon, bbox, width, height, margin)
 
+    for area in areas:
+        pixels = [proj(lat, lon) for lat, lon in area.points]
+        if len(pixels) >= 3:
+            fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
+            draw.polygon(pixels, fill=fill)
+
     for road in roads:
         pixels = [proj(lat, lon) for lat, lon in road.points]
         if len(pixels) >= 2:
@@ -196,6 +214,7 @@ def render_frame(
     route_points: tuple[tuple[float, float], ...],
     position: tuple[float, float] | None,
     *,
+    areas: tuple[Area, ...] = (),
     speed_kmh: float | None = None,
     heading: float | None = None,
     marker_image: Image.Image | None = None,
@@ -217,14 +236,14 @@ def render_frame(
     in).
 
     `base_image`, if given, is used as the starting canvas (copied, not
-    mutated) instead of a fresh background with `roads` drawn onto it
-    - see render_base_map(). `roads` is then only used by callers that
-    still need it for something else; this function itself won't
-    re-draw it. Passing `base_image` only makes sense when `bbox`
-    matches whatever bbox `base_image` was rendered with - it's the
-    caller's responsibility to keep those in sync (render_map_video()
-    only does this in its static, non-`--map-zoom` mode, where `bbox`
-    is the same object on every call).
+    mutated) instead of a fresh background with `roads`/`areas` drawn
+    onto it - see render_base_map(). `roads`/`areas` are then only used
+    by callers that still need them for something else; this function
+    itself won't re-draw them. Passing `base_image` only makes sense
+    when `bbox` matches whatever bbox `base_image` was rendered with -
+    it's the caller's responsibility to keep those in sync
+    (render_map_video() only does this in its static, non-`--map-zoom`
+    mode, where `bbox` is the same object on every call).
     """
 
     if base_image is not None:
@@ -237,6 +256,12 @@ def render_frame(
         return _project(lat, lon, bbox, width, height, margin)
 
     if base_image is None:
+        for area in areas:
+            pixels = [proj(lat, lon) for lat, lon in area.points]
+            if len(pixels) >= 3:
+                fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
+                draw.polygon(pixels, fill=fill)
+
         for road in roads:
             pixels = [proj(lat, lon) for lat, lon in road.points]
             if len(pixels) >= 2:

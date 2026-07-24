@@ -27,9 +27,12 @@ from .map_render import DEFAULT_WIDTH
 from .map_render import render_base_map
 from .map_render import render_frame
 from .media import encode_frame_sequence
+from .osm_roads import Area
 from .osm_roads import BoundingBox
 from .osm_roads import Road
 from .osm_roads import bounding_box_around_point
+from .osm_roads import features_within_bbox
+from .osm_roads import index_features
 from .osm_roads import index_roads
 from .osm_roads import roads_within_bbox
 
@@ -241,6 +244,7 @@ def render_map_video(
     bbox: BoundingBox,
     destination: Path,
     *,
+    areas: tuple[Area, ...] = (),
     fps: int = DEFAULT_FPS,
     marker_image_path: Path | None = None,
     zoom_meters: float | None = None,
@@ -251,7 +255,9 @@ def render_map_video(
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
-    speed, and timestamp, drawn against `roads` (see osm_roads.py).
+    speed, and timestamp, drawn against `roads` and `areas` (water/
+    green polygons, see osm_roads.py) - `areas` defaults to empty and
+    is entirely optional, same as `roads` was before this existed.
 
     `bbox` frames the whole trip at once by default (a static
     overview, the same every frame). `zoom_meters`, if given, switches
@@ -343,6 +349,7 @@ def render_map_video(
     # (non-zoomed) mode every road is already relevant to the one
     # whole-trip bbox, so there's nothing to filter.
     indexed_roads = index_roads(roads) if zoom_meters is not None else None
+    indexed_areas = index_features(areas) if zoom_meters is not None else None
     zoom_aspect_ratio = width / height
 
     # Static (non-`--map-zoom`) mode draws the exact same `roads`
@@ -360,7 +367,7 @@ def render_map_video(
     base_image = (
         None
         if zoom_meters is not None
-        else render_base_map(bbox, roads, width=width, height=height)
+        else render_base_map(bbox, roads, areas=areas, width=width, height=height)
     )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -414,12 +421,18 @@ def render_map_video(
                 if indexed_roads is not None
                 else roads
             )
+            frame_areas = (
+                features_within_bbox(indexed_areas, frame_bbox)
+                if indexed_areas is not None
+                else areas
+            )
 
             frame = render_frame(
                 frame_bbox,
                 frame_roads,
                 tuple(route_so_far) + (position,),
                 position,
+                areas=frame_areas,
                 speed_kmh=speed,
                 heading=course,
                 marker_image=marker_image,
