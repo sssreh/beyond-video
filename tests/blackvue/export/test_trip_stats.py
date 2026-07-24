@@ -116,11 +116,12 @@ def test_compute_trip_stats_classifies_a_segment_by_the_mean_of_both_endpoints()
     assert stats.idle_seconds == 0.0
 
 
-def test_compute_trip_stats_skips_segments_with_no_speed_data_on_either_end():
-    # First segment has no speed reading on either fix - not counted
-    # toward moving or idle. Second segment has a real reading, so the
-    # trip overall still reports a (partial) moving/idle split rather
-    # than None.
+def test_compute_trip_stats_skips_the_leading_gap_before_any_speed_data_exists():
+    # Only the very first segment (before *any* real speed reading has
+    # appeared yet anywhere in the trip) is genuinely unclassifiable -
+    # there's nothing earlier to carry forward from. Once the first
+    # real reading (offset 20) appears, it classifies the segment
+    # leading into it too (see effective_speeds' forward-fill).
     fixes = (
         _fix(0, 59.300, 18.0000, None),
         _fix(10, 59.301, 18.0002, None),
@@ -131,3 +132,63 @@ def test_compute_trip_stats_skips_segments_with_no_speed_data_on_either_end():
 
     assert stats.moving_seconds == 10.0
     assert stats.idle_seconds == 0.0
+
+
+def test_compute_trip_stats_carries_the_last_known_speed_across_a_gap():
+    # Regression test for a real bug Christer found on his own
+    # archive: a long, continuously GPS-tracked drive (1708 fixes at
+    # ~1Hz over ~28 real minutes) reported barely 40% of that span
+    # across moving_seconds+idle_seconds combined, because any segment
+    # between two fixes that *both* happened to lack their own speed
+    # reading (common in practice, apparently, even with a good
+    # position fix) was silently dropped - counted toward neither
+    # bucket, with nothing in trip_info.txt to show time was missing.
+    #
+    # Here: a real 40 km/h reading at offset 0, then two fixes in a
+    # row with no speed reading of their own (offsets 10 and 20 -
+    # exactly the "neither endpoint has one" case that used to be
+    # dropped entirely), then a real reading again at offset 30. The
+    # whole 0->30 span must now be classified using the carried
+    # -forward 40 km/h (above threshold - moving), not silently
+    # dropped.
+    above = DEFAULT_SPEED_THRESHOLD_KMH + 20.0
+    fixes = (
+        _fix(0, 59.3000, 18.0000, above),
+        _fix(10, 59.3005, 18.0002, None),
+        _fix(20, 59.3010, 18.0004, None),
+        _fix(30, 59.3015, 18.0006, above),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.moving_seconds == 30.0
+    assert stats.idle_seconds == 0.0
+
+
+def test_compute_trip_stats_carry_forward_still_respects_a_later_speed_change():
+    # The carried-forward value must actually update once a new real
+    # reading appears, not just latch onto the very first one seen -
+    # here the vehicle is fast (above threshold), then a gap with no
+    # readings, then a real slow (idle) reading, then another gap.
+    # That second gap must carry the *slow* reading forward, not the
+    # original fast one.
+    above = DEFAULT_SPEED_THRESHOLD_KMH + 20.0
+    below = DEFAULT_SPEED_THRESHOLD_KMH - 1.0
+    fixes = (
+        _fix(0, 59.3000, 18.0000, above),
+        _fix(10, 59.3005, 18.0002, None),
+        _fix(20, 59.3010, 18.0004, below),
+        _fix(30, 59.3015, 18.0006, None),
+        _fix(40, 59.3020, 18.0008, None),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    # 0->10 (carries `above` into the gap) and 10->20 (real `below`
+    # reading arrives, but the segment is still classified by the mean
+    # of the carried `above` and the new `below` - see the "classifies
+    # by the mean" test above for that same rule) both land above
+    # threshold; 20->30 and 30->40 both carry the newer `below`
+    # reading forward and land below threshold.
+    assert stats.moving_seconds == 10.0 + 10.0
+    assert stats.idle_seconds == 10.0 + 10.0

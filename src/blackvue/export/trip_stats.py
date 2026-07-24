@@ -83,13 +83,28 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     telemetry/movement.py already uses to decide whether GPS evidence
     shows movement at a trip-gap edge - reused here rather than
     picking a new, unrelated number. Each gap between two consecutive
-    fixes is classified by the mean of the two fixes' own speed
-    readings (whichever of the two actually has one; skipped
-    entirely - counted toward neither bucket - if neither fix has a
-    speed reading, the same "unknown, not zero" handling
-    average_speed_kmh/max_speed_kmh already use). Both are None under
-    the same condition average_speed_kmh/max_speed_kmh are None - no
-    speed data at all anywhere in the trip.
+    fixes is classified by the mean of each fix's own speed reading if
+    it has one, or otherwise its *carried-forward* speed - the most
+    recent earlier fix in the trip that did have a reading (see the
+    forward-fill loop below). Confirmed against a real archive
+    (Christer, 2026-07-24): a fix having a valid position but no speed
+    reading of its own turns out to be common enough in practice - a
+    long, otherwise perfectly GPS-tracked ~28-minute city drive showed
+    barely 40% of its span reflected in moving_seconds+idle_seconds
+    before this fix, because a gap between two speed-less fixes was
+    previously skipped outright (counted toward neither bucket)
+    instead of falling back to nearby data - silently discarding most
+    of a real drive's duration from the breakdown without any
+    indication in trip_info.txt that anything was missing. Only a
+    fix with genuinely no earlier speed reading anywhere before it in
+    the trip (i.e. no real reading has been seen yet at all) still
+    contributes no classifiable segment - unavoidable, since there's
+    truly nothing to carry forward from yet. Both moving_seconds/
+    idle_seconds are None under the same condition average_speed_kmh/
+    max_speed_kmh are None - no speed data at all anywhere in the
+    trip. (average_speed_kmh/max_speed_kmh themselves are NOT
+    carried-forward - they're deliberately each fix's own raw,
+    unfilled reading only, same as before this fix.)
 
     Returns None if there are fewer than two valid, positioned fixes -
     not enough to measure any distance from, the same "nothing to
@@ -106,12 +121,23 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     if len(positioned) < 2:
         return None
 
+    # Forward-fill: each fix's own speed_kmh reading if it has one,
+    # otherwise the most recent earlier reading in the trip (None
+    # until the very first real reading appears in `positioned`) -
+    # see the moving_seconds/idle_seconds docstring above for why.
+    effective_speeds: list[float | None] = []
+    last_known_speed_kmh: float | None = None
+    for fix in positioned:
+        if fix.speed_kmh is not None:
+            last_known_speed_kmh = fix.speed_kmh
+        effective_speeds.append(last_known_speed_kmh)
+
     total_meters = 0.0
     moving_seconds = 0.0
     idle_seconds = 0.0
     any_speed_data = False
 
-    for previous, current in zip(positioned, positioned[1:]):
+    for index, (previous, current) in enumerate(zip(positioned, positioned[1:])):
         total_meters += _haversine_distance_meters(
             previous.latitude, previous.longitude,
             current.latitude, current.longitude,
@@ -119,7 +145,7 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
 
         segment_speeds = [
             speed
-            for speed in (previous.speed_kmh, current.speed_kmh)
+            for speed in (effective_speeds[index], effective_speeds[index + 1])
             if speed is not None
         ]
         if not segment_speeds:
