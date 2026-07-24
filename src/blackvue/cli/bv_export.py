@@ -53,6 +53,7 @@ from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
 from blackvue.trip.trip_builder import TripBuilder
+from blackvue.trip.trip_builder import recordings_with_front_video
 
 # bv-export's own opinionated defaults for --stitch-mirror-size/-zoom/
 # -pan-y, Christer's preferred rearview-mirror viewing setup - a
@@ -382,6 +383,15 @@ def bv_export(
     )
     bridge = movement_bridges_gap if movement else None
     recording_duration = read_duration_seconds if duration else None
+    # Trip detection only considers recordings with a Front asset -
+    # see recordings_with_front_video()'s own docstring for why
+    # (GPS/g-sensor/thumbnail-only recordings, common when Front/Rear
+    # video for a stretch was never downloaded, used to be able to
+    # chain-bridge a real gap between two actual video segments into
+    # one trip, and to pull a trip's merged GPS fixes across time the
+    # concatenated video doesn't actually cover - both confirmed on a
+    # real archive, both fixed by this filter).
+    front_recordings = recordings_with_front_video(archive.recordings)
     # Populated in place by build() with one membership-reasoning
     # entry per recording (see TripBuilder.build()'s own docstring) -
     # forwarded to every trip's own trip.log below so a surprising
@@ -394,7 +404,7 @@ def bv_export(
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
-    ).build(archive.recordings, reasons=reasons)
+    ).build(front_recordings, reasons=reasons)
 
     trips = [
         trip

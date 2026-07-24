@@ -13,6 +13,7 @@ from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
 from blackvue.trip.trip_builder import TripBuilder
+from blackvue.trip.trip_builder import recordings_with_front_video
 
 
 def format_size(size: int) -> str:
@@ -106,6 +107,15 @@ def print_trips(
     a gap it'll bridge - confirmed on a real archive to bridge a
     genuine 6-day gap into one trip off a single GPS speed reading at
     the very start of a later recording.
+
+    Only recordings with a Front asset are considered - see
+    recordings_with_front_video()'s own docstring for why (GPS/g
+    -sensor/thumbnail-only recordings, common for an archive that
+    isn't downloaded in full, used to be able to chain-bridge a real
+    gap into one trip and to skew a trip's own GPS-derived data past
+    what its video actually covers). A recording with no video simply
+    isn't part of any trip here - it still shows up in a plain,
+    non-`--trips` bv-ls listing.
     """
 
     bridge = movement_bridges_gap if use_movement else None
@@ -115,7 +125,7 @@ def print_trips(
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
-    ).build(recordings)
+    ).build(recordings_with_front_video(recordings))
 
     trip_width = max(
         [len("Trip")] + [len(trip.label) for trip in trips],

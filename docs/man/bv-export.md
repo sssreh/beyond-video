@@ -33,7 +33,7 @@ bv-export --target DIR [--prefix PREFIX]
 
 A trip with only one camera falls back to a plain copy of whichever one exists, ignoring every `--stitch-*`/`--map-*` flag.
 
-Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here.
+Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never starts, extends, or belongs to a trip on its own; it's simply not part of any trip's export.
 
 ## ARGUMENTS
 
