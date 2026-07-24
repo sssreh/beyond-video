@@ -5090,3 +5090,69 @@ throughout this session's other work. Worth a real `pytest` pass on
 Christer's own machine, along with a real `bv-export --map` run
 against his actual archive to see the water/green fill in a real
 rendered map.mp4, before considering this fully done.
+
+## Fix cuBLAS DLL failure surviving Whisper's CUDA-to-CPU fallback (this session)
+
+Christer reported a real crash from `bv-generate` on his machine:
+"bv-generate: 20260715_143340_N: language detection failed for
+20260715_143340_N.aac: Library cublas64_12.dll is not found or cannot
+be loaded". This looked at first like task #48's GPU auto-detect/CPU
+-fallback work not actually working, but the real cause was narrower:
+`_load_whisper_model()`'s existing CUDA-then-CPU fallback only catches
+problems that surface while *constructing* the `WhisperModel` object.
+CTranslate2 (faster-whisper's backend) lazily initializes its actual
+CUDA/cuBLAS runtime on first real inference, not at construction time
+- so on a machine with the CUDA driver present but the cuBLAS runtime
+DLL missing, the CUDA `WhisperModel` builds successfully (passing the
+load-time probe cleanly) and only fails later, on the first real
+`.transcribe()` call - which is exactly what "language detection
+failed" surfaced, since `detect_language()` was that first call.
+
+Fix, scoped to `speech.py` only: a new `_load_cpu_whisper_model()`
+helper (forces a CPU model directly, skipping the CUDA attempt
+entirely - unlike calling `_load_whisper_model()` again, which would
+uselessly retry CUDA first) and a new `_whisper_transcribe(model_size,
+source, **kwargs)` wrapper that calls the cached model's
+`.transcribe()`, and on any exception, evicts the cache entry, loads a
+forced CPU model in its place, and retries once. Both `detect_language()`
+and `transcribe()` now call `_whisper_transcribe()` instead of calling
+`_get_whisper_model()` + `.transcribe()` directly - `_get_whisper_model()`
+itself, `_load_whisper_model()` itself, and the shared
+`_WHISPER_MODEL_CACHE` dict's value shape (a bare model, not a tuple)
+are all deliberately left untouched, since `test_speech.py` has direct
+call sites and monkeypatches against exactly those functions/that
+shape (checked before writing any code, same "check existing test call
+sites before changing shared function contracts" discipline as this
+session's earlier mirror/map-icon defaults work).
+
+Once the CPU fallback fires for a given `model_size`, the cache holds
+the working CPU model from then on - every later call for that size
+skips straight to CPU instead of hitting the same DLL failure again,
+without needing to remember "this machine has no working CUDA" anywhere
+else.
+
+Verified without pytest (still no network access in this sandbox to
+install it): re-ran all four of `test_speech.py`'s existing
+Whisper-model tests by hand (CUDA-fails-at-load-falls-back-to-CPU,
+CUDA-succeeds-no-fallback-attempted, segment-timestamp-clamping via a
+monkeypatched `_get_whisper_model`, and the missing-faster-whisper
+`MediaToolError` message) - all four still pass unchanged, confirming
+the existing load-time behavior and test contracts weren't disturbed.
+Then reproduced Christer's exact failure directly: a fake CUDA model
+that constructs fine but raises "Library cublas64_12.dll is not found
+or cannot be loaded" on `.transcribe()`, seeded straight into the
+cache to mirror the real sequence (load-time probe already "succeeded"
+before this). `detect_language()` now recovers instead of raising -
+returns the real result, evicts the broken model, and leaves a working
+CPU model cached for next time (confirmed a second `transcribe()` call
+for the same `model_size` used the cached CPU model directly, no
+second failure). Also confirmed a genuine, non-recoverable failure (a
+fake model that fails identically on both CUDA and the forced CPU
+retry) still raises `MediaToolError` with both the "language detection
+failed for ..." context and the underlying error text intact - the
+fallback doesn't swallow a real problem, only recovers from the CUDA
+-runtime-specific one.
+
+Not yet run through the project's own `pytest` suite, and not yet
+re-confirmed against Christer's own `20260715_143340_N.aac` file on
+his machine - worth both once he can pull this commit.
