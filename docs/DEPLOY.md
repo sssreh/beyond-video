@@ -118,6 +118,28 @@ cd /volume1/beyond-video
 sudo docker-compose build bv-cli
 ```
 
+**Archive already lives somewhere else on the NAS?** `docker-compose.yml`'s `bv-cli` service maps `./data/archive` (i.e. `/volume1/beyond-video/data/archive`) to `/data/archive` inside the container by default. If recordings already live in a different Shared Folder (Christer's case: `/volume1/Dashcam/files`), don't edit `docker-compose.yml` itself to point elsewhere - a direct edit there is a tracked file, so it'd get silently wiped by the next `git fetch && git reset --hard origin/main` (see step 2's note on why `reset --hard` is used for updates). Instead, create a second file, `docker-compose.override.yml`, next to `docker-compose.yml` - docker-compose automatically layers it on top with no extra flags needed, and being untracked (already in `.gitignore`), it survives every future update:
+
+```
+cd /volume1/beyond-video
+cat > docker-compose.override.yml <<'EOF'
+services:
+  bv-cli:
+    volumes:
+      - /volume1/Dashcam/files:/data/archive
+      - ./data/trips:/data/trips
+      - ./data/camera-config:/data/config
+EOF
+```
+
+All three of `bv-cli`'s volumes are repeated here (not just the archive one) since compose merges a service's `volumes:` list as a whole, not entry-by-entry - leaving the other two out would drop them, not keep them. Verify the merge did what's expected before running anything for real:
+
+```
+sudo docker-compose config
+```
+
+Check the printed `bv-cli` service's `volumes:` block shows `/volume1/Dashcam/files:/data/archive` and nothing pointing at `./data/archive` (or `/volume1/beyond-video/data/archive`) - if an old mount is still there too, or `/data/archive` isn't there at all, adjust the override file and re-check before moving on. With `/volume1/Dashcam/files` as the archive, `bv-config`'s **Target (download path)** answer below still stays `/data/archive` - that's the *container path* every `bv-*` command reads/writes, regardless of which host folder it's mapped to.
+
 **Set up the camera** (one-time; re-run later to edit):
 
 ```

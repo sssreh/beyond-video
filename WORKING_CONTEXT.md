@@ -4934,3 +4934,45 @@ wrong first attempt.
 Not yet run through the full test suite for the same reason as the
 mirror-icon work above - no network access in this sandbox to install
 pytest.
+
+## docker-compose.override.yml for an archive outside data/archive (this session)
+
+Christer's real dashcam archive lives at `/volume1/Dashcam/files` on
+the NAS, not `/volume1/beyond-video/data/archive` - `bv-cli`'s default
+`./data/archive:/data/archive` mount in `docker-compose.yml` pointed
+at the wrong folder, which is why `bv-ls --timestamp 20260724` (after
+also fixing the missing `/data/archive` PATH argument and the missing
+`--config-dir` on `bv-config`, two smaller usage mistakes from the
+same troubleshooting thread) still returned nothing.
+
+Deliberately did NOT have Christer edit `docker-compose.yml` directly
+on the NAS to repoint the mount - that file is tracked, so a direct
+edit would get silently wiped by the very `git fetch && git reset
+--hard origin/main` sequence step 2 already established as this
+project's standard update workflow (needed there to work around the
+NAS's `core.autocrlf` issue). Documented and gitignored
+`docker-compose.override.yml` instead - a second compose file next to
+the first, which docker-compose layers on automatically with no extra
+flags, and which (being untracked) survives every future `git reset
+--hard` unaffected, since that only touches tracked files.
+
+`docs/DEPLOY.md`'s step 7 gained a new "Archive already lives
+somewhere else on the NAS?" note explaining this, with the override
+file's exact contents - all three of `bv-cli`'s volumes repeated, not
+just the archive one, since compose merges a service's `volumes:` list
+as a whole rather than entry-by-entry (confirmed this is the correct,
+safe-either-way approach without being able to verify docker-compose
+1.28.5's exact merge semantics from this sandbox - no network access
+to check the docs, and didn't want to guess wrong on a real NAS
+config). Also has Christer verify with `sudo docker-compose config`
+before running anything for real, checking the merged `bv-cli` volumes
+show the new archive path and nothing still pointing at the old one -
+a zero-risk dry-run check rather than trusting the merge blindly.
+`.gitignore` gained a `docker-compose.override.yml` entry with a
+comment explaining why it's deliberately untracked.
+
+Also clarified for Christer: even with the archive elsewhere,
+`bv-config`'s "Target (download path)" prompt still gets answered
+`/data/archive` (the *container* path every `bv-*` command reads/
+writes), not the real host folder - only the volume mapping changes,
+not what any `bv-*` command is told.
