@@ -72,7 +72,7 @@ Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-du
 | Option | Description |
 |---|---|
 | `--map` | Render `map.mp4`: a static whole-trip route/position/speed overlay on an OpenStreetMap basemap. **Off by default** - first fetch of an area's roads needs network (cached under `--target/.osm_cache` afterward), and rendering adds real time. |
-| `--map-icon PATH` | Use a custom image (ideally a transparent PNG pointing "up") as the position marker instead of the default rotating arrow. Applies to `--map` and `--map-zoom` alike. |
+| `--map-icon PATH` | Use a custom image (ideally a transparent PNG pointing "up") as the position marker. Applies to `--map` and `--map-zoom` alike. Default: a bundled red car icon - pass the literal value `none` to use a plain rotating arrow instead, or a path to use your own image. |
 | `--map-zoom [METERS]` | Render `map_zoom_METERSm.mp4`: a scrolling "follow camera" view, real-world half-width `METERS` (default 120 if given with no value). Independent of `--map` - works with or without it. |
 
 ### G-sensor overlay video

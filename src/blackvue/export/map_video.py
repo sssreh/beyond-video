@@ -40,6 +40,23 @@ from .osm_roads import roads_within_bbox
 # need to match the front/rear video's own frame rate.
 DEFAULT_FPS = 5
 
+# bv-export's own bundled default --map-icon: a top-down red car,
+# pointing "up" in its own file (see render_frame()'s marker_image
+# docstring), rotated per frame to the GPS course over ground just
+# like a custom --map-icon would be. Bundled alongside this module
+# (see pyproject.toml's package-data entry for "blackvue.export",
+# shared with mirror_icon.py's own DEFAULT_MIRROR_ICON_PATH) so it's
+# available wherever bv-export actually runs, not just inside a repo
+# checkout - same Path(__file__).parent-relative convention used
+# there and by blackvue.web.app's TEMPLATES_DIR. This is bv_export.py's
+# own CLI-level default (see that module's --map-icon handling for the
+# "omit the flag -> use this; pass the literal string 'none' -> fall
+# back to the plain procedural arrow instead" convention) - this
+# module's own render_map_video() keeps a plain None default (no icon,
+# arrow), unchanged, matching how DEFAULT_MIRROR_ICON_PATH is kept out
+# of stitch.py/trip_export.py's own defaults too.
+DEFAULT_MAP_ICON_PATH = Path(__file__).parent / "assets" / "red_car.png"
+
 
 def _valid_positioned_fixes(fixes: tuple[GpsFix, ...]) -> tuple[GpsFix, ...]:
     return tuple(
