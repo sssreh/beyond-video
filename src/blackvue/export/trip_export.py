@@ -27,6 +27,7 @@ from ..telemetry.gsensor_reader import GSensorSample
 from ..telemetry.gsensor_reader import read_gsensor
 from ..telemetry.gsensor_reader import write_gsensor
 from ..trip.trip import Trip
+from .geocoding import load_or_reverse_geocode
 from .gpx_writer import write_gpx
 from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
@@ -34,6 +35,8 @@ from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
+from .trip_info import write_trip_info
+from .trip_stats import compute_trip_stats
 from .stitch import AUTO_LAYOUT
 from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from .stitch import DEFAULT_MIRROR_RADIUS_PERCENT
@@ -67,6 +70,7 @@ class ExportResult:
     rear_video: Path | None = None
     audio: Path | None = None
     gpx: Path | None = None
+    trip_info: Path | None = None
     gsensor: Path | None = None
     map: Path | None = None
     map_zoom: Path | None = None
@@ -602,6 +606,57 @@ def export_trip(
     else:
         log.step("no GPS data for this trip - trip.gpx skipped")
 
+    # trip_info.txt: a short, human-readable summary (duration,
+    # distance/speed, start/end address) - always attempted, unlike
+    # the map/stitch outputs above, since none of this needs an
+    # explicit flag: duration is always known (see Trip.end_timestamp),
+    # distance/speed only need the same merged `fixes` trip.gpx already
+    # has, and reverse geocoding is a light, occasional lookup (two
+    # points per trip) explicitly within Nominatim's own public usage
+    # policy - see geocoding.py's own docstring for why this is treated
+    # the same as OSM road/area fetching rather than gated behind its
+    # own opt-in flag.
+    info_path = destination / "trip_info.txt"
+    stats = compute_trip_stats(fixes)
+    positioned_fixes = tuple(
+        fix
+        for fix in fixes
+        if fix.valid and fix.latitude is not None and fix.longitude is not None
+    )
+    geocode_cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
+    start_address = None
+    end_address = None
+    if positioned_fixes:
+        first_fix = positioned_fixes[0]
+        try:
+            start_address = load_or_reverse_geocode(
+                first_fix.latitude, first_fix.longitude, geocode_cache_dir
+            )
+        except MediaToolError as exc:
+            warnings.append(f"trip info: could not geocode start location: {exc}")
+            log.warning(f"trip info: could not geocode start location: {exc}")
+
+        last_fix = positioned_fixes[-1]
+        if last_fix is first_fix:
+            end_address = start_address
+        else:
+            try:
+                end_address = load_or_reverse_geocode(
+                    last_fix.latitude, last_fix.longitude, geocode_cache_dir
+                )
+            except MediaToolError as exc:
+                warnings.append(f"trip info: could not geocode end location: {exc}")
+                log.warning(f"trip info: could not geocode end location: {exc}")
+
+    write_trip_info(
+        info_path,
+        duration=trip.duration,
+        stats=stats,
+        start_address=start_address,
+        end_address=end_address,
+    )
+    log.step("wrote trip_info.txt")
+
     map_path = None
     map_zoom_path = None
     # Also loaded for --stitch-map, not just --map/--map-zoom - the
@@ -841,6 +896,7 @@ def export_trip(
         rear_video=rear_video,
         audio=audio,
         gpx=gpx_path,
+        trip_info=info_path,
         gsensor=gsensor_path,
         map=map_path,
         map_zoom=map_zoom_path,

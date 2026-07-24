@@ -102,7 +102,11 @@ def test_folder_name_for_trip_with_and_without_prefix():
     )
 
 
-def test_export_trip_writes_everything_available(tmp_path):
+def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_reverse_geocode", _fake_geocode
+    )
+
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -172,6 +176,13 @@ def test_export_trip_writes_everything_available(tmp_path):
 
     assert result.text == (dest_dir / "transcript.txt",)
     assert "First recording speech." in result.text[0].read_text()
+
+    assert result.trip_info == dest_dir / "trip_info.txt"
+    trip_info_text = result.trip_info.read_text(encoding="utf-8")
+    assert "Duration:" in trip_info_text
+    assert "Distance:" in trip_info_text
+    assert "Start location: 1 Fake Street, Fake City" in trip_info_text
+    assert "End location: 1 Fake Street, Fake City" in trip_info_text
 
     assert result.warnings == ()
 
@@ -265,7 +276,20 @@ def _epoch_ms(timestamp: datetime) -> int:
     return calendar.timegm(timestamp.timetuple()) * 1000
 
 
-def _trip_with_two_gps_fixes(source_dir):
+def _trip_with_two_gps_fixes(source_dir, monkeypatch):
+    # Every caller of this fixture builds a trip with real, positioned
+    # GPS data - trip_info.txt's reverse-geocoding lookups (see
+    # trip_export.py) fire unconditionally whenever that's true,
+    # regardless of --map/--stitch-map, so this is mocked out here
+    # once rather than separately in every test that uses this
+    # fixture - the same reason load_or_fetch_roads is mocked
+    # separately by each test that actually needs a real-looking
+    # response (roads aren't fetched unconditionally, so that one
+    # can't be hoisted the same way).
+    monkeypatch.setattr(
+        trip_export_module, "load_or_reverse_geocode", _fake_geocode
+    )
+
     first_id = RecordingId("20260720_100000_N")
     second_id = RecordingId("20260720_100010_N")
 
@@ -295,6 +319,30 @@ def _fake_roads(*_args, **_kwargs):
     return (Road(points=((48.07, 11.31), (48.08, 11.32))),)
 
 
+def _fake_areas(*_args, **_kwargs):
+    # load_or_fetch_areas() is called unconditionally alongside
+    # load_or_fetch_roads() whenever a map bbox is resolved (see
+    # trip_export.py's own bbox/roads/areas helper) - every test that
+    # mocks _fake_roads to avoid a real Overpass roads call needs this
+    # mocked too, for the same reason, or it hits a real (and in a
+    # network-isolated environment, failing) Overpass areas call
+    # instead. An empty tuple is a legitimate "no water/green areas
+    # here" result, not a failure - render_map_video() already treats
+    # that as a no-op.
+    return ()
+
+
+def _fake_geocode(*_args, **_kwargs):
+    # A stand-in for load_or_reverse_geocode - trip_info.txt's address
+    # lines are generated unconditionally whenever a trip has >=2
+    # positioned GPS fixes (see trip_export.py), independent of
+    # --map/--stitch-map, so any test whose fixture has real GPS data
+    # needs this mocked out the same way load_or_fetch_roads already
+    # is - otherwise it's a real, slow, network-dependent call in
+    # every such test, not just the ones actually testing geocoding.
+    return "1 Fake Street, Fake City"
+
+
 def test_export_trip_skips_map_by_default(tmp_path, monkeypatch):
     def _refuse(*_args, **_kwargs):
         raise AssertionError("should not fetch roads when render_map=False")
@@ -304,7 +352,7 @@ def test_export_trip_skips_map_by_default(tmp_path, monkeypatch):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir)
 
@@ -316,11 +364,14 @@ def test_export_trip_render_map_produces_a_video(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir, render_map=True)
 
@@ -334,6 +385,9 @@ def test_export_trip_render_map_zoom_produces_a_separate_file_alongside_map(
 ):
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
     )
 
     calls = []
@@ -349,7 +403,7 @@ def test_export_trip_render_map_zoom_produces_a_separate_file_alongside_map(
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir, render_map=True, map_zoom_meters=75.0)
 
@@ -382,11 +436,14 @@ def test_export_trip_render_map_zoom_alone_skips_the_static_map(
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir, map_zoom_meters=120.0)
 
@@ -402,11 +459,14 @@ def test_export_trip_formats_the_map_zoom_filename_without_a_trailing_zero(
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir, map_zoom_meters=75.5)
 
@@ -425,11 +485,14 @@ def test_export_trip_render_map_defaults_cache_dir_next_to_destination(
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _capture_cache_dir
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "target" / "trip_folder"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     export_trip(trip, dest_dir, render_map=True)
 
@@ -447,7 +510,7 @@ def test_export_trip_render_map_warns_instead_of_failing_on_fetch_error(
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir, render_map=True)
 
@@ -466,11 +529,14 @@ def test_export_trip_render_map_uses_a_custom_icon_when_given(
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     icon_path = tmp_path / "car.png"
     Image.new("RGBA", (16, 16), (0, 0, 255, 255)).save(icon_path)
@@ -488,11 +554,14 @@ def test_export_trip_render_map_warns_instead_of_failing_on_a_bad_icon_path(
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_two_gps_fixes(source_dir)
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
 
     result = export_trip(
         trip,
@@ -906,7 +975,14 @@ def test_export_trip_stitch_mirror_icon_warns_instead_of_failing_on_a_bad_icon_p
     assert "mirror icon" in result.warnings[0]
 
 
-def _trip_with_front_rear_and_gps_shape(source_dir, *, east_west: bool):
+def _trip_with_front_rear_and_gps_shape(
+    source_dir, monkeypatch, *, east_west: bool
+):
+    # See _trip_with_two_gps_fixes()'s own comment - same reason.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_reverse_geocode", _fake_geocode
+    )
+
     front_a = source_dir / "front_a.mp4"
     rear_a = source_dir / "rear_a.mp4"
     _make_video(front_a, 1.0)
@@ -951,14 +1027,16 @@ def _trip_with_front_rear_and_gps_shape(source_dir, *, east_west: bool):
 
 
 def test_export_trip_stitch_auto_layout_picks_side_by_side_for_east_west(
-    tmp_path
+    tmp_path, monkeypatch
 ):
     from blackvue.export.stitch import AUTO_LAYOUT
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps_shape(source_dir, east_west=True)
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=True
+    )
 
     result = export_trip(trip, dest_dir, stitch_layout=AUTO_LAYOUT)
 
@@ -968,14 +1046,16 @@ def test_export_trip_stitch_auto_layout_picks_side_by_side_for_east_west(
 
 
 def test_export_trip_stitch_auto_layout_picks_top_down_for_north_south(
-    tmp_path
+    tmp_path, monkeypatch
 ):
     from blackvue.export.stitch import AUTO_LAYOUT
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps_shape(source_dir, east_west=False)
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=False
+    )
 
     result = export_trip(trip, dest_dir, stitch_layout=AUTO_LAYOUT)
 
@@ -1004,7 +1084,7 @@ def test_export_trip_stitch_auto_layout_falls_back_without_gps_data(
 
 
 def test_export_trip_stitch_explicit_layout_is_never_overridden_by_auto_pick(
-    tmp_path
+    tmp_path, monkeypatch
 ):
     # An east-west trip would auto-pick side_by_side - explicitly
     # asking for top_down instead must still be honored exactly, since
@@ -1012,7 +1092,9 @@ def test_export_trip_stitch_explicit_layout_is_never_overridden_by_auto_pick(
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps_shape(source_dir, east_west=True)
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=True
+    )
 
     result = export_trip(trip, dest_dir, stitch_layout="top_down")
 
@@ -1063,7 +1145,12 @@ def test_export_trip_stitch_warns_instead_of_failing_on_encode_error(
     assert result.front_video is not None
 
 
-def _trip_with_front_rear_and_gps(source_dir):
+def _trip_with_front_rear_and_gps(source_dir, monkeypatch):
+    # See _trip_with_two_gps_fixes()'s own comment - same reason.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_reverse_geocode", _fake_geocode
+    )
+
     front_a = source_dir / "front_a.mp4"
     rear_a = source_dir / "rear_a.mp4"
     _make_video(front_a, 1.0)
@@ -1100,11 +1187,14 @@ def test_export_trip_stitch_map_adds_a_panel_to_stitch_mp4(tmp_path, monkeypatch
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps(source_dir)
+    trip = _trip_with_front_rear_and_gps(source_dir, monkeypatch)
 
     result_plain = export_trip(
         trip, dest_dir / "plain", stitch_layout="side_by_side",
@@ -1130,6 +1220,9 @@ def test_export_trip_stitch_map_side_is_forwarded(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     captured = {}
     original_stitch_cameras = trip_export_module.stitch_cameras
@@ -1145,7 +1238,7 @@ def test_export_trip_stitch_map_side_is_forwarded(tmp_path, monkeypatch):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps(source_dir)
+    trip = _trip_with_front_rear_and_gps(source_dir, monkeypatch)
 
     export_trip(
         trip, dest_dir,
@@ -1162,6 +1255,9 @@ def test_export_trip_stitch_map_size_is_forwarded(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trip_export_module, "load_or_fetch_roads", _fake_roads
     )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
 
     captured = {}
     original_stitch_cameras = trip_export_module.stitch_cameras
@@ -1177,7 +1273,7 @@ def test_export_trip_stitch_map_size_is_forwarded(tmp_path, monkeypatch):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps(source_dir)
+    trip = _trip_with_front_rear_and_gps(source_dir, monkeypatch)
 
     export_trip(
         trip, dest_dir,
@@ -1200,7 +1296,7 @@ def test_export_trip_stitch_map_skipped_without_stitch_map_flag(
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
-    trip = _trip_with_front_rear_and_gps(source_dir)
+    trip = _trip_with_front_rear_and_gps(source_dir, monkeypatch)
 
     result = export_trip(trip, dest_dir, stitch_layout="side_by_side")
 
