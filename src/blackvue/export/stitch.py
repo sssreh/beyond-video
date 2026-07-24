@@ -1263,6 +1263,38 @@ def _map_panel_dimensions(
     return max(2, round(width / 2) * 2), max(2, round(height / 2) * 2)
 
 
+def _contain_fit(
+    aspect_ratio: float, max_width: int, max_height: int
+) -> tuple[int, int]:
+    """The largest (width, height) that preserves `aspect_ratio`
+    (width/height) while fitting entirely within max_width x
+    max_height - the same "contain" fit CSS's own object-fit: contain
+    performs, never upscaling past either bound and never distorting
+    the ratio.
+
+    Used by _render_map_panel()'s "map" mode to size the actual map
+    render at the trip's own true geographic shape (see
+    osm_roads.aspect_ratio_of()) instead of the panel's own shape,
+    which is what previously forced the geographic bbox itself to
+    match the panel - see that function's docstring for the full
+    problem this fixes. The result is then letterboxed/pillarboxed
+    (via _fit_and_pad()) up to the panel's exact width x height, the
+    same way a widescreen video is letterboxed into a narrower player
+    window rather than stretched or cropped to fit it.
+
+    Even dimensions throughout, same rounding convention as
+    _map_panel_dimensions().
+    """
+
+    candidate_width = max_height * aspect_ratio
+    if candidate_width <= max_width:
+        width, height = candidate_width, max_height
+    else:
+        width, height = max_width, max_width / aspect_ratio
+
+    return max(2, round(width / 2) * 2), max(2, round(height / 2) * 2)
+
+
 def _render_map_panel(
     mode: str,
     fixes: tuple[GpsFix, ...],
@@ -1278,11 +1310,29 @@ def _render_map_panel(
     video_duration_seconds: float | None = None,
 ) -> Path | None:
     """Render --stitch-map's panel (mode 'map' or 'zoom') at exactly
-    width x height, shaped so combining it with the camera composite
-    doesn't distort it - see osm_roads.bounding_box_for_fixes()'s
-    `aspect_ratio` param. Returns None (writes nothing) if there isn't
-    enough GPS data to draw a route from - the same convention
-    render_map_video() itself uses.
+    width x height, so combining it with the camera composite via a
+    plain hstack/vstack doesn't distort the composite. Returns None
+    (writes nothing) if there isn't enough GPS data to draw a route
+    from - the same convention render_map_video() itself uses.
+
+    'zoom' mode is already well-composed at any width x height on its
+    own (a fixed real-world radius centered on the vehicle every
+    frame, not derived from the trip's overall shape), so it's handed
+    width/height directly. 'map' mode draws the trip's whole route at
+    once, whose own true geographic shape (see
+    osm_roads.aspect_ratio_of()) essentially never matches width x
+    height - rendered at width x height directly (forcing the
+    geographic bbox to that ratio via
+    osm_roads.bounding_box_for_fixes()'s `aspect_ratio` param, the
+    previous approach here), a mismatched shape forces the map to zoom
+    out in whichever direction is too short, leaving most of the panel
+    as background with the real route squeezed into a fraction of it.
+    Instead, 'map' mode is rendered undistorted at its own true shape,
+    sized to the largest fit within width x height (see
+    _contain_fit()), then letterboxed/pillarboxed up to the full
+    panel via _fit_and_pad() - the map itself stays correctly zoomed,
+    with black bars filling whatever's left over instead of the map
+    being stretched to fill it.
 
     This is a dedicated render, separate from any general-purpose
     map.mp4/map_zoom_*m.mp4 --map/--map-zoom may also produce in the
@@ -1323,17 +1373,48 @@ def _render_map_panel(
             video_duration_seconds=video_duration_seconds,
         )
 
-    bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
+    bbox = bounding_box_for_fixes(fixes)
     if bbox is None:
         return None
-    return render_map_video(
-        fixes, roads, bbox, destination,
+
+    inner_width, inner_height = _contain_fit(aspect_ratio_of(bbox), width, height)
+
+    if (inner_width, inner_height) == (width, height):
+        # Trip's true shape already matches the panel exactly (or the
+        # panel is a 1x1 placeholder in a test) - no letterboxing
+        # needed, skip the extra render+encode pass.
+        return render_map_video(
+            fixes, roads, bbox, destination,
+            areas=areas,
+            marker_image_path=marker_image_path,
+            width=width, height=height,
+            video_start=video_start,
+            video_duration_seconds=video_duration_seconds,
+        )
+
+    inner_path = destination.with_name(
+        f"{destination.stem}_unletterboxed{destination.suffix}"
+    )
+    rendered = render_map_video(
+        fixes, roads, bbox, inner_path,
         areas=areas,
         marker_image_path=marker_image_path,
-        width=width, height=height,
+        width=inner_width, height=inner_height,
         video_start=video_start,
         video_duration_seconds=video_duration_seconds,
     )
+    if rendered is None:
+        return None
+
+    encode_with_nvenc_fallback(
+        [
+            "-i", str(inner_path),
+            "-filter_complex", _fit_and_pad("0:v", "v", width, height),
+            "-map", "[v]",
+        ],
+        destination,
+    )
+    return destination
 
 
 def _ideal_shared_dimension(
