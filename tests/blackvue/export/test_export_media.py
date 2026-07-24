@@ -7,6 +7,7 @@ from PIL import Image
 from blackvue.export import media as media_module
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
+from blackvue.export.media import encode_with_nvenc_fallback
 from blackvue.generate.media import MediaToolError
 
 
@@ -148,7 +149,13 @@ def test_encode_frame_sequence_uses_libx264_directly_when_nvenc_unavailable(
 
     encode_frame_sequence(tmp_path, tmp_path / "out.mp4", fps=5)
 
-    assert captured == [["-c:v", "libx264", "-pix_fmt", "yuv420p"]]
+    # No bitrate was requested, so the default quality target
+    # (_DEFAULT_LIBX264_QUALITY_ARGS) is applied instead of leaving it
+    # to libx264's own internal default - see
+    # encode_with_nvenc_fallback()'s own docstring for why.
+    assert captured == [
+        ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "19"]
+    ]
 
 
 def test_encode_frame_sequence_tries_nvenc_first_when_available(
@@ -164,8 +171,17 @@ def test_encode_frame_sequence_tries_nvenc_first_when_available(
 
     encode_frame_sequence(tmp_path, tmp_path / "out.mp4", fps=5)
 
-    # Only the (successful) NVENC attempt - no CPU fallback needed.
-    assert captured == [["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p"]]
+    # Only the (successful) NVENC attempt - no CPU fallback needed. No
+    # bitrate was requested, so the default quality target
+    # (_DEFAULT_NVENC_QUALITY_ARGS) is applied instead of leaving it to
+    # nvenc's own internal default - see encode_with_nvenc_fallback()'s
+    # own docstring for why.
+    assert captured == [
+        [
+            "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+            "-rc", "vbr", "-cq", "19", "-b:v", "0",
+        ]
+    ]
 
 
 def test_encode_frame_sequence_falls_back_to_libx264_when_nvenc_fails_for_real(
@@ -199,3 +215,99 @@ def test_encode_frame_sequence_raises_when_the_cpu_encoder_also_fails(
 
     with pytest.raises(MediaToolError):
         encode_frame_sequence(empty_frame_dir, tmp_path / "out.mp4", fps=5)
+
+
+def test_encode_with_nvenc_fallback_applies_default_quality_when_unspecified(
+    tmp_path, monkeypatch
+):
+    # Regression test for a real problem Christer found on his own
+    # archive: with no --stitch-bitrate given, nvenc's own unset
+    # -b:v default landed at a visibly grainy ~1.9Mbps for a real
+    # stitch.mp4 (vs. ~23Mbps for an earlier, differently-composited
+    # stitch also run with no bitrate given) - not something safe to
+    # leave to the encoder's own internal heuristic. No extra_codec_args
+    # at all here (the "nothing requested" case every caller besides
+    # stitch.py's --stitch-bitrate path is in).
+    monkeypatch.setattr(media_module, "_NVENC_AVAILABLE", True)
+    captured = []
+
+    def fake_encode(codec_args, input_args, destination):
+        captured.append(codec_args)
+
+    monkeypatch.setattr(media_module, "_run_ffmpeg_encode", fake_encode)
+
+    encode_with_nvenc_fallback(["-i", "in.mp4"], tmp_path / "out.mp4")
+
+    assert captured == [
+        [
+            "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+            "-rc", "vbr", "-cq", "19", "-b:v", "0",
+        ]
+    ]
+
+
+def test_encode_with_nvenc_fallback_applies_default_quality_to_libx264_too(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_module, "_NVENC_AVAILABLE", False)
+    captured = []
+
+    def fake_encode(codec_args, input_args, destination):
+        captured.append(codec_args)
+
+    monkeypatch.setattr(media_module, "_run_ffmpeg_encode", fake_encode)
+
+    encode_with_nvenc_fallback(["-i", "in.mp4"], tmp_path / "out.mp4")
+
+    assert captured == [
+        ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "19"]
+    ]
+
+
+def test_encode_with_nvenc_fallback_skips_default_quality_when_caller_sets_bitrate(
+    tmp_path, monkeypatch
+):
+    # An explicit --stitch-bitrate (via stitch.py's own _bitrate_args())
+    # arrives here as "-b:v", "256k", "-maxrate", "256k", "-bufsize",
+    # "256k" - the caller's own explicit rate control must win outright,
+    # not get a competing -cq/-crf target stacked on top of it.
+    monkeypatch.setattr(media_module, "_NVENC_AVAILABLE", True)
+    captured = []
+
+    def fake_encode(codec_args, input_args, destination):
+        captured.append(codec_args)
+
+    monkeypatch.setattr(media_module, "_run_ffmpeg_encode", fake_encode)
+
+    encode_with_nvenc_fallback(
+        ["-i", "in.mp4"],
+        tmp_path / "out.mp4",
+        extra_codec_args=["-b:v", "256k", "-maxrate", "256k", "-bufsize", "256k"],
+    )
+
+    assert captured == [
+        [
+            "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+            "-b:v", "256k", "-maxrate", "256k", "-bufsize", "256k",
+        ]
+    ]
+
+
+def test_encode_with_nvenc_fallback_default_quality_survives_a_real_encode(
+    tmp_path, monkeypatch
+):
+    # Not mocked - lets the real ffmpeg/libx264 (this sandbox has no
+    # NVIDIA GPU, so the nvenc attempt genuinely fails and falls
+    # through) actually run with the new default -crf 19, confirming
+    # it's a flag ffmpeg accepts and produces a real, playable file
+    # from, not just a string this project's own code expects.
+    monkeypatch.setattr(media_module, "_NVENC_AVAILABLE", False)
+
+    frame_dir = tmp_path / "frames"
+    _make_frames(frame_dir)
+    destination = tmp_path / "out.mp4"
+
+    encode_frame_sequence(frame_dir, destination, fps=5)
+
+    assert destination.exists()
+    assert destination.stat().st_size > 0

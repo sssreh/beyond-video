@@ -70,6 +70,33 @@ def _nvenc_available() -> bool:
     return _NVENC_AVAILABLE
 
 
+# Applied by encode_with_nvenc_fallback() whenever the caller hasn't
+# already asked for their own rate control (typically stitch.py's
+# --stitch-bitrate, via _bitrate_args()) - see that function's own
+# docstring for why leaving rate control entirely up to nvenc/libx264's
+# own internal defaults turned out to be a real problem, not just a
+# theoretical one: confirmed on Christer's real archive that with no
+# bitrate given at all, h264_nvenc's own default landed at ~23Mbps for
+# one native-resolution stitch.mp4, but only ~1.9Mbps - visibly
+# grainy - for a later rearview_mirror+map+gsensor+subtitles one same
+# machine, same "no bitrate given" input. -cq/-crf 19 is a "high
+# quality, roughly visually lossless" target for real camera footage
+# (dashcam grain/detail is exactly the kind of content low CQ/CRF
+# values are meant for) - independent of resolution or how much filter
+# -graph compositing happens to precede the final encode, unlike
+# whatever heuristic nvenc's own unset-bitrate default uses.
+_DEFAULT_NVENC_QUALITY_ARGS = ["-rc", "vbr", "-cq", "19", "-b:v", "0"]
+_DEFAULT_LIBX264_QUALITY_ARGS = ["-crf", "19"]
+
+# extra_codec_args flags that mean "the caller already specified their
+# own rate control" - _DEFAULT_NVENC_QUALITY_ARGS/
+# _DEFAULT_LIBX264_QUALITY_ARGS are skipped whenever any of these is
+# already present, so an explicit --stitch-bitrate (-b:v, via
+# stitch.py's _bitrate_args()) isn't fought by a competing default
+# quality target on top of it.
+_CALLER_RATE_CONTROL_FLAGS = ("-b:v", "-crf", "-cq", "-qp")
+
+
 def _run_ffmpeg_encode(
     codec_args: list[str], input_args: list[str], destination: Path
 ) -> None:
@@ -102,19 +129,37 @@ def encode_with_nvenc_fallback(
     - encoder-agnostic settings the caller wants regardless of which
     of the two actually ends up encoding.
 
+    Unless `extra_codec_args` already contains its own rate-control
+    flag (see _CALLER_RATE_CONTROL_FLAGS), a default quality target
+    (_DEFAULT_NVENC_QUALITY_ARGS/_DEFAULT_LIBX264_QUALITY_ARGS) is
+    applied instead of leaving it to nvenc/libx264's own internal
+    defaults - see those constants' own comment for why that turned
+    out to matter for real.
+
     Shared by every "encode a video via ffmpeg" caller in bv-export
     (map_video.py/gsensor_video.py's frame sequences via
     encode_frame_sequence() below, stitch.py's camera composition) so
-    they all get the same NVENC-then-CPU fallback behavior for free.
+    they all get the same NVENC-then-CPU fallback behavior, and the
+    same default quality safety net, for free.
     """
 
     extra_codec_args = extra_codec_args or []
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    caller_set_rate_control = any(
+        flag in extra_codec_args for flag in _CALLER_RATE_CONTROL_FLAGS
+    )
+
     if _nvenc_available():
+        quality_args = (
+            [] if caller_set_rate_control else _DEFAULT_NVENC_QUALITY_ARGS
+        )
         try:
             _run_ffmpeg_encode(
-                ["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", *extra_codec_args],
+                [
+                    "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+                    *quality_args, *extra_codec_args,
+                ],
                 input_args, destination,
             )
             return
@@ -123,9 +168,15 @@ def encode_with_nvenc_fallback(
         except subprocess.CalledProcessError:
             pass  # fall through to the CPU encoder below
 
+    quality_args = (
+        [] if caller_set_rate_control else _DEFAULT_LIBX264_QUALITY_ARGS
+    )
     try:
         _run_ffmpeg_encode(
-            ["-c:v", "libx264", "-pix_fmt", "yuv420p", *extra_codec_args],
+            [
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                *quality_args, *extra_codec_args,
+            ],
             input_args, destination,
         )
     except FileNotFoundError as exc:
