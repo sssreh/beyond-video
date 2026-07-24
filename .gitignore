@@ -224,3 +224,12 @@ set_env.txt
 # - real trip footage and the accounts file, created on the host, never
 # meant to be committed.
 /data/
+
+# Host-specific docker-compose overrides (e.g. pointing bv-cli's archive
+# volume at a folder outside this repo's own data/ tree) - see
+# docs/DEPLOY.md's "Archive already lives somewhere else" section.
+# Deliberately untracked: unlike a direct edit to docker-compose.yml,
+# this survives `git fetch && git reset --hard origin/main` on the NAS
+# (that only touches tracked files), so it doesn't need reapplying
+# after every update.
+docker-compose.override.yml
