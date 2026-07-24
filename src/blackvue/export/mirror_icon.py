@@ -33,6 +33,22 @@ from PIL import Image
 
 from ..generate.media import MediaToolError
 
+# Bundled alongside this module (see pyproject.toml's package-data
+# entry for "blackvue.export") so it's available wherever bv-export
+# actually runs - a plain repo-relative path like "images/mirror.png"
+# would break under Dockerfile.cli's build (only pyproject.toml/
+# README.md/src/ are copied in) and any pip-installed, non-checkout
+# setup. Same Path(__file__).parent-relative convention
+# blackvue.web.app.py's TEMPLATES_DIR already uses for its own bundled
+# assets. This is Christer's own reference photo of his physical
+# rearview mirror (see this module's own history in WORKING_CONTEXT.md
+# - "--stitch-mirror-icon: composite a real mirror photo as the inset
+# frame"), now the default --stitch-mirror-icon instead of an
+# opt-in-only path: see bv_export.py's own handling of this constant
+# for the "omit the flag -> use this; pass the literal string 'none'
+# -> fall back to the plain procedural inset instead" convention.
+DEFAULT_MIRROR_ICON_PATH = Path(__file__).parent / "assets" / "mirror.png"
+
 # Luminance (0-255, average of R/G/B) below which a pixel counts as
 # "dark" - the mirror's own frame/bezel/mount - rather than "light"
 # -background or glass, both of which read as bright in a normal

@@ -4791,3 +4791,98 @@ the same `render_frame()` function.
 Not yet verified against a real re-export - Christer hasn't re-run
 `bv-export` with this change yet to confirm the roads are clearly
 visible at normal viewing size.
+
+## New bv-export defaults: mirror zoom/size/pan-y, bundled mirror photo (this session)
+
+Christer: "I would like to have the following as defaults
+--stitch-mirror-zoom 40 --stitch-mirror-size 40 --stitch-mirror-pan-y
+-30 - and have the images\mirror.png as default rearview images."
+
+Two AskUserQuestion decisions made this scoping concrete before
+touching code. First: `images/mirror.png` (repo root) never reaches
+`Dockerfile.cli`'s build context or a `pip install` (only pyproject
+.toml/README.md/src/ are copied/packaged), so a relative-path default
+would silently break under bv-cli on the NAS and any non-checkout
+install - confirmed packaging it into `src/blackvue/export/assets/
+mirror.png` instead, alongside a new `pyproject.toml` package-data
+entry (`"blackvue.export" = ["assets/*.png"]`), same fix already
+applied to `web/templates/*.html` earlier this session. Second: once
+mirror.png is the automatic default, confirmed a new literal
+`--stitch-mirror-icon none` value should exist as the explicit opt-out
+back to the plain procedural inset (omitting the flag now means "use
+the bundled photo," not "no photo").
+
+`mirror_icon.py` gained `DEFAULT_MIRROR_ICON_PATH = Path(__file__)
+.parent / "assets" / "mirror.png"` - same `Path(__file__).parent`
+-relative convention `web/app.py`'s `TEMPLATES_DIR` already uses.
+`bv_export.py`'s own `bv_export()` function (the single entry point
+both `main()`'s argparse and any direct library caller go through)
+resolves the three-way `stitch_mirror_icon` value: omitted (`None`)
+-> `DEFAULT_MIRROR_ICON_PATH`, the literal string `"none"` -> `None`
+(procedural inset), anything else -> that path. Verified against the
+real pipeline (ffmpeg-generated test videos, no mocking): the bundled
+mirror.png actually segments cleanly via `load_mirror_frame()` (glass
+bbox (9,103)-(569,251) inside a 580x262 canvas) and a real `bv_export()`
+call with no `stitch_mirror_icon` given produces a working stitch.mp4
+with no fallback warning; a second run with `stitch_mirror_icon="none"`
+also produces a working stitch.mp4 with the plain procedural inset.
+
+First implementation attempt was wrong and got caught before
+committing: initially changed `stitch.py`'s own shared
+`DEFAULT_MIRROR_SIZE_PERCENT`/`DEFAULT_MIRROR_ZOOM_PERCENT` constants
+directly, and split `DEFAULT_MIRROR_PAN_PERCENT` into X/Y variants
+with Y defaulting to -30 - but these constants are the *library*
+defaults, used directly by `stitch_cameras()`/`export_trip()` (and by
+roughly 20 call sites across this project's own `test_stitch.py`) when
+called without explicit values, not just bv-export's CLI. Pushing
+Christer's preference down to that layer would have silently changed
+what dozens of existing tests render (uncropped/centered rear frame ->
+40%-cropped, panned-up frame) without any of them asking for it -
+mirrored exactly why `--stitch-mirror-icon`'s own default resolution
+was deliberately kept out of `stitch.py`/`trip_export.py` in the first
+place. Caught by grepping test_stitch.py's `rearview_mirror` call
+sites for ones omitting `mirror_zoom`/`mirror_pan_y` before running
+anything - found ~18 such sites.
+
+Fixed by reverting `stitch.py`'s constants back to their original
+values (`DEFAULT_MIRROR_SIZE_PERCENT=25`, `DEFAULT_MIRROR_ZOOM_PERCENT
+=0`, `DEFAULT_MIRROR_PAN_X_PERCENT=DEFAULT_MIRROR_PAN_Y_PERCENT=0`, the
+split kept but both sides neutral) and instead adding three new
+CLI-only constants in `bv_export.py` itself -
+`_DEFAULT_CLI_MIRROR_SIZE_PERCENT`/`_DEFAULT_CLI_MIRROR_ZOOM_PERCENT`/
+`_DEFAULT_CLI_MIRROR_PAN_Y_PERCENT` (40/40/-30) - used only by
+`bv_export()`'s own function signature and `main()`'s argparse
+defaults. `--stitch-mirror-pan-x` keeps the library's own
+`DEFAULT_MIRROR_PAN_X_PERCENT` (0) at both layers, since Christer only
+asked for pan-y to change. `trip_export.py`'s own function signature
+still references `stitch.py`'s plain constants (now back to their
+original values), so it and every direct `stitch_cameras()`/
+`export_trip()` caller - including the whole test suite - keeps
+exactly its old default behavior. Re-verified the CLI's own `--help`
+output still shows the new 40/40/0/-30/bundled-photo defaults, and
+that a real end-to-end `bv_export()` call (no flags) still renders
+successfully with them, after this revert.
+
+Also updated `docs/man/bv-export.md`'s options table (stale "Default:
+25"/"Default: 0" entries) and its `--stitch-mirror-pan-y`/
+`--stitch-mirror-icon` rows to describe the new defaults - the
+existing full-combo example further down already passes these flags
+explicitly, so it didn't need changing.
+
+Fixed one test that referenced the now-renamed
+`DEFAULT_MIRROR_PAN_PERCENT` constant (`test_bv_export.py`'s
+`test_main_uses_the_default_stitch_mirror_pan_when_not_given`) to
+import/assert `DEFAULT_MIRROR_PAN_X_PERCENT`/`DEFAULT_MIRROR_PAN_Y
+_PERCENT` instead - this test mocks `bv_export_module.bv_export`
+itself, so it captures argparse's raw parsed values before any
+CLI-level resolution, unaffected by the constants split either way.
+
+Not yet run through the full test suite - this sandbox has no network
+access to install pytest, so verification here was manual (`ast.parse`
++ direct real-pipeline runs with ffmpeg-generated test videos, shown
+above) rather than the project's own test runner. Worth a real
+`pytest` pass on Christer's own machine before considering this fully
+verified, particularly `test_stitch.py`'s ~20 `rearview_mirror` call
+sites that don't pass `mirror_zoom`/`mirror_pan_y` explicitly (these
+should all be unaffected now that the library defaults were reverted,
+but a real run is the actual confirmation).
