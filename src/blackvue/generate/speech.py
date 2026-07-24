@@ -133,6 +133,54 @@ def _get_whisper_model(model_size: str):
     return _WHISPER_MODEL_CACHE[model_size]
 
 
+def _load_cpu_whisper_model(model_size: str):
+    """Force-load a CPU faster-whisper model, bypassing the CUDA
+    attempt in _load_whisper_model() entirely - see
+    _whisper_transcribe()'s own docstring for why this exists as a
+    separate function rather than just calling _load_whisper_model()
+    again (that would retry CUDA first, uselessly repeating the same
+    failure it's recovering from).
+    """
+
+    from faster_whisper import WhisperModel
+
+    return WhisperModel(model_size, device="cpu", compute_type="int8")
+
+
+def _whisper_transcribe(model_size: str, source: Path, **kwargs):
+    """Call WhisperModel.transcribe(), recovering with a fresh CPU
+    model if the *first real inference* on a cached model fails.
+
+    _load_whisper_model()'s own CUDA-then-CPU-fallback only catches
+    problems that surface while *constructing* the WhisperModel -
+    but CTranslate2 lazily initializes its actual CUDA/cuBLAS runtime
+    on first real inference, not at construction time. A machine
+    missing the cuBLAS/cuDNN DLLs can therefore pass that load-time
+    probe cleanly (the CUDA model object builds fine) and only fail
+    here, on the first .transcribe() call - confirmed by a real report
+    from Christer's machine: "language detection failed for
+    20260715_143340_N.aac: Library cublas64_12.dll is not found or
+    cannot be loaded", raised from what _load_whisper_model() had
+    already decided was a working CUDA model.
+
+    On any failure, evicts the cache entry and replaces it with a
+    forced CPU model (see _load_cpu_whisper_model()), then retries
+    once - so every later call for this model_size skips straight to
+    CPU instead of hitting the same DLL failure again. If the CPU
+    retry itself fails, that exception propagates to the caller's own
+    MediaToolError wrapping, same as before this existed.
+    """
+
+    model = _get_whisper_model(model_size)
+
+    try:
+        return model.transcribe(str(source), **kwargs)
+    except Exception:
+        cpu_model = _load_cpu_whisper_model(model_size)
+        _WHISPER_MODEL_CACHE[model_size] = cpu_model
+        return cpu_model.transcribe(str(source), **kwargs)
+
+
 def detect_language(source: Path, *, model_size: str = "small") -> str:
     """Cheaply detect the spoken language of source.
 
@@ -143,10 +191,8 @@ def detect_language(source: Path, *, model_size: str = "small") -> str:
     without committing to a full transcription.
     """
 
-    model = _get_whisper_model(model_size)
-
     try:
-        _, info = model.transcribe(str(source))
+        _, info = _whisper_transcribe(model_size, source)
     except Exception as exc:
         raise MediaToolError(
             f"language detection failed for {source.name}: {exc}"
@@ -168,10 +214,10 @@ def transcribe(
     None, the spoken language is auto-detected.
     """
 
-    model = _get_whisper_model(model_size)
-
     try:
-        raw_segments, info = model.transcribe(str(source), language=language)
+        raw_segments, info = _whisper_transcribe(
+            model_size, source, language=language
+        )
 
         # faster-whisper decodes in fixed-size chunks internally, so
         # the last segment's end timestamp can land slightly past the
