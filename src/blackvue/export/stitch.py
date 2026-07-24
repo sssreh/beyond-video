@@ -90,6 +90,14 @@ ALL_LAYOUTS = (*STACK_LAYOUTS, _MIRROR_LAYOUT)
 # spec's own "10-50%, default 25%" language) - its own separate range
 # from --stitch-gsensor-size's 5-40%/15%, since a rearview mirror
 # reads as a much more prominent element than a small gsensor gauge.
+# This is the library's own neutral default, used when stitch_cameras()
+# /export_trip() are called directly without a value - bv-export's CLI
+# (bv_export.py) has its own separate, more opinionated default (see
+# that module's own _DEFAULT_CLI_MIRROR_SIZE_PERCENT) matching
+# Christer's preferred viewing setup, deliberately not pushed down into
+# this shared library-level constant since other direct callers
+# (including this project's own test suite) rely on this staying the
+# original plain value.
 MIN_MIRROR_SIZE_PERCENT = 10.0
 MAX_MIRROR_SIZE_PERCENT = 50.0
 DEFAULT_MIRROR_SIZE_PERCENT = 25.0
@@ -114,7 +122,10 @@ DEFAULT_MIRROR_RADIUS_PERCENT = 0.0
 # more "zoomed in" mirror view). Capped below 100 (95, not the
 # mathematically-possible-but-degenerate 100 which would crop away the
 # entire frame) - Christer's own recommended reading of "zoom in
-# percent": 0 = full frame, higher = tighter crop.
+# percent": 0 = full frame, higher = tighter crop. Library-level
+# neutral default (see DEFAULT_MIRROR_SIZE_PERCENT's own comment just
+# above for why bv-export's CLI has its own separate, more opinionated
+# default instead of this constant changing).
 MIN_MIRROR_ZOOM_PERCENT = 0.0
 MAX_MIRROR_ZOOM_PERCENT = 95.0
 DEFAULT_MIRROR_ZOOM_PERCENT = 0.0
@@ -132,9 +143,16 @@ DEFAULT_MIRROR_ZOOM_PERCENT = 0.0
 # would mean either clamping pan back down to this exact behavior
 # anyway, or inventing pixels beyond the source frame's own edges at
 # low zoom, which isn't possible without visible padding).
+#
+# Split into separate x/y constants (both still 0/centered here, the
+# library-level neutral default) so bv-export's CLI can give pan_y its
+# own different opinionated default (panned up) without pan_x - see
+# DEFAULT_MIRROR_SIZE_PERCENT's own comment above for why that lives in
+# bv_export.py rather than here.
 MIN_MIRROR_PAN_PERCENT = -100.0
 MAX_MIRROR_PAN_PERCENT = 100.0
-DEFAULT_MIRROR_PAN_PERCENT = 0.0
+DEFAULT_MIRROR_PAN_X_PERCENT = 0.0
+DEFAULT_MIRROR_PAN_Y_PERCENT = 0.0
 
 # A small top margin (percent of the composite's own height) so the
 # mirror inset doesn't sit flush against the very top edge of the
@@ -398,8 +416,8 @@ def stitch_cameras(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
-    mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
-    mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
+    mirror_pan_x: float = DEFAULT_MIRROR_PAN_X_PERCENT,
+    mirror_pan_y: float = DEFAULT_MIRROR_PAN_Y_PERCENT,
     mirror_icon: Path | None = None,
     map_mode: str | None = None,
     map_side: str | None = None,
@@ -461,14 +479,18 @@ def stitch_cameras(
     -channel problem), right before the scale+hflip already baked in
     there - see this function's own decode-scale-filter comment.
     `mirror_pan_x`/`mirror_pan_y` (-100 to 100, default 0 - see MIN_/
-    MAX_/DEFAULT_MIRROR_PAN_PERCENT) slide that crop window off-center,
-    within the margin `mirror_zoom` cropped away - 0 stays centered
-    (unchanged default), negative pans left/up, positive pans right
-    /down, +/-100 pushes the crop window flush against one edge. Only
-    has room to move at all once `mirror_zoom` > 0 - at 0 there's no
+    MAX_MIRROR_PAN_PERCENT and DEFAULT_MIRROR_PAN_X_PERCENT/
+    DEFAULT_MIRROR_PAN_Y_PERCENT) slide that crop window off-center,
+    within the margin `mirror_zoom` cropped away - 0 (the default)
+    stays centered, negative pans left/up, positive pans right/down,
+    +/-100 pushes the crop window flush against one edge. Only has
+    room to move at all once `mirror_zoom` > 0 - at 0 there's no
     cropped-away margin to pan into, so pan is a no-op regardless of
     its own value. See _mirror_zoom_crop_filter()'s own docstring for
-    the exact math.
+    the exact math. (bv-export's CLI gives this a different, more
+    opinionated default than the plain 0 used here when called
+    directly - see bv_export.py's own _DEFAULT_CLI_MIRROR_ZOOM_PERCENT/
+    _DEFAULT_CLI_MIRROR_PAN_Y_PERCENT.)
 
     `mirror_icon`, if given, is a path to a photo of a real physical
     rearview mirror - see mirror_icon.py's own module docstring for
@@ -1566,8 +1588,8 @@ def _stack(
     mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
-    mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
-    mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
+    mirror_pan_x: float = DEFAULT_MIRROR_PAN_X_PERCENT,
+    mirror_pan_y: float = DEFAULT_MIRROR_PAN_Y_PERCENT,
     mirror_icon: Path | None = None,
     map_mode: str | None = None,
     map_side: str | None = None,

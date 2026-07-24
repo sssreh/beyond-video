@@ -80,3 +80,9 @@ bv-web = "blackvue.cli.bv_web:main"
 # all.
 [tool.setuptools.package-data]
 "blackvue.web" = ["templates/*.html"]
+# The bundled default --stitch-mirror-icon photo (mirror_icon.py's
+# DEFAULT_MIRROR_ICON_PATH) - same reasoning as templates/*.html
+# above: without this, `pip install .` silently drops it, and the
+# default only works from inside a repo checkout instead of any real
+# install (Dockerfile.cli, a PC pip install, ...).
+"blackvue.export" = ["assets/*.png"]

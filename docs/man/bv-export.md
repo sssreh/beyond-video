@@ -92,12 +92,12 @@ Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-du
 
 | Option | Description |
 |---|---|
-| `--stitch-mirror-size PERCENT` | Inset size as a percentage of the composite's width (10-50). Default: 25. |
+| `--stitch-mirror-size PERCENT` | Inset size as a percentage of the composite's width (10-50). Default: 40. |
 | `--stitch-mirror-radius PERCENT` | Round the inset's four corners (0-100, percent of min(width,height)/2). Default: 0 (square). Ignored if `--stitch-mirror-icon` is given. |
-| `--stitch-mirror-zoom PERCENT` | Crop this percent off each edge of the rear source, toward its center, before scaling into the inset (0-95). Default: 0 (full frame). |
+| `--stitch-mirror-zoom PERCENT` | Crop this percent off each edge of the rear source, toward its center, before scaling into the inset (0-95). Default: 40. |
 | `--stitch-mirror-pan-x PERCENT` | Pan the crop window left(-)/right(+) within the margin `--stitch-mirror-zoom` cropped away (-100 to 100). Default: 0 (centered). No effect at `--stitch-mirror-zoom 0`. |
-| `--stitch-mirror-pan-y PERCENT` | Same as `--stitch-mirror-pan-x`, up(-)/down(+). |
-| `--stitch-mirror-icon PATH` | Composite the inset into a photo of a real physical mirror instead of the plain rounded rectangle - rear footage is clipped into the photo's own glass area, automatically segmented from a plain product-style photo (darker frame/mount around a lighter glass area, on a light background). Falls back to the procedural inset with a warning if the photo can't be read/segmented. |
+| `--stitch-mirror-pan-y PERCENT` | Same as `--stitch-mirror-pan-x`, up(-)/down(+). Default: -30 (panned up). |
+| `--stitch-mirror-icon PATH` | Composite the inset into a photo of a real physical mirror instead of the plain rounded rectangle - rear footage is clipped into the photo's own glass area, automatically segmented from a plain product-style photo (darker frame/mount around a lighter glass area, on a light background). Falls back to the procedural inset with a warning if the photo can't be read/segmented. Default: a bundled reference mirror photo - pass the literal value `none` to use the plain procedural inset instead, or a path to use your own photo. |
 
 ### Stitch output sizing
 

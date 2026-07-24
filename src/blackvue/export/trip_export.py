@@ -37,7 +37,8 @@ from .stitch import AUTO_LAYOUT
 from .stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from .stitch import DEFAULT_MIRROR_RADIUS_PERCENT
 from .stitch import DEFAULT_MIRROR_SIZE_PERCENT
-from .stitch import DEFAULT_MIRROR_PAN_PERCENT
+from .stitch import DEFAULT_MIRROR_PAN_X_PERCENT
+from .stitch import DEFAULT_MIRROR_PAN_Y_PERCENT
 from .stitch import DEFAULT_MIRROR_ZOOM_PERCENT
 from .stitch import pick_stitch_layout
 from .stitch import stitch_cameras
@@ -266,8 +267,8 @@ def export_trip(
     stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
     stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
     stitch_mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
-    stitch_mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
-    stitch_mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
+    stitch_mirror_pan_x: float = DEFAULT_MIRROR_PAN_X_PERCENT,
+    stitch_mirror_pan_y: float = DEFAULT_MIRROR_PAN_Y_PERCENT,
     stitch_mirror_icon: Path | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
@@ -361,18 +362,21 @@ def export_trip(
     plain-rectangle look. `stitch_mirror_zoom` (percent of the rear
     source cropped away from each edge toward its center before
     scaling, 0-95, default stitch.DEFAULT_MIRROR_ZOOM_PERCENT) zooms
-    the mirror inset in - 0 (the default) shows the whole rear frame,
-    unchanged. `stitch_mirror_pan_x`/`stitch_mirror_pan_y` (-100 to
-    100, default stitch.DEFAULT_MIRROR_PAN_PERCENT) slide that crop
-    off-center within the margin `stitch_mirror_zoom` cropped away - 0
-    (the default) stays centered; only has room to move once
+    the mirror inset in - 0 shows the whole rear frame, unchanged.
+    `stitch_mirror_pan_x`/`stitch_mirror_pan_y` (-100 to 100, default
+    stitch.DEFAULT_MIRROR_PAN_X_PERCENT/DEFAULT_MIRROR_PAN_Y_PERCENT)
+    slide that crop off-center within the margin `stitch_mirror_zoom`
+    cropped away - 0 stays centered; only has room to move once
     `stitch_mirror_zoom` > 0. `stitch_mirror_icon`, if given, is a path
     to a photo of a real physical rearview mirror - replaces the plain
     procedural inset with rear footage composited into that photo's
     own glass area, see stitch.stitch_cameras()'s own docstring for the
-    full mechanism. `stitch_mirror_radius` is ignored when this is
-    given; `stitch_mirror_zoom`/`stitch_mirror_pan_x`/`stitch_mirror
-    _pan_y` still apply.
+    full mechanism. This function's own default is plain `None` (the
+    procedural inset) - bv_export.py's CLI/library entry point is what
+    resolves an omitted --stitch-mirror-icon to the bundled default
+    photo instead, see mirror_icon.DEFAULT_MIRROR_ICON_PATH. `stitch
+    _mirror_radius` is ignored when an icon is given; `stitch_mirror
+    _zoom`/`stitch_mirror_pan_x`/`stitch_mirror_pan_y` still apply.
 
     `stitch_resolution` (a (width, height) pixel pair) and
     `stitch_bitrate` (e.g. "256k", passed straight to ffmpeg's -b:v)

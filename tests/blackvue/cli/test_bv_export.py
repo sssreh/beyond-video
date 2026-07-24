@@ -923,7 +923,8 @@ def test_main_rejects_an_out_of_range_stitch_mirror_zoom(tmp_path):
 def test_main_uses_the_default_stitch_mirror_pan_when_not_given(
     tmp_path, monkeypatch
 ):
-    from blackvue.export.stitch import DEFAULT_MIRROR_PAN_PERCENT
+    from blackvue.export.stitch import DEFAULT_MIRROR_PAN_X_PERCENT
+    from blackvue.export.stitch import DEFAULT_MIRROR_PAN_Y_PERCENT
 
     captured = {}
 
@@ -939,8 +940,8 @@ def test_main_uses_the_default_stitch_mirror_pan_when_not_given(
 
     main(["--target", str(target), str(archive), "--stitch"])
 
-    assert captured["stitch_mirror_pan_x"] == DEFAULT_MIRROR_PAN_PERCENT
-    assert captured["stitch_mirror_pan_y"] == DEFAULT_MIRROR_PAN_PERCENT
+    assert captured["stitch_mirror_pan_x"] == DEFAULT_MIRROR_PAN_X_PERCENT
+    assert captured["stitch_mirror_pan_y"] == DEFAULT_MIRROR_PAN_Y_PERCENT
 
 
 def test_main_parses_explicit_stitch_mirror_pan_x_and_pan_y(

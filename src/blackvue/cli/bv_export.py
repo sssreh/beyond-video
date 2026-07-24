@@ -22,15 +22,14 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
+from blackvue.export.mirror_icon import DEFAULT_MIRROR_ICON_PATH
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
-from blackvue.export.stitch import DEFAULT_MIRROR_PAN_PERCENT
+from blackvue.export.stitch import DEFAULT_MIRROR_PAN_X_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_RADIUS_PERCENT
-from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
-from blackvue.export.stitch import DEFAULT_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_PAN_PERCENT
@@ -53,6 +52,24 @@ from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
 from blackvue.trip.trip_builder import TripBuilder
+
+# bv-export's own opinionated defaults for --stitch-mirror-size/-zoom/
+# -pan-y, Christer's preferred rearview-mirror viewing setup - a
+# closer, already-panned-up view rather than the plain full rear frame
+# stitch.py's own DEFAULT_MIRROR_SIZE_PERCENT/DEFAULT_MIRROR_ZOOM
+# _PERCENT/DEFAULT_MIRROR_PAN_Y_PERCENT default to when stitch_cameras()
+# /export_trip() are called directly (as this project's own test suite
+# does in many places, relying on that plain/uncropped default).
+# Deliberately kept as bv_export.py's own constants rather than
+# changing stitch.py's shared ones - same "CLI has its own opinionated
+# default, library stays neutral" split already used for
+# --stitch-mirror-icon (see DEFAULT_MIRROR_ICON_PATH's own docstring).
+# --stitch-mirror-pan-x isn't included here - Christer only asked for
+# pan_y to change, so pan_x keeps stitch.py's own DEFAULT_MIRROR_PAN_X
+# _PERCENT (0, centered) as both the library's and the CLI's default.
+_DEFAULT_CLI_MIRROR_SIZE_PERCENT = 40.0
+_DEFAULT_CLI_MIRROR_ZOOM_PERCENT = 40.0
+_DEFAULT_CLI_MIRROR_PAN_Y_PERCENT = -30.0
 
 
 def _interactive() -> bool:
@@ -250,11 +267,11 @@ def bv_export(
     stitch_scale: float | None = None,
     stitch_max_width: int | None = None,
     stitch_max_height: int | None = None,
-    stitch_mirror_size: float = DEFAULT_MIRROR_SIZE_PERCENT,
+    stitch_mirror_size: float = _DEFAULT_CLI_MIRROR_SIZE_PERCENT,
     stitch_mirror_radius: float = DEFAULT_MIRROR_RADIUS_PERCENT,
-    stitch_mirror_zoom: float = DEFAULT_MIRROR_ZOOM_PERCENT,
-    stitch_mirror_pan_x: float = DEFAULT_MIRROR_PAN_PERCENT,
-    stitch_mirror_pan_y: float = DEFAULT_MIRROR_PAN_PERCENT,
+    stitch_mirror_zoom: float = _DEFAULT_CLI_MIRROR_ZOOM_PERCENT,
+    stitch_mirror_pan_x: float = DEFAULT_MIRROR_PAN_X_PERCENT,
+    stitch_mirror_pan_y: float = _DEFAULT_CLI_MIRROR_PAN_Y_PERCENT,
     stitch_mirror_icon: str | Path | None = None,
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
@@ -367,7 +384,21 @@ def bv_export(
     # export_trip()'s map_cache_dir docstring.
     map_cache_dir = target_path / ".osm_cache"
     map_icon_path = Path(map_icon) if map_icon else None
-    stitch_mirror_icon_path = Path(stitch_mirror_icon) if stitch_mirror_icon else None
+    # stitch_mirror_icon has three states, not two: omitted (None) uses
+    # the bundled default photo (DEFAULT_MIRROR_ICON_PATH - Christer's
+    # own reference mirror), the literal string "none" explicitly opts
+    # back out to the plain procedural rounded-rectangle inset (passed
+    # down as None from here on), and anything else is a real path to
+    # a custom photo. See mirror_icon.py's own DEFAULT_MIRROR_ICON_PATH
+    # docstring for why this can't just be a plain Python default
+    # value (the image has to be resolved relative to the installed
+    # package, not this file's cwd).
+    if stitch_mirror_icon is None:
+        stitch_mirror_icon_path = DEFAULT_MIRROR_ICON_PATH
+    elif isinstance(stitch_mirror_icon, str) and stitch_mirror_icon.strip().lower() == "none":
+        stitch_mirror_icon_path = None
+    else:
+        stitch_mirror_icon_path = Path(stitch_mirror_icon)
     exit_code = 0
     # Cached on the first existing trip folder this run encounters,
     # then reused for every other one - so an interactive run only
@@ -688,14 +719,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--stitch-mirror-size",
         type=_parse_mirror_size,
-        default=DEFAULT_MIRROR_SIZE_PERCENT,
+        default=_DEFAULT_CLI_MIRROR_SIZE_PERCENT,
         metavar="PERCENT",
         help=(
             f"Mirror inset size as a percentage of the composite's own "
             f"width ({MIN_MIRROR_SIZE_PERCENT:g}-"
             f"{MAX_MIRROR_SIZE_PERCENT:g}). Only meaningful with "
             f"--stitch-layout rearview_mirror. Default: "
-            f"{DEFAULT_MIRROR_SIZE_PERCENT:g}."
+            f"{_DEFAULT_CLI_MIRROR_SIZE_PERCENT:g}."
         ),
     )
 
@@ -718,7 +749,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--stitch-mirror-zoom",
         type=_parse_mirror_zoom,
-        default=DEFAULT_MIRROR_ZOOM_PERCENT,
+        default=_DEFAULT_CLI_MIRROR_ZOOM_PERCENT,
         metavar="PERCENT",
         help=(
             f"Zoom the mirror inset in, by cropping this percentage off "
@@ -728,44 +759,45 @@ def main(argv: list[str] | None = None) -> int:
             f"- 0 shows the whole rear frame unchanged, higher values "
             f"show progressively less of it. Only meaningful with "
             f"--stitch-layout rearview_mirror. Default: "
-            f"{DEFAULT_MIRROR_ZOOM_PERCENT:g}."
+            f"{_DEFAULT_CLI_MIRROR_ZOOM_PERCENT:g}."
         ),
     )
 
     parser.add_argument(
         "--stitch-mirror-pan-x",
         type=_parse_mirror_pan,
-        default=DEFAULT_MIRROR_PAN_PERCENT,
+        default=DEFAULT_MIRROR_PAN_X_PERCENT,
         metavar="PERCENT",
         help=(
             f"Pan the mirror inset's crop window left/right within the "
             f"margin --stitch-mirror-zoom already crops away "
             f"({MIN_MIRROR_PAN_PERCENT:g}-{MAX_MIRROR_PAN_PERCENT:g}) - 0 "
-            f"(the default) stays centered, negative pans left, positive "
+            f"stays centered, negative pans left, positive "
             f"pans right, +/-{MAX_MIRROR_PAN_PERCENT:g} pushes the crop "
             f"window flush against one edge. Only has room to move once "
             f"--stitch-mirror-zoom is above 0 - at 0 there's no "
             f"cropped-away margin to pan into. Only meaningful with "
             f"--stitch-layout rearview_mirror. Default: "
-            f"{DEFAULT_MIRROR_PAN_PERCENT:g}."
+            f"{DEFAULT_MIRROR_PAN_X_PERCENT:g}."
         ),
     )
 
     parser.add_argument(
         "--stitch-mirror-pan-y",
         type=_parse_mirror_pan,
-        default=DEFAULT_MIRROR_PAN_PERCENT,
+        default=_DEFAULT_CLI_MIRROR_PAN_Y_PERCENT,
         metavar="PERCENT",
         help=(
             f"Pan the mirror inset's crop window up/down within the "
             f"margin --stitch-mirror-zoom already crops away "
             f"({MIN_MIRROR_PAN_PERCENT:g}-{MAX_MIRROR_PAN_PERCENT:g}) - 0 "
-            f"(the default) stays centered, negative pans up, positive "
+            f"stays centered, negative pans up, positive "
             f"pans down, +/-{MAX_MIRROR_PAN_PERCENT:g} pushes the crop "
             f"window flush against one edge. Same --stitch-mirror-zoom "
             f"-dependent behavior as --stitch-mirror-pan-x. Only "
             f"meaningful with --stitch-layout rearview_mirror. Default: "
-            f"{DEFAULT_MIRROR_PAN_PERCENT:g}."
+            f"{_DEFAULT_CLI_MIRROR_PAN_Y_PERCENT:g} (panned up, since "
+            f"the default --stitch-mirror-zoom already crops in)."
         ),
     )
 
@@ -788,8 +820,10 @@ def main(argv: list[str] | None = None) -> int:
             "photo's own frame shape is used instead); --stitch-mirror "
             "-zoom still applies to how much of the rear frame is shown. "
             "Falls back to the plain procedural inset with a warning if "
-            "the image can't be read or segmented. Default: none (uses "
-            "the procedural inset)."
+            "the image can't be read or segmented. Default: a bundled "
+            "reference mirror photo - pass the literal value 'none' to "
+            "use the plain procedural inset instead, or a path to use "
+            "your own photo."
         ),
     )
 
