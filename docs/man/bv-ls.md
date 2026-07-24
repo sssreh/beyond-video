@@ -19,7 +19,7 @@ bv-ls [--all] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
 
 By default, related recordings are grouped (e.g. an event recording and the context recording immediately before it) into a single row, with an `X` mark in each asset column that exists for that group. `--all` shows one row per individual recording instead.
 
-`--trips` switches to a completely different view: one row per detected **trip** (a run of recordings with no gap longer than `--max-gap` between them) instead of individual recordings/groups - the same trip-detection logic `bv-export` itself uses, useful for previewing how a trip export would be split up before actually running `bv-export`.
+`--trips` switches to a completely different view: one row per detected **trip** (a run of recordings with no gap longer than `--max-gap` between them) instead of individual recordings/groups - the same trip-detection logic `bv-export` itself uses, useful for previewing how a trip export would be split up before actually running `bv-export`. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never appears in `--trips` output at all, though it still shows up in the plain (non-`--trips`) listing.
 
 ## ARGUMENTS
 

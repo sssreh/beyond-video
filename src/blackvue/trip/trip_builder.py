@@ -3,9 +3,53 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 
+from blackvue.archive.asset import Asset
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.trip.trip import Trip
+
+
+def recordings_with_front_video(
+    recordings: Iterable[Recording],
+) -> tuple[Recording, ...]:
+    """Filter to only recordings with a Front asset - meant to be
+    applied to whatever's handed to TripBuilder.build(), not a change
+    to TripBuilder itself (which stays asset-agnostic).
+
+    Not every recording in an archive has video: BlackVue keeps
+    logging GPS/g-sensor/thumbnail data even for stretches whose
+    Front/Rear video was never downloaded (a real, common case for an
+    archive that isn't downloaded in full by default - only specific
+    ranges pulled down later, once something nearby turned out to be
+    worth keeping). Feeding those video-less recordings into
+    TripBuilder alongside real ones caused two confirmed problems on a
+    real archive:
+
+    1. TripBuilder's gap rule is evaluated pairwise between
+       consecutive recordings, not video segment to video segment. A
+       run of several video-less GPS pings a few minutes apart each
+       (individually under the gap threshold) could chain-bridge what
+       was actually a much longer real gap between two genuine video
+       segments into one trip.
+    2. Even where trip splitting was otherwise correct, a video-less
+       recording's own GPS fixes still got merged into the trip's
+       route by trip_export.py. But concatenated Front/Rear video has
+       no representation of missing time at all - it jump-cuts
+       straight from one real segment to the next - while the merged
+       GPS track still spans the real, unrepresented gap in between.
+       render_map_video() has no way to know that gap didn't actually
+       play out on screen, so it kept smoothly interpolating position
+       across it: the map visibly crawling forward while the real
+       video had already jump-cut past that whole stretch.
+
+    A video-less recording filtered out here never belongs to any
+    trip - it's simply not part of trip detection or export, the same
+    as if it weren't in the archive at all for that purpose. It still
+    shows up in a plain (non-`--trips`) `bv-ls` listing, since that
+    doesn't go through TripBuilder.
+    """
+
+    return tuple(recording for recording in recordings if recording.has(Asset.FRONT))
 
 
 DEFAULT_MAX_GAP = timedelta(minutes=5)
