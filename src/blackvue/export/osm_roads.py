@@ -1,5 +1,6 @@
 """
-OpenStreetMap road-geometry fetching for map-overlay video rendering.
+OpenStreetMap road/water/green-area geometry fetching for map-overlay
+video rendering.
 
 Deliberately does NOT use tile.openstreetmap.org, or any commercial
 tile-display API: rendering a trip's route needs a whole bounding
@@ -9,17 +10,21 @@ offline pattern tile.openstreetmap.org's usage policy prohibits
 (see WORKING_CONTEXT.md for the research behind this). Commercial
 tile APIs generally have the same problem the other way round: their
 terms license *live map display*, not baking tiles into a video file
-the user keeps forever.
+the user keeps forever - confirmed again, specifically for Mapbox,
+when Christer later asked about paid tile options (see
+WORKING_CONTEXT.md's "richer self-drawn rendering" entry).
 
 Instead, this queries the Overpass API (OSM's own read-only data API,
 explicitly recommended by the OSM Foundation for small-area,
 non-editing queries like this one - see
-https://operations.osmfoundation.org/policies/api/) for raw road
-*geometry*. That's ODbL-licensed OSM *data*, not a rendered image -
-explicitly fine to cache, store, and redistribute offline with
-attribution, unlike a pre-rendered tile. map_render.py then draws
-this geometry itself, so no live map service is involved once a
-region's data has been fetched once and cached.
+https://operations.osmfoundation.org/policies/api/) for raw map
+*geometry* - roads (Road/fetch_roads()/load_or_fetch_roads()) and,
+separately, water/park/forest areas (Area/fetch_areas()/
+load_or_fetch_areas()). That's ODbL-licensed OSM *data*, not a
+rendered image - explicitly fine to cache, store, and redistribute
+offline with attribution, unlike a pre-rendered tile. map_render.py
+then draws this geometry itself, so no live map service is involved
+once a region's data has been fetched once and cached.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -306,6 +311,17 @@ def roads_within_bbox(
     )
 
 
+# index_roads()/roads_within_bbox() only ever touch a road's own
+# `.points` field - nothing Road-specific - so they work unchanged for
+# any points-bearing feature. Area (below) reuses them via these
+# aliases rather than duplicating the same two functions, despite the
+# road-specific names; see map_video.py's areas handling for where
+# this actually gets used (--map-zoom's per-frame area filtering,
+# mirroring how it already filters roads).
+index_features = index_roads
+features_within_bbox = roads_within_bbox
+
+
 def _overpass_query(bbox: BoundingBox) -> str:
     return (
         "[out:json][timeout:60];"
@@ -337,8 +353,16 @@ def _parse_overpass_payload(payload: dict) -> tuple[Road, ...]:
     return tuple(roads)
 
 
-def _fetch_overpass_payload(bbox: BoundingBox, timeout: float) -> dict:
-    query = _overpass_query(bbox)
+def _fetch_overpass_payload(query: str, timeout: float) -> dict:
+    """POST `query` to the Overpass API and return the parsed JSON
+    response. Takes a pre-built query string rather than a bbox (the
+    original shape of this function) so it's shared by both
+    fetch_roads()/load_or_fetch_roads() (see _overpass_query()) and
+    fetch_areas()/load_or_fetch_areas() (see _area_overpass_query()) -
+    the two are otherwise identical POST-and-parse plumbing, differing
+    only in which query string they build.
+    """
+
     request = Request(
         OVERPASS_URL,
         data=f"data={query}".encode("utf-8"),
@@ -371,7 +395,9 @@ def fetch_roads(
     same convention as the rest of beyond-video's external-tool calls.
     """
 
-    return _parse_overpass_payload(_fetch_overpass_payload(bbox, timeout))
+    return _parse_overpass_payload(
+        _fetch_overpass_payload(_overpass_query(bbox), timeout)
+    )
 
 
 def _cache_key(bbox: BoundingBox) -> str:
@@ -405,7 +431,144 @@ def load_or_fetch_roads(
     if cache_path.exists():
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     else:
-        payload = _fetch_overpass_payload(bbox, timeout)
+        payload = _fetch_overpass_payload(_overpass_query(bbox), timeout)
         cache_path.write_text(json.dumps(payload), encoding="utf-8")
 
     return _parse_overpass_payload(payload)
+
+
+# --- Water/park/forest areas (bv-export --map/--map-zoom/--stitch-map's
+# background fill, alongside the road lines above) ---
+#
+# A deliberately separate request/cache path from fetch_roads()/
+# load_or_fetch_roads() above, rather than folding these tags into the
+# same Overpass query - doubles the number of Overpass requests needed
+# for a brand-new area (one for roads, one for areas), but keeps this
+# entirely additive: the existing, already-relied-upon road-fetching
+# code and its cache files are completely untouched by this feature.
+
+# Only *ways* are queried, not multipolygon relations - a real lake or
+# park assembled from several ways with holes (an island in a lake, a
+# courtyard inside a park) needs proper relation/inner-outer-ring
+# handling to render correctly, which this doesn't attempt. Most
+# individual water bodies and parks are a single closed way and render
+# fine; a minority (typically larger/more complex features) are simply
+# skipped rather than rendered wrong.
+_WATER_TAGS = (("natural", "water"), ("waterway", "riverbank"))
+_GREEN_TAGS = (
+    ("leisure", "park"),
+    ("landuse", "forest"),
+    ("landuse", "grass"),
+    ("landuse", "meadow"),
+    ("natural", "wood"),
+)
+
+
+@dataclass(frozen=True)
+class Area:
+    """One OSM closed way tagged as water or a green/park area, as a
+    sequence of (lat, lon) points forming a closed ring (Overpass's own
+    `out geom` closes a way by repeating its first point as its last) -
+    see map_render.py's render_frame()/render_base_map() for how these
+    get filled as polygons.
+
+    `kind` is `"water"` or `"green"` - the only distinction map_render
+    .py's fill color needs; the underlying OSM tag itself (see
+    _WATER_TAGS/_GREEN_TAGS) isn't kept once classified.
+    """
+
+    points: tuple[tuple[float, float], ...]
+    kind: str
+
+
+def _area_kind(tags: dict) -> str | None:
+    for key, value in _WATER_TAGS:
+        if tags.get(key) == value:
+            return "water"
+    for key, value in _GREEN_TAGS:
+        if tags.get(key) == value:
+            return "green"
+    return None
+
+
+def _area_overpass_query(bbox: BoundingBox) -> str:
+    bbox_clause = f"({bbox.min_lat},{bbox.min_lon},{bbox.max_lat},{bbox.max_lon})"
+    tag_clauses = "".join(
+        f'way["{key}"="{value}"]{bbox_clause};'
+        for key, value in (*_WATER_TAGS, *_GREEN_TAGS)
+    )
+    return f"[out:json][timeout:60];({tag_clauses});out geom;"
+
+
+def _parse_area_payload(payload: dict) -> tuple[Area, ...]:
+    areas = []
+
+    for element in payload.get("elements", ()):
+        if element.get("type") != "way":
+            continue
+
+        geometry = element.get("geometry")
+        if not geometry:
+            continue
+
+        kind = _area_kind(element.get("tags") or {})
+        if kind is None:
+            continue
+
+        points = tuple(
+            (point["lat"], point["lon"])
+            for point in geometry
+            if "lat" in point and "lon" in point
+        )
+        # A filled polygon needs at least 3 distinct points - Overpass
+        # geometry for a genuine area way always has more than this in
+        # practice, but a truncated/malformed response shouldn't crash
+        # rendering later.
+        if len(points) >= 3:
+            areas.append(Area(points=points, kind=kind))
+
+    return tuple(areas)
+
+
+def fetch_areas(
+    bbox: BoundingBox, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+) -> tuple[Area, ...]:
+    """Query the Overpass API for water/park/forest area geometry
+    within bbox - see Area's own docstring for exactly which OSM tags
+    count. Same MediaToolError-on-failure convention as fetch_roads().
+    """
+
+    return _parse_area_payload(
+        _fetch_overpass_payload(_area_overpass_query(bbox), timeout)
+    )
+
+
+def _area_cache_key(bbox: BoundingBox) -> str:
+    """Same rounding/format as _cache_key(), prefixed so an area cache
+    file never collides with (or overwrites) a road cache file for the
+    same bbox in the same --target/.osm_cache directory - they hold
+    different Overpass responses for the same coordinates."""
+
+    return f"areas_{_cache_key(bbox)}"
+
+
+def load_or_fetch_areas(
+    bbox: BoundingBox,
+    cache_dir: Path,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[Area, ...]:
+    """Same one-fetch-then-fully-offline caching as load_or_fetch_roads()
+    (see its own docstring), for water/park/forest areas instead of
+    roads."""
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / _area_cache_key(bbox)
+
+    if cache_path.exists():
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    else:
+        payload = _fetch_overpass_payload(_area_overpass_query(bbox), timeout)
+        cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    return _parse_area_payload(payload)

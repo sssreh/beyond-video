@@ -4976,3 +4976,117 @@ Also clarified for Christer: even with the archive elsewhere,
 `/data/archive` (the *container* path every `bv-*` command reads/
 writes), not the real host folder - only the volume mapping changes,
 not what any `bv-*` command is told.
+
+## Water/green-area map rendering (this session)
+
+Christer asked "How much will it costs to get nice background maps" -
+researched live (Mapbox Static Images API: free to 50k requests/month,
+then ~$1/1,000) but found their ToS caps caching at 30 days and bans
+redistributing map imagery in any form, including baked into a kept
+video - a hard blocker for a downloaded, permanently-kept dashcam
+export, not just a cost question. Reported this back; Christer said
+"yes" to scoping richer self-drawn map rendering instead (the existing
+ODbL-geometry architecture `osm_roads.py` already uses, just extended
+to draw more feature types), then picked "Water + parks/green areas"
+as the first piece to build via `AskUserQuestion`, explicitly not
+wanting buildings/road-labels done at the same time.
+
+`osm_roads.py` gained a new `Area` frozen dataclass (`points`, `kind`
+- `"water"` or `"green"`), `_WATER_TAGS`/`_GREEN_TAGS` OSM tag lists
+(`natural=water`, `waterway=riverbank` for water;
+`leisure=park`/`landuse=forest`/`landuse=grass`/`landuse=meadow`/
+`natural=wood` for green), `_area_overpass_query()`,
+`_parse_area_payload()`, `fetch_areas()`, and `load_or_fetch_areas()`
+- a separate, additive Overpass query/cache path from the existing
+road fetch (own cache key prefix `areas_`), deliberately not merged
+into the existing well-tested road query/cache code. Also refactored
+`_fetch_overpass_payload()` to take a pre-built query string instead
+of a bbox, so both the road and area query builders share the same
+HTTP-fetch-and-parse plumbing without duplicating it. `index_roads()`/
+`roads_within_bbox()` only ever touch a road's `.points` attribute, so
+they work unchanged for `Area` too - exposed via generic aliases
+`index_features`/`features_within_bbox` rather than copy-pasting the
+same bbox-overlap filtering logic a second time.
+
+`map_render.py` gained `WATER_COLOR`/`GREEN_COLOR` constants and an
+`areas: tuple[Area, ...] = ()` parameter on both `render_base_map()`
+and `render_frame()` - areas are drawn as filled polygons *before*
+roads in both places, so road lines stay visible on top of a water/
+green fill rather than being drawn under it. Defaults to `()`
+everywhere, so nothing changes for any caller that doesn't pass areas.
+
+`map_video.py`'s `render_map_video()` gained the same `areas` param,
+threaded through: the one-time `render_base_map()` call (static, non
+-zoom mode), a new `indexed_areas` alongside the existing
+`indexed_roads` (same "only worth indexing in zoom mode" reasoning),
+and a new per-frame `frame_areas` alongside `frame_roads` feeding into
+`render_frame()`.
+
+`trip_export.py`'s `_load_trip_roads()` now returns a 3-tuple `(bbox,
+roads, areas)` instead of 2. A failed *road* fetch still aborts the
+whole map phase with a "map data: ..." warning, unchanged - roads are
+load-bearing, no roads means no point drawing a map at all. A failed
+*area* fetch is handled separately and degrades independently:
+`areas` falls back to `()` (renders exactly as before this feature
+existed) with its own "map areas: ..." warning, without touching
+`bbox`/`roads` or aborting anything - water/green fill is treated as
+purely cosmetic, so losing it shouldn't cost the rest of the map.
+`_render_map_variant()` and the `export_trip()` call site (both the
+`--map` and `--map-zoom` renders, plus a new `stitch_map_areas`
+alongside the existing `stitch_map_roads` for `--stitch-map`) all
+thread `areas` through to `render_map_video()`.
+
+`stitch.py`'s `stitch_cameras()`/`_stack()` gained a `map_areas: tuple
+[Area, ...] = ()` parameter alongside `map_roads`, and
+`_render_map_panel()` gained an `areas` parameter threaded to both its
+`render_map_video()` calls (zoom mode and static mode).
+
+No new CLI flag - water/green areas render automatically wherever
+roads already render (`--map`, `--map-zoom`, `--stitch-map`), same as
+Christer's own framing of the feature ("nicer background maps", not a
+new opt-in switch).
+
+Verified with direct sandbox Python execution (no pytest/network
+available here, same limitation as this session's earlier work):
+
+1. `osm_roads.py` in isolation - built a real bbox, confirmed
+   `_area_overpass_query()`'s output is valid Overpass QL combining
+   all 7 water/green tag clauses; fed a synthetic 3-way payload
+   (water, park, and an unrelated highway way) through
+   `_parse_area_payload()` and confirmed exactly the water/green ways
+   became `Area` objects with the right `kind` and the highway was
+   excluded; confirmed `index_features()`/`features_within_bbox()`
+   correctly filter by bbox overlap.
+2. `map_render.py` - rendered a 400x400 base map with one water and
+   one green polygon plus a road, and sampled actual pixel colors:
+   confirmed the water/green fills land exactly on `WATER_COLOR`/
+   `GREEN_COLOR`, background elsewhere is untouched, and both
+   `render_frame()` code paths (reusing a `base_image` that already
+   has areas baked in, and drawing areas fresh with no `base_image`)
+   produce the same correct colors.
+3. `map_video.py` - ran `render_map_video()` for real (monkeypatching
+   only `encode_frame_sequence` to avoid needing ffmpeg in this
+   sandbox) in both static and `zoom_meters` (follow-camera) mode,
+   captured an actual rendered frame PNG from the static-mode run and
+   confirmed real water/green pixel colors in it; confirmed zoom mode
+   (which exercises `index_features()`/`features_within_bbox()`
+   per-frame filtering) completes without error.
+4. `trip_export.py` - called `_load_trip_roads()` directly with
+   `load_or_fetch_roads`/`load_or_fetch_areas` mocked three ways:
+   both succeed (3-tuple returned, no warnings), roads fail (whole
+   thing degrades to `(None, None, None)`, one "map data" warning),
+   and areas fail while roads succeed (bbox/roads still returned,
+   `areas` falls back to `()`, one separate "map areas" warning) -
+   all three matched the intended degrade behavior exactly.
+5. `stitch.py` - confirmed via `inspect.signature()` that
+   `stitch_cameras()`/`_stack()`/`_render_map_panel()` all carry the
+   new `areas`/`map_areas` parameters, then patched `render_map_video`
+   inside `_render_map_panel()` and confirmed the `areas` kwarg it was
+   called with actually reached `render_map_video()` unchanged.
+
+Not yet run through the project's own `pytest` suite - no network
+access in this sandbox to install it, same standing limitation noted
+throughout this session's other work. Worth a real `pytest` pass on
+Christer's own machine, along with a real `bv-export --map` run
+against his actual archive to see the water/green fill in a real
+rendered map.mp4, before considering this fully done.

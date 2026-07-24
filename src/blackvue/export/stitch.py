@@ -31,6 +31,7 @@ from .media import concatenate_media
 from .media import encode_with_nvenc_fallback
 from .mirror_icon import MirrorFrame
 from .mirror_icon import load_mirror_frame
+from .osm_roads import Area
 from .osm_roads import Road
 from .osm_roads import aspect_ratio_of
 from .osm_roads import bounding_box_for_fixes
@@ -425,6 +426,7 @@ def stitch_cameras(
     map_zoom_meters: float | None = None,
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
+    map_areas: tuple[Area, ...] = (),
     map_icon: Path | None = None,
     map_video_start=None,
     map_video_duration_seconds: float | None = None,
@@ -626,10 +628,12 @@ def stitch_cameras(
     `map_zoom_meters` is required when `map_mode == "zoom"` (reused as
     the panel's
     follow-camera radius - normally whatever --map-zoom METERS was
-    also given). `map_fixes`/`map_roads` are the trip's already-loaded
-    GPS fixes/OSM road geometry (see trip_export.py's
-    _load_trip_roads()) - `map_mode` is a no-op if `map_fixes` is
-    empty. `map_icon` is the same custom position-marker image
+    also given). `map_fixes`/`map_roads`/`map_areas` are the trip's
+    already-loaded GPS fixes/OSM road geometry/water-green-area
+    geometry (see trip_export.py's _load_trip_roads()) - `map_mode` is
+    a no-op if `map_fixes` is empty; `map_areas` defaults to empty and
+    is purely cosmetic (see map_render.py). `map_icon` is the same
+    custom position-marker image
     --map/--map-zoom accept. Any map-panel problem (no GPS data, no
     default side for an unrecognized layout, a missing zoom radius, an
     image-load failure) degrades to a `warnings` entry and no panel,
@@ -712,7 +716,7 @@ def stitch_cameras(
             mirror_pan_y=mirror_pan_y, mirror_icon=mirror_icon,
             map_mode=map_mode, map_side=map_side, map_size=map_size,
             map_zoom_meters=map_zoom_meters, map_fixes=map_fixes,
-            map_roads=map_roads, map_icon=map_icon,
+            map_roads=map_roads, map_areas=map_areas, map_icon=map_icon,
             map_video_start=map_video_start,
             map_video_duration_seconds=map_video_duration_seconds,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
@@ -1265,6 +1269,7 @@ def _render_map_panel(
     roads: tuple[Road, ...],
     destination: Path,
     *,
+    areas: tuple[Area, ...] = (),
     width: int,
     height: int,
     zoom_meters: float | None,
@@ -1310,6 +1315,7 @@ def _render_map_panel(
             return None
         return render_map_video(
             fixes, roads, bbox, destination,
+            areas=areas,
             marker_image_path=marker_image_path,
             zoom_meters=zoom_meters,
             width=width, height=height,
@@ -1322,6 +1328,7 @@ def _render_map_panel(
         return None
     return render_map_video(
         fixes, roads, bbox, destination,
+        areas=areas,
         marker_image_path=marker_image_path,
         width=width, height=height,
         video_start=video_start,
@@ -1597,6 +1604,7 @@ def _stack(
     map_zoom_meters: float | None = None,
     map_fixes: tuple[GpsFix, ...] = (),
     map_roads: tuple[Road, ...] = (),
+    map_areas: tuple[Area, ...] = (),
     map_icon: Path | None = None,
     map_video_start=None,
     map_video_duration_seconds: float | None = None,
@@ -2262,6 +2270,7 @@ def _stack(
                 try:
                     rendered = _render_map_panel(
                         map_mode, map_fixes, map_roads, panel_path,
+                        areas=map_areas,
                         width=panel_size[0], height=panel_size[1],
                         zoom_meters=map_zoom_meters,
                         marker_image_path=map_icon,
