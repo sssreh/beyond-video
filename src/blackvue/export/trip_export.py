@@ -651,9 +651,13 @@ def export_trip(
     write_trip_info(
         info_path,
         duration=trip.duration,
+        start_timestamp=trip.start_timestamp,
+        end_timestamp=trip.end_timestamp,
         stats=stats,
         start_address=start_address,
         end_address=end_address,
+        has_parking_footage=trip.has_parking_footage,
+        total_size_bytes=trip.total_size,
     )
     log.step("wrote trip_info.txt")
 

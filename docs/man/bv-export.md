@@ -35,7 +35,7 @@ A trip with only one camera falls back to a plain copy of whichever one exists, 
 
 Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never starts, extends, or belongs to a trip on its own; it's simply not part of any trip's export.
 
-Every trip also gets a `trip_info.txt` summary - duration always, and (whenever the trip has GPS data) distance, average/max speed, and a reverse-geocoded address for the first and last GPS position. This isn't behind a flag: it's automatic, the same way `--map`'s road data is automatically fetched once requested. The address lookup uses OpenStreetMap's Nominatim service (one request per trip's start, one for its end, cached under `--target/.osm_cache` afterward like road/area data) - a network failure there only drops the address lines with a warning, never the rest of the export.
+Every trip also gets a `trip_info.txt` summary - start/end time, duration, total size, and whether Parking-mode footage is included always, and (whenever the trip has GPS data) distance, average/max speed, moving/idle time, and a reverse-geocoded address for the first and last GPS position. This isn't behind a flag: it's automatic, the same way `--map`'s road data is automatically fetched once requested. The address lookup uses OpenStreetMap's Nominatim service (one request per trip's start, one for its end, cached under `--target/.osm_cache` afterward like road/area data) - a network failure there only drops the address lines with a warning, never the rest of the export.
 
 ## ARGUMENTS
 
@@ -159,7 +159,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 | `trip.3gf` | always, if g-sensor data exists |
 | `trip.srt`, `trip.lrc` | always, if transcript data exists |
 | `trip.log` | always - the exact command line used, trip membership reasoning, and (with `--debug`) phase timings |
-| `trip_info.txt` | always - duration, and (if GPS data exists) distance, average/max speed, and a reverse-geocoded start/end address |
+| `trip_info.txt` | always - start/end time, duration, total on-disk size, whether Parking-mode footage is included, and (if GPS data exists) distance, average/max speed, moving/idle time, and a reverse-geocoded start/end address |
 | `map.mp4` | `--map` |
 | `map_zoom_METERSm.mp4` | `--map-zoom` |
 | `gsensor.mp4` | `--gsensor-video` |
