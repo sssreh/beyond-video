@@ -94,6 +94,25 @@ class Trip:
         return self.end_timestamp - self.start_timestamp
 
     @property
+    def total_size(self) -> int:
+        """Combined byte size of every asset (video/audio/GPS/g-sensor/
+        etc.) across every recording in the trip - `Recording.size` is
+        already accumulated per-asset by ArchiveReader as it reads the
+        archive, so this is just a sum, not a fresh filesystem scan."""
+
+        return sum(recording.size for recording in self.recordings)
+
+    @property
+    def has_parking_footage(self) -> bool:
+        """Whether any recording in the trip is Parking-mode
+        (RecordingId.kind == "P") - a normal-driving trip is the
+        common case, so this is meant to flag the exceptional one
+        rather than be shown unconditionally either way (see
+        trip_info.py's own use of it)."""
+
+        return any(recording.id.is_parking for recording in self.recordings)
+
+    @property
     def label(self) -> str:
         """Return the trip_<start>_<end> label used both in bv-ls's
         --trips listing and (as a suffix, optionally prefixed) in

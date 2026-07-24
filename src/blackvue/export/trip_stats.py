@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass
 
 from ..telemetry.gps_reader import GpsFix
+from ..telemetry.movement import DEFAULT_SPEED_THRESHOLD_KMH
 
 # Mean Earth radius in meters - the same well-known value
 # osm_roads.py's own (module-private) constant uses for its bounding
@@ -29,6 +30,12 @@ class TripStats:
     distance_km: float
     average_speed_kmh: float | None
     max_speed_kmh: float | None
+    # Optional (default None, not 0.0) so any existing caller
+    # constructing a TripStats without these still works unchanged -
+    # see compute_trip_stats()'s own docstring for what "no speed data
+    # at all" (None) means vs. a genuine zero.
+    moving_seconds: float | None = None
+    idle_seconds: float | None = None
 
 
 def _haversine_distance_meters(
@@ -70,6 +77,20 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     reading. Both are None if no fix in the trip has a `speed_kmh`
     reading at all (some GPS sentence types don't carry one).
 
+    `moving_seconds`/`idle_seconds` split the time between consecutive
+    positioned fixes into "the vehicle was moving" vs. "it wasn't",
+    using the same DEFAULT_SPEED_THRESHOLD_KMH (5.0) cutoff
+    telemetry/movement.py already uses to decide whether GPS evidence
+    shows movement at a trip-gap edge - reused here rather than
+    picking a new, unrelated number. Each gap between two consecutive
+    fixes is classified by the mean of the two fixes' own speed
+    readings (whichever of the two actually has one; skipped
+    entirely - counted toward neither bucket - if neither fix has a
+    speed reading, the same "unknown, not zero" handling
+    average_speed_kmh/max_speed_kmh already use). Both are None under
+    the same condition average_speed_kmh/max_speed_kmh are None - no
+    speed data at all anywhere in the trip.
+
     Returns None if there are fewer than two valid, positioned fixes -
     not enough to measure any distance from, the same "nothing to
     work with" convention render_map_video() and write_gpx() already
@@ -86,11 +107,31 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
         return None
 
     total_meters = 0.0
+    moving_seconds = 0.0
+    idle_seconds = 0.0
+    any_speed_data = False
+
     for previous, current in zip(positioned, positioned[1:]):
         total_meters += _haversine_distance_meters(
             previous.latitude, previous.longitude,
             current.latitude, current.longitude,
         )
+
+        segment_speeds = [
+            speed
+            for speed in (previous.speed_kmh, current.speed_kmh)
+            if speed is not None
+        ]
+        if not segment_speeds:
+            continue
+        any_speed_data = True
+
+        elapsed_seconds = (current.timestamp - previous.timestamp).total_seconds()
+        segment_speed_kmh = sum(segment_speeds) / len(segment_speeds)
+        if segment_speed_kmh < DEFAULT_SPEED_THRESHOLD_KMH:
+            idle_seconds += elapsed_seconds
+        else:
+            moving_seconds += elapsed_seconds
 
     speeds = [fix.speed_kmh for fix in positioned if fix.speed_kmh is not None]
     average_speed_kmh = sum(speeds) / len(speeds) if speeds else None
@@ -100,4 +141,6 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
         distance_km=total_meters / 1000,
         average_speed_kmh=average_speed_kmh,
         max_speed_kmh=max_speed_kmh,
+        moving_seconds=moving_seconds if any_speed_data else None,
+        idle_seconds=idle_seconds if any_speed_data else None,
     )

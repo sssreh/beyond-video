@@ -103,4 +103,45 @@ def test_trip_works_against_a_real_recording_not_just_the_fake():
     assert trip.start_timestamp == datetime(2026, 7, 15, 13, 32, 55)
     assert trip.end_timestamp == datetime(2026, 7, 15, 13, 34, 55)
     assert trip.label == "trip_20260715_133255_20260715_133455"
+
+
+def test_trip_total_size_sums_every_recordings_own_size():
+    # total_size/has_parking_footage both read real Recording/
+    # RecordingId attributes (.size, .id.is_parking) FakeRecording
+    # above doesn't define - real Recording objects only, same
+    # reasoning as test_trip_works_against_a_real_recording_not_just_
+    # the_fake above.
+    first = Recording(id=RecordingId("20260715_133255_N"))
+    first.add_size(1000)
+    first.add_size(500)
+    last = Recording(id=RecordingId("20260715_133455_N"))
+    last.add_size(2500)
+
+    trip = Trip((first, last))
+
+    assert trip.total_size == 4000
+
+
+def test_trip_total_size_is_zero_for_recordings_with_no_known_size():
+    trip = Trip((Recording(id=RecordingId("20260715_133255_N")),))
+
+    assert trip.total_size == 0
+
+
+def test_trip_has_parking_footage_true_when_any_recording_is_parking_mode():
+    normal = Recording(id=RecordingId("20260715_133255_N"))
+    parking = Recording(id=RecordingId("20260715_133455_P"))
+
+    trip = Trip((normal, parking))
+
+    assert trip.has_parking_footage
+
+
+def test_trip_has_parking_footage_false_for_an_all_normal_trip():
+    trip = Trip((
+        Recording(id=RecordingId("20260715_133255_N")),
+        Recording(id=RecordingId("20260715_133455_E")),
+    ))
+
+    assert not trip.has_parking_footage
     
