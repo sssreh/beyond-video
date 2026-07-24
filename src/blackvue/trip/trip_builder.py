@@ -192,7 +192,12 @@ class TripBuilder:
                         "max_gap+gap_tolerance threshold, and no movement "
                         "evidence bridged it"
                     )
-                trips.append(Trip(tuple(current_trip)))
+                trips.append(
+                    Trip(
+                        tuple(current_trip),
+                        recording_duration=self.recording_duration,
+                    )
+                )
                 current_trip = [recording]
             else:
                 if reasons is not None:
@@ -211,7 +216,9 @@ class TripBuilder:
                         )
                 current_trip.append(recording)
 
-        trips.append(Trip(tuple(current_trip)))
+        trips.append(
+            Trip(tuple(current_trip), recording_duration=self.recording_duration)
+        )
 
         return trips
 
