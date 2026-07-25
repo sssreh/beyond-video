@@ -79,6 +79,8 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 | `--map-icon PATH` | Use a custom image (ideally a transparent PNG pointing "up") as the position marker. Applies to `--map` and `--map-zoom` alike. Default: a bundled red car icon - pass the literal value `none` to use a plain rotating arrow instead, or a path to use your own image. |
 | `--map-zoom [METERS]` | Render `map_zoom_METERSm.mp4`: a scrolling "follow camera" view, real-world half-width `METERS` (default 120 if given with no value). Independent of `--map` - works with or without it. |
 
+Both `map.mp4` and `map_zoom_METERSm.mp4` show a small satellite badge in the top-right corner whenever the current frame's position comes from a real GPS fix. It's off during a leading or trailing gap in GPS coverage (e.g. no signal yet at the very start of a trip), when the position marker is frozen at the nearest known fix instead of tracking a live one - not (yet) shown for a signal gap in the *middle* of a trip. Not behind a flag - automatic whenever either map is rendered.
+
 ### G-sensor overlay video
 
 | Option | Description |

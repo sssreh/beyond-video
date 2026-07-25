@@ -311,6 +311,12 @@ def render_map_video(
     g-sensor-only "trip"), or the real video's own duration couldn't
     be probed.
 
+    A small satellite badge (see render_frame()'s `show_gps_badge`)
+    appears in the top-right corner of every frame whose timestamp
+    falls within the real fixes' own range - i.e. whenever the
+    position marker is a real, live GPS fix rather than frozen at the
+    first/last fix during a leading/trailing gap like the one above.
+
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - the same "nothing
     to work with" convention export_trip()'s other outputs use.
@@ -409,6 +415,18 @@ def render_map_video(
             )
             position = (lat, lon)
 
+            # "Live" means this frame's timestamp falls within the
+            # real fixes' own range, so the position above came from
+            # actually interpolating between two of them - as opposed
+            # to being clamped to the nearest fix because the frame is
+            # before the first (or after the last) one, which is what
+            # video_start/video_duration_seconds deliberately let
+            # happen for a leading/trailing GPS gap (see this
+            # function's own docstring). Doesn't (yet) detect a long
+            # gap *between* two real fixes mid-trip - see the badge's
+            # own WORKING_CONTEXT.md entry for that scope note.
+            live_fix = positioned[0].timestamp <= timestamp <= positioned[-1].timestamp
+
             frame_bbox = (
                 bounding_box_around_point(
                     lat, lon, zoom_meters, aspect_ratio=zoom_aspect_ratio
@@ -437,6 +455,7 @@ def render_map_video(
                 heading=course,
                 marker_image=marker_image,
                 timestamp_text=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                show_gps_badge=live_fix,
                 width=width,
                 height=height,
                 base_image=base_image,

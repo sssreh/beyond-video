@@ -745,6 +745,68 @@ def test_render_map_video_video_start_clamps_position_during_the_leading_gap(
     assert captured[0] == (59.300, 18.000)
 
 
+def test_render_map_video_omits_the_gps_badge_during_the_leading_gap(
+    tmp_path, monkeypatch
+):
+    # Same leading-gap setup as test_render_map_video_video_start_
+    # clamps_position_during_the_leading_gap above: frame 0 is before
+    # the first real fix, so its position is clamped/frozen - the
+    # satellite badge shouldn't claim that's a live fix.
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("show_gps_badge"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    video_start = datetime(2026, 7, 15, 13, 0, 0)
+    fixes = (_fix(3, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
+        video_start=video_start, video_duration_seconds=4.0,
+    )
+
+    # Frame 0 (elapsed=0s) is before the first real fix (at 3s) -
+    # badge should be off. A later frame, once real fixes are covered,
+    # should have it on.
+    assert captured[0] is False
+    assert any(shown is True for shown in captured)
+
+
+def test_render_map_video_shows_the_gps_badge_for_every_frame_without_a_gap(
+    tmp_path, monkeypatch
+):
+    # No video_start/video_duration_seconds given, so every frame's
+    # timestamp falls within the fixes' own range by construction -
+    # the badge should be on for every single frame.
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("show_gps_badge"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert len(captured) >= 2
+    assert all(shown is True for shown in captured)
+
+
 def test_render_map_video_video_duration_seconds_extends_past_a_trailing_gap(
     tmp_path
 ):

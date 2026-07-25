@@ -51,6 +51,17 @@ MARKER_FILL_COLOR = (230, 57, 70)
 MARKER_OUTLINE_COLOR = (255, 255, 255)
 TEXT_COLOR = (40, 40, 40)
 
+# The "live GPS fix" badge (see render_map_video()'s `show_gps_badge`
+# handling in map_video.py, and _draw_gps_badge() below) - a small
+# satellite glyph on a translucent dark circle, top-right corner, on
+# whenever the current frame's position comes from a real bracketing
+# fix rather than being frozen at the nearest known one because the
+# frame's timestamp falls before the first (or after the last) fix.
+GPS_BADGE_BG_COLOR = (20, 20, 20, 170)
+GPS_BADGE_ICON_COLOR = (99, 187, 108, 255)
+GPS_BADGE_RADIUS_PX = 11
+GPS_BADGE_MARGIN_PX = 10
+
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 640
 DEFAULT_MARGIN_PX = 24
@@ -159,6 +170,76 @@ def _paste_marker_image(
     image.paste(rotated, (x, y), rotated)
 
 
+def _draw_gps_badge(
+    image: Image.Image,
+    width: int,
+    margin: int = GPS_BADGE_MARGIN_PX,
+) -> None:
+    """Draw a small satellite badge in the frame's top-right corner -
+    render_frame()'s `show_gps_badge` signal that this frame's
+    position comes from a real, bracketing GPS fix rather than being
+    frozen at the nearest known one (see render_map_video()'s
+    `live_fix` check in map_video.py). Christer asked for this after
+    the leading-gap trip.gpx bug (see gps_reader.py) made it clear a
+    frozen position and a real one look identical on the rendered map
+    otherwise.
+
+    Drawn as a small RGBA image with its own alpha channel, then
+    pasted using itself as the mask - same compositing approach
+    _paste_marker_image() already uses for a custom --map-icon, so a
+    translucent circular background blends over whatever roads/route
+    happen to be underneath instead of hard-cutting a solid box.
+    """
+
+    diameter = GPS_BADGE_RADIUS_PX * 2
+    badge = Image.new("RGBA", (diameter, diameter), (0, 0, 0, 0))
+    badge_draw = ImageDraw.Draw(badge)
+    badge_draw.ellipse((0, 0, diameter - 1, diameter - 1), fill=GPS_BADGE_BG_COLOR)
+
+    cx = cy = GPS_BADGE_RADIUS_PX
+    body_half = 2.5
+    panel_w, panel_half = 3, 3.5
+
+    # Satellite body (small square) ...
+    badge_draw.rectangle(
+        (cx - body_half, cy - body_half, cx + body_half, cy + body_half),
+        fill=GPS_BADGE_ICON_COLOR,
+    )
+    # ... two solar panels either side ...
+    badge_draw.rectangle(
+        (
+            cx - body_half - panel_w - 1, cy - panel_half,
+            cx - body_half - 1, cy + panel_half,
+        ),
+        fill=GPS_BADGE_ICON_COLOR,
+    )
+    badge_draw.rectangle(
+        (
+            cx + body_half + 1, cy - panel_half,
+            cx + body_half + panel_w + 1, cy + panel_half,
+        ),
+        fill=GPS_BADGE_ICON_COLOR,
+    )
+    # ... and a short antenna with a signal dot at its tip, angled up
+    # toward the top-right corner of the badge.
+    badge_draw.line(
+        (cx + body_half, cy - body_half, cx + body_half + 4, cy - body_half - 4),
+        fill=GPS_BADGE_ICON_COLOR,
+        width=1,
+    )
+    badge_draw.ellipse(
+        (
+            cx + body_half + 3, cy - body_half - 6,
+            cx + body_half + 5, cy - body_half - 4,
+        ),
+        fill=GPS_BADGE_ICON_COLOR,
+    )
+
+    x = width - margin - diameter
+    y = margin
+    image.paste(badge, (x, y), badge)
+
+
 def render_base_map(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
@@ -219,6 +300,7 @@ def render_frame(
     heading: float | None = None,
     marker_image: Image.Image | None = None,
     timestamp_text: str | None = None,
+    show_gps_badge: bool = False,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
@@ -234,6 +316,12 @@ def render_frame(
     instead, or a plain dot when neither is available (e.g. a
     single-fix/stationary trip with no course data to point an arrow
     in).
+
+    `show_gps_badge`, when true, draws a small satellite badge in the
+    top-right corner (see _draw_gps_badge()) - render_map_video() sets
+    this per frame based on whether the frame's position comes from a
+    real bracketing fix or is frozen at the nearest known one because
+    the timestamp falls outside every fix's own range.
 
     `base_image`, if given, is used as the starting canvas (copied, not
     mutated) instead of a fresh background with `roads`/`areas` drawn
@@ -304,6 +392,9 @@ def render_frame(
             font=font,
             spacing=6,
         )
+
+    if show_gps_badge:
+        _draw_gps_badge(image, width)
 
     return image
 

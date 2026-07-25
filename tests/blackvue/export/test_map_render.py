@@ -173,6 +173,56 @@ def test_render_frame_with_base_image_does_not_mutate_it():
     assert list(base.getdata()) == base_pixels_before
 
 
+def test_render_frame_draws_a_gps_badge_when_requested():
+    without_badge = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02)
+    )
+    with_badge = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        show_gps_badge=True,
+    )
+
+    assert list(without_badge.getdata()) != list(with_badge.getdata())
+
+
+def test_render_frame_omits_the_gps_badge_by_default():
+    default = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02)
+    )
+    explicit_false = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        show_gps_badge=False,
+    )
+
+    assert list(default.getdata()) == list(explicit_false.getdata())
+
+
+def test_render_frame_draws_the_gps_badge_in_the_top_right_corner():
+    from blackvue.export.map_render import GPS_BADGE_MARGIN_PX
+    from blackvue.export.map_render import GPS_BADGE_RADIUS_PX
+
+    blank = render_frame(_BBOX, roads=(), route_points=(), position=None)
+    with_badge = render_frame(
+        _BBOX, roads=(), route_points=(), position=None, show_gps_badge=True,
+    )
+
+    # The badge sits at a fixed top-right offset, independent of the
+    # route/marker (position=None here) - its own center pixel (well
+    # inside the circular background, unlike a corner of its bounding
+    # box) should have changed, while the opposite (bottom-left)
+    # corner, well outside the badge, should not have.
+    diameter = GPS_BADGE_RADIUS_PX * 2
+    badge_center = (
+        640 - GPS_BADGE_MARGIN_PX - GPS_BADGE_RADIUS_PX,
+        GPS_BADGE_MARGIN_PX + GPS_BADGE_RADIUS_PX,
+    )
+    far_corner_pixel = (5, 635)
+
+    assert diameter > 0  # sanity: badge has a real size to center within
+    assert blank.getpixel(badge_center) != with_badge.getpixel(badge_center)
+    assert blank.getpixel(far_corner_pixel) == with_badge.getpixel(far_corner_pixel)
+
+
 def test_load_font_only_opens_the_font_file_once(monkeypatch):
     monkeypatch.setattr(map_render_module, "_CACHED_FONT", None)
 
