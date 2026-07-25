@@ -69,8 +69,16 @@ DEFAULT_MAP_ICON_PATH = Path(__file__).parent / "assets" / "red_car.png"
 # position between those two fixes is a straight-line guess across a
 # real signal-loss gap (a tunnel, underground parking), not a live
 # fix, even though both of the fixes bracketing it are individually
-# real - confirmed with Christer at 10 seconds.
-MAX_LIVE_FIX_GAP_SECONDS = 10.0
+# real. Originally set at 10 seconds; tightened to 3 after checking
+# real inter-fix gaps across six of Christer's own raw .gps files
+# (1,078 consecutive gaps, ~1Hz nominal rate): the widest real gap
+# seen was 1.248s, so 3s catches a real outage promptly with zero
+# false positives against that sample - a 1s threshold, by contrast,
+# would have flagged ~41% of those same real, healthy gaps as stale
+# (normal receiver jitter routinely nudges a "1 second" gap to
+# 1.0-1.25s), which would make the badge flicker during ordinary
+# driving rather than actually mean something.
+MAX_LIVE_FIX_GAP_SECONDS = 3.0
 
 
 def _valid_positioned_fixes(fixes: tuple[GpsFix, ...]) -> tuple[GpsFix, ...]:

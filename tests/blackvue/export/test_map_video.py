@@ -760,9 +760,9 @@ def test_is_live_fix_false_after_the_last_fix():
 
 
 def test_is_live_fix_true_between_two_closely_spaced_fixes():
-    fixes = (_fix(0, 59.30, 18.00), _fix(5, 59.31, 18.02))
+    fixes = (_fix(0, 59.30, 18.00), _fix(2, 59.31, 18.02))
 
-    assert _is_live_fix(fixes, fixes[0].timestamp + timedelta(seconds=2), 0) is True
+    assert _is_live_fix(fixes, fixes[0].timestamp + timedelta(seconds=1), 0) is True
 
 
 def test_is_live_fix_false_across_a_signal_loss_gap_mid_trip():
@@ -883,7 +883,7 @@ def test_render_map_video_shows_the_gps_badge_for_every_frame_without_a_gap(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
 
-    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    fixes = (_fix(0, 59.300, 18.000), _fix(2, 59.310, 18.020))
     bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03)
 
     render_map_video(
