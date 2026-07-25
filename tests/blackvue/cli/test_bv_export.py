@@ -1136,8 +1136,11 @@ def test_main_accepts_rearview_mirror_as_a_stitch_layout(tmp_path, monkeypatch):
 def test_main_uses_the_default_stitch_mirror_size_when_not_given(
     tmp_path, monkeypatch
 ):
-    from blackvue.export.stitch import DEFAULT_MIRROR_SIZE_PERCENT
-
+    # bv-export's CLI deliberately overrides stitch.py's own plain/neutral
+    # DEFAULT_MIRROR_SIZE_PERCENT with its own opinionated
+    # _DEFAULT_CLI_MIRROR_SIZE_PERCENT (see that constant's own comment,
+    # task #89) - main()'s own default has to match the CLI's constant,
+    # not the library's.
     captured = {}
 
     def _fake_bv_export(**kwargs):
@@ -1152,7 +1155,10 @@ def test_main_uses_the_default_stitch_mirror_size_when_not_given(
 
     main(["--target", str(target), str(archive), "--stitch"])
 
-    assert captured["stitch_mirror_size"] == DEFAULT_MIRROR_SIZE_PERCENT
+    assert (
+        captured["stitch_mirror_size"]
+        == bv_export_module._DEFAULT_CLI_MIRROR_SIZE_PERCENT
+    )
 
 
 def test_main_parses_an_explicit_stitch_mirror_size(tmp_path, monkeypatch):
@@ -1248,8 +1254,9 @@ def test_main_rejects_an_out_of_range_stitch_mirror_radius(tmp_path):
 def test_main_uses_the_default_stitch_mirror_zoom_when_not_given(
     tmp_path, monkeypatch
 ):
-    from blackvue.export.stitch import DEFAULT_MIRROR_ZOOM_PERCENT
-
+    # Same reasoning as the mirror-size test above - bv-export's CLI
+    # overrides stitch.py's neutral DEFAULT_MIRROR_ZOOM_PERCENT with its
+    # own _DEFAULT_CLI_MIRROR_ZOOM_PERCENT (task #89).
     captured = {}
 
     def _fake_bv_export(**kwargs):
@@ -1264,7 +1271,10 @@ def test_main_uses_the_default_stitch_mirror_zoom_when_not_given(
 
     main(["--target", str(target), str(archive), "--stitch"])
 
-    assert captured["stitch_mirror_zoom"] == DEFAULT_MIRROR_ZOOM_PERCENT
+    assert (
+        captured["stitch_mirror_zoom"]
+        == bv_export_module._DEFAULT_CLI_MIRROR_ZOOM_PERCENT
+    )
 
 
 def test_main_parses_an_explicit_stitch_mirror_zoom(tmp_path, monkeypatch):
@@ -1304,8 +1314,13 @@ def test_main_rejects_an_out_of_range_stitch_mirror_zoom(tmp_path):
 def test_main_uses_the_default_stitch_mirror_pan_when_not_given(
     tmp_path, monkeypatch
 ):
+    # pan_x is unchanged from stitch.py's own neutral default (Christer
+    # only asked for pan_y to change - see
+    # _DEFAULT_CLI_MIRROR_PAN_Y_PERCENT's own comment), so it's still
+    # checked against the library constant; pan_y is bv-export's own
+    # opinionated CLI default (task #89) and has to be checked against
+    # that instead.
     from blackvue.export.stitch import DEFAULT_MIRROR_PAN_X_PERCENT
-    from blackvue.export.stitch import DEFAULT_MIRROR_PAN_Y_PERCENT
 
     captured = {}
 
@@ -1322,7 +1337,10 @@ def test_main_uses_the_default_stitch_mirror_pan_when_not_given(
     main(["--target", str(target), str(archive), "--stitch"])
 
     assert captured["stitch_mirror_pan_x"] == DEFAULT_MIRROR_PAN_X_PERCENT
-    assert captured["stitch_mirror_pan_y"] == DEFAULT_MIRROR_PAN_Y_PERCENT
+    assert (
+        captured["stitch_mirror_pan_y"]
+        == bv_export_module._DEFAULT_CLI_MIRROR_PAN_Y_PERCENT
+    )
 
 
 def test_main_parses_explicit_stitch_mirror_pan_x_and_pan_y(
