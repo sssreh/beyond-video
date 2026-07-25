@@ -9,7 +9,8 @@
 ```
 bv-export --target DIR [--prefix PREFIX]
           [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-          [--max-gap MINUTES] [--movement] [--no-duration] [--gap-tolerance SECONDS]
+          [--max-gap MINUTES] [--movement] [--no-duration] [--duration-heal-archive]
+          [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
           [--gsensor-video]
@@ -34,7 +35,9 @@ bv-export --target DIR [--prefix PREFIX]
 
 A trip with only one camera falls back to a plain copy of whichever one exists, ignoring every `--stitch-*`/`--map-*` flag.
 
-Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here. `--max-parking-duration` is `bv-export`-only for now - `bv-ls --trips`'s preview doesn't yet apply it, so a trip split it causes won't show up there ahead of time. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never starts, extends, or belongs to a trip on its own; it's simply not part of any trip's export.
+Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here. `--max-parking-duration` and `--duration-heal-archive` are `bv-export`-only for now - `bv-ls --trips`'s preview doesn't apply either, so a trip split `--max-parking-duration` causes, or a `.duration.txt` `--duration-heal-archive` would have written, won't show up there ahead of time. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never starts, extends, or belongs to a trip on its own; it's simply not part of any trip's export.
+
+Trip detection itself reads whatever `.duration.txt` files already exist but, by default, doesn't compute a missing one - only the recordings belonging to a trip actually being exported this run get a missing `.duration.txt` computed and written, right before that trip's own overwrite prompt is resolved, so no single trip's prompt ever waits on unrelated recordings elsewhere in the archive. The trade-off: a recording that's never been probed yet, outside the trip(s) being exported this run, could still occasionally land in the wrong trip (the old bare-start-timestamp gap calculation) until it's actually been exported once, or `--duration-heal-archive` is used to heal the whole archive up front instead.
 
 Every trip also gets a `trip_info.txt` summary - start/end time, duration, total size, and whether Parking-mode footage is included always, and (whenever the trip has GPS data) distance, average/max speed, moving/idle time, and a reverse-geocoded address for the first and last GPS position. This isn't behind a flag: it's automatic, the same way `--map`'s road data is automatically fetched once requested. The address lookup uses OpenStreetMap's Nominatim service (one request per trip's start, one for its end, cached under `--target/.osm_cache` afterward like road/area data) - a network failure there only drops the address lines with a warning, never the rest of the export.
 
@@ -67,7 +70,8 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 |---|---|
 | `--max-gap MINUTES` | Largest gap between two recordings still counted as the same trip. Default: 5. |
 | `--movement` | Bridge a gap over `--max-gap` using GPS/g-sensor movement evidence. **Off by default** - unbounded bridging risk, see `bv-ls(1)`. |
-| `--no-duration` | Measure gaps from start timestamps only, ignoring `.duration.txt`. |
+| `--no-duration` | Measure gaps from start timestamps only, ignoring `.duration.txt` entirely - no reading, computing, or writing it. |
+| `--duration-heal-archive` | Self-heal a missing `.duration.txt` for every recording in the archive during trip detection, not just the trip(s) being exported this run (the default - see below). Real, possibly long, one-time ffprobe cost before the first overwrite prompt can appear; trades that for maximum trip-detection accuracy up front. Rejected together with `--no-duration`. |
 | `--gap-tolerance SECONDS` | Fixed noise margin added on top of `--max-gap`. Default: 10. |
 | `--max-parking-duration MINUTES` | Longest a continuous run of Parking-mode footage can span in real elapsed time (not its played-back length) before a Parking recording is kept out of the trip it would otherwise end and starts the next trip instead - a single Parking recording longer than this on its own is never appended to the drive before it. Two or more chained Parking recordings whose combined real span crosses this can split from each other the same way, not just at the point driving resumes. Requires real duration data, same as `--max-gap`'s own duration-aware gap calculation (`--no-duration` disables this too). Default: 60. |
 

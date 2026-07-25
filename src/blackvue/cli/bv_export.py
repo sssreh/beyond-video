@@ -48,6 +48,7 @@ from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import load_or_compute_duration
+from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
@@ -287,6 +288,7 @@ def bv_export(
     max_gap_minutes: int | None = None,
     movement: bool = False,
     duration: bool = True,
+    duration_heal_archive: bool = False,
     gap_tolerance_seconds: int | None = None,
     max_parking_duration_minutes: int | None = None,
     render_map: bool = False,
@@ -351,18 +353,33 @@ def bv_export(
     lose its earlier recordings entirely, since they'd never even
     reach TripBuilder, and the exported "trip" would be missing real
     footage that belongs to it. The trade-off: trip detection (and
-    anything it reads - or, for `.duration.txt` specifically, computes
-    and writes the first time - per recording, like real span data for
-    `--no-duration`'s opposite, or GPS/g-sensor data for movement
-    bridging; see `load_or_compute_duration()`) now runs across the
-    *entire* archive on every run, not just the requested range - a
-    real cost on a very large archive, accepted here in favor of never
-    silently truncating a trip. The very first run against a fresh
-    archive (no `.duration.txt` files yet, and `--no-duration` not
-    given) pays a one-time ffprobe cost per recording across the whole
-    archive to self-heal that cache; every run after that is exactly
-    as cheap as reading the files back in, the same as before this
-    self-healing existed.
+    anything it reads, like real span data for `--no-duration`'s
+    opposite, or GPS/g-sensor data for movement bridging) now runs
+    across the *entire* archive on every run, not just the requested
+    range - a real cost on a very large archive, accepted here in
+    favor of never silently truncating a trip.
+
+    That archive-wide detection pass reads `.duration.txt` (see
+    `read_duration_seconds()`) rather than computing a missing one -
+    Christer found the alternative (computing and writing every
+    missing file across the whole archive before this function could
+    even ask its first "trip already exists?" question) made a first
+    run against a large archive look hung for a long, silent stretch.
+    Instead, only the recordings belonging to a trip actually being
+    exported this run get self-healed (see `load_or_compute_duration()`
+    below, right before that trip's own folder name/overwrite prompt is
+    resolved) - a real, if small, drop in detection accuracy for a
+    recording elsewhere in the archive that's never been probed yet
+    (it falls back to the old bare-start-timestamp gap calculation,
+    same as before self-healing existed, until its own trip is
+    exported at least once), accepted in favor of never blocking a
+    prompt on unrelated work. `duration_heal_archive=True` (bv-export's
+    own `--duration-heal-archive`) restores the original archive-wide
+    self-healing during detection instead, for a run where maximum
+    accuracy matters more than a fast first prompt (e.g. an unattended
+    batch job with nobody waiting on it). Mutually exclusive with
+    `duration=False` (`--no-duration`) - there's nothing to heal
+    against when duration data is turned off entirely.
 
     `command_line`, if given, is written verbatim into every trip's
     own trip.log as the exact command that produced it - main() below
@@ -383,6 +400,12 @@ def bv_export(
     duration-aware gap calculation does, so `--no-duration` disables
     this too. Defaults to DEFAULT_MAX_PARKING_DURATION (60 minutes).
     """
+
+    if duration_heal_archive and not duration:
+        raise SystemExit(
+            "bv-export: --duration-heal-archive has nothing to heal "
+            "against when --no-duration is also given."
+        )
 
     archive = Archive(path)
 
@@ -411,7 +434,6 @@ def bv_export(
         else DEFAULT_MAX_PARKING_DURATION
     )
     bridge = movement_bridges_gap if movement else None
-    recording_duration = load_or_compute_duration if duration else None
     # Trip detection only considers recordings with a Front asset -
     # see recordings_with_front_video()'s own docstring for why
     # (GPS/g-sensor/thumbnail-only recordings, common when Front/Rear
@@ -421,6 +443,27 @@ def bv_export(
     # concatenated video doesn't actually cover - both confirmed on a
     # real archive, both fixed by this filter).
     front_recordings = recordings_with_front_video(archive.recordings)
+
+    # Archive-wide trip *detection* (below) reads whatever .duration.txt
+    # already exists rather than computing a missing one - see this
+    # function's own docstring for why (a full self-heal here used to
+    # block the first overwrite prompt on a long, silent archive-wide
+    # ffprobe pass). `duration_heal_archive` opts back into full
+    # self-healing here instead, for a run that wants maximum detection
+    # accuracy over a fast first prompt - done as its own explicit pass
+    # over every recording right here (not just by handing
+    # load_or_compute_duration to TripBuilder below), since TripBuilder
+    # 's own gap-walking loop never looks up the chronologically last
+    # recording in the whole archive (nothing ever follows it to
+    # trigger that lookup) and so would otherwise leave it unhealed
+    # even under this flag.
+    if not duration:
+        recording_duration = None
+    else:
+        if duration_heal_archive:
+            for recording in front_recordings:
+                load_or_compute_duration(recording)
+        recording_duration = read_duration_seconds
     # Populated in place by build() with one membership-reasoning
     # entry per recording (see TripBuilder.build()'s own docstring) -
     # forwarded to every trip's own trip.log below so a surprising
@@ -468,6 +511,20 @@ def bv_export(
     wipe_decision: bool | None = None
 
     for trip in trips:
+        if duration and not dry_run:
+            # Self-heal only this trip's own recordings (see this
+            # function's own docstring for why the archive-wide
+            # detection pass above deliberately doesn't) - right here,
+            # before folder_name_for_trip() below reads
+            # trip.end_timestamp (the last recording's real span) and
+            # before this trip's own overwrite prompt, so neither one
+            # waits on any other trip's recordings. A harmless no-op
+            # cache-hit loop when duration_heal_archive already healed
+            # everything above. dry_run skips this entirely, same as
+            # everything else it doesn't touch.
+            for recording in trip:
+                load_or_compute_duration(recording)
+
         folder = target_path / folder_name_for_trip(trip, prefix)
 
         if dry_run:
@@ -661,9 +718,34 @@ def main(argv: list[str] | None = None) -> int:
             "bv-generate --get-duration run) when there is one, or "
             "computing and writing one on the spot otherwise, so this "
             "works out of the box without needing that separate pass "
-            "first. --no-duration skips all of that (no ffprobe/ffmpeg "
-            "calls for this, no files written) and falls back to plain "
-            "start-to-start timestamps."
+            "first. That self-healing is scoped to just the trip(s) "
+            "actually being exported this run (see "
+            "--duration-heal-archive to widen it) - --no-duration skips "
+            "all of it entirely (no ffprobe/ffmpeg calls for this, no "
+            "files written, no per-trip scope either) and falls back to "
+            "plain start-to-start timestamps."
+        ),
+    )
+
+    parser.add_argument(
+        "--duration-heal-archive",
+        action="store_true",
+        default=False,
+        help=(
+            "Self-heal a missing .duration.txt for every recording in "
+            "the archive during trip detection, not just the trip(s) "
+            "being exported this run. By default, trip detection reads "
+            "whatever .duration.txt already exists but doesn't compute "
+            "a missing one - fast, but a recording that's never been "
+            "probed yet could still occasionally land in the wrong trip "
+            "until it's actually been exported once. This flag trades "
+            "that fast default for maximum detection accuracy across "
+            "the whole archive up front, at the cost of a real, "
+            "possibly long, one-time ffprobe pass before the first "
+            "overwrite prompt can even appear - worth it for an "
+            "unattended batch run, less so interactively. Rejected "
+            "together with --no-duration - nothing to heal against with "
+            "duration data turned off entirely."
         ),
     )
 
@@ -1181,6 +1263,7 @@ def main(argv: list[str] | None = None) -> int:
         max_gap_minutes=args.max_gap_minutes,
         movement=args.movement,
         duration=args.duration,
+        duration_heal_archive=args.duration_heal_archive,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         max_parking_duration_minutes=args.max_parking_duration_minutes,
         render_map=args.render_map,

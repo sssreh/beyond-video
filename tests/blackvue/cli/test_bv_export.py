@@ -297,6 +297,57 @@ def test_bv_export_uses_duration_file_to_avoid_a_false_split(tmp_path):
     ).is_dir()
 
 
+def test_bv_export_only_self_heals_recordings_in_the_exported_trip(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100200_NF.mp4")
+    _make_video(archive / "20260720_120000_NF.mp4")
+
+    # --timestamp scopes this run to the first trip only (the second,
+    # two hours later, is well outside the default 5-minute max_gap).
+    bv_export(str(archive), target=str(target), timestamp="20260720_1000")
+
+    assert (archive / "20260720_100000_N.duration.txt").exists()
+    assert (archive / "20260720_100200_N.duration.txt").exists()
+    assert not (archive / "20260720_120000_N.duration.txt").exists()
+
+
+def test_bv_export_duration_heal_archive_heals_every_recording(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_120000_NF.mp4")
+
+    bv_export(
+        str(archive), target=str(target), timestamp="20260720_1000",
+        duration_heal_archive=True,
+    )
+
+    assert (archive / "20260720_100000_N.duration.txt").exists()
+    # Not part of the exported trip, but --duration-heal-archive widens
+    # the self-heal to the whole archive during detection itself.
+    assert (archive / "20260720_120000_N.duration.txt").exists()
+
+
+def test_bv_export_rejects_duration_heal_archive_with_no_duration(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    with pytest.raises(SystemExit):
+        bv_export(
+            str(archive), target=str(target),
+            duration=False, duration_heal_archive=True,
+        )
+
+
 def test_bv_export_gap_tolerance_can_be_tightened(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()
@@ -684,6 +735,44 @@ def test_main_sets_debug_true_when_debug_flag_given(tmp_path, monkeypatch):
     main(["--target", str(target), str(archive), "--debug"])
 
     assert captured["debug"] is True
+
+
+def test_main_leaves_duration_heal_archive_false_by_default(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["duration_heal_archive"] is False
+
+
+def test_main_sets_duration_heal_archive_true_when_flag_given(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--duration-heal-archive"])
+
+    assert captured["duration_heal_archive"] is True
 
 
 def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(
