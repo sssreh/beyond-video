@@ -140,12 +140,28 @@ class TripBuilder:
     ceiling that entire span reads as "no gap at all" between the
     drive before it and the drive after - see
     DEFAULT_MAX_PARKING_DURATION's own comment for the real case this
-    was built for. Two (or more) consecutive Parking recordings whose
-    *combined* real span crosses the cap can split from each other
-    too, not just at the point driving resumes - deliberately: a
-    single long parked stretch chunked into several Parking files by
-    the dashcam itself shouldn't dodge the cap just because no one
-    file individually is long enough.
+    was built for.
+
+    The check is prospective: before a recording is added to the
+    current trip, build() asks whether *including* it would push the
+    trailing run's total over the cap - if so, that recording is kept
+    out of the trip it would otherwise have ended, and instead becomes
+    the first recording of the next trip. Christer was explicit about
+    this direction on a real case: a single Parking recording whose
+    own real span already exceeds the cap must never be part of the
+    trip it would otherwise close out. The same prospective check
+    naturally covers a *combined* span too - two or more consecutive
+    Parking recordings, individually under the cap, whose running
+    total crosses it partway through still split from each other, not
+    just at the point driving resumes - a single long parked stretch
+    chunked into several Parking files by the dashcam itself
+    shouldn't dodge the cap just because no one file individually is
+    long enough. A trip can still legitimately *start* with a
+    recording whose own span alone exceeds the cap, since there's
+    nowhere earlier to exclude it from - the running total for that
+    new trip is then that recording's own span, so whether the
+    *next* recording joins it depends on the same prospective check
+    same as anywhere else.
 
     A cap-forced split is never offered to `bridge` - it's a
     deliberate policy decision ("a stop this long is a new trip"), not
@@ -258,9 +274,20 @@ class TripBuilder:
             gap_desc = self._describe_gap(gap)
             threshold_desc = f"{threshold.total_seconds():.1f}s"
 
+            # Prospective, not retrospective: this asks whether
+            # *including* `recording` would push the trailing run's
+            # total over the cap - not whether it already is. That's
+            # what keeps an over-the-cap Parking recording out of the
+            # trip it would otherwise have ended, rather than letting
+            # it in and only excluding whatever comes after it - see
+            # build()'s own docstring for the real case that mattered
+            # for.
+            parking_increment = self._parking_contribution(recording)
+            prospective_parking_seconds = trailing_parking_seconds + parking_increment
+
             parking_cap_exceeded = (
                 self.max_parking_duration is not None
-                and trailing_parking_seconds
+                and prospective_parking_seconds
                 > self.max_parking_duration.total_seconds()
             )
 
@@ -273,14 +300,16 @@ class TripBuilder:
 
             if parking_cap_exceeded:
                 if reasons is not None:
-                    parked_desc = f"{trailing_parking_seconds / 60:.1f}m"
+                    prospective_desc = f"{prospective_parking_seconds / 60:.1f}m"
                     cap_desc = (
                         f"{self.max_parking_duration.total_seconds() / 60:.1f}m"
                     )
                     reasons[recording.id] = (
-                        f"starts a new trip - {parked_desc} of continuous "
-                        f"Parking-mode footage since {previous.id} exceeds "
-                        f"the {cap_desc} max_parking_duration limit"
+                        "starts a new trip - including this recording would "
+                        f"bring continuous Parking-mode footage to "
+                        f"{prospective_desc}, over the {cap_desc} "
+                        "max_parking_duration limit, so it starts the next "
+                        "trip instead of ending this one"
                     )
                 trips.append(
                     Trip(
@@ -289,7 +318,7 @@ class TripBuilder:
                     )
                 )
                 current_trip = [recording]
-                trailing_parking_seconds = self._parking_contribution(recording)
+                trailing_parking_seconds = parking_increment
             elif gap > threshold and not bridge_reason:
                 if reasons is not None:
                     reasons[recording.id] = (
@@ -305,7 +334,7 @@ class TripBuilder:
                     )
                 )
                 current_trip = [recording]
-                trailing_parking_seconds = self._parking_contribution(recording)
+                trailing_parking_seconds = parking_increment
             else:
                 if reasons is not None:
                     if gap > threshold:
@@ -324,10 +353,12 @@ class TripBuilder:
                 current_trip.append(recording)
                 # A non-Parking recording breaks the trailing run
                 # entirely (reset, not left unchanged) - a Parking one
-                # extends it by its own contribution.
+                # extends it by its own contribution (already computed
+                # above as prospective_parking_seconds, which passed
+                # the cap check to get here).
                 if self.max_parking_duration is not None:
                     trailing_parking_seconds = (
-                        trailing_parking_seconds + self._parking_contribution(recording)
+                        prospective_parking_seconds
                         if recording.id.is_parking
                         else 0.0
                     )

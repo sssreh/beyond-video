@@ -350,16 +350,26 @@ def _duration_lookup(overrides: dict[str, int]):
     return lambda recording: overrides.get(str(recording.id))
 
 
-def test_max_parking_duration_forces_a_split_when_a_single_recording_exceeds_it():
+def test_max_parking_duration_keeps_an_oversized_recording_out_of_the_ending_trip():
     # Reproduces Christer's real archive case at a small scale: a
     # Parking-mode timelapse (90 real minutes) plays back in a few
     # minutes, but recording_duration reports its real elapsed span -
     # so the very next recording's duration-folded gap is a harmless
     # 9 seconds, well inside the ordinary max_gap threshold. Without
     # max_parking_duration, this stays one trip (the original bug).
-    # With a 60-minute cap, the Parking recording's own 90-minute real
-    # span already exceeds it, forcing a split before the next
-    # recording is even considered.
+    #
+    # With a 60-minute cap: Christer was explicit that a Parking
+    # recording whose own real span already exceeds the cap must never
+    # be part of the trip it would otherwise close out - so the check
+    # is prospective (would *including* this recording exceed the
+    # cap?), not retrospective. That excludes `second` from the drive
+    # entirely - it becomes its own trip instead of trip one's last
+    # member. `third` (immediately following, ordinary driving) can't
+    # join that trip either, since `second` alone already leaves it
+    # over cap with nothing `third` can contribute to fix that - so it
+    # becomes a third trip of its own. Real archives won't usually end
+    # right there (see the "resumes normally afterward" test below for
+    # what happens once genuine driving continues past this point).
     first = Recording(id=RecordingId("20260715_100000_N"))
     second = Recording(id=RecordingId("20260715_100500_P"))
     third = Recording(id=RecordingId("20260715_113509_N"))
@@ -371,11 +381,39 @@ def test_max_parking_duration_forces_a_split_when_a_single_recording_exceeds_it(
         max_parking_duration=timedelta(minutes=60),
     ).build([first, second, third])
 
-    assert len(trips) == 2
-    assert len(trips[0]) == 2
+    assert len(trips) == 3
+    assert len(trips[0]) == 1
     assert trips[0].start_timestamp == ts("20260715_100000")
     assert len(trips[1]) == 1
-    assert trips[1].start_timestamp == ts("20260715_113509")
+    assert trips[1].start_timestamp == ts("20260715_100500")
+    assert len(trips[2]) == 1
+    assert trips[2].start_timestamp == ts("20260715_113509")
+
+
+def test_max_parking_duration_resumes_normally_once_driving_continues():
+    # Same oversized Parking recording as above, but this time real
+    # driving continues past the immediately-following recording -
+    # confirming the "nothing else can join a trip that already
+    # contains an over-cap recording" effect only ever costs the one
+    # recording immediately after it, not every recording from then on.
+    first = Recording(id=RecordingId("20260715_100000_N"))
+    second = Recording(id=RecordingId("20260715_100500_P"))
+    third = Recording(id=RecordingId("20260715_113509_N"))
+    fourth = Recording(id=RecordingId("20260715_113514_N"))
+    fifth = Recording(id=RecordingId("20260715_113519_N"))
+
+    duration = _duration_lookup({str(second.id): 90 * 60})
+
+    trips = TripBuilder(
+        recording_duration=duration,
+        max_parking_duration=timedelta(minutes=60),
+    ).build([first, second, third, fourth, fifth])
+
+    assert len(trips) == 3
+    assert len(trips[0]) == 1
+    assert len(trips[1]) == 1
+    assert len(trips[2]) == 3
+    assert trips[2].start_timestamp == ts("20260715_113509")
 
 
 def test_max_parking_duration_lets_a_shorter_stop_through():
@@ -399,11 +437,14 @@ def test_max_parking_duration_lets_a_shorter_stop_through():
 def test_max_parking_duration_splits_between_two_chained_parking_recordings():
     # Three consecutive Parking recordings, each individually under
     # the 60-minute cap (40 minutes apiece), chained with ~0 real gap
-    # between them. The first two combined (80 minutes) already cross
-    # the cap, so the split lands between the second and third Parking
-    # recording - a "parking-only" trip of just the third recording -
-    # confirming the cap tracks the *cumulative* run, not just each
-    # recording's own length.
+    # between them. Including the first two (80 minutes combined)
+    # would already cross the cap when the *third* one is considered,
+    # so the split lands there - third is kept out of the trip that
+    # already holds first/second, and starts a new one instead (with
+    # fourth, itself under cap, joining it normally) - confirming the
+    # cap tracks the *cumulative* run, not just each recording's own
+    # length, and that the recording which would push it over stays
+    # out of the trip being closed rather than ending it.
     first = Recording(id=RecordingId("20260715_100000_N"))
     second = Recording(id=RecordingId("20260715_100500_P"))
     third = Recording(id=RecordingId("20260715_104505_P"))
@@ -421,9 +462,9 @@ def test_max_parking_duration_splits_between_two_chained_parking_recordings():
     ).build([first, second, third, fourth])
 
     assert len(trips) == 2
-    assert len(trips[0]) == 3
-    assert len(trips[1]) == 1
-    assert trips[1].start_timestamp == ts("20260715_112510")
+    assert len(trips[0]) == 2
+    assert len(trips[1]) == 2
+    assert trips[1].start_timestamp == ts("20260715_104505")
 
 
 def test_max_parking_duration_resets_after_a_non_parking_recording():
@@ -492,6 +533,10 @@ def test_max_parking_duration_unset_never_touches_is_parking():
 
 
 def test_max_parking_duration_split_reason_names_the_limit_and_accumulated_time():
+    # `second`'s own 90-minute span alone already exceeds the cap, so
+    # it's `second` itself (not whatever comes after it) that gets the
+    # "starts a new trip" reason - it's the one being kept out of the
+    # trip it would otherwise have joined.
     first = Recording(id=RecordingId("20260715_100000_N"))
     second = Recording(id=RecordingId("20260715_100500_P"))
     third = Recording(id=RecordingId("20260715_113509_N"))
@@ -504,21 +549,24 @@ def test_max_parking_duration_split_reason_names_the_limit_and_accumulated_time(
         max_parking_duration=timedelta(minutes=60),
     ).build([first, second, third], reasons=reasons)
 
-    reason = reasons[third.id]
+    reason = reasons[second.id]
     assert "starts a new trip" in reason
     assert "Parking-mode" in reason
     assert "90.0m" in reason
     assert "60.0m" in reason
-    assert str(second.id) in reason
 
 
 def test_max_parking_duration_split_is_never_offered_to_bridge():
     # Even with a genuine additional gap on top of the cap (so the
     # ordinary gap>threshold check would also fire) and a bridge that
-    # would otherwise keep it together, a cap-forced split must still
-    # happen and bridge must never be consulted for it - see
+    # would otherwise keep it together, a cap-forced exclusion must
+    # still happen and bridge must never be consulted for it - see
     # TripBuilder's own docstring for why (a deliberate policy
-    # decision, not ambiguous gap evidence to weigh).
+    # decision, not ambiguous gap evidence to weigh). Both `second`
+    # (excluded on its own oversized span) and `third` (excluded
+    # because `second`'s leftover total alone already leaves no room)
+    # go through the cap-exceeded path, so bridge should never fire
+    # for either.
     first = Recording(id=RecordingId("20260715_100000_N"))
     second = Recording(id=RecordingId("20260715_100500_P"))
     third = Recording(id=RecordingId("20260715_120000_N"))
@@ -537,6 +585,6 @@ def test_max_parking_duration_split_is_never_offered_to_bridge():
         bridge=bridge,
     ).build([first, second, third])
 
-    assert len(trips) == 2
+    assert len(trips) == 3
     assert calls == []
     

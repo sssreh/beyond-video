@@ -69,7 +69,7 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 | `--movement` | Bridge a gap over `--max-gap` using GPS/g-sensor movement evidence. **Off by default** - unbounded bridging risk, see `bv-ls(1)`. |
 | `--no-duration` | Measure gaps from start timestamps only, ignoring `.duration.txt`. |
 | `--gap-tolerance SECONDS` | Fixed noise margin added on top of `--max-gap`. Default: 10. |
-| `--max-parking-duration MINUTES` | Longest a continuous run of Parking-mode footage can span in real elapsed time (not its played-back length) before the drive that follows it counts as a new trip. Two or more chained Parking recordings whose combined real span crosses this can split from each other too, not just at the point driving resumes. Requires real duration data, same as `--max-gap`'s own duration-aware gap calculation (`--no-duration` disables this too). Default: 60. |
+| `--max-parking-duration MINUTES` | Longest a continuous run of Parking-mode footage can span in real elapsed time (not its played-back length) before a Parking recording is kept out of the trip it would otherwise end and starts the next trip instead - a single Parking recording longer than this on its own is never appended to the drive before it. Two or more chained Parking recordings whose combined real span crosses this can split from each other the same way, not just at the point driving resumes. Requires real duration data, same as `--max-gap`'s own duration-aware gap calculation (`--no-duration` disables this too). Default: 60. |
 
 ### Map
 

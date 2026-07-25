@@ -365,13 +365,16 @@ def bv_export(
     Parking-mode footage can span in real elapsed time (not its
     played-back length - a Parking-mode timelapse can run for well
     over an hour of real time while playing back in a few minutes)
-    before the drive that follows it counts as a new trip - see
-    TripBuilder's own docstring for the full mechanism, including why
-    two chained Parking recordings can split from each other too, not
-    just at the point driving resumes. Depends on real duration data
-    the same way `--max-gap`'s own duration-aware gap calculation
-    does, so `--no-duration` disables this too. Defaults to
-    DEFAULT_MAX_PARKING_DURATION (60 minutes).
+    before a Parking recording is kept out of the trip it would
+    otherwise end and starts the next trip instead - so a single
+    Parking recording longer than this on its own is never appended
+    to the drive before it. See TripBuilder's own docstring for the
+    full mechanism, including why two or more chained Parking
+    recordings whose combined real span crosses this can split from
+    each other the same way, not just at the point driving resumes.
+    Depends on real duration data the same way `--max-gap`'s own
+    duration-aware gap calculation does, so `--no-duration` disables
+    this too. Defaults to DEFAULT_MAX_PARKING_DURATION (60 minutes).
     """
 
     archive = Archive(path)
@@ -677,12 +680,15 @@ def main(argv: list[str] | None = None) -> int:
             "How long a continuous run of Parking-mode footage can "
             "span, in real elapsed time (not its played-back length - "
             "a Parking-mode timelapse can run for well over an hour of "
-            "real time while playing back in a few minutes), before "
-            "the drive that follows it counts as a new trip. Two (or "
-            "more) chained Parking recordings whose combined real span "
-            "crosses this can also split from each other, not just at "
-            "the point driving resumes. Requires real duration data "
-            "the same way --max-gap's own duration-aware gap "
+            "real time while playing back in a few minutes), before a "
+            "Parking recording is kept out of the trip it would "
+            "otherwise end and starts the next trip instead - so a "
+            "single Parking recording longer than this on its own is "
+            "never appended to the drive before it. Two (or more) "
+            "chained Parking recordings whose combined real span "
+            "crosses this can split from each other the same way, not "
+            "just at the point driving resumes. Requires real duration "
+            "data the same way --max-gap's own duration-aware gap "
             "calculation does, so --no-duration disables this too. "
             f"Default: "
             f"{int(DEFAULT_MAX_PARKING_DURATION.total_seconds() // 60)}."
