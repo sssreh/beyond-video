@@ -611,6 +611,15 @@ def test_stitch_cameras_scales_a_single_camera_when_resolution_given(tmp_path):
 def test_stitch_cameras_passes_bitrate_through_to_the_encoder(
     tmp_path, monkeypatch
 ):
+    # Isolated from the real source-bitrate cap (see the dedicated
+    # cap tests above) - this one's only concerned with whether the
+    # requested value reaches the encoder unchanged, not the cap
+    # logic itself. Without this, the tiny real testsrc clips
+    # _make_video() produces (a genuinely low real bitrate) could
+    # legitimately trip the new default cap and break this
+    # assertion for the wrong reason.
+    monkeypatch.setattr(stitch_module, "_video_bitrate", lambda path: None)
+
     captured = {}
 
     def fake_encode(input_args, destination, extra_codec_args=None):
@@ -1025,7 +1034,12 @@ def test_stack_applies_bitrate_only_to_the_final_combine_call(
     # The two decode calls produce intermediates, not the final
     # output - a bitrate cap only makes sense on the last (combine)
     # call, which is what the user actually asked to constrain.
+    # _video_bitrate mocked out (see test_stitch_cameras_passes_
+    # bitrate_through_to_the_encoder's own comment) so the real, tiny
+    # testsrc clips' own real bitrate can't trip the new source cap
+    # and break this test for an unrelated reason.
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    monkeypatch.setattr(stitch_module, "_video_bitrate", lambda path: None)
 
     captured_extra_codec_args = []
 
@@ -1089,14 +1103,16 @@ def _fake_intermediate_bitrates(front_bps, rear_bps):
     return fake_video_bitrate
 
 
-def test_stack_caps_bitrate_to_the_sum_of_the_two_intermediates_bitrates(
+def test_stack_caps_an_explicit_bitrate_to_twice_the_source_bitrate(
     tmp_path, monkeypatch
 ):
     # The whole point of the cap: a requested bitrate way above what
-    # the two (already resolution/bitrate-reduced) intermediates
-    # actually carry can't recover detail that isn't there anymore -
-    # capped to the sum of their real bitrates instead, with a warning
-    # explaining why.
+    # the original camera footage actually carries can't recover
+    # detail that was never there - capped to twice the *source*
+    # files' own combined bitrate instead (some headroom above the
+    # source is allowed deliberately, see _stack()'s own comment - a
+    # composited stitch has more visual complexity than the plain
+    # camera feed alone), with a warning explaining why.
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
     monkeypatch.setattr(
         stitch_module, "_video_bitrate",
@@ -1123,19 +1139,20 @@ def test_stack_caps_bitrate_to_the_sum_of_the_two_intermediates_bitrates(
         layout="side_by_side", bitrate="5M", warnings=warnings,
     )
 
-    # 500_000 + 300_000 = 800_000 bps ceiling, well under the
-    # requested 5_000_000 (5M) - the final combine call should be
-    # capped to the sum, not the original request.
+    # 500_000 + 300_000 = 800_000 bps source reference, doubled to a
+    # 1_600_000 bps cap - well under the requested 5_000_000 (5M), so
+    # the final combine call should be capped to that, not the
+    # original request.
     final_call = captured_extra_codec_args[-1]
     assert final_call == [
-        "-b:v", "800000", "-maxrate", "800000", "-bufsize", "800000",
+        "-b:v", "1600000", "-maxrate", "1600000", "-bufsize", "1600000",
     ]
     assert len(warnings) == 1
     assert "5M" in warnings[0]
-    assert "800k" in warnings[0]
+    assert "1600k" in warnings[0]
 
 
-def test_stack_does_not_cap_bitrate_when_already_below_the_ceiling(
+def test_stack_does_not_cap_bitrate_when_already_below_the_cap(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
@@ -1171,11 +1188,11 @@ def test_stack_does_not_cap_bitrate_when_already_below_the_ceiling(
     assert warnings == []
 
 
-def test_stack_skips_the_bitrate_cap_when_intermediate_bitrate_unknown(
+def test_stack_skips_the_bitrate_cap_when_source_bitrate_unknown(
     tmp_path, monkeypatch
 ):
     # Never worth failing (or even warning about) the export over -
-    # if either intermediate's bitrate can't be determined, the
+    # if the source files' bitrate can't be determined, an explicit
     # requested bitrate just flows through untouched.
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
     monkeypatch.setattr(stitch_module, "_video_bitrate", lambda path: None)
@@ -1205,9 +1222,119 @@ def test_stack_skips_the_bitrate_cap_when_intermediate_bitrate_unknown(
     assert warnings == []
 
 
-def test_stack_skips_bitrate_probing_when_no_bitrate_requested(
+def test_stack_defaults_to_the_summed_source_bitrate_for_side_by_side(
     tmp_path, monkeypatch
 ):
+    # Christer: "I think the default should match the front video" -
+    # side_by_side/top_down sum front+rear's own source bitrate as
+    # the default encode target when no --stitch-bitrate is given at
+    # all, instead of falling through to the flat CQ 19 default.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    monkeypatch.setattr(
+        stitch_module, "_video_bitrate",
+        _fake_intermediate_bitrates(500_000, 300_000),
+    )
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="side_by_side")
+
+    final_call = captured_extra_codec_args[-1]
+    assert final_call == [
+        "-b:v", "800000", "-maxrate", "800000", "-bufsize", "800000",
+    ]
+
+
+def test_stack_defaults_to_front_alone_for_rearview_mirror(tmp_path, monkeypatch):
+    # rearview_mirror: rear only ever contributes a small inset
+    # overlay, not full-frame pixels, so the default target is front's
+    # own source bitrate alone - not summed with rear (Christer's call
+    # on this one: "up to you in rearview mirror mode").
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+
+    probed_paths = []
+
+    def fake_video_bitrate(path):
+        probed_paths.append(path)
+        return {"front.mp4": 900_000, "rear.mp4": 300_000}[path.name]
+
+    monkeypatch.setattr(stitch_module, "_video_bitrate", fake_video_bitrate)
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="rearview_mirror")
+
+    final_call = captured_extra_codec_args[-1]
+    assert final_call == [
+        "-b:v", "900000", "-maxrate", "900000", "-bufsize", "900000",
+    ]
+    # rear's own source bitrate is never even probed for mirror mode -
+    # only front's.
+    assert all(path.name == "front.mp4" for path in probed_paths)
+
+
+def test_stack_falls_back_to_cq19_when_source_bitrate_cant_be_determined(
+    tmp_path, monkeypatch
+):
+    # No --stitch-bitrate given, and the source bitrate can't be
+    # probed either - falls all the way through to
+    # encode_with_nvenc_fallback's own CQ/CRF 19 default (no -b:v at
+    # all in extra_codec_args), same as before this feature existed.
+    # Never worth failing the export over.
+    monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
+    monkeypatch.setattr(stitch_module, "_video_bitrate", lambda path: None)
+
+    captured_extra_codec_args = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        captured_extra_codec_args.append(extra_codec_args)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"")
+
+    monkeypatch.setattr(stitch_module, "encode_with_nvenc_fallback", fake_encode)
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="side_by_side")
+
+    final_call = captured_extra_codec_args[-1]
+    assert final_call == []
+
+
+def test_stack_probes_source_bitrate_even_when_no_bitrate_requested(
+    tmp_path, monkeypatch
+):
+    # Old behavior (pre "match the front video" default) skipped
+    # probing entirely whenever no --stitch-bitrate was given - now
+    # probing always happens, since it's what computes the default
+    # target itself, not just a cap on an explicit request.
     monkeypatch.setattr(stitch_module, "_NVDEC_AVAILABLE", False)
 
     probe_calls = []
@@ -1231,7 +1358,7 @@ def test_stack_skips_bitrate_probing_when_no_bitrate_requested(
 
     stitch_cameras(front, rear, tmp_path / "stitch.mp4", layout="side_by_side")
 
-    assert probe_calls == []
+    assert len(probe_calls) == 2
 
 
 def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
@@ -2025,7 +2152,7 @@ def test_stitch_cameras_subtitles_combines_with_gsensor_and_a_map_panel(
 
 
 def test_stitch_cameras_subtitles_are_confined_to_the_camera_region_not_the_map_panel(
-    tmp_path
+    tmp_path, monkeypatch
 ):
     # Confirms a real issue found on Christer's own --stitch-map
     # export: subtitles used to be burned onto the *final* composed
@@ -2035,6 +2162,18 @@ def test_stitch_cameras_subtitles_are_confined_to_the_camera_region_not_the_map_
     # composite alone, before the map panel is ever hstacked/vstacked
     # alongside it - same "confined to the footage region" scoping the
     # gsensor overlay already had.
+    #
+    # _video_bitrate mocked out - unrelated to what this test actually
+    # checks, but a flat solid-color source (see _make_solid_video()
+    # below) genuinely compresses to a near-zero real bitrate, and the
+    # new "match the source" default (see _stack()) would otherwise
+    # target that near-zero figure for a frame that, once the map
+    # panel/subtitle overlays are burned in, is no longer low
+    # -complexity at all - starving the encode enough to visibly
+    # corrupt this test's own brightness assertions below, for a
+    # reason that has nothing to do with what this test is for.
+    monkeypatch.setattr(stitch_module, "_video_bitrate", lambda path: None)
+
     front = tmp_path / "front.mp4"
     rear = tmp_path / "rear.mp4"
     _make_solid_video(front, 160, 120, "0xdddddd")

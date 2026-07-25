@@ -928,8 +928,14 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RATE",
         help=(
             "Target video bitrate for stitch.mp4 (e.g. 256k, 2M), "
-            "passed straight to ffmpeg and capped there (-b:v/"
-            "-maxrate/-bufsize all set to RATE). Only used together "
+            "passed straight to ffmpeg (-b:v/-maxrate/-bufsize all set "
+            "to RATE). Capped to twice the original front/rear "
+            "footage's own combined bitrate (front alone for "
+            "rearview_mirror), so an unreasonably high request can't "
+            "ask for detail the source never had. Omitting this flag "
+            "doesn't mean 'no limit' - it defaults to matching that "
+            "same source bitrate directly, rather than a flat quality "
+            "target independent of the source. Only used together "
             "with --stitch."
         ),
     )

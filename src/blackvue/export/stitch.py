@@ -1996,35 +1996,61 @@ def _stack(
             front_future.result()
             rear_future.result()
 
-        # A requested `bitrate` is capped to the sum of the two
-        # intermediates' own actual bitrates, not the original
-        # cameras' native bitrates - the final combine pass never sees
-        # the originals again, only these already-reduced
-        # intermediates, so that's the real information ceiling. Sum,
-        # not the higher of the two: both intermediates are already
-        # scaled to roughly the same size (see _ideal_shared_dimension()
-        # above), so the composite has roughly double the pixel area of
-        # either one alone - capping at just one intermediate's bitrate
-        # would spread that same budget over twice the pixels, likely
-        # looking worse than either intermediate on its own. Skipped
-        # entirely if no bitrate was requested, or if either
-        # intermediate's own bitrate can't be determined (never worth
-        # failing the export over).
-        effective_bitrate = bitrate
-        if bitrate is not None:
-            front_bps = _video_bitrate(front_decoded)
-            rear_bps = _video_bitrate(rear_decoded)
-            requested_bps = _parse_bitrate_bps(bitrate)
+        # `reference_bps`: what "the front video's own quality" means
+        # for this stitch, used both as the default encode target
+        # below (when no --stitch-bitrate is given at all) and as the
+        # basis for capping an explicit one. Measured off the
+        # *original* `front`/`rear` source files, not front_decoded/
+        # rear_decoded - those intermediates have already been run
+        # through this same pass's own CQ 19 default (see
+        # _decode_camera()), so measuring off them would just feed
+        # CQ19's own output back in as a "target" instead of the
+        # camera's real captured quality, which defeats the point.
+        #
+        # side_by_side/top_down sum front+rear: the composite has
+        # roughly double the pixel area of either camera alone (both
+        # intermediates are already scaled to roughly the same size,
+        # see _ideal_shared_dimension() above), so a target based on
+        # just one would spread that same budget over twice the
+        # pixels. rearview_mirror uses front alone - rear only ever
+        # contributes a small inset overlay there, not full-frame
+        # pixels, so folding its bitrate in would overstate the
+        # reference (Christer's call on this one: "up to you in
+        # rearview mirror mode").
+        #
+        # Skipped (falls through to encode_with_nvenc_fallback's own
+        # CQ 19 default) if the source bitrate can't be determined -
+        # never worth failing the export over.
+        front_source_bps = _video_bitrate(front)
+        reference_bps = front_source_bps
+        if not is_mirror and front_source_bps is not None:
+            rear_source_bps = _video_bitrate(rear)
+            if rear_source_bps is not None:
+                reference_bps = front_source_bps + rear_source_bps
 
-            if front_bps is not None and rear_bps is not None:
-                ceiling_bps = front_bps + rear_bps
-                if requested_bps is not None and requested_bps > ceiling_bps:
-                    effective_bitrate = str(ceiling_bps)
+        effective_bitrate = bitrate
+        if bitrate is None:
+            if reference_bps is not None:
+                effective_bitrate = str(reference_bps)
+        else:
+            requested_bps = _parse_bitrate_bps(bitrate)
+            if reference_bps is not None and requested_bps is not None:
+                # Explicit --stitch-bitrate is allowed some headroom
+                # above the source's own quality (Christer: "set a cap
+                # --stitch-bitrate to be the 2 times higher") rather
+                # than being capped tightly to reference_bps itself -
+                # someone asking for more than the source has is
+                # presumably doing it deliberately (compositing
+                # overlays adds visual complexity beyond the plain
+                # camera feed), just not without any ceiling at all.
+                cap_bps = reference_bps * 2
+                if requested_bps > cap_bps:
+                    effective_bitrate = str(cap_bps)
                     if warnings is not None:
                         warnings.append(
                             f"stitch: requested bitrate {bitrate} exceeds "
-                            "the two intermediates' combined bitrate "
-                            f"(~{ceiling_bps // 1000}k) - capped to that "
+                            "twice the source's own bitrate "
+                            f"(~{cap_bps // 1000}k) - capped to that "
                             "instead"
                         )
 

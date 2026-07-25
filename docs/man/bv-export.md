@@ -110,7 +110,7 @@ Both `map.mp4` and `map_zoom_METERSm.mp4` show a small satellite badge in the to
 | Option | Description |
 |---|---|
 | `--stitch-resolution WIDTHxHEIGHT` | Scale to an exact resolution (e.g. `320x240`) - handy for a fast test render. Can distort aspect ratio if chosen carelessly. |
-| `--stitch-bitrate RATE` | Target video bitrate (e.g. `256k`, `2M`), passed to ffmpeg's `-b:v`/`-maxrate`/`-bufsize`. |
+| `--stitch-bitrate RATE` | Target video bitrate (e.g. `256k`, `2M`), passed to ffmpeg's `-b:v`/`-maxrate`/`-bufsize`. Capped to twice the original front/rear footage's own combined bitrate (front alone for `rearview_mirror`) - a request well above what the source ever had can't recover detail that isn't there. Without this flag, `stitch.mp4` defaults to matching that same source bitrate directly (front+rear summed for `side_by_side`/`top_down`, front alone for `rearview_mirror`) rather than a flat quality target independent of the source - falls back to a fixed high-quality CQ/CRF 19 target only if the source bitrate can't be determined. `map.mp4`/`gsensor.mp4` are unaffected either way - always CQ/CRF 19. |
 | `--stitch-scale PERCENT` | Scale the natural resolution down by this percentage (1-100), always preserving aspect ratio - preferred over guessing a `--stitch-resolution`. |
 | `--stitch-max-width PIXELS` | Cap the natural width, scaling down (never up) just enough to fit, preserving aspect ratio. |
 | `--stitch-max-height PIXELS` | Cap the natural height - see `--stitch-max-width`. |
