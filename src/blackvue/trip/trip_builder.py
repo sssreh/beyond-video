@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from blackvue.archive.asset import Asset
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
+from blackvue.lexicaltimeparser import TimeInterval
 from blackvue.trip.trip import Trip
 
 
@@ -79,6 +80,18 @@ DEFAULT_GAP_TOLERANCE = timedelta(seconds=10)
 # normal errand-length stop doesn't split, short enough that his real
 # ~90-minute case does.
 DEFAULT_MAX_PARKING_DURATION = timedelta(minutes=60)
+
+# build_for_interval()'s own tuning knobs - see its docstring for the
+# full algorithm. Small enough that the common case (a single
+# requested trip, out of an archive with many more before/after it)
+# proves both of its real boundaries in one or two build() passes
+# without ever reading duration data for recordings far outside it.
+_INITIAL_BOUNDARY_MARGIN = 4
+# Each retry doubles the margin (a "galloping search") rather than
+# growing by a fixed step, so a request whose true boundary happens to
+# sit unusually far from the seed range still converges in a small,
+# bounded number of build() passes instead of one recording at a time.
+_BOUNDARY_MARGIN_GROWTH = 2
 
 # `bridge` may return any truthy value to bridge a gap (False/None to
 # not) - conventionally a short human-readable reason string, which is
@@ -368,6 +381,141 @@ class TripBuilder:
         )
 
         return trips
+
+    def build_for_interval(
+        self,
+        recordings: Iterable[Recording],
+        interval: TimeInterval,
+        *,
+        reasons: dict[RecordingId, str] | None = None,
+    ) -> list[Trip]:
+        """Like build(), but reads only as much of `recordings` as is
+        needed to produce every complete trip touching `interval`,
+        instead of the whole archive - bv-export used to hand build()
+        the entire archive on every run, even to export a single day,
+        so trip detection (and the duration lookups its gap
+        calculation depends on) cost the same however small the actual
+        request was. Christer's own framing of the fix: "from time
+        range, seek backwards until start found, then forward until
+        end is found."
+
+        The approach: seed a slice of `recordings` (assumed already
+        sorted chronologically, same precondition as build()) to just
+        the ones whose own `id.value` falls inside `interval`, run
+        build() on it, and check whether the earliest/latest trip that
+        actually touches `interval` still starts/ends exactly at the
+        slice's own edge. If it does, that boundary isn't proven yet -
+        there might be more of that trip just outside the slice that a
+        real gap would otherwise have excluded, and there's no way to
+        tell the difference without looking - so the slice grows
+        further in that direction (see _INITIAL_BOUNDARY_MARGIN/
+        _BOUNDARY_MARGIN_GROWTH) and build() runs again. Repeats until
+        both boundaries land on a real, build()-confirmed gap, or the
+        slice can no longer grow (it already spans the whole of
+        `recordings`) - at which point every trip in the result is
+        exactly what a full build() over all of `recordings` would
+        also have produced, just without ever computing a duration for
+        a recording far outside `interval`. An `interval` that already
+        matches "the whole archive" (LexicalTimeParser's own all-open
+        sentinel range) seeds the slice to everything and returns after
+        exactly one build() pass - no slower than calling build()
+        directly, so callers don't need to special-case that request
+        shape themselves (though bv-export's own CLI does anyway, for
+        clarity about when the archive-wide cost is expected).
+
+        Deliberately grows both sides together each retry rather than
+        independently, even once one side is already proven - simpler
+        to reason about, and the extra recordings re-read on the
+        already-settled side cost nothing beyond a few more (already-
+        cached, after the first pass) duration lookups.
+
+        `reasons` behaves exactly as it does for build() - populated
+        from whichever slice this ultimately settles on, so an
+        exported trip's own trip.log still shows the real gap/bridge/
+        parking-cap reasoning that decided its membership, not a
+        placeholder. Entries for recordings pulled in only to prove a
+        boundary (a neighboring trip that turned out not to touch
+        `interval`) are included too, same as a real archive-wide
+        build() would leave in `reasons` for every recording it looked
+        at - harmless, since callers look reasons up by a specific
+        recording's own id, never iterate the whole dict.
+
+        If `recording_duration` is set, every recording in the final
+        window is guaranteed to have had it called on it at least once
+        before this returns - not just the ones build()'s own gap
+        -walking loop happened to need (it never calls it for a
+        window's own last recording, since nothing follows it to
+        trigger `_end_timestamp()` - the same gap this project's own
+        archive-wide detection used to leave for its own chronologically
+        last recording). This is what makes `load_or_compute_duration`
+        as `recording_duration` (bv-export's own
+        `--duration-heal-archive`) a clean, complete guarantee: every
+        recording this search actually settled on gets a real
+        `.duration.txt`, including whichever one happens to land right
+        on the final window's own edge.
+        """
+
+        recordings = tuple(recordings)
+        total = len(recordings)
+        if total == 0:
+            return []
+
+        seed_indices = [
+            index
+            for index, recording in enumerate(recordings)
+            if recording.id.value in interval
+        ]
+        if not seed_indices:
+            return []
+
+        seed_lo, seed_hi = seed_indices[0], seed_indices[-1]
+        margin = _INITIAL_BOUNDARY_MARGIN
+
+        while True:
+            window_lo = max(0, seed_lo - margin)
+            window_hi = min(total - 1, seed_hi + margin)
+
+            window_reasons: dict[RecordingId, str] | None = (
+                {} if reasons is not None else None
+            )
+            trips = self.build(
+                recordings[window_lo : window_hi + 1], reasons=window_reasons
+            )
+
+            # seed_indices was non-empty, so at least one trip in this
+            # window overlaps `interval` - relevant is never empty.
+            relevant = [
+                trip
+                for trip in trips
+                if any(recording.id.value in interval for recording in trip)
+            ]
+            first_relevant, last_relevant = relevant[0], relevant[-1]
+
+            left_proven = (
+                window_lo == 0
+                or first_relevant.first_recording is not recordings[window_lo]
+            )
+            right_proven = (
+                window_hi == total - 1
+                or last_relevant.last_recording is not recordings[window_hi]
+            )
+
+            if (left_proven and right_proven) or (
+                window_lo == 0 and window_hi == total - 1
+            ):
+                if reasons is not None:
+                    reasons.update(window_reasons)
+                if self.recording_duration is not None:
+                    # See this method's own docstring for why - build()
+                    # 's gap-walking loop alone never calls
+                    # recording_duration on a window's own last
+                    # recording, which would otherwise leave a hole in
+                    # what --duration-heal-archive is supposed to mean.
+                    for recording in recordings[window_lo : window_hi + 1]:
+                        self.recording_duration(recording)
+                return trips
+
+            margin *= _BOUNDARY_MARGIN_GROWTH
 
     @staticmethod
     def _describe_gap(gap: timedelta) -> str:

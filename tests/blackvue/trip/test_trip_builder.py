@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
+from blackvue.lexicaltimeparser import LexicalTimeParser
+from blackvue.lexicaltimeparser import TimeInterval
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import TripBuilder
 
@@ -587,4 +589,228 @@ def test_max_parking_duration_split_is_never_offered_to_bridge():
 
     assert len(trips) == 3
     assert calls == []
+
+
+# --- build_for_interval() ---
+#
+# Christer: bv-export's own archive-wide trip detection felt slow even
+# to export a single day - build_for_interval() bounds detection to
+# just the trip(s) touching a requested interval instead, by seeding
+# on the recordings actually inside it and growing outward only as far
+# as needed to prove a real gap on each side (see its own docstring).
+# These tests build a synthetic multi-trip archive and check the
+# bounded result always matches a plain build() over the *entire*
+# archive, for a range of request shapes - the whole point of the
+# feature is "same answer, less work," so every test here compares
+# against that same real ground truth rather than asserting a fixed
+# expected shape by hand.
+
+
+def _multi_trip_recordings(
+    trip_count: int,
+    *,
+    recordings_per_trip: int = 10,
+    start: str = "20260101_080000",
+    within_trip_gap_minutes: int = 5,
+    between_trip_gap_minutes: int = 30,
+) -> list[Recording]:
+    """`trip_count` trips of `recordings_per_trip` recordings each,
+    `within_trip_gap_minutes` apart inside a trip and
+    `between_trip_gap_minutes` apart between trips - `TripBuilder(
+    max_gap=timedelta(minutes=10))` (used by every test below) then
+    splits this into exactly `trip_count` distinct trips, giving a
+    predictable, larger-than-any-single-test-needs archive to seed
+    requests into."""
+
+    recordings = []
+    t = datetime.strptime(start, "%Y%m%d_%H%M%S")
+    for trip_index in range(trip_count):
+        for recording_index in range(recordings_per_trip):
+            recordings.append(
+                Recording(id=RecordingId(t.strftime("%Y%m%d_%H%M%S") + "_N"))
+            )
+            t += timedelta(minutes=within_trip_gap_minutes)
+        t += timedelta(minutes=between_trip_gap_minutes)
+    return recordings
+
+
+def _exact_interval(recording: Recording) -> TimeInterval:
+    """A `--timestamp`-style interval matching only `recording`'s own
+    exact timestamp - the tightest possible seed, one recording deep
+    inside whatever trip it belongs to, so build_for_interval() must
+    grow outward on its own to recover the rest of that trip."""
+
+    return LexicalTimeParser(
+        timestamp=recording.id.timestamp.strftime("%Y%m%d_%H%M%S")
+    ).parse()
+
+
+def test_build_for_interval_matches_a_middle_trip_seeded_by_one_recording():
+    recordings = _multi_trip_recordings(10)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+    full = builder.build(recordings)
+    target = full[5]
+
+    # Seed on the target trip's own middle recording, not its first or
+    # last - build_for_interval() must grow both backward and forward
+    # within the same trip to recover it in full.
+    seed_recording = target.recordings[len(target) // 2]
+
+    bounded = builder.build_for_interval(recordings, _exact_interval(seed_recording))
+    relevant = [
+        trip
+        for trip in bounded
+        if any(r.id.value in _exact_interval(seed_recording) for r in trip)
+    ]
+
+    assert len(relevant) == 1
+    assert relevant[0].recordings == target.recordings
+
+
+def test_build_for_interval_matches_the_first_trip_in_the_archive():
+    recordings = _multi_trip_recordings(10)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+    full = builder.build(recordings)
+    target = full[0]
+
+    interval = _exact_interval(target.first_recording)
+    bounded = builder.build_for_interval(recordings, interval)
+    relevant = [
+        trip for trip in bounded if any(r.id.value in interval for r in trip)
+    ]
+
+    assert len(relevant) == 1
+    assert relevant[0].recordings == target.recordings
+
+
+def test_build_for_interval_matches_the_last_trip_in_the_archive():
+    recordings = _multi_trip_recordings(10)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+    full = builder.build(recordings)
+    target = full[-1]
+
+    interval = _exact_interval(target.last_recording)
+    bounded = builder.build_for_interval(recordings, interval)
+    relevant = [
+        trip for trip in bounded if any(r.id.value in interval for r in trip)
+    ]
+
+    assert len(relevant) == 1
+    assert relevant[0].recordings == target.recordings
+
+
+def test_build_for_interval_returns_empty_for_no_matching_recordings():
+    recordings = _multi_trip_recordings(5)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+
+    interval = LexicalTimeParser(timestamp="20300101_000000").parse()
+
+    assert builder.build_for_interval(recordings, interval) == []
+
+
+def test_build_for_interval_covers_a_range_spanning_several_trips():
+    recordings = _multi_trip_recordings(10)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+    full = builder.build(recordings)
+
+    interval = LexicalTimeParser(
+        from_=full[3].first_recording.id.timestamp.strftime("%Y%m%d_%H%M%S"),
+        until=full[6].last_recording.id.timestamp.strftime("%Y%m%d_%H%M%S"),
+    ).parse()
+
+    bounded = builder.build_for_interval(recordings, interval)
+    relevant = [
+        trip for trip in bounded if any(r.id.value in interval for r in trip)
+    ]
+
+    assert [trip.recordings for trip in relevant] == [
+        trip.recordings for trip in full[3:7]
+    ]
+
+
+def test_build_for_interval_matches_build_for_the_whole_archive_sentinel():
+    recordings = _multi_trip_recordings(6)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+
+    sentinel = LexicalTimeParser().parse()
+    full = builder.build(recordings)
+    bounded = builder.build_for_interval(recordings, sentinel)
+
+    assert [trip.recordings for trip in bounded] == [
+        trip.recordings for trip in full
+    ]
+
+
+def test_build_for_interval_populates_reasons_for_the_returned_trips():
+    recordings = _multi_trip_recordings(6)
+    builder = TripBuilder(max_gap=timedelta(minutes=10))
+    full = builder.build(recordings)
+    target = full[3]
+
+    reasons: dict = {}
+    builder.build_for_interval(
+        recordings, _exact_interval(target.first_recording), reasons=reasons
+    )
+
+    for recording in target:
+        assert recording.id in reasons
+
+
+def test_build_for_interval_heals_every_recording_in_the_final_window():
+    # A recording_duration callback with a real side effect (like
+    # load_or_compute_duration - bv-export's own bounded
+    # --duration-heal-archive) must be called on every recording the
+    # search actually settles on, including whichever one lands right
+    # on the final window's own edge - build()'s own gap-walking loop
+    # alone never calls it for a window's last recording (nothing
+    # follows it to trigger _end_timestamp()), which is exactly the
+    # gap this behaviour closes - see build_for_interval()'s own
+    # docstring.
+    recordings = _multi_trip_recordings(6)
+    builder_for_ground_truth = TripBuilder(max_gap=timedelta(minutes=10))
+    full = builder_for_ground_truth.build(recordings)
+    target = full[3]
+
+    healed: list = []
+
+    def heal(recording):
+        healed.append(recording.id)
+        return None
+
+    builder = TripBuilder(max_gap=timedelta(minutes=10), recording_duration=heal)
+    bounded = builder.build_for_interval(
+        recordings, _exact_interval(target.first_recording)
+    )
+
+    window_recordings = [r for trip in bounded for r in trip]
+    assert set(healed) == {r.id for r in window_recordings}
+
+
+def test_build_for_interval_reads_far_fewer_recordings_than_a_full_scan():
+    # The whole point: recovering one trip out of a much larger archive
+    # shouldn't need duration data for recordings nowhere near it.
+    recordings = _multi_trip_recordings(50)
+    target_index = 25
+
+    calls: list = []
+
+    def counting_duration(recording):
+        calls.append(recording.id)
+        return None
+
+    builder = TripBuilder(
+        max_gap=timedelta(minutes=10), recording_duration=counting_duration
+    )
+    full = TripBuilder(max_gap=timedelta(minutes=10)).build(recordings)
+    target = full[target_index]
+
+    calls.clear()
+    builder.build_for_interval(recordings, _exact_interval(target.first_recording))
+    bounded_call_count = len(calls)
+
+    calls.clear()
+    builder.build(recordings)
+    full_call_count = len(calls)
+
+    assert bounded_call_count < full_call_count / 4
     

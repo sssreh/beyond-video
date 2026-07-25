@@ -332,8 +332,44 @@ def test_bv_export_duration_heal_archive_heals_every_recording(tmp_path):
 
     assert (archive / "20260720_100000_N.duration.txt").exists()
     # Not part of the exported trip, but --duration-heal-archive widens
-    # the self-heal to the whole archive during detection itself.
+    # the self-heal beyond just the trip being exported - this small,
+    # two-recording archive happens to fit entirely inside
+    # build_for_interval()'s own bounded search window on its first
+    # pass (see the *_is_bounded_not_archive_wide test below for the
+    # case where it doesn't), so both still get healed here.
     assert (archive / "20260720_120000_N.duration.txt").exists()
+
+
+def test_bv_export_duration_heal_archive_is_bounded_not_archive_wide(tmp_path):
+    # --duration-heal-archive used to mean a real archive-wide ffprobe
+    # pass, every recording, regardless of how small the actual
+    # request was - it's now bounded to whatever build_for_interval()
+    # 's own search actually settles on (see trip_builder.py), so a
+    # trip far away from the requested one should come out unhealed.
+    from datetime import datetime, timedelta
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    # Ten separate trips - a real, unrelated 30-minute gap (well over
+    # the default 5-minute max_gap) between each one - only the first
+    # of which is actually requested.
+    start = datetime(2026, 7, 20, 10, 0, 0)
+    stamps = [
+        (start + timedelta(minutes=30 * i)).strftime("%Y%m%d_%H%M%S")
+        for i in range(10)
+    ]
+    for stamp in stamps:
+        _make_video(archive / f"{stamp}_NF.mp4")
+
+    bv_export(
+        str(archive), target=str(target), timestamp=stamps[0],
+        duration_heal_archive=True,
+    )
+
+    assert (archive / f"{stamps[0]}_N.duration.txt").exists()
+    assert not (archive / f"{stamps[-1]}_N.duration.txt").exists()
 
 
 def test_bv_export_rejects_duration_heal_archive_with_no_duration(tmp_path):

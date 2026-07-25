@@ -347,45 +347,60 @@ def bv_export(
     breadcrumbs for tracking down where time went on a slow run, off
     by default since most runs don't need them.
 
-    `--timestamp`/`--from`/`--until` select *trips*, not recordings:
-    trips are detected across the whole archive first, and a trip is
-    included if any of its own recordings fall inside the requested
-    range - the whole trip is then exported, including whatever
-    recordings pushed it before or after the range's own boundaries.
-    Filtering recordings by the range *before* detecting trips (the
-    original approach) could silently truncate a trip that merely
-    overlaps the requested window - e.g. a long continuous drive that
-    started a few minutes before a `--timestamp` window opens would
-    lose its earlier recordings entirely, since they'd never even
-    reach TripBuilder, and the exported "trip" would be missing real
-    footage that belongs to it. The trade-off: trip detection (and
-    anything it reads, like real span data for `--no-duration`'s
-    opposite, or GPS/g-sensor data for movement bridging) now runs
-    across the *entire* archive on every run, not just the requested
-    range - a real cost on a very large archive, accepted here in
-    favor of never silently truncating a trip.
+    `--timestamp`/`--from`/`--until` select *trips*, not recordings: a
+    trip is included if any of its own recordings fall inside the
+    requested range - the whole trip is then exported, including
+    whatever recordings pushed it before or after the range's own
+    boundaries. Filtering recordings by the range *before* detecting
+    trips (the original approach) could silently truncate a trip that
+    merely overlaps the requested window - e.g. a long continuous drive
+    that started a few minutes before a `--timestamp` window opens
+    would lose its earlier recordings entirely, since they'd never
+    even reach TripBuilder, and the exported "trip" would be missing
+    real footage that belongs to it.
 
-    That archive-wide detection pass reads `.duration.txt` (see
+    Detection itself is *bounded* to `interval`, not an archive-wide
+    scan - see `TripBuilder.build_for_interval()`'s own docstring for
+    the algorithm (seed on the recordings actually inside `interval`,
+    then grow outward only as far as needed to prove a real gap on
+    each side, same as a full scan would have found, just without
+    reading duration data for recordings nowhere near the request).
+    This used to run across the *entire* archive on every single run
+    regardless of how small the actual request was - correct, but a
+    real, growing cost as an archive gets larger, since even exporting
+    one day still meant detecting and duration-checking every trip
+    that ever existed. Christer's own framing of the fix: "from time
+    range, seek backwards until start found, then forward until end
+    is found." An `--timestamp`/`--from`/`--until`-less run (export
+    the whole archive) still does the plain archive-wide `build()` -
+    there's nothing to bound against when everything is being
+    exported anyway.
+
+    Bounded detection reads `.duration.txt` (see
     `read_duration_seconds()`) rather than computing a missing one -
     Christer found the alternative (computing and writing every
-    missing file across the whole archive before this function could
-    even ask its first "trip already exists?" question) made a first
-    run against a large archive look hung for a long, silent stretch.
-    Instead, only the recordings belonging to a trip actually being
-    exported this run get self-healed (see `load_or_compute_duration()`
-    below, right before that trip's own folder name/overwrite prompt is
-    resolved) - a real, if small, drop in detection accuracy for a
-    recording elsewhere in the archive that's never been probed yet
-    (it falls back to the old bare-start-timestamp gap calculation,
-    same as before self-healing existed, until its own trip is
-    exported at least once), accepted in favor of never blocking a
-    prompt on unrelated work. `duration_heal_archive=True` (bv-export's
-    own `--duration-heal-archive`) restores the original archive-wide
-    self-healing during detection instead, for a run where maximum
-    accuracy matters more than a fast first prompt (e.g. an unattended
-    batch job with nobody waiting on it). Mutually exclusive with
-    `duration=False` (`--no-duration`) - there's nothing to heal
-    against when duration data is turned off entirely.
+    missing file before this function could even ask its first "trip
+    already exists?" question) made a first run against a large
+    archive look hung for a long, silent stretch. Instead, only the
+    recordings belonging to a trip actually being exported this run
+    get self-healed (see `load_or_compute_duration()` below, right
+    before that trip's own folder name/overwrite prompt is resolved) -
+    a real, if small, drop in detection accuracy for a recording that's
+    never been probed yet and happens to fall right at a boundary the
+    bounded search is trying to prove (it falls back to the old bare
+    -start-timestamp gap calculation there, same as before self
+    -healing existed, until its own trip is exported at least once),
+    accepted in favor of never blocking a prompt on unrelated work.
+    `duration_heal_archive=True` (bv-export's own
+    `--duration-heal-archive`) hands `load_or_compute_duration` itself
+    to the bounded search instead of the cache-only reader, so every
+    recording the search actually looks at gets ffprobed for real
+    rather than falling back - "don't just trust the cache" - but still
+    only within whatever the bounded search touches, not the whole
+    archive; it stopped meaning "scan everything" once detection itself
+    stopped doing that. Mutually exclusive with `duration=False`
+    (`--no-duration`) - there's nothing to heal against when duration
+    data is turned off entirely.
 
     `command_line`, if given, is written verbatim into every trip's
     own trip.log as the exact command that produced it - main() below
@@ -517,40 +532,56 @@ def bv_export(
     # real archive, both fixed by this filter).
     front_recordings = recordings_with_front_video(archive.recordings)
 
-    # Archive-wide trip *detection* (below) reads whatever .duration.txt
-    # already exists rather than computing a missing one - see this
-    # function's own docstring for why (a full self-heal here used to
-    # block the first overwrite prompt on a long, silent archive-wide
-    # ffprobe pass). `duration_heal_archive` opts back into full
-    # self-healing here instead, for a run that wants maximum detection
-    # accuracy over a fast first prompt - done as its own explicit pass
-    # over every recording right here (not just by handing
-    # load_or_compute_duration to TripBuilder below), since TripBuilder
-    # 's own gap-walking loop never looks up the chronologically last
-    # recording in the whole archive (nothing ever follows it to
-    # trigger that lookup) and so would otherwise leave it unhealed
-    # even under this flag.
+    # Trip *detection* (below) is bounded to `interval` rather than
+    # scanning the whole archive on every run - see TripBuilder.
+    # build_for_interval()'s own docstring for the full algorithm.
+    # Christer's own framing: "from time range, seek backwards until
+    # start found, then forward until end is found." Only recordings
+    # the bounded search actually looks at (roughly: the trip(s)
+    # touching `interval`, plus however far it had to grow to prove
+    # both real boundaries) ever get a duration lookup - not every
+    # recording in the archive, which is what made a first run against
+    # a large, growing archive feel slow even just to export one day
+    # out of it. `duration_heal_archive` still means "don't just trust
+    # the cache, verify/compute for real" - now within that bounded
+    # set, not across the whole archive - by handing
+    # load_or_compute_duration itself to the builder instead of the
+    # cache-only read_duration_seconds, so a recording without a
+    # `.duration.txt` yet gets ffprobed (and cached) the moment the
+    # bounded search actually reads it, rather than needing a separate
+    # eager pass first.
     if not duration:
         recording_duration = None
+    elif duration_heal_archive:
+        recording_duration = load_or_compute_duration
     else:
-        if duration_heal_archive:
-            for recording in front_recordings:
-                load_or_compute_duration(recording)
         recording_duration = read_duration_seconds
-    # Populated in place by build() with one membership-reasoning
-    # entry per recording (see TripBuilder.build()'s own docstring) -
-    # forwarded to every trip's own trip.log below so a surprising
-    # trip membership decision (e.g. a recording that seems to belong
-    # to the wrong trip) can be checked against the real reasoning
-    # that produced it.
+    # Populated in place by build()/build_for_interval() with one
+    # membership-reasoning entry per recording (see TripBuilder.build()
+    # 's own docstring) - forwarded to every trip's own trip.log below
+    # so a surprising trip membership decision (e.g. a recording that
+    # seems to belong to the wrong trip) can be checked against the
+    # real reasoning that produced it.
     reasons: dict[RecordingId, str] = {}
-    all_trips = TripBuilder(
+    builder = TripBuilder(
         max_gap=max_gap,
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
         max_parking_duration=max_parking_duration,
-    ).build(front_recordings, reasons=reasons)
+    )
+    if interval.first == "00000000_000000" and interval.last == "99999999_999999":
+        # A true full-archive export (no --timestamp/--from/--until at
+        # all) - nothing to bound against, so build every trip
+        # directly rather than paying for build_for_interval()'s own
+        # seed/grow bookkeeping for no benefit (it would settle on the
+        # same full-archive slice after its own first pass anyway, but
+        # saying so here is clearer than relying on that fact).
+        all_trips = builder.build(front_recordings, reasons=reasons)
+    else:
+        all_trips = builder.build_for_interval(
+            front_recordings, interval, reasons=reasons
+        )
 
     trips = [
         trip
