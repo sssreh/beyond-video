@@ -56,9 +56,12 @@ def test_read_gps_parses_a_valid_fix(tmp_path):
     assert fix.course == 45.00
 
 
-def test_read_gps_treats_no_fix_status_as_invalid_with_no_position(
+def test_read_gps_treats_no_fix_mode_as_invalid_with_no_position(
     tmp_path,
 ):
+    # Both the status field (V) and the mode indicator (N, the last
+    # field) agree here - a genuine "no fix at all" sentence, the
+    # common case right after a receiver powers on cold.
     path = tmp_path / "sample.gps"
     path.write_text(
         "[1700000000000]$GPRMC,120000.00,V,,,,,,,010124,,,N*7F\n"
@@ -74,6 +77,51 @@ def test_read_gps_treats_no_fix_status_as_invalid_with_no_position(
     assert fix.longitude is None
     assert fix.speed_kmh is None
     assert fix.course is None
+
+
+def test_read_gps_treats_void_status_with_a_computed_position_as_valid(
+    tmp_path,
+):
+    # Regression test for a real case Christer found on his own
+    # archive: the receiver reports status='V' (not yet confirmed to
+    # its own stricter internal accuracy threshold) well after the
+    # mode indicator already reports 'A' (a real position has been
+    # computed) - confirmed against real files as smooth, physically
+    # continuous, non-jumping GPS data, not noise. GpsFix.valid must
+    # follow the mode indicator here, not the older status field, or
+    # this entire stretch of a real drive's track goes missing.
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000001000]$GPRMC,120001.00,V,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    fixes = read_gps(path)
+
+    assert len(fixes) == 1
+    fix = fixes[0]
+
+    assert fix.valid is True
+    assert fix.latitude == 48 + 7.038 / 60
+    assert fix.longitude == 11 + 31 / 60
+    assert round(fix.speed_kmh, 3) == round(10.00 * 1.852, 3)
+    assert fix.course == 45.00
+
+
+def test_read_gps_uses_the_mode_indicator_not_the_status_field(tmp_path):
+    # A contrived, not-seen-in-the-wild combination (status='A' but
+    # mode='N') specifically to prove which field actually drives
+    # `valid` - if this ever passed with valid=True, that would mean
+    # the code regressed to reading the older status field again.
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,N*00\n"
+    )
+
+    fixes = read_gps(path)
+
+    assert fixes[0].valid is False
 
 
 def test_read_gps_handles_sentences_concatenated_without_a_newline(

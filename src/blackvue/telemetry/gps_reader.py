@@ -15,6 +15,20 @@ RMC, VTG). $GPRMC alone carries everything this reader needs in one
 sentence - fix validity, position, speed, and course - so only $GPRMC
 lines are parsed; the rest are ignored.
 
+Fix validity comes from the sentence's mode indicator (the last
+field), not its older status field (the one right after the time,
+'A'/'V') - see GpsFix.valid's own docstring for why. Confirmed on a
+real archive (Christer, 2026-07-24): a BlackVue receiver can carry
+status='V' for a good while after mode already reports 'A' with a
+real, physically continuous position - status lagging behind a
+stricter internal accuracy/DOP confirmation the mode indicator
+doesn't wait for. Using status alone silently discarded a large,
+genuinely usable stretch of GPS track - up to the first ~11 minutes
+of a real trip in one case - even though BlackVue's own viewer app
+has the exact same blind spot (also shows no movement there), so
+this isn't a deliberate design choice being second-guessed, just an
+already-present signal in the sentence that wasn't being read.
+
 Camera clock note: the bracket timestamp (a real Unix epoch, so UTC)
 was found to match the recording's filename timestamp
 (RecordingId.timestamp, which is naive/local) to the second in a real
@@ -44,7 +58,17 @@ _SENTENCE_PATTERN = re.compile(r"\[(\d+)\](\$GPRMC,[^\[]*)", re.DOTALL)
 
 @dataclass(frozen=True)
 class GpsFix:
-    """One $GPRMC fix from a .gps file."""
+    """One $GPRMC fix from a .gps file.
+
+    `valid` reflects the sentence's mode indicator (its last field) -
+    False only when the receiver has no position at all ('N', no
+    fix); any other mode ('A'utonomous, 'D'ifferential, 'E'stimated/
+    dead-reckoning, ...) counts as valid, since all of them mean a
+    real position was computed. Deliberately NOT the older status
+    field ('A'/'V', right after the time) - see gps_reader.py's own
+    module docstring for why that field alone turned out to
+    underreport real, usable GPS data on a real archive.
+    """
 
     timestamp: datetime
     valid: bool
@@ -89,10 +113,12 @@ def _parse_rmc(timestamp_ms: str, sentence: str) -> GpsFix | None:
     if len(fields) != 13:
         return None
 
-    _, _time, status, lat, ns, lon, ew, speed_knots, course, _date, _mv, _mvd, _mode = fields
+    _, _time, _status, lat, ns, lon, ew, speed_knots, course, _date, _mv, _mvd, mode = fields
 
     timestamp = datetime.utcfromtimestamp(int(timestamp_ms) / 1000)
-    valid = status == "A"
+    # See GpsFix.valid's own docstring - deliberately the mode
+    # indicator, not the older `_status` field.
+    valid = mode != "N"
 
     latitude = (
         _nmea_coordinate_to_decimal(lat, ns) if lat and ns else None
