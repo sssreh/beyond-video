@@ -59,7 +59,10 @@ TEXT_COLOR = (40, 40, 40)
 # frame's timestamp falls before the first (or after the last) fix.
 GPS_BADGE_BG_COLOR = (20, 20, 20, 170)
 GPS_BADGE_ICON_COLOR = (99, 187, 108, 255)
-GPS_BADGE_RADIUS_PX = 11
+# Christer's own read on the original 11px radius (a 22px circle on a
+# 640px-wide frame): too small, hard to make out the satellite glyph's
+# own detail. Doubled per his explicit choice ("100% bigger").
+GPS_BADGE_RADIUS_PX = 22
 GPS_BADGE_MARGIN_PX = 10
 
 DEFAULT_WIDTH = 640
@@ -197,8 +200,17 @@ def _draw_gps_badge(
     badge_draw.ellipse((0, 0, diameter - 1, diameter - 1), fill=GPS_BADGE_BG_COLOR)
 
     cx = cy = GPS_BADGE_RADIUS_PX
-    body_half = 2.5
-    panel_w, panel_half = 3, 3.5
+
+    # Every glyph dimension below is expressed relative to the badge's
+    # own radius (scale = 1.0 at the original 11px-radius baseline this
+    # glyph was first drawn at), not as fixed pixel counts - so a
+    # bigger GPS_BADGE_RADIUS_PX (e.g. Christer's 100%-bigger request)
+    # actually draws a bigger, more detailed satellite rather than the
+    # same small glyph adrift in a larger circle.
+    scale = GPS_BADGE_RADIUS_PX / 11.0
+    body_half = 2.5 * scale
+    panel_w, panel_half = 3 * scale, 3.5 * scale
+    line_width = max(1, round(scale))
 
     # Satellite body (small square) ...
     badge_draw.rectangle(
@@ -208,29 +220,32 @@ def _draw_gps_badge(
     # ... two solar panels either side ...
     badge_draw.rectangle(
         (
-            cx - body_half - panel_w - 1, cy - panel_half,
-            cx - body_half - 1, cy + panel_half,
+            cx - body_half - panel_w - scale, cy - panel_half,
+            cx - body_half - scale, cy + panel_half,
         ),
         fill=GPS_BADGE_ICON_COLOR,
     )
     badge_draw.rectangle(
         (
-            cx + body_half + 1, cy - panel_half,
-            cx + body_half + panel_w + 1, cy + panel_half,
+            cx + body_half + scale, cy - panel_half,
+            cx + body_half + panel_w + scale, cy + panel_half,
         ),
         fill=GPS_BADGE_ICON_COLOR,
     )
     # ... and a short antenna with a signal dot at its tip, angled up
     # toward the top-right corner of the badge.
     badge_draw.line(
-        (cx + body_half, cy - body_half, cx + body_half + 4, cy - body_half - 4),
+        (
+            cx + body_half, cy - body_half,
+            cx + body_half + 4 * scale, cy - body_half - 4 * scale,
+        ),
         fill=GPS_BADGE_ICON_COLOR,
-        width=1,
+        width=line_width,
     )
     badge_draw.ellipse(
         (
-            cx + body_half + 3, cy - body_half - 6,
-            cx + body_half + 5, cy - body_half - 4,
+            cx + body_half + 3 * scale, cy - body_half - 6 * scale,
+            cx + body_half + 5 * scale, cy - body_half - 4 * scale,
         ),
         fill=GPS_BADGE_ICON_COLOR,
     )
@@ -301,6 +316,7 @@ def render_frame(
     marker_image: Image.Image | None = None,
     timestamp_text: str | None = None,
     show_gps_badge: bool = False,
+    show_marker: bool = True,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
@@ -322,6 +338,19 @@ def render_frame(
     this per frame based on whether the frame's position comes from a
     real bracketing fix or is frozen at the nearest known one because
     the timestamp falls outside every fix's own range.
+
+    `show_marker`, when false, suppresses the position marker/arrow/dot
+    entirely even though `position` is given (still real - just not
+    drawn) - `route_points`/`speed_kmh`/`timestamp_text` are unaffected.
+    render_map_video() sets this false only for the strict leading-gap
+    case (a frame whose timestamp is before the trip's very first real
+    GPS fix, `position` clamped to that fix), so nothing appears to
+    "know" its own location before the receiver has actually reported
+    one - Christer's own framing: the clamped position landing on the
+    map once real coordinates exist is fine, but showing it before that
+    point isn't. True (the default) everywhere else, including the
+    trailing-gap and mid-trip signal-loss cases `show_gps_badge=False`
+    also covers - those still show the marker, just without the badge.
 
     `base_image`, if given, is used as the starting canvas (copied, not
     mutated) instead of a fresh background with `roads`/`areas` drawn
@@ -359,7 +388,7 @@ def render_frame(
         pixels = [proj(lat, lon) for lat, lon in route_points]
         draw.line(pixels, fill=ROUTE_COLOR, width=4, joint="curve")
 
-    if position is not None:
+    if position is not None and show_marker:
         point = proj(*position)
 
         if marker_image is not None:

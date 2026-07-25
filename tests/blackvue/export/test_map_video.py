@@ -747,6 +747,134 @@ def test_render_map_video_video_start_clamps_position_during_the_leading_gap(
     assert captured[0] == (59.300, 18.000)
 
 
+def test_render_map_video_scales_the_marker_image_to_half_size(tmp_path, monkeypatch):
+    from blackvue.export.map_video import MARKER_IMAGE_SCALE
+
+    icon_path = tmp_path / "car.png"
+    Image.new("RGBA", (128, 64), (255, 0, 0, 255)).save(icon_path)
+
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("marker_image"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
+        marker_image_path=icon_path,
+    )
+
+    assert MARKER_IMAGE_SCALE == 0.5
+    assert captured[0].size == (64, 32)
+
+
+def test_render_map_video_hides_the_marker_before_the_first_real_fix(
+    tmp_path, monkeypatch
+):
+    # Christer: the car shouldn't be seen before it gets real
+    # coordinates for the first time - only the strict leading-gap
+    # frames (before positioned[0].timestamp) should suppress the
+    # marker.
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("show_marker"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    video_start = datetime(2026, 7, 15, 13, 0, 0)
+    fixes = (_fix(3, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
+        video_start=video_start, video_duration_seconds=4.0,
+    )
+
+    # Frame 0 (elapsed=0s) is before the first real fix (at 3s) -
+    # marker hidden. A later frame, once the first fix is covered,
+    # should show it again.
+    assert captured[0] is False
+    assert any(shown is True for shown in captured)
+
+
+def test_render_map_video_still_shows_the_marker_during_a_trailing_gap(
+    tmp_path, monkeypatch
+):
+    # Unlike the leading-gap case above, a trailing gap (no more GPS
+    # data after the last fix) still shows the (clamped) marker -
+    # Christer only asked for the car to be hidden before it *first*
+    # gets real coordinates, not for every gap the satellite badge
+    # itself goes dark for.
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("show_marker"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4",
+        fps=2, video_duration_seconds=5.0,
+    )
+
+    assert captured
+    assert all(shown is True for shown in captured)
+
+
+def test_render_map_video_still_shows_the_marker_during_a_mid_trip_signal_loss_gap(
+    tmp_path, monkeypatch
+):
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("show_marker"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    wide_gap = MAX_LIVE_FIX_GAP_SECONDS + 20
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(2, 59.302, 18.004),
+        _fix(2 + wide_gap, 59.400, 18.200),
+        _fix(2 + wide_gap + 2, 59.402, 18.204),
+    )
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.5, max_lon=18.3)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=1,
+    )
+
+    # Every frame is after the first real fix, so show_marker is True
+    # throughout even though some of those frames have the badge off
+    # (a different, already-tested signal).
+    assert captured
+    assert all(shown is True for shown in captured)
+
+
 def test_is_live_fix_false_before_the_first_fix():
     fixes = (_fix(0, 59.30, 18.00), _fix(10, 59.31, 18.02))
 

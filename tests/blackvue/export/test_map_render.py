@@ -114,6 +114,55 @@ def test_render_frame_uses_a_custom_marker_image_when_given():
     assert with_icon.getpixel((int(x), int(y))) == (0, 0, 255)
 
 
+def test_render_frame_suppresses_the_marker_when_show_marker_is_false():
+    # Christer: the car shouldn't be seen before it gets real
+    # coordinates for the first time - render_map_video() passes
+    # show_marker=False for exactly that leading-gap case, even though
+    # `position` is still a real (clamped) value.
+    icon = Image.new("RGBA", (20, 20), (0, 0, 255, 255))
+
+    background = render_frame(_BBOX, roads=(), route_points=(), position=None)
+    hidden = render_frame(
+        _BBOX,
+        roads=(),
+        route_points=(),
+        position=(59.31, 18.02),
+        heading=0.0,
+        marker_image=icon,
+        show_marker=False,
+    )
+
+    assert list(background.getdata()) == list(hidden.getdata())
+
+
+def test_render_frame_shows_the_marker_by_default():
+    icon = Image.new("RGBA", (20, 20), (0, 0, 255, 255))
+
+    background = render_frame(_BBOX, roads=(), route_points=(), position=None)
+    shown = render_frame(
+        _BBOX,
+        roads=(),
+        route_points=(),
+        position=(59.31, 18.02),
+        heading=0.0,
+        marker_image=icon,
+    )
+
+    assert list(background.getdata()) != list(shown.getdata())
+
+
+def test_render_frame_suppresses_the_plain_dot_marker_too():
+    # show_marker also covers the no-marker_image/no-heading fallback
+    # (a plain dot), not just a custom marker_image.
+    background = render_frame(_BBOX, roads=(), route_points=(), position=None)
+    hidden = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        show_marker=False,
+    )
+
+    assert list(background.getdata()) == list(hidden.getdata())
+
+
 def test_render_frame_handles_a_degenerate_bounding_box():
     # A bbox with zero width/height (e.g. a stationary trip) shouldn't
     # raise a ZeroDivisionError.

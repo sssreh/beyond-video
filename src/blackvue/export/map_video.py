@@ -60,6 +60,19 @@ DEFAULT_FPS = 5
 # of stitch.py/trip_export.py's own defaults too.
 DEFAULT_MAP_ICON_PATH = Path(__file__).parent / "assets" / "red_car.png"
 
+# Christer's own read on the marker rendering at a loaded image's full
+# native pixel size (the only sizing this ever had - see the
+# marker_image loading below): too big, dominating the frame rather
+# than reading as a small position indicator. Applied uniformly to
+# whatever marker image is in play, the bundled red car above or a
+# custom --map-icon alike, rather than special-casing just the bundled
+# asset - the same "reasonable default, no reason to make an exception"
+# call as the rest of this module's own sizing constants. This also
+# fixes a real, if minor, inconsistency: a custom --map-icon used to
+# render at whatever size its own source file happened to be saved at,
+# with nothing normalizing it against the map canvas at all.
+MARKER_IMAGE_SCALE = 0.5
+
 # The live-GPS satellite badge (see render_map_video()'s `live_fix`
 # handling and map_render.py's `show_gps_badge`) treats a frame as
 # "live" only if its bracketing pair of real fixes is no more than
@@ -372,6 +385,15 @@ def render_map_video(
     position marker is a real, live GPS fix rather than frozen at the
     first/last fix during a leading/trailing gap like the one above.
 
+    The position marker itself, though, is only suppressed for the
+    leading side of that gap - a frame before the trip's very first
+    real fix shows no marker at all (nothing to clamp to yet, and
+    nothing should look like it "knows" a position no fix has actually
+    reported), while a frame during a trailing gap or a mid-trip
+    signal-loss gap (a tunnel) still shows the marker, clamped or
+    interpolated as before - only its badge goes dark for those. See
+    render_frame()'s `show_marker`.
+
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - the same "nothing
     to work with" convention export_trip()'s other outputs use.
@@ -398,6 +420,18 @@ def render_map_video(
             raise MediaToolError(
                 f"could not load marker image {marker_image_path}: {exc}"
             ) from exc
+
+        # Scaled once here, not per frame inside _paste_marker_image()'s
+        # own per-frame rotate/paste - the marker image itself never
+        # changes mid-render, so resizing it once up front is free
+        # compared to redoing it on every single frame. See
+        # MARKER_IMAGE_SCALE's own comment for why this applies
+        # uniformly to any marker image, bundled or custom.
+        scaled_size = (
+            max(1, round(marker_image.width * MARKER_IMAGE_SCALE)),
+            max(1, round(marker_image.height * MARKER_IMAGE_SCALE)),
+        )
+        marker_image = marker_image.resize(scaled_size, resample=Image.LANCZOS)
 
     frame_count = max(2, int(total_seconds * fps) + 1)
 
@@ -480,6 +514,18 @@ def render_map_video(
             # _is_live_fix()/MAX_LIVE_FIX_GAP_SECONDS.
             live_fix = _is_live_fix(positioned, timestamp, position_index)
 
+            # Stricter than live_fix/show_gps_badge above: only true
+            # before the trip's very first real GPS fix, the one case
+            # Christer specifically didn't want the marker drawn for at
+            # all ("shouldn't be seen before it gets real coordinates
+            # for the first time") - a stationary marker sitting on a
+            # position nothing has actually reported yet. The trailing
+            # -gap and mid-trip signal-loss cases show_gps_badge=False
+            # also covers are deliberately left showing the (clamped or
+            # interpolated) marker, same as before this - only the
+            # badge goes off for those, not the marker itself.
+            before_first_fix = timestamp < positioned[0].timestamp
+
             frame_bbox = (
                 bounding_box_around_point(
                     lat, lon, zoom_meters, aspect_ratio=zoom_aspect_ratio
@@ -509,6 +555,7 @@ def render_map_video(
                 marker_image=marker_image,
                 timestamp_text=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                 show_gps_badge=live_fix,
+                show_marker=not before_first_fix,
                 width=width,
                 height=height,
                 base_image=base_image,
