@@ -60,6 +60,18 @@ DEFAULT_FPS = 5
 # of stitch.py/trip_export.py's own defaults too.
 DEFAULT_MAP_ICON_PATH = Path(__file__).parent / "assets" / "red_car.png"
 
+# The live-GPS satellite badge (see render_map_video()'s `live_fix`
+# handling and map_render.py's `show_gps_badge`) treats a frame as
+# "live" only if its bracketing pair of real fixes is no more than
+# this many seconds apart. GPS receivers normally reacquire within a
+# couple of seconds after a brief obstruction (an overpass, a parking
+# garage entrance); a bracket wider than this means the interpolated
+# position between those two fixes is a straight-line guess across a
+# real signal-loss gap (a tunnel, underground parking), not a live
+# fix, even though both of the fixes bracketing it are individually
+# real - confirmed with Christer at 10 seconds.
+MAX_LIVE_FIX_GAP_SECONDS = 10.0
+
 
 def _valid_positioned_fixes(fixes: tuple[GpsFix, ...]) -> tuple[GpsFix, ...]:
     return tuple(
@@ -236,6 +248,41 @@ def _interpolate_position_from_index(
     course = _interpolate_course(current.course, nxt.course, t)
 
     return lat, lon, speed, course
+
+
+def _is_live_fix(
+    positioned: tuple[GpsFix, ...], timestamp: datetime, index: int
+) -> bool:
+    """Whether `timestamp` (with its already-known bracketing `index`,
+    see _advance_fix_index()) should show the live-GPS satellite badge
+    - see MAX_LIVE_FIX_GAP_SECONDS' own docstring for what "live" means
+    here.
+
+    False in two distinct cases render_map_video()'s frame loop can't
+    otherwise tell apart just from the interpolated position alone:
+    `timestamp` is outside every fix's own range (clamped to the first
+    or last fix - a leading/trailing gap, e.g. no GPS lock yet at trip
+    start), or `timestamp` falls between two real fixes that are
+    themselves more than MAX_LIVE_FIX_GAP_SECONDS apart (a signal-loss
+    gap mid-trip, e.g. a tunnel) - both bracketing fixes are real, but
+    the straight line between them across that much silence isn't.
+
+    The instant of a real fix itself is always live, even if the next
+    fix is a wide gap away - that reading is real regardless of how
+    long the signal then goes quiet for afterward.
+    """
+
+    if timestamp < positioned[0].timestamp or timestamp > positioned[-1].timestamp:
+        return False
+
+    if timestamp == positioned[index].timestamp:
+        return True
+
+    if index >= len(positioned) - 1:
+        return True
+
+    span = (positioned[index + 1].timestamp - positioned[index].timestamp)
+    return span.total_seconds() <= MAX_LIVE_FIX_GAP_SECONDS
 
 
 def render_map_video(
@@ -416,16 +463,14 @@ def render_map_video(
             position = (lat, lon)
 
             # "Live" means this frame's timestamp falls within the
-            # real fixes' own range, so the position above came from
-            # actually interpolating between two of them - as opposed
-            # to being clamped to the nearest fix because the frame is
-            # before the first (or after the last) one, which is what
-            # video_start/video_duration_seconds deliberately let
-            # happen for a leading/trailing GPS gap (see this
-            # function's own docstring). Doesn't (yet) detect a long
-            # gap *between* two real fixes mid-trip - see the badge's
-            # own WORKING_CONTEXT.md entry for that scope note.
-            live_fix = positioned[0].timestamp <= timestamp <= positioned[-1].timestamp
+            # real fixes' own range (not clamped to the nearest one
+            # because the frame is before the first/after the last,
+            # e.g. video_start/video_duration_seconds covering a
+            # leading/trailing GPS gap - see this function's own
+            # docstring), and its bracketing pair of real fixes isn't
+            # itself a signal-loss gap mid-trip (e.g. a tunnel) - see
+            # _is_live_fix()/MAX_LIVE_FIX_GAP_SECONDS.
+            live_fix = _is_live_fix(positioned, timestamp, position_index)
 
             frame_bbox = (
                 bounding_box_around_point(

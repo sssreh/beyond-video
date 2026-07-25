@@ -7,8 +7,10 @@ import pytest
 from PIL import Image
 
 from blackvue.export import map_video as map_video_module
+from blackvue.export.map_video import MAX_LIVE_FIX_GAP_SECONDS
 from blackvue.export.map_video import _advance_fix_index
 from blackvue.export.map_video import _interpolate_position_from_index
+from blackvue.export.map_video import _is_live_fix
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
@@ -743,6 +745,91 @@ def test_render_map_video_video_start_clamps_position_during_the_leading_gap(
     # for a real leading gap instead of always being masked by `start`
     # itself being derived from the fixes.
     assert captured[0] == (59.300, 18.000)
+
+
+def test_is_live_fix_false_before_the_first_fix():
+    fixes = (_fix(0, 59.30, 18.00), _fix(10, 59.31, 18.02))
+
+    assert _is_live_fix(fixes, fixes[0].timestamp - timedelta(seconds=1), 0) is False
+
+
+def test_is_live_fix_false_after_the_last_fix():
+    fixes = (_fix(0, 59.30, 18.00), _fix(10, 59.31, 18.02))
+
+    assert _is_live_fix(fixes, fixes[-1].timestamp + timedelta(seconds=1), 1) is False
+
+
+def test_is_live_fix_true_between_two_closely_spaced_fixes():
+    fixes = (_fix(0, 59.30, 18.00), _fix(5, 59.31, 18.02))
+
+    assert _is_live_fix(fixes, fixes[0].timestamp + timedelta(seconds=2), 0) is True
+
+
+def test_is_live_fix_false_across_a_signal_loss_gap_mid_trip():
+    # Two real fixes more than MAX_LIVE_FIX_GAP_SECONDS apart (e.g. a
+    # tunnel) - both individual fixes are real, but the straight-line
+    # interpolation between them isn't a live position.
+    gap = MAX_LIVE_FIX_GAP_SECONDS + 30
+    fixes = (_fix(0, 59.30, 18.00), _fix(gap, 59.40, 18.20))
+
+    midpoint = fixes[0].timestamp + timedelta(seconds=gap / 2)
+    assert _is_live_fix(fixes, midpoint, 0) is False
+
+
+def test_is_live_fix_true_right_at_a_real_fix_even_with_a_wide_gap_ahead():
+    # Exactly at the earlier fix's own timestamp, before any
+    # interpolation across the wide gap has actually happened yet -
+    # this instant itself is still a real, live fix.
+    gap = MAX_LIVE_FIX_GAP_SECONDS + 30
+    fixes = (_fix(0, 59.30, 18.00), _fix(gap, 59.40, 18.20))
+
+    assert _is_live_fix(fixes, fixes[0].timestamp, 0) is True
+
+
+def test_is_live_fix_true_at_exactly_the_gap_threshold():
+    fixes = (_fix(0, 59.30, 18.00), _fix(MAX_LIVE_FIX_GAP_SECONDS, 59.31, 18.02))
+
+    midpoint = fixes[0].timestamp + timedelta(seconds=MAX_LIVE_FIX_GAP_SECONDS / 2)
+    assert _is_live_fix(fixes, midpoint, 0) is True
+
+
+def test_render_map_video_omits_the_gps_badge_during_a_mid_trip_signal_loss_gap(
+    tmp_path, monkeypatch
+):
+    captured = []
+
+    def fake_render_frame(*_args, **kwargs):
+        captured.append(kwargs.get("show_gps_badge"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    # A real gap wider than MAX_LIVE_FIX_GAP_SECONDS between the 2nd
+    # and 3rd fixes (e.g. a tunnel) - frames landing inside that gap
+    # should have the badge off even though both bracketing fixes are
+    # themselves real.
+    wide_gap = MAX_LIVE_FIX_GAP_SECONDS + 20
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(2, 59.302, 18.004),
+        _fix(2 + wide_gap, 59.400, 18.200),
+        _fix(2 + wide_gap + 2, 59.402, 18.204),
+    )
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.5, max_lon=18.3)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=1,
+    )
+
+    # At least one frame is live before the gap, at least one frame
+    # inside the gap has the badge off, and at least one frame after
+    # the gap is live again.
+    assert captured[0] is True
+    assert any(shown is False for shown in captured[1:-1])
+    assert captured[-1] is True
 
 
 def test_render_map_video_omits_the_gps_badge_during_the_leading_gap(
