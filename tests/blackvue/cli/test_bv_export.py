@@ -8,6 +8,7 @@ from blackvue.cli.bv_export import main
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
 from blackvue.export.parking_transition import DEFAULT_PARKING_TRANSITION_CLIPS
+from blackvue.export.parking_transition import RANDOM_PARKING_TRANSITION_POOL
 
 
 def _make_video(path, duration_seconds: float = 0.5) -> None:
@@ -794,6 +795,7 @@ def test_main_leaves_include_parking_false_by_default(tmp_path, monkeypatch):
     assert captured["include_parking"] is False
     assert captured["parking_transition_image"] is None
     assert captured["parking_transition_clip"] is None
+    assert captured["parking_transition_standard"] is False
 
 
 def test_main_sets_include_parking_true_when_flag_given(tmp_path, monkeypatch):
@@ -871,6 +873,79 @@ def test_bv_export_rejects_parking_transition_image_with_clip_together(tmp_path)
         )
 
 
+def test_bv_export_rejects_parking_transition_standard_with_image_together(
+    tmp_path,
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        bv_export(
+            str(archive), target=str(target),
+            parking_transition_image=str(tmp_path / "image.png"),
+            parking_transition_standard=True,
+        )
+
+
+def test_bv_export_rejects_parking_transition_standard_with_clip_together(
+    tmp_path,
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        bv_export(
+            str(archive), target=str(target),
+            parking_transition_clip=str(tmp_path / "clip.mp4"),
+            parking_transition_standard=True,
+        )
+
+
+def test_main_leaves_parking_transition_standard_false_by_default(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["parking_transition_standard"] is False
+
+
+def test_main_sets_parking_transition_standard_true_when_flag_given(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--parking-transition-standard",
+    ])
+
+    assert captured["parking_transition_standard"] is True
+
+
 def _parking_archive(archive):
     # A minimal on-disk archive - drive, park, drive - just enough for
     # TripBuilder to detect one trip with a mid-trip Parking recording.
@@ -909,15 +984,85 @@ def test_bv_export_picks_a_random_bundled_clip_by_default(tmp_path, monkeypatch)
 
     assert exit_code == 0
     assert len(captured_calls) == 1
-    # random.choice() was drawn from exactly the bundled pool, not some
-    # other list.
-    assert picked_pools == [DEFAULT_PARKING_TRANSITION_CLIPS]
+    # random.choice() was drawn from exactly the full 7-entry pool (six
+    # clips + the procedural frame's own None sentinel), not some other
+    # list.
+    assert picked_pools == [RANDOM_PARKING_TRANSITION_POOL]
     assert (
         captured_calls[0]["parking_transition_clip"]
         == DEFAULT_PARKING_TRANSITION_CLIPS[0]
     )
     # No override given, so image stays unset - the clip pick doesn't
     # also set the image.
+    assert captured_calls[0]["parking_transition_image"] is None
+
+
+def test_bv_export_random_pool_can_land_on_the_procedural_frame(
+    tmp_path, monkeypatch
+):
+    # Christer: "I think your clip should be in there to[o]" - the plain
+    # procedural frame (RANDOM_PARKING_TRANSITION_POOL's own `None`
+    # entry) has to be a real possible outcome of the random pick, not
+    # just something reachable via an explicit opt-out.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+    _parking_archive(archive)
+
+    captured_calls = []
+
+    def _fake_export_trip(trip, folder, **kwargs):
+        captured_calls.append(kwargs)
+        return trip_export_module.ExportResult()
+
+    monkeypatch.setattr(bv_export_module, "export_trip", _fake_export_trip)
+
+    def _fake_choice(pool):
+        return None
+
+    monkeypatch.setattr(bv_export_module.random, "choice", _fake_choice)
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    # None all the way through - export_trip() sees neither a clip nor
+    # an image, which is exactly what already makes it draw the plain
+    # procedural frame itself. No special-casing needed for this
+    # outcome.
+    assert captured_calls[0]["parking_transition_clip"] is None
+    assert captured_calls[0]["parking_transition_image"] is None
+
+
+def test_bv_export_skips_the_random_pick_when_parking_transition_standard_is_true(
+    tmp_path, monkeypatch
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+    _parking_archive(archive)
+
+    captured_calls = []
+
+    def _fake_export_trip(trip, folder, **kwargs):
+        captured_calls.append(kwargs)
+        return trip_export_module.ExportResult()
+
+    monkeypatch.setattr(bv_export_module, "export_trip", _fake_export_trip)
+
+    def _fail_choice(pool):
+        raise AssertionError(
+            "random.choice() should not be called when "
+            "--parking-transition-standard is given"
+        )
+
+    monkeypatch.setattr(bv_export_module.random, "choice", _fail_choice)
+
+    exit_code = bv_export(
+        str(archive), target=str(target), parking_transition_standard=True
+    )
+
+    assert exit_code == 0
+    assert captured_calls[0]["parking_transition_clip"] is None
     assert captured_calls[0]["parking_transition_image"] is None
 
 

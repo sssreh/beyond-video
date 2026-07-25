@@ -85,6 +85,19 @@ DEFAULT_PARKING_TRANSITION_CLIPS = (
     _ASSETS_DIR / "no_parking_6.mp4",
 )
 
+# The full pool bv-export's CLI draws its random per-trip pick from:
+# Christer's own six clips above, plus `None` standing in for the plain
+# procedural frame render_parking_transition_image() draws itself -
+# Christer: "I think your clip should be in there to[o]", asking for the
+# built-in placeholder to stay reachable by chance alongside his own six,
+# not just via an explicit opt-out. `None` is exactly the sentinel
+# render_parking_transition_video()/ParkingTransitionCache already treat
+# as "no clip, no image - draw the plain procedural frame", so handing
+# `random.choice()`'s result straight through as `parking_transition_clip`
+# needs no special-casing at all when it happens to land on `None`. Every
+# one of the 7 entries has an equal 1-in-7 chance.
+RANDOM_PARKING_TRANSITION_POOL = DEFAULT_PARKING_TRANSITION_CLIPS + (None,)
+
 BACKGROUND_COLOR = (20, 20, 20)
 # Same red accent used throughout the rest of bv-export's own
 # rendering (map_render.py's ROUTE_COLOR/POSITION_DOT_COLOR/
@@ -355,6 +368,16 @@ def _render_from_clip(
     option, placed after -i) always wins - re-timed to `frame_rate`,
     and stripped of its own audio track with -an (see
     render_parking_transition_video()'s own docstring for why).
+
+    Since the loop always restarts from `clip_path`'s own frame 0, a
+    source longer than `duration_seconds` effectively contributes only
+    its own first `duration_seconds` - never a middle or end segment -
+    and a source shorter than `duration_seconds` loops back to its own
+    start to fill the rest, rather than freezing on its last frame or
+    leaving the placeholder short (Christer: "if an external clip is
+    added only the first 3 seconds should be imported" - already true
+    here for any clip at or above the fixed duration, verified with
+    real fixtures both directions).
     """
 
     encode_with_nvenc_fallback(
