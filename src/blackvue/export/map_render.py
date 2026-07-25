@@ -99,14 +99,19 @@ _ROAD_STYLE_BY_HIGHWAY: dict[str, tuple[tuple[int, int, int], int]] = {
 # name.
 _DEFAULT_ROAD_STYLE: tuple[tuple[int, int, int], int] = (ROAD_COLOR, 2)
 
-# Only "real" through-roads get a name label - a footpath/driveway's
-# own name (when it even has one) reads as clutter at this scale, and
-# there are usually far more of them per frame than named through
-# -roads. Deliberately a strict subset of _ROAD_STYLE_BY_HIGHWAY's own
-# keys (every entry here has a styling entry too), not the inverse.
+# Only major through-roads get a name label. This was originally the
+# 8 types just below the comment block (down through
+# unclassified/residential/living_street), but Christer flagged real
+# city driving as too cluttered - a dense residential grid has far more
+# named streets than a frame this size can label without every name
+# overlapping its neighbors. Confirmed with a synthetic dense-grid
+# render (8 residential cross-streets alongside 4 arterials): the old
+# set produced 12 overlapping labels crowding the top of the frame,
+# this narrower set produces 4 clearly separated ones. Deliberately a
+# strict subset of _ROAD_STYLE_BY_HIGHWAY's own keys (every entry here
+# has a styling entry too), not the inverse.
 _LABELED_HIGHWAY_TYPES = frozenset({
     "motorway", "trunk", "primary", "secondary", "tertiary",
-    "unclassified", "residential", "living_street",
 })
 # A road whose own on-screen length is shorter than this isn't worth
 # labeling - the text would be wider than the road itself, illegible
