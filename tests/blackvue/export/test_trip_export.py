@@ -12,6 +12,7 @@ from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
+from blackvue.export.parking_transition import PARKING_TRANSITION_DURATION_SECONDS
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.generate.media import MediaToolError
@@ -67,6 +68,21 @@ def _make_audio(path, duration_seconds: float = 1.0) -> None:
         text=True,
         check=True,
     )
+
+
+def _video_duration(path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(json.loads(result.stdout)["format"]["duration"])
 
 
 def _has_audio_stream(path) -> bool:
@@ -242,6 +258,196 @@ def test_export_trip_concatenates_front_rear_audio_independently(
     assert result.rear_video.exists()
     assert result.audio.exists()
     assert len(result.warnings) == 1
+
+
+def _parking_trip(source_dir, *, with_audio: bool = False):
+    """A 3-recording trip - drive, park, drive - with a real (long)
+    Parking-mode video in the middle, for --include-parking's
+    skip-and-replace tests below. The middle recording's own video is
+    deliberately much longer than the two flanking ones (mimicking a
+    real Parking timelapse's own played-back length) so a test can
+    tell "still the real Parking footage" (long) apart from "swapped
+    for the 3-second transition clip" (short) just from the resulting
+    front.mp4's own duration.
+    """
+
+    front_a = source_dir / "front_a.mp4"
+    front_p = source_dir / "front_p.mp4"
+    front_b = source_dir / "front_b.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(front_p, 6.0)
+    _make_video(front_b, 1.0)
+
+    assets_a = {Asset.FRONT: AssetFile(Asset.FRONT, front_a)}
+    assets_p = {Asset.FRONT: AssetFile(Asset.FRONT, front_p)}
+    assets_b = {Asset.FRONT: AssetFile(Asset.FRONT, front_b)}
+
+    if with_audio:
+        audio_a = source_dir / "audio_a.aac"
+        audio_p = source_dir / "audio_p.aac"
+        audio_b = source_dir / "audio_b.aac"
+        _make_audio(audio_a, 1.0)
+        _make_audio(audio_p, 6.0)
+        _make_audio(audio_b, 1.0)
+        assets_a[Asset.AUDIO] = AssetFile(Asset.AUDIO, audio_a)
+        assets_p[Asset.AUDIO] = AssetFile(Asset.AUDIO, audio_p)
+        assets_b[Asset.AUDIO] = AssetFile(Asset.AUDIO, audio_b)
+
+    first = Recording(id=RecordingId("20260720_100000_N"), assets=assets_a)
+    middle = Recording(id=RecordingId("20260720_100010_P"), assets=assets_p)
+    last = Recording(id=RecordingId("20260720_100100_N"), assets=assets_b)
+    return Trip((first, middle, last))
+
+
+def test_export_trip_replaces_a_mid_trip_parking_recording_with_a_transition_clip(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.warnings == ()
+    # 1s + PARKING_TRANSITION_DURATION_SECONDS + 1s, not 1s + 6s + 1s -
+    # the real (6s) Parking footage was swapped for the shorter
+    # transition clip.
+    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
+    assert abs(_video_duration(result.front_video) - expected) < 0.5
+
+
+def test_export_trip_include_parking_keeps_the_real_parking_footage(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    result = export_trip(trip, dest_dir, include_parking=True)
+
+    assert result.warnings == ()
+    # The original, unmodified behavior: every recording's own video,
+    # unconditionally - 1s + 6s + 1s, the real Parking footage kept.
+    assert abs(_video_duration(result.front_video) - 8.0) < 0.5
+
+
+def test_export_trip_leaves_a_parking_recording_at_the_trip_start_untouched(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_p = source_dir / "front_p.mp4"
+    front_b = source_dir / "front_b.mp4"
+    _make_video(front_p, 6.0)
+    _make_video(front_b, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_P"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)},
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)},
+        ),
+    ))
+
+    # Default include_parking=False - but this Parking recording
+    # starts the trip, with nothing before it to transition from, so
+    # it's always left as-is regardless of the flag.
+    result = export_trip(trip, dest_dir)
+
+    assert result.warnings == ()
+    assert abs(_video_duration(result.front_video) - 7.0) < 0.5
+
+
+def test_export_trip_leaves_a_parking_recording_at_the_trip_end_untouched(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    front_p = source_dir / "front_p.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(front_p, 6.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)},
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_P"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)},
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.warnings == ()
+    assert abs(_video_duration(result.front_video) - 7.0) < 0.5
+
+
+def test_export_trip_swaps_matching_silence_for_a_skipped_parking_recordings_audio(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir, with_audio=True)
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.warnings == ()
+    assert result.audio is not None
+    assert result.audio.exists()
+    # Christer: "swap in matching silence" - the audio placeholder has
+    # to be exactly as long as the video placeholder for stitch.mp4's
+    # later muxed-audio step to stay in sync, so audio.aac's own real
+    # total content should reflect the same 1s + 3s + 1s shape as
+    # front.mp4 (see media.py's concatenate_media() docstring on why a
+    # raw AAC elementary stream's own *reported* container duration
+    # isn't trustworthy - decoding is the only reliable check).
+    decoded = dest_dir / "audio_decoded.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(result.audio), str(decoded)],
+        capture_output=True, text=True, check=True,
+    )
+    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
+    assert abs(_video_duration(decoded) - expected) < 0.5
+
+
+def test_export_trip_parking_transition_image_override_is_used(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    # A tiny, real still image (not a video) - render_parking_transition
+    # _video() fits/pads whatever image it's given to the trip's own
+    # resolution, so any valid image works here.
+    custom_image = source_dir / "no_parking.png"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=blue:s=32x32",
+            "-frames:v", "1",
+            str(custom_image),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    result = export_trip(
+        trip, dest_dir, parking_transition_image=custom_image
+    )
+
+    assert result.warnings == ()
+    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
+    assert abs(_video_duration(result.front_video) - expected) < 0.5
 
 
 def test_export_trip_skips_missing_assets_cleanly(tmp_path):

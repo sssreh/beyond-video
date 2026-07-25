@@ -775,6 +775,65 @@ def test_main_sets_duration_heal_archive_true_when_flag_given(
     assert captured["duration_heal_archive"] is True
 
 
+def test_main_leaves_include_parking_false_by_default(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["include_parking"] is False
+    assert captured["parking_transition_image"] is None
+
+
+def test_main_sets_include_parking_true_when_flag_given(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--include-parking"])
+
+    assert captured["include_parking"] is True
+
+
+def test_main_forwards_parking_transition_image(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+    icon = tmp_path / "no_parking.png"
+
+    main([
+        "--target", str(target), str(archive),
+        "--parking-transition-image", str(icon),
+    ])
+
+    assert captured["parking_transition_image"] == str(icon)
+
+
 def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(
     tmp_path, monkeypatch
 ):

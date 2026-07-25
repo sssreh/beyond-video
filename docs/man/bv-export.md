@@ -12,6 +12,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-gap MINUTES] [--movement] [--no-duration] [--duration-heal-archive]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
+          [--include-parking] [--parking-transition-image PATH]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
           [--gsensor-video]
           [--stitch] [--stitch-layout LAYOUT]
@@ -74,6 +75,17 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 | `--duration-heal-archive` | Self-heal a missing `.duration.txt` for every recording in the archive during trip detection, not just the trip(s) being exported this run (the default - see below). Real, possibly long, one-time ffprobe cost before the first overwrite prompt can appear; trades that for maximum trip-detection accuracy up front. Rejected together with `--no-duration`. |
 | `--gap-tolerance SECONDS` | Fixed noise margin added on top of `--max-gap`. Default: 10. |
 | `--max-parking-duration MINUTES` | Longest a continuous run of Parking-mode footage can span in real elapsed time (not its played-back length) before a Parking recording is kept out of the trip it would otherwise end and starts the next trip instead - a single Parking recording longer than this on its own is never appended to the drive before it. Two or more chained Parking recordings whose combined real span crosses this can split from each other the same way, not just at the point driving resumes. Requires real duration data, same as `--max-gap`'s own duration-aware gap calculation (`--no-duration` disables this too). Default: 60. |
+
+### Parking footage
+
+`--max-parking-duration` above decides which recordings end up *inside* a trip in the first place; these two flags decide what happens to a Parking-mode recording that already is one, once that trip is actually assembled.
+
+| Option | Description |
+|---|---|
+| `--include-parking` | Include a Parking-mode recording strictly in the middle of a trip - flanked by another recording on both sides - as-is in `front.mp4`/`rear.mp4`/`audio.aac`. **Off by default**: that footage is left out instead and replaced with a 3-second synthetic clip (a still frame reading "PARKING FOOTAGE SKIPPED", and matching silence in `audio.aac`) so the rest of the trip's audio stays in sync with the video. A Parking recording at the very start or end of a trip is always included as-is, regardless of this flag - there's nothing to transition from/to on one side. |
+| `--parking-transition-image PATH` | Use a custom picture for the "parking footage skipped" placeholder frame, fitted/padded (not stretched) to match each trip's own camera resolution. Only meaningful when `--include-parking` is not given. Default: a bundled dark frame with a red "no parking" icon and caption. |
+
+The placeholder video/silence pair is re-rendered per distinct camera resolution/frame rate (video) or sample rate/channel count (audio) actually encountered, not shipped as one fixed file - `ffmpeg`'s concat demuxer stream-copies rather than re-encodes, so every source has to already match its neighbours exactly. A trip with several skipped Parking recordings at the same camera settings only pays for one real render of each.
 
 ### Map
 
@@ -164,7 +176,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 
 | File | Written by |
 |---|---|
-| `front.mp4`, `rear.mp4` | always (whichever cameras exist) |
+| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a mid-trip Parking recording is replaced by a 3-second transition clip unless `--include-parking` is given |
 | `trip.gpx` | always, if GPS data exists |
 | `trip.3gf` | always, if g-sensor data exists |
 | `trip.srt`, `trip.lrc` | always, if transcript data exists |

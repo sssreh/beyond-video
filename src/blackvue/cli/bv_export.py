@@ -316,6 +316,8 @@ def bv_export(
     stitch_gsensor_xy: tuple[float, float] | None = None,
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
+    include_parking: bool = False,
+    parking_transition_image: str | Path | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -399,6 +401,26 @@ def bv_export(
     Depends on real duration data the same way `--max-gap`'s own
     duration-aware gap calculation does, so `--no-duration` disables
     this too. Defaults to DEFAULT_MAX_PARKING_DURATION (60 minutes).
+
+    `include_parking=False` (the default) leaves any Parking-mode
+    recording strictly in the middle of a trip - flanked by another
+    recording on both sides - out of front.mp4/rear.mp4/audio.aac,
+    replacing it with a short synthetic clip instead: a still frame
+    reading "PARKING FOOTAGE SKIPPED", and matching silence for
+    audio.aac, both exactly 3 seconds long so every substituted asset
+    for that recording stays in sync with the others. A Parking
+    recording at the very start or end of a trip is always left as-is
+    regardless of this flag - there's nothing to transition from/to on
+    one side. Pass `include_parking=True` (bv-export's own
+    `--include-parking`) to include every Parking recording's real
+    footage/audio unconditionally instead, the original behavior.
+    `parking_transition_image`, if given, replaces the default "no
+    parking" placeholder frame with your own picture (fitted/padded to
+    match each trip's own resolution) - same bundled-default-with-
+    override convention as `map_icon`/`stitch_mirror_icon`, except
+    there's no procedural-vs-bundled split to opt out of here (the
+    procedural frame *is* the default), so there's no "none" value.
+    See blackvue.export.parking_transition for the full mechanism.
     """
 
     if duration_heal_archive and not duration:
@@ -579,6 +601,12 @@ def bv_export(
                 stitch_gsensor_xy=stitch_gsensor_xy,
                 stitch_subtitles=stitch_subtitles,
                 stitch_subtitles_background=stitch_subtitles_background,
+                include_parking=include_parking,
+                parking_transition_image=(
+                    Path(parking_transition_image)
+                    if parking_transition_image is not None
+                    else None
+                ),
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
@@ -1211,6 +1239,40 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--include-parking",
+        action="store_true",
+        default=False,
+        help=(
+            "Include a Parking-mode recording strictly in the middle "
+            "of a trip - flanked by another recording on both sides - "
+            "as-is in front.mp4/rear.mp4/audio.aac. By default, that "
+            "footage is left out and replaced with a short synthetic "
+            "clip instead (a still frame reading 'PARKING FOOTAGE "
+            "SKIPPED', and matching silence for audio.aac, both "
+            "exactly 3 seconds) - see --parking-transition-image to "
+            "use your own picture for that frame. A Parking recording "
+            "at the very start or end of a trip is always included "
+            "as-is, regardless of this flag - there's nothing to "
+            "transition from/to on one side."
+        ),
+    )
+
+    parser.add_argument(
+        "--parking-transition-image",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Use a custom picture for the 'parking footage skipped' "
+            "placeholder frame --include-parking's default behavior "
+            "shows instead of a skipped Parking recording - fitted/"
+            "padded (not stretched) to match each trip's own camera "
+            "resolution. Only meaningful when --include-parking is "
+            "not given. Default: a bundled dark frame with a red "
+            "'no parking' icon and caption."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -1291,6 +1353,8 @@ def main(argv: list[str] | None = None) -> int:
         stitch_gsensor_xy=args.stitch_gsensor_xy,
         stitch_subtitles=args.stitch_subtitles if args.stitch else False,
         stitch_subtitles_background=args.subtitles_bg,
+        include_parking=args.include_parking,
+        parking_transition_image=args.parking_transition_image,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         debug=args.debug,
