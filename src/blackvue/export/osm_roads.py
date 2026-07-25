@@ -87,9 +87,26 @@ class BoundingBox:
 @dataclass(frozen=True)
 class Road:
     """One OSM way tagged `highway=*`, as a sequence of (lat, lon)
-    points in the order Overpass returned them."""
+    points in the order Overpass returned them.
+
+    `highway` is the tag's own value (`"motorway"`, `"residential"`,
+    `"footway"`, ...) - map_render.py styles (color/width) and decides
+    whether to label a road by this, see its own
+    `_ROAD_STYLE_BY_HIGHWAY`/`_LABELED_HIGHWAY_TYPES`. `name` is the
+    OSM `name` tag if the way has one, else `None` - most footways/
+    service roads/unnamed tracks don't. Both default to their "unknown"
+    value (`""`/`None`) rather than being required, so an already
+    -cached `.osm_cache/*.json` payload from before this project kept
+    tags at all (unlikely in practice - see `_parse_overpass_payload()`'s
+    own docstring for why the raw cached response already had them all
+    along) or a test fixture that only ever supplied `points=` keeps
+    working unchanged - it just renders with this project's original
+    flat, unstyled, unlabeled look until re-fetched.
+    """
 
     points: tuple[tuple[float, float], ...]
+    highway: str = ""
+    name: str | None = None
 
 
 def bounding_box_for_fixes(
@@ -332,6 +349,23 @@ def _overpass_query(bbox: BoundingBox) -> str:
 
 
 def _parse_overpass_payload(payload: dict) -> tuple[Road, ...]:
+    """Parse a raw Overpass JSON response (either just-fetched or read
+    back from an `.osm_cache/*.json` file - both go through this same
+    function, see `load_or_fetch_roads()`) into `Road` objects,
+    including each way's own `highway`/`name` tags for map_render.py's
+    styling/labeling.
+
+    No query change was needed to start keeping these: `_overpass_query()`
+    's `out geom;` statement already requests full tags alongside
+    geometry (Overpass's own default verbosity, "body", includes tags -
+    only an explicit `out skel geom;`/`out ids geom;` would suppress
+    them), so every cache file this project has ever written already
+    has them in the raw response. This function used to just discard
+    them after `element.get("tags")`; now it keeps `highway`/`name`
+    too - meaning even an old, already-cached bbox picks up styling and
+    labels immediately, no re-fetch or cache-format migration required.
+    """
+
     roads = []
 
     for element in payload.get("elements", ()):
@@ -348,7 +382,12 @@ def _parse_overpass_payload(payload: dict) -> tuple[Road, ...]:
             if "lat" in point and "lon" in point
         )
         if points:
-            roads.append(Road(points=points))
+            tags = element.get("tags") or {}
+            roads.append(Road(
+                points=points,
+                highway=tags.get("highway", ""),
+                name=tags.get("name"),
+            ))
 
     return tuple(roads)
 

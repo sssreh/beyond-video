@@ -273,7 +273,7 @@ def test_render_frame_draws_the_gps_badge_in_the_top_right_corner():
 
 
 def test_load_font_only_opens_the_font_file_once(monkeypatch):
-    monkeypatch.setattr(map_render_module, "_CACHED_FONT", None)
+    monkeypatch.setattr(map_render_module, "_CACHED_FONT_BY_SIZE", {})
 
     calls = []
     # A plain sentinel, not a real font - load_default() itself calls
@@ -292,3 +292,28 @@ def test_load_font_only_opens_the_font_file_once(monkeypatch):
 
     assert first is second
     assert len(calls) == 1
+
+
+def test_load_font_caches_separately_per_size(monkeypatch):
+    # _load_font() is also used for the smaller road-name-label font
+    # (see _draw_roads()) alongside the default speed/timestamp size -
+    # a single-slot cache (this function's own original shape) would
+    # silently hand back the wrong-sized font for whichever one wasn't
+    # requested first.
+    monkeypatch.setattr(map_render_module, "_CACHED_FONT_BY_SIZE", {})
+
+    calls = []
+
+    def fake_truetype(path, size, *args, **kwargs):
+        calls.append(size)
+        return object()
+
+    monkeypatch.setattr(ImageFont, "truetype", fake_truetype)
+
+    default_size = _load_font()
+    small_size = _load_font(12)
+    default_size_again = _load_font()
+
+    assert default_size is not small_size
+    assert default_size is default_size_again
+    assert calls == [18, 12]

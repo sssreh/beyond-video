@@ -18,6 +18,15 @@ empty `areas` tuple, the default everywhere below, draws nothing new
 and looks exactly like before this was added) - see osm_roads.py's
 fetch_areas()/load_or_fetch_areas().
 
+Roads are drawn (and, for major named ones, labeled) by `_draw_roads()`
+- color/width vary by each road's own OSM `highway=*` tag (a motorway
+reads as a bold, distinct line; a residential street a plain muted
+one; a footpath thinner still - see `_ROAD_STYLE_BY_HIGHWAY`), and a
+sufficiently long, major, named road gets its own street name label at
+its longest visible segment (see `_LABELED_HIGHWAY_TYPES`) - one label
+per distinct name per frame, not one per OSM way, since a single real
+street is typically split into many ways.
+
 The current-position marker is an arrow rotated to the GPS course
 over ground by default, or a custom image (also rotated) when one is
 supplied (bv-export --map-icon) - see render_frame()'s docstring.
@@ -51,6 +60,63 @@ MARKER_FILL_COLOR = (230, 57, 70)
 MARKER_OUTLINE_COLOR = (255, 255, 255)
 TEXT_COLOR = (40, 40, 40)
 
+# OSM highway=* tag values this project recognizes for styling
+# (color, width) - loosely modeled on how common light basemap styles
+# (e.g. CartoDB Positron, the muted look BACKGROUND_COLOR/ROAD_COLOR
+# above already borrow from) differentiate a motorway from a
+# residential street from a footpath, tuned to still read clearly at
+# this project's typical 640x640 render. Christer asked for "street
+# names road colors" without specifying an exact palette - this is a
+# first pass, easy to retune (just this one table) once he's seen a
+# real render; not yet confirmed against his own taste.
+_ROAD_STYLE_BY_HIGHWAY: dict[str, tuple[tuple[int, int, int], int]] = {
+    "motorway": ((237, 139, 47), 5),
+    "motorway_link": ((237, 139, 47), 4),
+    "trunk": ((242, 168, 74), 5),
+    "trunk_link": ((242, 168, 74), 4),
+    "primary": ((247, 193, 110), 4),
+    "primary_link": ((247, 193, 110), 3),
+    "secondary": ((250, 214, 145), 3),
+    "secondary_link": ((250, 214, 145), 3),
+    "tertiary": ((214, 209, 197), 3),
+    "tertiary_link": ((214, 209, 197), 3),
+    "unclassified": ((190, 184, 172), 2),
+    "residential": ((190, 184, 172), 2),
+    "living_street": ((190, 184, 172), 2),
+    "service": ((205, 200, 190), 1),
+    "track": ((205, 200, 190), 1),
+    "footway": ((180, 178, 172), 1),
+    "path": ((180, 178, 172), 1),
+    "cycleway": ((180, 178, 172), 1),
+    "pedestrian": ((180, 178, 172), 1),
+    "steps": ((180, 178, 172), 1),
+}
+# Anything not in the table above - an unmapped/uncommon highway=*
+# value, or "" for a Road cached/constructed before this project kept
+# the tag at all (see osm_roads.Road's own docstring) - renders
+# identically to this project's original flat, single-color styling,
+# so nothing regresses for a road type this table doesn't happen to
+# name.
+_DEFAULT_ROAD_STYLE: tuple[tuple[int, int, int], int] = (ROAD_COLOR, 2)
+
+# Only "real" through-roads get a name label - a footpath/driveway's
+# own name (when it even has one) reads as clutter at this scale, and
+# there are usually far more of them per frame than named through
+# -roads. Deliberately a strict subset of _ROAD_STYLE_BY_HIGHWAY's own
+# keys (every entry here has a styling entry too), not the inverse.
+_LABELED_HIGHWAY_TYPES = frozenset({
+    "motorway", "trunk", "primary", "secondary", "tertiary",
+    "unclassified", "residential", "living_street",
+})
+# A road whose own on-screen length is shorter than this isn't worth
+# labeling - the text would be wider than the road itself, illegible
+# clutter rather than a useful label.
+_MIN_LABELED_ROAD_LENGTH_PX = 40
+# Smaller than the default 18px speed/timestamp font (DEFAULT_MARGIN_PX
+# and friends were sized around that one) - a label sits directly on
+# top of its own road, not tucked in a corner with room to spare.
+_ROAD_LABEL_FONT_SIZE = 12
+
 # The "live GPS fix" badge (see render_map_video()'s `show_gps_badge`
 # handling in map_video.py, and _draw_gps_badge() below) - a small
 # satellite glyph on a translucent dark circle, top-right corner, on
@@ -76,28 +142,31 @@ _FONT_CANDIDATES = (
     "DejaVuSans-Bold.ttf",
 )
 
-# Cached after the first render_frame() call - a map.mp4 export calls
-# this once per frame (every frame draws its speed/timestamp text),
-# and re-opening and re-parsing the same TTF file from disk that many
-# times over was a real, measured chunk of render time for no benefit
-# (the font never changes mid-export).
-_CACHED_FONT: ImageFont.ImageFont | None = None
+# Cached by size after the first request for that size - a map.mp4
+# export calls this once per frame for the speed/timestamp text (every
+# frame draws it), and re-opening and re-parsing the same TTF file from
+# disk that many times over was a real, measured chunk of render time
+# for no benefit (the font never changes mid-export). Keyed by size
+# (rather than the single-slot cache this used to be) since road-name
+# labels (_draw_roads() below) need a second, smaller size alongside
+# the speed/timestamp overlay's own - same dict-cache pattern
+# parking_transition.py's own _load_font() already uses for the same
+# reason.
+_CACHED_FONT_BY_SIZE: dict[int, ImageFont.ImageFont] = {}
 
 
 def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    global _CACHED_FONT
-
-    if _CACHED_FONT is None:
+    if size not in _CACHED_FONT_BY_SIZE:
         for candidate in _FONT_CANDIDATES:
             try:
-                _CACHED_FONT = ImageFont.truetype(candidate, size)
+                _CACHED_FONT_BY_SIZE[size] = ImageFont.truetype(candidate, size)
                 break
             except OSError:
                 continue
         else:
-            _CACHED_FONT = ImageFont.load_default()
+            _CACHED_FONT_BY_SIZE[size] = ImageFont.load_default()
 
-    return _CACHED_FONT
+    return _CACHED_FONT_BY_SIZE[size]
 
 
 def _project(
@@ -255,6 +324,64 @@ def _draw_gps_badge(
     image.paste(badge, (x, y), badge)
 
 
+def _polyline_length(pixels: list[tuple[float, float]]) -> float:
+    return sum(
+        math.hypot(x2 - x1, y2 - y1)
+        for (x1, y1), (x2, y2) in zip(pixels, pixels[1:])
+    )
+
+
+def _draw_roads(
+    draw: ImageDraw.ImageDraw,
+    proj,
+    roads: tuple[Road, ...],
+) -> None:
+    """Draw every road's own line, styled by its OSM `highway=*` tag
+    (see `_ROAD_STYLE_BY_HIGHWAY`), then - in a second pass, so a label
+    is never immediately overdrawn by a later road's own line crossing
+    it - a name label for each sufficiently long, major, named road
+    (see `_LABELED_HIGHWAY_TYPES`/`_MIN_LABELED_ROAD_LENGTH_PX`).
+
+    A single real street is usually split into many separate OSM ways
+    (one per intersection) - labeling every segment would repeat the
+    same name over and over along one street, so this keeps only the
+    single longest on-screen segment per distinct name and labels that
+    one. `stroke_width`/`stroke_fill` draws a background-colored halo
+    behind each label so it stays legible over a road/area fill of a
+    similar shade to the text itself, without needing a separate
+    background box.
+
+    Shared by `render_base_map()` and `render_frame()`'s own
+    from-scratch (no `base_image`) path so the two styling/labeling
+    rules can't drift apart from each other.
+    """
+
+    labels_by_name: dict[str, tuple[tuple[float, float], float]] = {}
+
+    for road in roads:
+        pixels = [proj(lat, lon) for lat, lon in road.points]
+        if len(pixels) < 2:
+            continue
+
+        color, width = _ROAD_STYLE_BY_HIGHWAY.get(road.highway, _DEFAULT_ROAD_STYLE)
+        draw.line(pixels, fill=color, width=width)
+
+        if road.name and road.highway in _LABELED_HIGHWAY_TYPES:
+            length = _polyline_length(pixels)
+            if length >= _MIN_LABELED_ROAD_LENGTH_PX:
+                existing = labels_by_name.get(road.name)
+                if existing is None or length > existing[1]:
+                    labels_by_name[road.name] = (pixels[len(pixels) // 2], length)
+
+    if labels_by_name:
+        font = _load_font(_ROAD_LABEL_FONT_SIZE)
+        for name, (point, _length) in labels_by_name.items():
+            draw.text(
+                point, name, font=font, fill=TEXT_COLOR, anchor="mm",
+                stroke_width=2, stroke_fill=BACKGROUND_COLOR,
+            )
+
+
 def render_base_map(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
@@ -296,10 +423,7 @@ def render_base_map(
             fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
             draw.polygon(pixels, fill=fill)
 
-    for road in roads:
-        pixels = [proj(lat, lon) for lat, lon in road.points]
-        if len(pixels) >= 2:
-            draw.line(pixels, fill=ROAD_COLOR, width=2)
+    _draw_roads(draw, proj, roads)
 
     return image
 
@@ -379,10 +503,7 @@ def render_frame(
                 fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
                 draw.polygon(pixels, fill=fill)
 
-        for road in roads:
-            pixels = [proj(lat, lon) for lat, lon in road.points]
-            if len(pixels) >= 2:
-                draw.line(pixels, fill=ROAD_COLOR, width=2)
+        _draw_roads(draw, proj, roads)
 
     if len(route_points) >= 2:
         pixels = [proj(lat, lon) for lat, lon in route_points]
