@@ -12,6 +12,7 @@ from blackvue.export import stitch as stitch_module
 from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import STACK_LAYOUTS
+from blackvue.export.stitch import _default_rearview_mirror_map_side
 from blackvue.export.stitch import _escape_subtitles_filename
 from blackvue.export.stitch import _map_panel_dimensions
 from blackvue.export.stitch import parse_gsensor_position
@@ -260,6 +261,20 @@ def test_pick_stitch_layout_picks_top_down_for_a_north_south_trip():
 
 def test_pick_stitch_layout_returns_none_for_no_gps_data():
     assert pick_stitch_layout(()) is None
+
+
+def test_default_rearview_mirror_map_side_picks_left_for_a_north_south_trip():
+    fixes = (_fix(0, 59.00, 18.000), _fix(2, 60.00, 18.001))
+    assert _default_rearview_mirror_map_side(fixes) == "left"
+
+
+def test_default_rearview_mirror_map_side_picks_down_for_an_east_west_trip():
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.301, 18.100))
+    assert _default_rearview_mirror_map_side(fixes) == "down"
+
+
+def test_default_rearview_mirror_map_side_falls_back_to_down_for_no_gps_data():
+    assert _default_rearview_mirror_map_side(()) == "down"
 
 
 def test_stitch_cameras_rejects_auto_layout_directly(tmp_path):
@@ -2931,17 +2946,23 @@ def test_stitch_cameras_rearview_mirror_icon_still_respects_mirror_pan(
     assert pixel[0] > 150 and pixel[1] < 100 and pixel[2] < 100
 
 
-def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
+def test_stitch_cameras_rearview_mirror_map_panel_defaults_to_left_for_a_north_south_trip(
     tmp_path
 ):
     front = tmp_path / "front.mp4"
     rear = tmp_path / "rear.mp4"
     _make_solid_video(front, 640, 480, "blue")
     _make_solid_video(rear, 320, 240, "black")
-    # A sharply north-south trip - with the general 50% clamp this
-    # would ask for a much taller panel than 30% of 480 (144px); the
-    # agreed spec caps rearview_mirror specifically at 30%, so the
-    # actual added height should land exactly there instead.
+    # A sharply north-south trip - _default_rearview_mirror_map_side()
+    # puts its map panel on the left by default (Christer: "if a trip
+    # is mainly north-south we put it to the left of the video"). As a
+    # "left" panel, height is matched to comp_height (480) and width is
+    # the free axis - sized from the trip's own real-world aspect ratio
+    # (comp_height * trip_ratio), which for a trip this sharply
+    # north-south (trip_ratio near 0) comes out far too thin and hits
+    # _MIN_MAP_PANEL_FRACTION's 20% floor instead, not the 30%
+    # rearview_mirror max (that cap binds the *other* way, for a "down"
+    # panel on the same trip - see the explicit-side test below).
     fixes = (_fix(0, 59.00, 18.000), _fix(2, 60.00, 18.001))
 
     warnings = []
@@ -2949,6 +2970,33 @@ def test_stitch_cameras_rearview_mirror_map_panel_is_capped_at_30_percent(
     stitch_cameras(
         front, rear, destination, layout="rearview_mirror",
         map_mode="map", map_fixes=fixes, map_roads=(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # comp_width (640) * 0.2 = 128, already even.
+    assert width == 640 + 128
+    assert height == 480
+
+
+def test_stitch_cameras_rearview_mirror_map_panel_honors_an_explicit_side(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_solid_video(front, 640, 480, "blue")
+    _make_solid_video(rear, 320, 240, "black")
+    # Same sharply north-south trip as the test above, which would
+    # default to "left" - an explicit map_side overrides that, same as
+    # it does for side_by_side/top_down.
+    fixes = (_fix(0, 59.00, 18.000), _fix(2, 60.00, 18.001))
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        map_mode="map", map_fixes=fixes, map_roads=(), map_side="down",
+        warnings=warnings,
     )
 
     assert warnings == []

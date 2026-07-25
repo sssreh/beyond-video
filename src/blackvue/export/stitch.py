@@ -64,16 +64,16 @@ AUTO_LAYOUT = "auto"
 # side_by_side (wide) camera row gets its map panel on the bottom -
 # nested perpendicular to the camera arrangement so the final frame
 # doesn't turn into a long thin ribbon in either direction.
-# rearview_mirror's own default ("down") is my own pick, not specified
-# in the agreed spec beyond "left or down" - front is the whole
-# composite in this layout (no rear column/row to be perpendicular
-# to), so there's no geometric argument either way; `down` just
-# matches side_by_side's own default rather than for any deeper
-# reason.
+#
+# rearview_mirror isn't in this dict - it's a single full-frame camera
+# in this layout, not a stack, so there's no camera-shape to nest
+# perpendicular to the way there is for the other two. See
+# _default_rearview_mirror_map_side() instead, which picks its side
+# from the trip's own geometry (the same north-south/east-west check
+# pick_stitch_layout() uses) rather than a fixed default.
 _DEFAULT_MAP_SIDE_FOR_LAYOUT = {
     "side_by_side": "down",
     "top_down": "left",
-    "rearview_mirror": "down",
 }
 
 # rearview_mirror isn't a plain hstack/vstack of two full-size cameras
@@ -618,7 +618,9 @@ def stitch_cameras(
     meaningful when both front and rear exist (the single-camera
     fallback below ignores it entirely, same as `layout` - not yet
     built for that simpler path). `map_side` overrides the panel's
-    default side (see _DEFAULT_MAP_SIDE_FOR_LAYOUT); `map_size`
+    default side (see _DEFAULT_MAP_SIDE_FOR_LAYOUT for side_by_side/
+    top_down, or _default_rearview_mirror_map_side() for
+    rearview_mirror); `map_size`
     (--stitch-map-size, a percent, MIN_/MAX_MAP_SIZE_PERCENT) overrides
     the panel's own automatic geography-aspect-ratio sizing with an
     exact fraction of the camera composite's matching dimension - see
@@ -1185,6 +1187,36 @@ def pick_stitch_layout(fixes: tuple[GpsFix, ...]) -> str | None:
         return None
 
     return "side_by_side" if aspect_ratio_of(bbox) >= 1.0 else "top_down"
+
+
+def _default_rearview_mirror_map_side(fixes: tuple[GpsFix, ...]) -> str:
+    """--stitch-map's default panel side for rearview_mirror
+    specifically, when --stitch-map-side isn't given explicitly -
+    Christer: "if a trip is mainly north-south we put it to the left
+    of the video."
+
+    Unlike side_by_side/top_down (see _DEFAULT_MAP_SIDE_FOR_LAYOUT),
+    there's no camera-stack shape to nest perpendicular to here -
+    rearview_mirror is a single full-frame camera, not a stack, so its
+    own shape never varies with the trip. This instead counters the
+    *map panel's own* natural shape: a north-south trip's map renders
+    tall and narrow (a natural fit for a left column); an east-west
+    trip's renders wide and short (a natural fit underneath). Same
+    bounding_box_for_fixes()/aspect_ratio_of() geometry
+    pick_stitch_layout() already uses to pick between side_by_side/
+    top_down, aimed at the map instead of the camera arrangement.
+
+    Falls back to "down" - _DEFAULT_MAP_SIDE_FOR_LAYOUT's own
+    convention for the other two layouts - when there isn't enough GPS
+    data to compute a bounding box at all, same "degrade, don't fail"
+    pattern pick_stitch_layout() itself follows.
+    """
+
+    bbox = bounding_box_for_fixes(fixes)
+    if bbox is not None and aspect_ratio_of(bbox) < 1.0:
+        return "left"
+
+    return "down"
 
 
 def _map_panel_dimensions(
@@ -2344,7 +2376,12 @@ def _stack(
         output_label = camera_label
 
         if map_mode is not None and map_fixes:
-            panel_side = map_side or _DEFAULT_MAP_SIDE_FOR_LAYOUT.get(layout)
+            if map_side is not None:
+                panel_side = map_side
+            elif layout == _MIRROR_LAYOUT:
+                panel_side = _default_rearview_mirror_map_side(map_fixes)
+            else:
+                panel_side = _DEFAULT_MAP_SIDE_FOR_LAYOUT.get(layout)
 
             if panel_side is None:
                 if warnings is not None:

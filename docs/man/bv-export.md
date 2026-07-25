@@ -128,7 +128,7 @@ The position marker itself is hidden entirely before the trip's very first real 
 | Option | Description |
 |---|---|
 | `--stitch-map [{map,zoom}]` | Compose a map panel alongside the cameras, rendered fresh at the composite's own size (not a copy of `--map`'s file). Bare flag = static overview; `zoom` = follow-camera view (needs `--map-zoom METERS` too, reused as the radius). |
-| `--stitch-map-side {left,right,top,down}` | Panel side. Default: left for `top_down`, down for `side_by_side`/`rearview_mirror`. |
+| `--stitch-map-side {left,right,top,down}` | Panel side. Default: left for `top_down`, down for `side_by_side`. For `rearview_mirror` (a single full-frame camera, not a stack, so there's no camera shape to nest the panel against) the default instead follows the trip's own real-world shape: left for a mainly north-south trip, down for a mainly east-west one (or when there's no GPS data to judge by). |
 | `--stitch-map-size PERCENT` | Panel width/height as a percent of the matching composite dimension (5-80). Default: sized automatically from the trip's own aspect ratio. |
 
 ### Stitch g-sensor overlay
