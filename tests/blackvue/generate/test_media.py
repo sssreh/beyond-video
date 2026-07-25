@@ -12,6 +12,7 @@ from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import compute_span
 from blackvue.generate.media import get_span
+from blackvue.generate.media import load_or_compute_duration
 from blackvue.generate.media import read_duration_seconds
 from blackvue.generate.media import select_source
 from blackvue.generate.mp4_box_reader import Mp4Info
@@ -120,6 +121,120 @@ def test_read_duration_seconds_returns_none_for_malformed_content(tmp_path):
     )
 
     assert read_duration_seconds(recording) is None
+
+
+def test_load_or_compute_duration_returns_the_cached_value_without_probing(
+    tmp_path, monkeypatch
+):
+    duration_path = tmp_path / "20260715_133255_N.duration.txt"
+    duration_path.write_text("125\n", encoding="utf-8")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.DURATION] = AssetFile(
+        asset=Asset.DURATION, path=duration_path
+    )
+
+    def fail_get_span(*_args, **_kwargs):
+        raise AssertionError("get_span() should not be called for a cache hit")
+
+    monkeypatch.setattr(media_module, "get_span", fail_get_span)
+
+    assert load_or_compute_duration(recording) == 125
+
+
+def test_load_or_compute_duration_computes_and_writes_a_missing_file(
+    tmp_path, monkeypatch
+):
+    front_path = tmp_path / "20260715_133255_N_front.mp4"
+    front_path.write_bytes(b"")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_path)
+
+    monkeypatch.setattr(media_module, "get_span", lambda _id, _path: 342)
+
+    result = load_or_compute_duration(recording)
+
+    assert result == 342
+    written = tmp_path / "20260715_133255_N.duration.txt"
+    assert written.read_text(encoding="utf-8") == "342\n"
+
+
+def test_load_or_compute_duration_prefers_front_falls_back_to_rear(
+    tmp_path, monkeypatch
+):
+    rear_path = tmp_path / "20260715_133255_N_rear.mp4"
+    rear_path.write_bytes(b"")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.REAR] = AssetFile(asset=Asset.REAR, path=rear_path)
+
+    probed_paths = []
+
+    def fake_get_span(_id, path):
+        probed_paths.append(path)
+        return 88
+
+    monkeypatch.setattr(media_module, "get_span", fake_get_span)
+
+    assert load_or_compute_duration(recording) == 88
+    assert probed_paths == [rear_path]
+
+
+def test_load_or_compute_duration_returns_none_without_front_or_rear(monkeypatch):
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+
+    def fail_get_span(*_args, **_kwargs):
+        raise AssertionError("get_span() should not be called with no source")
+
+    monkeypatch.setattr(media_module, "get_span", fail_get_span)
+
+    assert load_or_compute_duration(recording) is None
+
+
+def test_load_or_compute_duration_returns_none_when_get_span_fails(
+    tmp_path, monkeypatch
+):
+    front_path = tmp_path / "20260715_133255_N_front.mp4"
+    front_path.write_bytes(b"")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_path)
+
+    def fail_get_span(*_args, **_kwargs):
+        raise MediaToolError("ffprobe not found")
+
+    monkeypatch.setattr(media_module, "get_span", fail_get_span)
+
+    assert load_or_compute_duration(recording) is None
+    assert not (tmp_path / "20260715_133255_N.duration.txt").exists()
+
+
+def test_load_or_compute_duration_still_returns_the_value_if_writing_fails(
+    tmp_path, monkeypatch
+):
+    # A read-only archive, a full disk, etc. - the caller still gets
+    # the real answer it asked for even if persisting the cache back
+    # out didn't work, same "never worth failing over" convention as
+    # everything else in this module.
+    front_path = tmp_path / "20260715_133255_N_front.mp4"
+    front_path.write_bytes(b"")
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_path)
+
+    monkeypatch.setattr(media_module, "get_span", lambda _id, _path: 99)
+
+    real_write_text = Path.write_text
+
+    def fake_write_text(self, *args, **kwargs):
+        if self.name.endswith(".duration.txt"):
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    assert load_or_compute_duration(recording) == 99
 
 
 def test_get_span_uses_ffprobe_result_when_probe_succeeds(

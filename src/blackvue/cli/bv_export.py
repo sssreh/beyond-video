@@ -47,7 +47,7 @@ from blackvue.export.stitch import MIN_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.generate.media import MediaToolError
-from blackvue.generate.media import read_duration_seconds
+from blackvue.generate.media import load_or_compute_duration
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
@@ -351,11 +351,18 @@ def bv_export(
     lose its earlier recordings entirely, since they'd never even
     reach TripBuilder, and the exported "trip" would be missing real
     footage that belongs to it. The trade-off: trip detection (and
-    anything it reads per recording, like `.duration.txt` for
+    anything it reads - or, for `.duration.txt` specifically, computes
+    and writes the first time - per recording, like real span data for
     `--no-duration`'s opposite, or GPS/g-sensor data for movement
-    bridging) now runs across the *entire* archive on every run, not
-    just the requested range - a real cost on a very large archive,
-    accepted here in favor of never silently truncating a trip.
+    bridging; see `load_or_compute_duration()`) now runs across the
+    *entire* archive on every run, not just the requested range - a
+    real cost on a very large archive, accepted here in favor of never
+    silently truncating a trip. The very first run against a fresh
+    archive (no `.duration.txt` files yet, and `--no-duration` not
+    given) pays a one-time ffprobe cost per recording across the whole
+    archive to self-heal that cache; every run after that is exactly
+    as cheap as reading the files back in, the same as before this
+    self-healing existed.
 
     `command_line`, if given, is written verbatim into every trip's
     own trip.log as the exact command that produced it - main() below
@@ -404,7 +411,7 @@ def bv_export(
         else DEFAULT_MAX_PARKING_DURATION
     )
     bridge = movement_bridges_gap if movement else None
-    recording_duration = read_duration_seconds if duration else None
+    recording_duration = load_or_compute_duration if duration else None
     # Trip detection only considers recordings with a Front asset -
     # see recordings_with_front_video()'s own docstring for why
     # (GPS/g-sensor/thumbnail-only recordings, common when Front/Rear
@@ -647,10 +654,16 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Ignore .duration.txt files and measure gaps from each "
             "recording's start timestamp only. By default, a "
-            "recording's real span (from bv-generate --get-duration, "
-            "if it's been run) is added to its start before "
+            "recording's real span is added to its start before "
             "comparing the gap to the next recording against "
-            "--max-gap, so a long recording isn't mistaken for a gap."
+            "--max-gap, so a long recording isn't mistaken for a gap - "
+            "reusing an existing .duration.txt (from an earlier "
+            "bv-generate --get-duration run) when there is one, or "
+            "computing and writing one on the spot otherwise, so this "
+            "works out of the box without needing that separate pass "
+            "first. --no-duration skips all of that (no ffprobe/ffmpeg "
+            "calls for this, no files written) and falls back to plain "
+            "start-to-start timestamps."
         ),
     )
 

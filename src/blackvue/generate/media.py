@@ -176,6 +176,60 @@ def read_duration_seconds(recording: Recording) -> int | None:
         return None
 
 
+def load_or_compute_duration(recording: Recording) -> int | None:
+    """Return a recording's real-world span in seconds, self-healing
+    the cache read_duration_seconds() alone only ever reads: an
+    existing .duration.txt is read and returned as-is (same as
+    read_duration_seconds()), but a *missing* one is computed via
+    get_span() and written out right here, the same
+    load-if-cached-else-fetch-and-cache pattern
+    osm_roads.load_or_fetch_roads() already uses for OSM road/area
+    data - so a trip's own recordings don't need a separate upfront
+    `bv-generate --get-duration` pass before something that needs real
+    elapsed time (TripBuilder's max_parking_duration cap, the
+    duration-aware trip-gap calculation, trip_stats) can use it. Once
+    written, the file persists in the archive like any other asset -
+    free on every later call, including from an entirely separate
+    bv-export/bv-ls run.
+
+    Unlike read_duration_seconds(), this does touch ffprobe/ffmpeg (via
+    get_span()) whenever the cache is missing - a real, one-time cost
+    per recording. Callers that must stay ffmpeg-free (e.g. anything
+    that can't carry a hard ffmpeg dependency) should keep using
+    read_duration_seconds() directly instead.
+
+    Returns None - without writing anything - if the recording has
+    neither a front nor rear video to probe (select_source() finds
+    nothing) or if get_span() itself raises MediaToolError. Also
+    returns the freshly computed value even if writing the cache file
+    back out fails (a read-only archive, a full disk) - never worth
+    losing the answer the caller actually asked for over a failed
+    write, same "never worth failing over" convention this module's
+    other cache-adjacent functions already follow.
+    """
+
+    cached = read_duration_seconds(recording)
+    if cached is not None:
+        return cached
+
+    source_file = select_source(recording)
+    if source_file is None:
+        return None
+
+    try:
+        span = get_span(recording.id, source_file.path)
+    except MediaToolError:
+        return None
+
+    destination = source_file.path.parent / f"{recording.id}.duration.txt"
+    try:
+        destination.write_text(f"{span}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+    return span
+
+
 def extract_audio(source: Path, destination: Path) -> None:
     """Extract the audio track from source into destination via ffmpeg.
 
