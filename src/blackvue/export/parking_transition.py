@@ -62,6 +62,29 @@ from .media import encode_with_nvenc_fallback
 # trivially in sync with each other (see the module docstring).
 PARKING_TRANSITION_DURATION_SECONDS = 3.0
 
+_ASSETS_DIR = Path(__file__).parent / "assets"
+
+# Christer's own six Kling-generated "no parking" clips (confirmed his
+# own AI-generated content, not third-party footage) - bv-export's CLI
+# picks one at random per trip whenever neither --parking-transition
+# -image nor --parking-transition-clip is given (Christer: "I want
+# them to be randomly inserted if not specified"), see bv_export.py's
+# main(). Kept as bv_export.py's own CLI-layer default rather than
+# this module's/export_trip()'s (same "CLI has its own opinionated
+# default, library stays neutral" split already used for --map-icon/
+# --stitch-mirror-icon - see map_video.DEFAULT_MAP_ICON_PATH's own
+# comment) - export_trip() itself still defaults to the plain
+# procedural frame when nothing at all is given, e.g. for this
+# project's own test suite or any other direct caller.
+DEFAULT_PARKING_TRANSITION_CLIPS = (
+    _ASSETS_DIR / "no_parking_1.mp4",
+    _ASSETS_DIR / "no_parking_2.mp4",
+    _ASSETS_DIR / "no_parking_3.mp4",
+    _ASSETS_DIR / "no_parking_4.mp4",
+    _ASSETS_DIR / "no_parking_5.mp4",
+    _ASSETS_DIR / "no_parking_6.mp4",
+)
+
 BACKGROUND_COLOR = (20, 20, 20)
 # Same red accent used throughout the rest of bv-export's own
 # rendering (map_render.py's ROUTE_COLOR/POSITION_DOT_COLOR/

@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import argparse
+import random
 import shlex
 import shutil
 import sys
@@ -24,6 +25,7 @@ from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.map_video import DEFAULT_MAP_ICON_PATH
 from blackvue.export.mirror_icon import DEFAULT_MIRROR_ICON_PATH
+from blackvue.export.parking_transition import DEFAULT_PARKING_TRANSITION_CLIPS
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
@@ -415,20 +417,30 @@ def bv_export(
     one side. Pass `include_parking=True` (bv-export's own
     `--include-parking`) to include every Parking recording's real
     footage/audio unconditionally instead, the original behavior.
-    `parking_transition_image`, if given, replaces the default "no
-    parking" placeholder frame with your own picture (fitted/padded to
-    match each trip's own resolution) - same bundled-default-with-
-    override convention as `map_icon`/`stitch_mirror_icon`, except
-    there's no procedural-vs-bundled split to opt out of here (the
-    procedural frame *is* the default), so there's no "none" value.
+
+    Unless overridden (see below), each trip that needs a transition
+    picks one of `parking_transition.DEFAULT_PARKING_TRANSITION_CLIPS`
+    at random - Christer's own six Kling-generated "no parking" clips
+    - rather than always showing the same plain procedural frame; a
+    fresh random pick per trip, not once for the whole run, so a run
+    exporting several trips isn't locked into showing the same clip
+    every time. `parking_transition_image`, if given, replaces that
+    random default with your own still picture instead (fitted/padded
+    to match each trip's own resolution) - same bundled-default-with-
+    override convention as `map_icon`/`stitch_mirror_icon`.
     `parking_transition_clip`, if given, takes priority over
-    `parking_transition_image` and uses a real video instead of a
-    still frame - looped or trimmed to the fixed transition duration,
-    re-encoded to match each trip's own resolution/frame rate, and
-    always stripped of its own audio track. Rejected together with
-    `parking_transition_image` - only one placeholder source at a
-    time. See blackvue.export.parking_transition for the full
-    mechanism.
+    `parking_transition_image` and uses your own real video instead of
+    a still frame or the random default - looped or trimmed to the
+    fixed transition duration, re-encoded to match each trip's own
+    resolution/frame rate, and always stripped of its own audio track.
+    `parking_transition_image`/`parking_transition_clip` are rejected
+    together - only one placeholder source at a time. The random
+    default only applies through bv-export's own CLI/`bv_export()` -
+    `export_trip()` itself still defaults to the plain procedural
+    frame when nothing at all is given, the same "CLI has its own
+    opinionated default, library stays neutral" split `map_icon`/
+    `stitch_mirror_icon` already use. See
+    blackvue.export.parking_transition for the full mechanism.
     """
 
     if duration_heal_archive and not duration:
@@ -586,6 +598,33 @@ def bv_export(
                 if wipe_decision:
                     shutil.rmtree(folder)
 
+        # Resolved per trip (not once for the whole run, the way
+        # map_icon_path/stitch_mirror_icon_path are above) specifically
+        # so a random pick actually varies across trips in the same
+        # run rather than locking the entire run into one clip picked
+        # before the first trip even started. Only kicks in when
+        # neither --parking-transition-image nor
+        # --parking-transition-clip was given - an explicit choice
+        # always wins - and only bothers picking when there's
+        # something to skip in the first place (--include-parking
+        # means no transition is ever rendered, so nothing to choose).
+        # Christer: "I want them to be randomly inserted if not
+        # specified" (his own Kling-generated clips, see
+        # parking_transition.DEFAULT_PARKING_TRANSITION_CLIPS).
+        trip_parking_transition_clip = (
+            Path(parking_transition_clip)
+            if parking_transition_clip is not None
+            else None
+        )
+        if (
+            not include_parking
+            and parking_transition_image is None
+            and trip_parking_transition_clip is None
+        ):
+            trip_parking_transition_clip = random.choice(
+                DEFAULT_PARKING_TRANSITION_CLIPS
+            )
+
         try:
             result = export_trip(
                 trip,
@@ -622,11 +661,7 @@ def bv_export(
                     if parking_transition_image is not None
                     else None
                 ),
-                parking_transition_clip=(
-                    Path(parking_transition_clip)
-                    if parking_transition_clip is not None
-                    else None
-                ),
+                parking_transition_clip=trip_parking_transition_clip,
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
@@ -1267,14 +1302,14 @@ def main(argv: list[str] | None = None) -> int:
             "of a trip - flanked by another recording on both sides - "
             "as-is in front.mp4/rear.mp4/audio.aac. By default, that "
             "footage is left out and replaced with a short synthetic "
-            "clip instead (a still frame reading 'PARKING FOOTAGE "
-            "SKIPPED', and matching silence for audio.aac, both "
-            "exactly 3 seconds) - see --parking-transition-image/"
-            "--parking-transition-clip to use your own picture or "
-            "video for that frame. A Parking recording at the very "
-            "start or end of a trip is always included as-is, "
-            "regardless of this flag - there's nothing to transition "
-            "from/to on one side."
+            "clip instead: one of six bundled 'no parking' clips "
+            "picked at random per trip, or matching silence for "
+            "audio.aac, both exactly 3 seconds - see "
+            "--parking-transition-image/--parking-transition-clip to "
+            "use your own picture or video instead of the random "
+            "default. A Parking recording at the very start or end of "
+            "a trip is always included as-is, regardless of this flag "
+            "- there's nothing to transition from/to on one side."
         ),
     )
 
@@ -1284,13 +1319,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Use a custom picture for the 'parking footage skipped' "
-            "placeholder frame --include-parking's default behavior "
-            "shows instead of a skipped Parking recording - fitted/"
-            "padded (not stretched) to match each trip's own camera "
-            "resolution. Only meaningful when --include-parking is "
-            "not given. Default: a bundled dark frame with a red "
-            "'no parking' icon and caption. Rejected together with "
-            "--parking-transition-clip."
+            "placeholder frame instead of the default random pick "
+            "from six bundled 'no parking' clips (see "
+            "--parking-transition-clip) - fitted/padded (not "
+            "stretched) to match each trip's own camera resolution. "
+            "Only meaningful when --include-parking is not given. "
+            "Rejected together with --parking-transition-clip."
         ),
     )
 
@@ -1300,12 +1334,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Use a custom video (rather than a still picture) for the "
-            "'parking footage skipped' placeholder - e.g. your own "
-            "AI-generated 'no parking' clip. Looped or trimmed to "
-            "exactly 3 seconds regardless of its own length, scaled/"
-            "padded (not stretched) to match each trip's own camera "
-            "resolution and frame rate, and always stripped of its "
-            "own audio track (front.mp4/rear.mp4 are video-only "
+            "'parking footage skipped' placeholder, instead of the "
+            "default random pick from six bundled 'no parking' clips "
+            "(Christer's own Kling-generated ones). Looped or trimmed "
+            "to exactly 3 seconds regardless of its own length, "
+            "scaled/padded (not stretched) to match each trip's own "
+            "camera resolution and frame rate, and always stripped of "
+            "its own audio track (front.mp4/rear.mp4 are video-only "
             "throughout this pipeline). Only meaningful when "
             "--include-parking is not given. Rejected together with "
             "--parking-transition-image."
