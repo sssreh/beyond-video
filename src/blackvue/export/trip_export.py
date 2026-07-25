@@ -370,6 +370,7 @@ def export_trip(
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
     parking_transition_image: Path | None = None,
+    parking_transition_clip: Path | None = None,
     command_line: str | None = None,
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
@@ -561,7 +562,15 @@ def export_trip(
     the default "no parking" placeholder frame with Christer's own
     picture (fitted/padded to match, see parking_transition.py) - the
     same bundled-default-with-override convention as `map_icon`/
-    `stitch_mirror_icon`.
+    `stitch_mirror_icon`. `parking_transition_clip`, if given, takes
+    priority over `parking_transition_image` and replaces the
+    placeholder with a real video instead of a still frame (e.g. one
+    of Christer's own AI-generated "no parking" clips) - looped or
+    trimmed to match the fixed transition duration exactly, re-encoded
+    to each trip's own resolution/frame rate, and always stripped of
+    its own audio track (front.mp4/rear.mp4 are video-only throughout
+    this whole pipeline; the matching-silence audio.aac swap above is
+    unaffected either way).
 
     `command_line`, if given, is written verbatim into this trip's own
     trip.log (see below) as the exact command that produced it - bv-
@@ -632,6 +641,7 @@ def export_trip(
         parking_transitions = ParkingTransitionCache(
             work_dir=Path(parking_transitions_dir.name),
             image_path=parking_transition_image,
+            clip_path=parking_transition_clip,
         )
 
     try:

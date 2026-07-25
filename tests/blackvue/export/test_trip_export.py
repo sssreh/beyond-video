@@ -450,6 +450,72 @@ def test_export_trip_parking_transition_image_override_is_used(tmp_path):
     assert abs(_video_duration(result.front_video) - expected) < 0.5
 
 
+def test_export_trip_parking_transition_clip_override_is_used(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    # A real (short) video clip, deliberately a different resolution
+    # than the trip's own front.mp4 recordings and with its own
+    # embedded audio track - render_parking_transition_video() should
+    # scale/pad it to match and strip the audio, not fail or carry
+    # either through unchanged.
+    custom_clip = source_dir / "no_parking_clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-t", "1.0", "-shortest",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            str(custom_clip),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    result = export_trip(
+        trip, dest_dir, parking_transition_clip=custom_clip
+    )
+
+    assert result.warnings == ()
+    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
+    assert abs(_video_duration(result.front_video) - expected) < 0.5
+    assert not _has_audio_stream(result.front_video)
+
+
+def test_export_trip_parking_transition_clip_takes_priority_over_image(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    custom_image = source_dir / "no_parking.png"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=blue:s=32x32",
+            "-frames:v", "1",
+            str(custom_image),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    custom_clip = source_dir / "no_parking_clip.mp4"
+    _make_video(custom_clip, 1.0)
+
+    # Both given - shouldn't raise; export_trip()/ParkingTransitionCache
+    # give the clip priority (see parking_transition.py's own docstring).
+    result = export_trip(
+        trip, dest_dir,
+        parking_transition_image=custom_image,
+        parking_transition_clip=custom_clip,
+    )
+
+    assert result.warnings == ()
+    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
+    assert abs(_video_duration(result.front_video) - expected) < 0.5
+
+
 def test_export_trip_skips_missing_assets_cleanly(tmp_path):
     dest_dir = tmp_path / "export"
     trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))

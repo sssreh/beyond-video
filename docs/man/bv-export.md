@@ -12,7 +12,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-gap MINUTES] [--movement] [--no-duration] [--duration-heal-archive]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
-          [--include-parking] [--parking-transition-image PATH]
+          [--include-parking] [--parking-transition-image PATH | --parking-transition-clip PATH]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
           [--gsensor-video]
           [--stitch] [--stitch-layout LAYOUT]
@@ -78,12 +78,13 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 
 ### Parking footage
 
-`--max-parking-duration` above decides which recordings end up *inside* a trip in the first place; these two flags decide what happens to a Parking-mode recording that already is one, once that trip is actually assembled.
+`--max-parking-duration` above decides which recordings end up *inside* a trip in the first place; these flags decide what happens to a Parking-mode recording that already is one, once that trip is actually assembled.
 
 | Option | Description |
 |---|---|
 | `--include-parking` | Include a Parking-mode recording strictly in the middle of a trip - flanked by another recording on both sides - as-is in `front.mp4`/`rear.mp4`/`audio.aac`. **Off by default**: that footage is left out instead and replaced with a 3-second synthetic clip (a still frame reading "PARKING FOOTAGE SKIPPED", and matching silence in `audio.aac`) so the rest of the trip's audio stays in sync with the video. A Parking recording at the very start or end of a trip is always included as-is, regardless of this flag - there's nothing to transition from/to on one side. |
-| `--parking-transition-image PATH` | Use a custom picture for the "parking footage skipped" placeholder frame, fitted/padded (not stretched) to match each trip's own camera resolution. Only meaningful when `--include-parking` is not given. Default: a bundled dark frame with a red "no parking" icon and caption. |
+| `--parking-transition-image PATH` | Use a custom picture for the "parking footage skipped" placeholder frame, fitted/padded (not stretched) to match each trip's own camera resolution. Only meaningful when `--include-parking` is not given. Default: a bundled dark frame with a red "no parking" icon and caption. Rejected together with `--parking-transition-clip`. |
+| `--parking-transition-clip PATH` | Use a custom video instead of a still picture for the placeholder - e.g. your own AI-generated "no parking" clip. Looped or trimmed to exactly 3 seconds regardless of its own length, scaled/padded (not stretched) to match each trip's own camera resolution and frame rate, and always stripped of its own audio track (`front.mp4`/`rear.mp4` are video-only throughout this pipeline - any embedded audio in the clip is simply discarded, not muxed in anywhere). Only meaningful when `--include-parking` is not given. Rejected together with `--parking-transition-image`. |
 
 The placeholder video/silence pair is re-rendered per distinct camera resolution/frame rate (video) or sample rate/channel count (audio) actually encountered, not shipped as one fixed file - `ffmpeg`'s concat demuxer stream-copies rather than re-encodes, so every source has to already match its neighbours exactly. A trip with several skipped Parking recordings at the same camera settings only pays for one real render of each.
 

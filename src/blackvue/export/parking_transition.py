@@ -254,24 +254,47 @@ def render_parking_transition_video(
     frame_rate: float,
     duration_seconds: float = PARKING_TRANSITION_DURATION_SECONDS,
     image_path: Path | None = None,
+    clip_path: Path | None = None,
 ) -> None:
     """Render the "parking footage skipped" placeholder video at
     `destination`, sized/timed to match a real recording's own
     width/height/frame_rate - see this module's docstring for why
     that matters for the concat demuxer.
 
-    `image_path`, if given (Christer's own --parking-transition-image
-    picture), is fitted/padded to width x height; otherwise
-    render_parking_transition_image() draws the default frame.
+    `clip_path`, if given (Christer's own --parking-transition-clip -
+    e.g. one of his own AI-generated "no parking" clips), takes
+    priority over `image_path` and is used instead of a still frame:
+    scaled/padded to width x height the same way `image_path` is (see
+    _render_from_clip()), looped or trimmed to exactly
+    `duration_seconds` regardless of its own source length, re-encoded
+    to `frame_rate`, and stripped of any audio track entirely - every
+    front.mp4/rear.mp4 recording in this whole pipeline is already
+    video-only (audio lives in its own separate audio.aac), and
+    concatenate_media()'s stream copy needs this placeholder's video
+    stream to match its neighbours exactly, which a passenger audio
+    track would break.
+
+    Otherwise, `image_path`, if given (Christer's own
+    --parking-transition-image picture), is fitted/padded to width x
+    height; with neither given, render_parking_transition_image()
+    draws the default frame.
     """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if clip_path is not None:
+        _render_from_clip(
+            clip_path, destination,
+            width=width, height=height, frame_rate=frame_rate,
+            duration_seconds=duration_seconds,
+        )
+        return
 
     if image_path is not None:
         with Image.open(image_path) as source:
             frame = _fit_and_pad_image(source, width, height)
     else:
         frame = render_parking_transition_image(width, height)
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         frame_path = Path(tmp.name)
@@ -288,6 +311,43 @@ def render_parking_transition_video(
         )
     finally:
         frame_path.unlink(missing_ok=True)
+
+
+def _render_from_clip(
+    clip_path: Path,
+    destination: Path,
+    *,
+    width: int,
+    height: int,
+    frame_rate: float,
+    duration_seconds: float,
+) -> None:
+    """Re-encode `clip_path` (a real video, not a still image) into
+    `destination`: fitted/padded to width x height without distorting
+    its own aspect ratio (same scale-then-pad idiom stitch.py's own
+    _fit_and_pad() uses for the map panel), looped with -stream_loop
+    -1 and cut to exactly `duration_seconds` with -t - handles a
+    source shorter *or* longer than `duration_seconds` uniformly,
+    since -stream_loop repeats indefinitely and -t (as an output
+    option, placed after -i) always wins - re-timed to `frame_rate`,
+    and stripped of its own audio track with -an (see
+    render_parking_transition_video()'s own docstring for why).
+    """
+
+    encode_with_nvenc_fallback(
+        [
+            "-stream_loop", "-1",
+            "-i", str(clip_path),
+            "-t", str(duration_seconds),
+            "-r", str(frame_rate),
+            "-an",
+            "-vf", (
+                f"scale=w={width}:h={height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            ),
+        ],
+        destination,
+    )
 
 
 def render_parking_transition_silence(
@@ -348,6 +408,7 @@ class ParkingTransitionCache:
 
     work_dir: Path
     image_path: Path | None = None
+    clip_path: Path | None = None
     _video_cache: dict[tuple[int, int, float], Path] = field(default_factory=dict)
     _silence_cache: dict[tuple[str, int, int], Path] = field(default_factory=dict)
     _next_id: int = 0
@@ -355,7 +416,8 @@ class ParkingTransitionCache:
     def video_for(self, source: Path) -> Path:
         """Return a placeholder video matching `source`'s own width/
         height/frame_rate, rendering one if this is the first request
-        for that combination."""
+        for that combination. `clip_path`, if set, takes priority over
+        `image_path` - see render_parking_transition_video()."""
 
         width, height, frame_rate = probe_video_properties(source)
         key = (width, height, round(frame_rate, 3))
@@ -369,6 +431,7 @@ class ParkingTransitionCache:
                 height=height,
                 frame_rate=frame_rate,
                 image_path=self.image_path,
+                clip_path=self.clip_path,
             )
             self._video_cache[key] = destination
 

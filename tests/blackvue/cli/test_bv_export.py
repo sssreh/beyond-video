@@ -792,6 +792,7 @@ def test_main_leaves_include_parking_false_by_default(tmp_path, monkeypatch):
 
     assert captured["include_parking"] is False
     assert captured["parking_transition_image"] is None
+    assert captured["parking_transition_clip"] is None
 
 
 def test_main_sets_include_parking_true_when_flag_given(tmp_path, monkeypatch):
@@ -832,6 +833,41 @@ def test_main_forwards_parking_transition_image(tmp_path, monkeypatch):
     ])
 
     assert captured["parking_transition_image"] == str(icon)
+
+
+def test_main_forwards_parking_transition_clip(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+    clip = tmp_path / "no_parking.mp4"
+
+    main([
+        "--target", str(target), str(archive),
+        "--parking-transition-clip", str(clip),
+    ])
+
+    assert captured["parking_transition_clip"] == str(clip)
+
+
+def test_bv_export_rejects_parking_transition_image_with_clip_together(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        bv_export(
+            str(archive), target=str(target),
+            parking_transition_image=str(tmp_path / "image.png"),
+            parking_transition_clip=str(tmp_path / "clip.mp4"),
+        )
 
 
 def test_main_uses_the_default_stitch_layout_when_stitch_flag_given(

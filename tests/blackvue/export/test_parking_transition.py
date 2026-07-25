@@ -138,6 +138,85 @@ def test_render_parking_transition_video_uses_a_custom_image_when_given(tmp_path
     assert (width, height) == (64, 48)
 
 
+def test_render_parking_transition_video_uses_a_custom_clip_when_given(tmp_path):
+    # A source clip with its own embedded audio track and a different
+    # resolution/frame rate than the requested output - both should
+    # get normalized away (audio stripped, video scaled/padded/re-
+    # timed) rather than carried through.
+    clip = tmp_path / "custom_clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-t", "1.0", "-shortest",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            str(clip),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    destination = tmp_path / "placeholder.mp4"
+
+    render_parking_transition_video(
+        destination, width=64, height=48, frame_rate=10.0,
+        duration_seconds=1.0, clip_path=clip,
+    )
+
+    assert destination.exists()
+    width, height, frame_rate = probe_video_properties(destination)
+    assert (width, height) == (64, 48)
+    assert abs(frame_rate - 10.0) < 0.5
+    assert probe_audio_properties(destination) is None
+
+
+def test_render_parking_transition_video_loops_a_clip_shorter_than_the_duration(
+    tmp_path,
+):
+    short_clip = tmp_path / "short_clip.mp4"
+    _make_video(short_clip, duration_seconds=0.5, size="64x48", rate=10)
+    destination = tmp_path / "placeholder.mp4"
+
+    render_parking_transition_video(
+        destination, width=64, height=48, frame_rate=10.0,
+        duration_seconds=2.0, clip_path=short_clip,
+    )
+
+    assert abs(_decoded_duration(destination) - 2.0) < 0.3
+
+
+def test_render_parking_transition_video_trims_a_clip_longer_than_the_duration(
+    tmp_path,
+):
+    long_clip = tmp_path / "long_clip.mp4"
+    _make_video(long_clip, duration_seconds=3.0, size="64x48", rate=10)
+    destination = tmp_path / "placeholder.mp4"
+
+    render_parking_transition_video(
+        destination, width=64, height=48, frame_rate=10.0,
+        duration_seconds=1.0, clip_path=long_clip,
+    )
+
+    assert abs(_decoded_duration(destination) - 1.0) < 0.3
+
+
+def test_render_parking_transition_video_clip_takes_priority_over_image(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    _make_video(clip, duration_seconds=1.0, size="64x48", rate=10)
+    image = tmp_path / "image.png"
+    Image.new("RGB", (10, 10), (0, 255, 0)).save(image)
+    destination = tmp_path / "placeholder.mp4"
+
+    # Both given - clip_path should win, not raise, not silently use
+    # the image instead (see this module's own docstring).
+    render_parking_transition_video(
+        destination, width=64, height=48, frame_rate=10.0,
+        duration_seconds=1.0, image_path=image, clip_path=clip,
+    )
+
+    assert destination.exists()
+    assert probe_video_properties(destination)[:2] == (64, 48)
+
+
 def test_render_parking_transition_silence_matches_requested_properties(tmp_path):
     destination = tmp_path / "silence.aac"
 
@@ -234,6 +313,44 @@ def test_parking_transition_cache_uses_a_custom_image_for_every_render(tmp_path)
 
     assert placeholder.exists()
     assert probe_video_properties(placeholder)[:2] == (64, 48)
+
+
+def test_parking_transition_cache_uses_a_custom_clip_for_every_render(tmp_path):
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    custom_clip = tmp_path / "custom_clip.mp4"
+    _make_video(custom_clip, duration_seconds=1.0, size="32x32", rate=10)
+    cache = ParkingTransitionCache(work_dir=work_dir, clip_path=custom_clip)
+
+    source = tmp_path / "front.mp4"
+    _make_video(source, size="64x48", rate=10)
+
+    placeholder = cache.video_for(source)
+
+    assert placeholder.exists()
+    assert probe_video_properties(placeholder)[:2] == (64, 48)
+    assert probe_audio_properties(placeholder) is None
+
+
+def test_parking_transition_cache_clip_path_takes_priority_over_image_path(tmp_path):
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    custom_image = tmp_path / "image.png"
+    Image.new("RGB", (10, 10), (255, 0, 0)).save(custom_image)
+    custom_clip = tmp_path / "clip.mp4"
+    _make_video(custom_clip, duration_seconds=1.0, size="32x32", rate=10)
+    cache = ParkingTransitionCache(
+        work_dir=work_dir, image_path=custom_image, clip_path=custom_clip
+    )
+
+    source = tmp_path / "front.mp4"
+    _make_video(source, size="64x48", rate=10)
+
+    placeholder = cache.video_for(source)
+
+    # Doesn't raise, doesn't silently fall back to the image - both
+    # given means the clip wins (see render_parking_transition_video()).
+    assert placeholder.exists()
 
 
 def test_parking_transition_duration_constant_is_three_seconds():

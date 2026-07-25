@@ -318,6 +318,7 @@ def bv_export(
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
     parking_transition_image: str | Path | None = None,
+    parking_transition_clip: str | Path | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -420,13 +421,27 @@ def bv_export(
     override convention as `map_icon`/`stitch_mirror_icon`, except
     there's no procedural-vs-bundled split to opt out of here (the
     procedural frame *is* the default), so there's no "none" value.
-    See blackvue.export.parking_transition for the full mechanism.
+    `parking_transition_clip`, if given, takes priority over
+    `parking_transition_image` and uses a real video instead of a
+    still frame - looped or trimmed to the fixed transition duration,
+    re-encoded to match each trip's own resolution/frame rate, and
+    always stripped of its own audio track. Rejected together with
+    `parking_transition_image` - only one placeholder source at a
+    time. See blackvue.export.parking_transition for the full
+    mechanism.
     """
 
     if duration_heal_archive and not duration:
         raise SystemExit(
             "bv-export: --duration-heal-archive has nothing to heal "
             "against when --no-duration is also given."
+        )
+
+    if parking_transition_image is not None and parking_transition_clip is not None:
+        raise SystemExit(
+            "bv-export: --parking-transition-image and "
+            "--parking-transition-clip can't both be given - only one "
+            "placeholder source at a time."
         )
 
     archive = Archive(path)
@@ -605,6 +620,11 @@ def bv_export(
                 parking_transition_image=(
                     Path(parking_transition_image)
                     if parking_transition_image is not None
+                    else None
+                ),
+                parking_transition_clip=(
+                    Path(parking_transition_clip)
+                    if parking_transition_clip is not None
                     else None
                 ),
                 command_line=command_line,
@@ -1249,11 +1269,12 @@ def main(argv: list[str] | None = None) -> int:
             "footage is left out and replaced with a short synthetic "
             "clip instead (a still frame reading 'PARKING FOOTAGE "
             "SKIPPED', and matching silence for audio.aac, both "
-            "exactly 3 seconds) - see --parking-transition-image to "
-            "use your own picture for that frame. A Parking recording "
-            "at the very start or end of a trip is always included "
-            "as-is, regardless of this flag - there's nothing to "
-            "transition from/to on one side."
+            "exactly 3 seconds) - see --parking-transition-image/"
+            "--parking-transition-clip to use your own picture or "
+            "video for that frame. A Parking recording at the very "
+            "start or end of a trip is always included as-is, "
+            "regardless of this flag - there's nothing to transition "
+            "from/to on one side."
         ),
     )
 
@@ -1268,7 +1289,26 @@ def main(argv: list[str] | None = None) -> int:
             "padded (not stretched) to match each trip's own camera "
             "resolution. Only meaningful when --include-parking is "
             "not given. Default: a bundled dark frame with a red "
-            "'no parking' icon and caption."
+            "'no parking' icon and caption. Rejected together with "
+            "--parking-transition-clip."
+        ),
+    )
+
+    parser.add_argument(
+        "--parking-transition-clip",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Use a custom video (rather than a still picture) for the "
+            "'parking footage skipped' placeholder - e.g. your own "
+            "AI-generated 'no parking' clip. Looped or trimmed to "
+            "exactly 3 seconds regardless of its own length, scaled/"
+            "padded (not stretched) to match each trip's own camera "
+            "resolution and frame rate, and always stripped of its "
+            "own audio track (front.mp4/rear.mp4 are video-only "
+            "throughout this pipeline). Only meaningful when "
+            "--include-parking is not given. Rejected together with "
+            "--parking-transition-image."
         ),
     )
 
@@ -1355,6 +1395,7 @@ def main(argv: list[str] | None = None) -> int:
         stitch_subtitles_background=args.subtitles_bg,
         include_parking=args.include_parking,
         parking_transition_image=args.parking_transition_image,
+        parking_transition_clip=args.parking_transition_clip,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         debug=args.debug,
