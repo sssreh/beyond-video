@@ -10,6 +10,7 @@
 bv-export --target DIR [--prefix PREFIX]
           [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
           [--max-gap MINUTES] [--movement] [--no-duration] [--gap-tolerance SECONDS]
+          [--max-parking-duration MINUTES]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
           [--gsensor-video]
           [--stitch] [--stitch-layout LAYOUT]
@@ -33,7 +34,7 @@ bv-export --target DIR [--prefix PREFIX]
 
 A trip with only one camera falls back to a plain copy of whichever one exists, ignoring every `--stitch-*`/`--map-*` flag.
 
-Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never starts, extends, or belongs to a trip on its own; it's simply not part of any trip's export.
+Trip detection is shared with `bv-ls --trips`: `--max-gap`/`--movement`/`--no-duration`/`--gap-tolerance` all mean exactly the same thing here. `--max-parking-duration` is `bv-export`-only for now - `bv-ls --trips`'s preview doesn't yet apply it, so a trip split it causes won't show up there ahead of time. Only recordings with Front video count toward trip detection - a recording with GPS/g-sensor/thumbnail data but no Front video (common if its video was never downloaded) never starts, extends, or belongs to a trip on its own; it's simply not part of any trip's export.
 
 Every trip also gets a `trip_info.txt` summary - start/end time, duration, total size, and whether Parking-mode footage is included always, and (whenever the trip has GPS data) distance, average/max speed, moving/idle time, and a reverse-geocoded address for the first and last GPS position. This isn't behind a flag: it's automatic, the same way `--map`'s road data is automatically fetched once requested. The address lookup uses OpenStreetMap's Nominatim service (one request per trip's start, one for its end, cached under `--target/.osm_cache` afterward like road/area data) - a network failure there only drops the address lines with a warning, never the rest of the export.
 
@@ -68,6 +69,7 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 | `--movement` | Bridge a gap over `--max-gap` using GPS/g-sensor movement evidence. **Off by default** - unbounded bridging risk, see `bv-ls(1)`. |
 | `--no-duration` | Measure gaps from start timestamps only, ignoring `.duration.txt`. |
 | `--gap-tolerance SECONDS` | Fixed noise margin added on top of `--max-gap`. Default: 10. |
+| `--max-parking-duration MINUTES` | Longest a continuous run of Parking-mode footage can span in real elapsed time (not its played-back length) before the drive that follows it counts as a new trip. Two or more chained Parking recordings whose combined real span crosses this can split from each other too, not just at the point driving resumes. Requires real duration data, same as `--max-gap`'s own duration-aware gap calculation (`--no-duration` disables this too). Default: 60. |
 
 ### Map
 

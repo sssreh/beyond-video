@@ -52,6 +52,7 @@ from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
+from blackvue.trip.trip_builder import DEFAULT_MAX_PARKING_DURATION
 from blackvue.trip.trip_builder import TripBuilder
 from blackvue.trip.trip_builder import recordings_with_front_video
 
@@ -287,6 +288,7 @@ def bv_export(
     movement: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
+    max_parking_duration_minutes: int | None = None,
     render_map: bool = False,
     map_icon: str | Path | None = None,
     map_zoom_meters: float | None = None,
@@ -358,6 +360,18 @@ def bv_export(
     `command_line`, if given, is written verbatim into every trip's
     own trip.log as the exact command that produced it - main() below
     reconstructs it from sys.argv/argv before calling here.
+
+    `max_parking_duration_minutes` caps how long a continuous run of
+    Parking-mode footage can span in real elapsed time (not its
+    played-back length - a Parking-mode timelapse can run for well
+    over an hour of real time while playing back in a few minutes)
+    before the drive that follows it counts as a new trip - see
+    TripBuilder's own docstring for the full mechanism, including why
+    two chained Parking recordings can split from each other too, not
+    just at the point driving resumes. Depends on real duration data
+    the same way `--max-gap`'s own duration-aware gap calculation
+    does, so `--no-duration` disables this too. Defaults to
+    DEFAULT_MAX_PARKING_DURATION (60 minutes).
     """
 
     archive = Archive(path)
@@ -380,6 +394,11 @@ def bv_export(
         timedelta(seconds=gap_tolerance_seconds)
         if gap_tolerance_seconds is not None
         else DEFAULT_GAP_TOLERANCE
+    )
+    max_parking_duration = (
+        timedelta(minutes=max_parking_duration_minutes)
+        if max_parking_duration_minutes is not None
+        else DEFAULT_MAX_PARKING_DURATION
     )
     bridge = movement_bridges_gap if movement else None
     recording_duration = read_duration_seconds if duration else None
@@ -404,6 +423,7 @@ def bv_export(
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
+        max_parking_duration=max_parking_duration,
     ).build(front_recordings, reasons=reasons)
 
     trips = [
@@ -644,6 +664,28 @@ def main(argv: list[str] | None = None) -> int:
             "file-rotation overhead), not a detection setting like "
             f"--max-gap. Default: "
             f"{int(DEFAULT_GAP_TOLERANCE.total_seconds())}."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-parking-duration",
+        dest="max_parking_duration_minutes",
+        type=int,
+        metavar="MINUTES",
+        default=None,
+        help=(
+            "How long a continuous run of Parking-mode footage can "
+            "span, in real elapsed time (not its played-back length - "
+            "a Parking-mode timelapse can run for well over an hour of "
+            "real time while playing back in a few minutes), before "
+            "the drive that follows it counts as a new trip. Two (or "
+            "more) chained Parking recordings whose combined real span "
+            "crosses this can also split from each other, not just at "
+            "the point driving resumes. Requires real duration data "
+            "the same way --max-gap's own duration-aware gap "
+            "calculation does, so --no-duration disables this too. "
+            f"Default: "
+            f"{int(DEFAULT_MAX_PARKING_DURATION.total_seconds() // 60)}."
         ),
     )
 
@@ -1115,6 +1157,7 @@ def main(argv: list[str] | None = None) -> int:
         movement=args.movement,
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
+        max_parking_duration_minutes=args.max_parking_duration_minutes,
         render_map=args.render_map,
         map_icon=args.map_icon,
         map_zoom_meters=args.map_zoom_meters,

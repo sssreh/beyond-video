@@ -66,6 +66,20 @@ DEFAULT_MAX_GAP = timedelta(minutes=5)
 # being opt-in like `bridge`/`recording_duration`.
 DEFAULT_GAP_TOLERANCE = timedelta(seconds=10)
 
+# Default cap on how long a continuous run of Parking-mode footage can
+# span (real elapsed time, via `recording_duration` - see
+# `max_parking_duration` below) before the drive that follows it
+# starts a new trip. Confirmed as a real problem on Christer's own
+# archive: BlackVue's Parking-mode timelapse can play back in a few
+# minutes while representing well over an hour of real parked time,
+# and `recording_duration`'s own fold-in (see its docstring) folded
+# that entire real span in as "still continuous" with no ceiling -
+# merging a drive, an hour-plus stop, and the next drive into one
+# trip. 60 minutes was Christer's own choice: long enough that a
+# normal errand-length stop doesn't split, short enough that his real
+# ~90-minute case does.
+DEFAULT_MAX_PARKING_DURATION = timedelta(minutes=60)
+
 # `bridge` may return any truthy value to bridge a gap (False/None to
 # not) - conventionally a short human-readable reason string, which is
 # what movement_bridges_gap() returns (see telemetry/movement.py) so
@@ -114,6 +128,34 @@ class TripBuilder:
     start-to-start-gap behaviour for any max_gap realistically used
     (minutes, not single-digit seconds) - pass `gap_tolerance=
     timedelta(0)` for the literal old behaviour at any max_gap.
+
+    An optional `max_parking_duration` caps how long a *continuous run*
+    of Parking-mode (`RecordingId.is_parking`) recordings can span in
+    real elapsed time (their `recording_duration`, summed across the
+    trailing run - not just one recording's own length) before it
+    forces a split, independent of the ordinary gap rule above. This
+    only ever matters because of `recording_duration`'s own fold-in:
+    a Parking-mode timelapse can play back in a few minutes while
+    covering well over an hour of real parked time, and without a
+    ceiling that entire span reads as "no gap at all" between the
+    drive before it and the drive after - see
+    DEFAULT_MAX_PARKING_DURATION's own comment for the real case this
+    was built for. Two (or more) consecutive Parking recordings whose
+    *combined* real span crosses the cap can split from each other
+    too, not just at the point driving resumes - deliberately: a
+    single long parked stretch chunked into several Parking files by
+    the dashcam itself shouldn't dodge the cap just because no one
+    file individually is long enough.
+
+    A cap-forced split is never offered to `bridge` - it's a
+    deliberate policy decision ("a stop this long is a new trip"), not
+    ambiguous gap evidence like an unexplained time gap is, so there's
+    nothing for movement evidence to usefully weigh in on. Requires
+    `recording_duration` to be set (same as `max_gap`'s own duration
+    -aware behaviour) - with it unset, or a specific recording's own
+    duration lookup returning None, that recording contributes nothing
+    towards the cap, so `max_parking_duration` is a safe no-op rather
+    than an error in either case.
     """
 
     def __init__(
@@ -123,11 +165,13 @@ class TripBuilder:
         bridge: Bridge | None = None,
         recording_duration: RecordingDuration | None = None,
         gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
+        max_parking_duration: timedelta | None = None,
     ):
         self.max_gap = max_gap
         self.bridge = bridge
         self.recording_duration = recording_duration
         self.gap_tolerance = gap_tolerance
+        self.max_parking_duration = max_parking_duration
 
     def _end_timestamp(self, recording: Recording) -> datetime:
         if self.recording_duration is not None:
@@ -138,6 +182,33 @@ class TripBuilder:
                 )
 
         return recording.id.timestamp
+
+    def _parking_contribution(self, recording: Recording) -> float:
+        """How many seconds `recording` adds to a trailing run of
+        continuous Parking-mode footage for `max_parking_duration`
+        purposes - its own real `recording_duration` if it's a Parking
+        -mode recording with a known duration, otherwise 0 (a non
+        -Parking recording breaks the run entirely - see build()'s own
+        reset of the running total - and an unknown duration simply
+        can't be counted, the same "no signal, no contribution"
+        handling `_end_timestamp()` already gives a missing duration).
+
+        `max_parking_duration is None` (the feature unused) short
+        -circuits to 0 before ever touching `recording.id.is_parking` -
+        deliberately, so callers whose `recording`/`recording.id`
+        stand-ins don't define `is_parking` at all (this project's own
+        test suite includes several, predating this feature) still
+        work unchanged as long as they never opt in.
+        """
+
+        if self.max_parking_duration is None or self.recording_duration is None:
+            return 0.0
+
+        if not recording.id.is_parking:
+            return 0.0
+
+        duration_seconds = self.recording_duration(recording)
+        return float(duration_seconds) if duration_seconds is not None else 0.0
 
     def build(
         self,
@@ -172,6 +243,13 @@ class TripBuilder:
             reasons[recordings[0].id] = "first recording in the archive"
 
         threshold = self.max_gap + self.gap_tolerance
+        # Running total for the trailing (most recent, unbroken) run of
+        # Parking-mode footage at the end of current_trip - reset to 0
+        # by any non-Parking recording or any split, below. Always 0.0
+        # (so `parking_cap_exceeded` can never fire) when
+        # max_parking_duration is unset - see _parking_contribution()'s
+        # own "safe no-op" handling of an unset/unknown duration.
+        trailing_parking_seconds = self._parking_contribution(recordings[0])
 
         for recording in recordings[1:]:
             previous = current_trip[-1]
@@ -180,11 +258,39 @@ class TripBuilder:
             gap_desc = self._describe_gap(gap)
             threshold_desc = f"{threshold.total_seconds():.1f}s"
 
+            parking_cap_exceeded = (
+                self.max_parking_duration is not None
+                and trailing_parking_seconds
+                > self.max_parking_duration.total_seconds()
+            )
+
+            # A cap-forced split is never offered to bridge - see
+            # build()'s own docstring for why (it's a deliberate policy
+            # decision, not ambiguous gap evidence).
             bridge_reason = None
-            if gap > threshold and self.bridge:
+            if not parking_cap_exceeded and gap > threshold and self.bridge:
                 bridge_reason = self.bridge(previous, recording)
 
-            if gap > threshold and not bridge_reason:
+            if parking_cap_exceeded:
+                if reasons is not None:
+                    parked_desc = f"{trailing_parking_seconds / 60:.1f}m"
+                    cap_desc = (
+                        f"{self.max_parking_duration.total_seconds() / 60:.1f}m"
+                    )
+                    reasons[recording.id] = (
+                        f"starts a new trip - {parked_desc} of continuous "
+                        f"Parking-mode footage since {previous.id} exceeds "
+                        f"the {cap_desc} max_parking_duration limit"
+                    )
+                trips.append(
+                    Trip(
+                        tuple(current_trip),
+                        recording_duration=self.recording_duration,
+                    )
+                )
+                current_trip = [recording]
+                trailing_parking_seconds = self._parking_contribution(recording)
+            elif gap > threshold and not bridge_reason:
                 if reasons is not None:
                     reasons[recording.id] = (
                         f"starts a new trip - gap since {previous.id} was "
@@ -199,6 +305,7 @@ class TripBuilder:
                     )
                 )
                 current_trip = [recording]
+                trailing_parking_seconds = self._parking_contribution(recording)
             else:
                 if reasons is not None:
                     if gap > threshold:
@@ -215,6 +322,15 @@ class TripBuilder:
                             "max_gap+gap_tolerance threshold"
                         )
                 current_trip.append(recording)
+                # A non-Parking recording breaks the trailing run
+                # entirely (reset, not left unchanged) - a Parking one
+                # extends it by its own contribution.
+                if self.max_parking_duration is not None:
+                    trailing_parking_seconds = (
+                        trailing_parking_seconds + self._parking_contribution(recording)
+                        if recording.id.is_parking
+                        else 0.0
+                    )
 
         trips.append(
             Trip(tuple(current_trip), recording_duration=self.recording_duration)
