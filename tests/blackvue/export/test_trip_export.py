@@ -317,6 +317,69 @@ def test_export_trip_replaces_a_mid_trip_parking_recording_with_a_transition_cli
     assert abs(_video_duration(result.front_video) - expected) < 0.5
 
 
+def test_export_trip_parking_placeholder_falls_back_to_sibling_camera_when_one_side_is_corrupted(
+    tmp_path,
+):
+    # Christer's real-world report: a mid-trip Parking recording's own
+    # front file was corrupted on the SD card (ffprobe's own
+    # "contradictionary STSC and STCO"/"error reading header"), while
+    # the paired rear file for the same recording probed fine. Without
+    # ParkingTransitionCache.video_for()'s sibling-fallback, only the
+    # front placeholder would fail to render and that segment would be
+    # dropped from front.mp4 entirely - while rear.mp4 still got its
+    # normal 3-second placeholder - leaving the two videos different
+    # lengths from that point on. With the fallback, front's
+    # placeholder is sized from rear's own (readable) properties
+    # instead, keeping both in sync and producing no warning at all.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    front_p = source_dir / "front_p.mp4"  # corrupted - ffprobe can't read it
+    rear_p = source_dir / "rear_p.mp4"
+    front_b = source_dir / "front_b.mp4"
+    rear_b = source_dir / "rear_b.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+    front_p.write_bytes(b"not a real mp4 at all")
+    _make_video(rear_p, 6.0)
+    _make_video(front_b, 1.0)
+    _make_video(rear_b, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100010_P"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_p),
+                Asset.REAR: AssetFile(Asset.REAR, rear_p),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_b),
+                Asset.REAR: AssetFile(Asset.REAR, rear_b),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.warnings == ()
+    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
+    assert abs(_video_duration(result.front_video) - expected) < 0.5
+    assert abs(_video_duration(result.rear_video) - expected) < 0.5
+
+
 def test_export_trip_include_parking_keeps_the_real_parking_footage(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()

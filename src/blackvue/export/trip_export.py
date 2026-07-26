@@ -98,6 +98,15 @@ def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
     return trip.label
 
 
+# The other camera's own video asset for the same recording - used as
+# a probe fallback below when one side's Parking file is corrupted,
+# since front/rear share resolution/frame rate in practice.
+_SIBLING_VIDEO_ASSET = {
+    Asset.FRONT: Asset.REAR,
+    Asset.REAR: Asset.FRONT,
+}
+
+
 def _parking_transition_source(
     asset: Asset,
     recording: Recording,
@@ -112,7 +121,14 @@ def _parking_transition_source(
     caller leaves this recording's contribution to `asset` out
     entirely (the same as if it never had the asset in the first
     place, rather than falling back to the real Parking footage
-    Christer asked to have skipped)."""
+    Christer asked to have skipped).
+
+    For Asset.FRONT/REAR, the sibling camera's own file (same
+    `recording`) is passed to ParkingTransitionCache.video_for() as a
+    fallback probe source - see that function's docstring for why:
+    it's what lets one corrupted side (e.g. a truncated _PF.mp4) still
+    get a correctly-sized placeholder from its working sibling
+    (_PR.mp4), rather than the two ending up different lengths."""
 
     if parking_transitions is None:
         return None
@@ -121,7 +137,12 @@ def _parking_transition_source(
     try:
         if asset is Asset.AUDIO:
             return parking_transitions.silence_for(source)
-        return parking_transitions.video_for(source)
+        sibling_asset = _SIBLING_VIDEO_ASSET.get(asset)
+        sibling_file = (
+            recording.file(sibling_asset) if sibling_asset is not None else None
+        )
+        fallback_source = sibling_file.path if sibling_file is not None else None
+        return parking_transitions.video_for(source, fallback_source=fallback_source)
     except MediaToolError as exc:
         message = f"parking transition clip for {recording.id}: {exc}"
         warnings.append(message)

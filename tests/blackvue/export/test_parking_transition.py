@@ -2,12 +2,14 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 
 from blackvue.export import parking_transition as parking_transition_module
 from blackvue.export.parking_transition import ParkingTransitionCache
+from blackvue.generate.media import MediaToolError
 from blackvue.export.parking_transition import PARKING_TRANSITION_DURATION_SECONDS
 from blackvue.export.parking_transition import _load_font
 from blackvue.export.parking_transition import probe_audio_properties
@@ -274,6 +276,72 @@ def test_parking_transition_cache_renders_a_new_video_for_different_properties(
     assert placeholder_small != placeholder_large
     assert probe_video_properties(placeholder_small)[:2] == (64, 48)
     assert probe_video_properties(placeholder_large)[:2] == (96, 64)
+
+
+def test_parking_transition_cache_video_for_falls_back_to_sibling_on_probe_failure(
+    tmp_path,
+):
+    # Christer's real-world report: a corrupted mid-trip Parking
+    # recording's own file (e.g. a truncated _PF.mp4) fails ffprobe
+    # with a container-structure error ("contradictionary STSC and
+    # STCO", "error reading header"). Rather than dropping that
+    # side's segment outright, video_for() should fall back to
+    # probing the sibling camera's own file (passed as
+    # `fallback_source` by trip_export.py's _parking_transition_source())
+    # and size the placeholder from that instead - keeping front.mp4/
+    # rear.mp4 in sync rather than one side quietly going shorter.
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    cache = ParkingTransitionCache(work_dir=work_dir)
+
+    corrupted_front = tmp_path / "front.mp4"
+    corrupted_front.write_bytes(b"not a real mp4 at all")
+    working_rear = tmp_path / "rear.mp4"
+    _make_video(working_rear, size="64x48", rate=10)
+
+    placeholder = cache.video_for(corrupted_front, fallback_source=working_rear)
+
+    assert placeholder.exists()
+    assert probe_video_properties(placeholder)[:2] == (64, 48)
+
+
+def test_parking_transition_cache_video_for_raises_original_error_if_fallback_also_fails(
+    tmp_path,
+):
+    # If *both* sides are corrupted (as actually happened in
+    # Christer's report - both _PF.mp4 and _PR.mp4 failed to probe),
+    # the error raised should still name the original `source` file,
+    # not the fallback, since that's the file this placeholder is
+    # actually standing in for and the one the resulting warning
+    # message should point Christer at.
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    cache = ParkingTransitionCache(work_dir=work_dir)
+
+    corrupted_front = tmp_path / "front.mp4"
+    corrupted_front.write_bytes(b"not a real mp4 at all")
+    corrupted_rear = tmp_path / "rear.mp4"
+    corrupted_rear.write_bytes(b"also not a real mp4")
+
+    with pytest.raises(MediaToolError) as excinfo:
+        cache.video_for(corrupted_front, fallback_source=corrupted_rear)
+
+    assert "front.mp4" in str(excinfo.value)
+
+
+def test_parking_transition_cache_video_for_raises_when_no_fallback_given(tmp_path):
+    # Same as today's behavior when trip_export.py has no sibling
+    # asset to fall back to (e.g. the recording has no rear camera at
+    # all) - the original error still surfaces normally.
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    cache = ParkingTransitionCache(work_dir=work_dir)
+
+    corrupted_front = tmp_path / "front.mp4"
+    corrupted_front.write_bytes(b"not a real mp4 at all")
+
+    with pytest.raises(MediaToolError):
+        cache.video_for(corrupted_front)
 
 
 def test_parking_transition_cache_reuses_silence_for_matching_properties(tmp_path):

@@ -481,13 +481,40 @@ class ParkingTransitionCache:
     _silence_cache: dict[tuple[str, int, int], Path] = field(default_factory=dict)
     _next_id: int = 0
 
-    def video_for(self, source: Path) -> Path:
+    def video_for(self, source: Path, *, fallback_source: Path | None = None) -> Path:
         """Return a placeholder video matching `source`'s own width/
         height/frame_rate, rendering one if this is the first request
         for that combination. `clip_path`, if set, takes priority over
-        `image_path` - see render_parking_transition_video()."""
+        `image_path` - see render_parking_transition_video().
 
-        width, height, frame_rate = probe_video_properties(source)
+        `fallback_source`, if given (trip_export.py passes the sibling
+        FRONT/REAR file from the same recording), is probed instead
+        whenever `source` itself can't be - e.g. a mid-trip Parking
+        recording whose own file is corrupted on the SD card (ffprobe's
+        "contradictionary STSC and STCO"/"error reading header").
+        Front and rear cameras on the same recording always share
+        resolution and frame rate in practice, so this keeps both
+        sides' placeholders - and therefore front.mp4/rear.mp4's
+        lengths - in sync, instead of only the corrupted side silently
+        dropping that segment while its sibling keeps it (Christer
+        hit exactly this: both PF and PR happened to fail together
+        that time, so it went unnoticed, but a single-sided failure
+        would have desynced the two videos from that point on). If
+        `fallback_source` also fails to probe, the *original* error
+        from `source` is what gets raised/reported, since that's the
+        file this placeholder actually stands in for.
+        """
+
+        try:
+            width, height, frame_rate = probe_video_properties(source)
+        except MediaToolError as exc:
+            if fallback_source is None:
+                raise
+            try:
+                width, height, frame_rate = probe_video_properties(fallback_source)
+            except MediaToolError:
+                raise exc from None
+
         key = (width, height, round(frame_rate, 3))
 
         if key not in self._video_cache:
