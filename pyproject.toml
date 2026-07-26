@@ -88,4 +88,17 @@ bv-web = "blackvue.cli.bv_web:main"
 # this, `pip install .` silently drops them, and the defaults only
 # work from inside a repo checkout instead of any real install
 # (Dockerfile.cli, a PC pip install, ...).
-"blackvue.export" = ["assets/*.png", "assets/*.mp4"]
+#
+# assets/*.ttf (DejaVuSans-Bold.ttf) and the accompanying
+# LICENSE_DEJAVU.txt: the bundled Unicode-capable font used by
+# map_render.py, gsensor_graph_render.py, and parking_transition.py
+# to draw text (street names, etc.) that can contain non-ASCII
+# characters like Swedish a-ring, a-umlaut, o-umlaut. Before this, all three modules only tried
+# a Linux system font path and a bare filename, both of which are
+# absent on Christer's Windows machine and in the ffmpeg-only
+# Dockerfile.cli image, so they silently fell back to PIL's built-in
+# default font - which has no a/a/o glyphs at all and rendered them
+# as blank boxes. Same package-data lesson as templates/*.html: a
+# file sitting in the repo's assets/ folder isn't enough by itself,
+# it must be listed here too or a real install drops it.
+"blackvue.export" = ["assets/*.png", "assets/*.mp4", "assets/*.ttf", "assets/*.txt"]

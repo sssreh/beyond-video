@@ -1,8 +1,11 @@
 from datetime import timedelta
+from pathlib import Path
 
 from PIL import Image
 from PIL import ImageDraw
+from PIL import ImageFont
 
+from blackvue.export import gsensor_graph_render as gsensor_graph_render_module
 from blackvue.export.gsensor_graph_render import BACKGROUND_COLOR
 from blackvue.export.gsensor_graph_render import DEFAULT_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_MARGIN_PX
@@ -539,3 +542,47 @@ def test_trace_line_width_is_2px():
     # isolation - once those two were fixed, Christer picked the
     # bolder 2px width back.
     assert TRACE_LINE_WIDTH == 2
+
+
+def test_font_candidates_lists_the_bundled_font_first():
+    # Same fix as map_render.py's own _load_font() (where this bug was
+    # first diagnosed, for map street-name labels): the bundled copy
+    # under assets/ has to be tried before the two old system-path
+    # candidates (a Linux-only path absent on Christer's Windows
+    # machine and the ffmpeg-only Docker image, and a bare filename
+    # that only resolves from the current working directory), or a
+    # real install would still silently fall through to the tiny
+    # glyph-less default font PIL uses as its last resort.
+    expected = Path(gsensor_graph_render_module.__file__).parent / "assets" / "DejaVuSans-Bold.ttf"
+    assert gsensor_graph_render_module._FONT_CANDIDATES[0] == str(expected)
+
+
+def test_bundled_font_file_exists_on_disk():
+    assert Path(gsensor_graph_render_module._FONT_CANDIDATES[0]).is_file()
+
+
+def test_bundled_font_loads_as_a_real_truetype_font(monkeypatch):
+    monkeypatch.setattr(gsensor_graph_render_module, "_CACHED_FONT_BY_SIZE", {})
+
+    font = _load_font()
+
+    assert isinstance(font, ImageFont.FreeTypeFont)
+
+
+def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
+    # Mirrors map_render.py's own version of this test: PIL's
+    # ImageFont.load_default() fallback (reached when every
+    # _FONT_CANDIDATES path fails) has no å/ä/ö glyphs and draws them
+    # as blank/tofu boxes - a real DejaVu font renders noticeably
+    # wider text for the same string. This module's own text (tick
+    # labels, legend) is ASCII-only today, but the font is shared
+    # infrastructure with map_render.py/parking_transition.py, so it's
+    # worth confirming it actually works for non-ASCII text here too.
+    monkeypatch.setattr(gsensor_graph_render_module, "_CACHED_FONT_BY_SIZE", {})
+
+    font = _load_font(24)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    left, top, right, bottom = draw.textbbox((0, 0), "Åkergatan äö", font=font)
+
+    assert (right - left) > 150
+    assert (bottom - top) > 15

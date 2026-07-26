@@ -112,7 +112,24 @@ BACKGROUND_COLOR = (20, 20, 20)
 ICON_COLOR = (230, 57, 70)
 TEXT_COLOR = (255, 255, 255)
 
+# Christer: "would it be possible to get correct å, ä and ö characters"
+# (Swedish a-ring/a-umlaut/o-umlaut) - the two candidates below used to
+# be the *only* candidates, and both are unreliable: the first is a
+# Linux-only system path (absent on Christer's Windows machine, and
+# Dockerfile.cli's ffmpeg-only apt install never puts a font package
+# there either), and the second only resolves if a same-named file
+# happens to already sit in the current working directory. When both
+# fail, ImageFont.truetype() raises OSError for every candidate and
+# the code fell through to ImageFont.load_default() - a tiny built-in
+# bitmap font confirmed (by direct rendering test) to have no
+# Swedish-letter glyphs at all, so they rendered as blank/tofu boxes.
+# The bundled copy is tried first and is expected to always resolve
+# from a real install (see pyproject.toml's package-data entry for
+# assets/*.ttf); the two old paths stay afterwards purely as a
+# best-effort fallback if the bundled file is ever missing for some
+# reason.
 _FONT_CANDIDATES = (
+    str(_ASSETS_DIR / "DejaVuSans-Bold.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "DejaVuSans-Bold.ttf",
 )

@@ -1,10 +1,15 @@
 import json
 import subprocess
+from pathlib import Path
 
 from PIL import Image
+from PIL import ImageDraw
+from PIL import ImageFont
 
+from blackvue.export import parking_transition as parking_transition_module
 from blackvue.export.parking_transition import ParkingTransitionCache
 from blackvue.export.parking_transition import PARKING_TRANSITION_DURATION_SECONDS
+from blackvue.export.parking_transition import _load_font
 from blackvue.export.parking_transition import probe_audio_properties
 from blackvue.export.parking_transition import probe_video_properties
 from blackvue.export.parking_transition import render_parking_transition_image
@@ -357,3 +362,48 @@ def test_parking_transition_duration_constant_is_three_seconds():
     # Christer: "a 3 second video" - pinned here so a future change to
     # the constant is a deliberate, visible edit to this test too.
     assert PARKING_TRANSITION_DURATION_SECONDS == 3.0
+
+
+def test_font_candidates_lists_the_bundled_font_first():
+    # Same fix as map_render.py's own _load_font() (where this bug was
+    # first diagnosed, for map street-name labels): the bundled copy
+    # under assets/ has to be tried before the two old system-path
+    # candidates (a Linux-only path absent on Christer's Windows
+    # machine and the ffmpeg-only Docker image, and a bare filename
+    # that only resolves from the current working directory), or a
+    # real install would still silently fall through to the tiny
+    # glyph-less default font PIL uses as its last resort.
+    expected = Path(parking_transition_module.__file__).parent / "assets" / "DejaVuSans-Bold.ttf"
+    assert parking_transition_module._FONT_CANDIDATES[0] == str(expected)
+
+
+def test_bundled_font_file_exists_on_disk():
+    assert Path(parking_transition_module._FONT_CANDIDATES[0]).is_file()
+
+
+def test_bundled_font_loads_as_a_real_truetype_font(monkeypatch):
+    monkeypatch.setattr(parking_transition_module, "_CACHED_FONT_BY_SIZE", {})
+
+    font = _load_font(18)
+
+    assert isinstance(font, ImageFont.FreeTypeFont)
+
+
+def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
+    # Mirrors map_render.py's own version of this test: PIL's
+    # ImageFont.load_default() fallback (reached when every
+    # _FONT_CANDIDATES path fails) has no å/ä/ö glyphs and draws them
+    # as blank/tofu boxes - a real DejaVu font renders noticeably
+    # wider text for the same string. The "PARKING FOOTAGE SKIPPED"
+    # caption itself is ASCII-only today, but the font is shared
+    # infrastructure with map_render.py/gsensor_graph_render.py, so
+    # it's worth confirming it actually works for non-ASCII text here
+    # too.
+    monkeypatch.setattr(parking_transition_module, "_CACHED_FONT_BY_SIZE", {})
+
+    font = _load_font(24)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    left, top, right, bottom = draw.textbbox((0, 0), "Åkergatan äö", font=font)
+
+    assert (right - left) > 150
+    assert (bottom - top) > 15

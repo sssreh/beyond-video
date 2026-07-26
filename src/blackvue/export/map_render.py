@@ -142,7 +142,24 @@ DEFAULT_MARGIN_PX = 24
 DEFAULT_MARKER_LENGTH_PX = 16
 DEFAULT_MARKER_HALF_WIDTH_PX = 8
 
+# Christer: "would it be possible to get correct å, ä and ö characters
+# for map street names" - the two paths below used to be the *only*
+# candidates, and both are unreliable: the first is a Linux-only
+# system path (absent on Christer's Windows machine, and
+# Dockerfile.cli's ffmpeg-only apt install never puts a font package
+# there either), and the second only resolves if a same-named file
+# happens to already sit in the current working directory. When both
+# fail, ImageFont.truetype() raises OSError for every candidate and
+# the code fell through to ImageFont.load_default() - a tiny built-in
+# bitmap font confirmed (by direct rendering test) to have no Swedish-
+# letter glyphs at all, so road names like "Åkergatan" rendered with
+# blank/tofu boxes for å/ä/ö. The bundled copy (see assets/, and
+# pyproject.toml's package-data entry for assets/*.ttf) is tried
+# first and is expected to always resolve from a real install; the
+# two old paths stay afterwards purely as a best-effort fallback if
+# the bundled file is ever missing for some reason.
 _FONT_CANDIDATES = (
+    str(Path(__file__).parent / "assets" / "DejaVuSans-Bold.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "DejaVuSans-Bold.ttf",
 )

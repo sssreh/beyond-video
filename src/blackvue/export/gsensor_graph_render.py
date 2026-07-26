@@ -96,6 +96,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
@@ -224,7 +226,22 @@ LEGEND_LABELS = (
     ("Z", "Up/down"),
 )
 
+# The bundled copy is tried first (see assets/, and pyproject.toml's
+# package-data entry for assets/*.ttf) and is expected to always
+# resolve from a real install. The two paths after it are what this
+# used to rely on exclusively - a Linux-only system path (absent on
+# Christer's Windows machine, and Dockerfile.cli's ffmpeg-only apt
+# install never puts a font package there either) and a bare filename
+# that only resolves from the current working directory - both kept
+# only as a best-effort fallback. Same reasoning as map_render.py's
+# own _FONT_CANDIDATES (which is where this bug was first diagnosed,
+# for map street-name labels): when every candidate fails,
+# ImageFont.truetype() raises OSError each time and the code falls
+# through to ImageFont.load_default(), a tiny built-in bitmap font
+# confirmed (by direct rendering test) to have no Swedish-letter
+# (a-ring/a-umlaut/o-umlaut) glyphs at all.
 _FONT_CANDIDATES = (
+    str(Path(__file__).parent / "assets" / "DejaVuSans-Bold.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "DejaVuSans-Bold.ttf",
 )

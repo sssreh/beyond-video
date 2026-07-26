@@ -1,8 +1,12 @@
+from pathlib import Path
+
 from PIL import Image
+from PIL import ImageDraw
 from PIL import ImageFont
 
 from blackvue.export import map_render as map_render_module
 from blackvue.export.map_render import _arrow_points
+from blackvue.export.map_render import _FONT_CANDIDATES
 from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
 from blackvue.export.map_render import render_base_map
@@ -317,3 +321,54 @@ def test_load_font_caches_separately_per_size(monkeypatch):
     assert default_size is not small_size
     assert default_size is default_size_again
     assert calls == [18, 12]
+
+
+def test_font_candidates_lists_the_bundled_font_first():
+    # Christer: "would it be possible to get correct å, ä and ö
+    # characters for map street names" - the bundled copy under
+    # assets/ has to come before the two old system-path candidates
+    # (a Linux-only path absent on Christer's Windows machine and the
+    # ffmpeg-only Docker image, and a bare filename that only resolves
+    # from the current working directory) or a real install would
+    # still silently fall through to those unreliable paths first.
+    bundled = Path(__file__).resolve().parents[3] / "src" / "blackvue" / "export" / "assets" / "DejaVuSans-Bold.ttf"
+    assert _FONT_CANDIDATES[0] == str(Path(map_render_module.__file__).parent / "assets" / "DejaVuSans-Bold.ttf")
+    assert Path(_FONT_CANDIDATES[0]) == bundled
+
+
+def test_bundled_font_file_exists_on_disk():
+    # Guards against the exact bug class pyproject.toml's package-data
+    # comment warns about (templates/*.html omitted, TemplateNotFound
+    # on the real NAS install) - if this file is ever deleted or
+    # renamed without updating _FONT_CANDIDATES/package-data to match,
+    # this test catches it immediately instead of only surfacing as
+    # tofu boxes on someone's real export.
+    assert Path(_FONT_CANDIDATES[0]).is_file()
+
+
+def test_bundled_font_loads_as_a_real_truetype_font(monkeypatch):
+    monkeypatch.setattr(map_render_module, "_CACHED_FONT_BY_SIZE", {})
+
+    font = _load_font()
+
+    assert isinstance(font, ImageFont.FreeTypeFont)
+
+
+def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
+    # The bug this guards against: PIL's ImageFont.load_default()
+    # fallback (reached when every _FONT_CANDIDATES path fails to
+    # resolve) has no å/ä/ö glyphs at all and draws them as
+    # blank/tofu boxes - confirmed by direct rendering comparison
+    # during this fix. A real DejaVu font renders "Åkergatan äö" with
+    # a normal, non-degenerate text width; the exact pixel width isn't
+    # asserted (font hinting/version could shift it slightly), just
+    # that it's comfortably wider than a handful of narrow tofu boxes
+    # would be.
+    monkeypatch.setattr(map_render_module, "_CACHED_FONT_BY_SIZE", {})
+
+    font = _load_font(24)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    left, top, right, bottom = draw.textbbox((0, 0), "Åkergatan äö", font=font)
+
+    assert (right - left) > 150
+    assert (bottom - top) > 15
