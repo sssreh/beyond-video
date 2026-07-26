@@ -35,10 +35,10 @@ from blackvue.export.gsensor_graph_render import _split_lanes
 from blackvue.export.gsensor_graph_render import _smoothed
 from blackvue.export.gsensor_graph_render import _time_to_pos
 from blackvue.export.gsensor_graph_render import _value_to_pos
+from blackvue.export.gsensor_graph_render import axis_scales_for_samples
 from blackvue.export.gsensor_graph_render import baseline_for_samples
 from blackvue.export.gsensor_graph_render import render_base_frame
 from blackvue.export.gsensor_graph_render import render_frame
-from blackvue.export.gsensor_graph_render import scale_for_samples
 from blackvue.export.gsensor_render import BACKGROUND_COLOR as DOT_GAUGE_BACKGROUND_COLOR
 from blackvue.telemetry.gsensor_reader import GSensorSample
 
@@ -50,7 +50,7 @@ def _sample(offset_ms, x, y, z):
 def test_render_base_frame_returns_image_of_requested_size():
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(
-        samples, (0.0, 0.0, 0.0), 100.0, 1.0, width=320, height=180
+        samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, width=320, height=180
     )
 
     assert image.size == (320, 180)
@@ -78,8 +78,8 @@ def test_render_base_frame_windowed_places_samples_relative_to_the_window():
     samples = (_sample(10_000, 50, -50, 0), _sample(30_000, 50, -50, 0))
 
     image = render_base_frame(
-        samples, baseline, scale, total_seconds, width=320, height=180,
-        window_start=10.0, window_end=30.0,
+        samples, baseline, (scale, scale, scale), total_seconds,
+        width=320, height=180, window_start=10.0, window_end=30.0,
     )
 
     left, top, right, bottom = _plot_area(
@@ -102,14 +102,14 @@ def test_render_base_frame_default_window_matches_explicit_full_span():
         _sample(0, 40, -20, 5), _sample(5000, -10, 30, -15), _sample(9000, 0, 0, 0),
     )
     baseline = (0.0, 0.0, 0.0)
-    scale = 50.0
+    scales = (50.0, 50.0, 50.0)
     total_seconds = 9.0
 
     default_image = render_base_frame(
-        samples, baseline, scale, total_seconds, width=400, height=200, show_z=True,
+        samples, baseline, scales, total_seconds, width=400, height=200, show_z=True,
     )
     explicit_image = render_base_frame(
-        samples, baseline, scale, total_seconds, width=400, height=200, show_z=True,
+        samples, baseline, scales, total_seconds, width=400, height=200, show_z=True,
         window_start=0.0, window_end=total_seconds,
     )
 
@@ -124,7 +124,7 @@ def test_render_base_frame_background_is_a_flat_light_color():
     # feedback: "awful green background"). Checked at a far corner,
     # well outside where any trace/tick/legend could land.
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     assert image.getpixel((0, 0)) == BACKGROUND_COLOR
 
@@ -143,7 +143,7 @@ def test_render_base_frame_handles_fewer_than_two_samples_without_crashing():
     # (blank-of-traces) image rather than crashing on draw.line() with
     # a single point.
     samples = (_sample(0, 0, 0, 0),)
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 1.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), 1.0)
 
     assert image.size == (DEFAULT_WIDTH, DEFAULT_HEIGHT)
 
@@ -165,7 +165,9 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
     total_seconds = 1.0
     samples = (_sample(0, 50, -30, 10), _sample(1000, 50, -30, 10))
 
-    image = render_base_frame(samples, baseline, scale, total_seconds, show_z=True)
+    image = render_base_frame(
+        samples, baseline, (scale, scale, scale), total_seconds, show_z=True
+    )
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
         legend_reserve=_legend_reserve_px("horizontal", show_z=True),
@@ -189,7 +191,7 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
 
 def test_render_frame_draws_a_playhead_that_moves_with_elapsed_seconds():
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    base = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    base = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     start = render_frame(base, 0.0, 1.0)
     middle = render_frame(base, 0.5, 1.0)
@@ -200,7 +202,7 @@ def test_render_frame_draws_a_playhead_that_moves_with_elapsed_seconds():
 
 def test_render_frame_playhead_uses_the_playhead_color():
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    base = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    base = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     frame = render_frame(base, 0.5, 1.0)
     left, top, right, bottom = _plot_area(
@@ -215,7 +217,7 @@ def test_render_frame_playhead_uses_the_playhead_color():
 def test_render_base_frame_vertical_uses_the_vertical_defaults_when_unsized():
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(
-        samples, (0.0, 0.0, 0.0), 100.0, 1.0, orientation="vertical"
+        samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, orientation="vertical"
     )
 
     assert image.size == (DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT)
@@ -260,8 +262,8 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
     samples = (_sample(0, 50, -30, 10), _sample(1000, 50, -30, 10))
 
     image = render_base_frame(
-        samples, baseline, scale, total_seconds, orientation="vertical",
-        show_z=True,
+        samples, baseline, (scale, scale, scale), total_seconds,
+        orientation="vertical", show_z=True,
     )
     left, top, right, bottom = _plot_area(
         DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical",
@@ -282,7 +284,7 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
 def test_render_frame_vertical_playhead_moves_down_not_across():
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     base = render_base_frame(
-        samples, (0.0, 0.0, 0.0), 100.0, 1.0, orientation="vertical"
+        samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, orientation="vertical"
     )
 
     start = render_frame(base, 0.0, 1.0, orientation="vertical")
@@ -390,7 +392,7 @@ def test_render_base_frame_draws_a_divider_between_the_two_lanes():
     # show_z (no lane split at all otherwise - see
     # test_render_base_frame_hides_z_by_default()).
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0, show_z=True)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, show_z=True)
 
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
@@ -402,28 +404,73 @@ def test_render_base_frame_draws_a_divider_between_the_two_lanes():
     assert image.getpixel((round(left) + 5, divider_y)) == LANE_DIVIDER_COLOR
 
 
-def test_scale_for_samples_floors_at_minimum_for_flat_data():
+def test_axis_scales_for_samples_floors_each_axis_at_minimum_for_flat_data():
     samples = (_sample(0, 0, 0, 0), _sample(100, 0, 0, 0))
 
-    assert scale_for_samples(samples, minimum=1.0) == 1.0
+    assert axis_scales_for_samples(samples, minimum=1.0) == (1.0, 1.0, 1.0)
 
 
-def test_scale_for_samples_scales_to_the_observed_peak_across_all_three_axes():
-    samples = (_sample(0, 100, -50, 10), _sample(100, -300, 200, -20))
+def test_axis_scales_for_samples_scales_each_axis_to_its_own_observed_peak():
+    # The key behavior change from the old (now-removed) scale_for_
+    # samples(): a huge deviation on one axis must NOT inflate another
+    # axis' own scale - X's peak (300) should give X its own scale
+    # while Y (50) and Z (20) get their own, much smaller ones,
+    # matching Christer's own ask ("could the x and y be optimized to
+    # have the amplitude gained to the maximum of that trip").
+    samples = (_sample(0, 100, -50, 10), _sample(100, -300, 20, -20))
 
-    # Largest deviation across x/y/z is 300 (from x=-300).
-    assert scale_for_samples(samples, padding=1.2, minimum=1.0) == 360.0
+    scale_x, scale_y, scale_z = axis_scales_for_samples(
+        samples, padding=1.2, minimum=1.0
+    )
+
+    assert scale_x == 360.0  # 300 * 1.2
+    assert scale_y == 60.0  # 50 * 1.2
+    assert scale_z == 24.0  # 20 * 1.2
 
 
-def test_scale_for_samples_measures_deviation_from_a_given_baseline():
+def test_axis_scales_for_samples_measures_deviation_from_a_given_baseline():
     samples = (_sample(0, 100, -50, 0), _sample(100, -300, 200, 0))
 
-    scale = scale_for_samples(
+    scale_x, scale_y, scale_z = axis_scales_for_samples(
         samples, baseline=(500.0, 500.0, 0.0), padding=1.0, minimum=1.0
     )
 
-    # Deviations: (-400, -550, 0) and (-800, -300, 0) -> largest is 800.
-    assert scale == 800.0
+    # Deviations: (-400, -550, 0) and (-800, -300, 0) -> largest per
+    # axis is 800 (x), 550 (y), 0 (z, floored to minimum).
+    assert (scale_x, scale_y, scale_z) == (800.0, 550.0, 1.0)
+
+
+def test_render_base_frame_each_axis_uses_its_own_scale_not_a_shared_one():
+    # Christer: "could the x and y be optimized to have the amplitude
+    # gained to the maximum of that trip" - an axis with a small scale
+    # relative to another axis' should still reach its own lane's full
+    # height at its own peak, rather than being squashed down by the
+    # other axis' larger scale. X and Y are given the exact same raw
+    # value (10) here but different scales (10 vs 100) - X's value
+    # equals its own scale exactly, so it should land at the lane's
+    # own top edge (the full extent), while Y - same raw value, but
+    # ten times X's own scale - lands much closer to the lane's center.
+    baseline = (0.0, 0.0, 0.0)
+    scales = (10.0, 100.0, 100.0)
+    total_seconds = 1.0
+    samples = (_sample(0, 10, 10, 0), _sample(1000, 10, 10, 0))
+
+    image = render_base_frame(samples, baseline, scales, total_seconds)
+    left, top, right, bottom = _plot_area(
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
+    )
+    x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
+
+    x_edge_y = round(_value_to_pos(10, 10.0, top, bottom))
+    y_center_ish_y = round(_value_to_pos(10, 100.0, top, bottom))
+
+    assert _color_near_row(image, x_pixel, x_edge_y, X_COLOR)
+    assert _color_near_row(image, x_pixel, y_center_ish_y, Y_COLOR)
+    # Concrete check that this isn't a coincidence: X's own edge
+    # position is nowhere near Y's, confirming the two traces really
+    # did use different scales rather than the same one.
+    assert abs(x_edge_y - y_center_ish_y) > 50
 
 
 def test_baseline_for_samples_is_the_median_of_each_axis():
@@ -479,7 +526,7 @@ def test_render_base_frame_draws_a_legend_swatch_for_each_axis_color():
     # three rows including Z's own - Z is hidden (and so is its legend
     # row) by default, see test_render_base_frame_hides_z_by_default().
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0, show_z=True)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, show_z=True)
 
     left = top = DEFAULT_MARGIN_PX
     swatch_x = left + LEGEND_PADDING + 5
@@ -495,7 +542,7 @@ def test_render_base_frame_skips_the_legend_for_fewer_than_two_samples():
     # labeling traces that were never drawn, so it's skipped too (same
     # "if len(samples) >= 2" guard the traces themselves use).
     samples = (_sample(0, 0, 0, 0),)
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 1.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), 1.0)
 
     left = top = DEFAULT_MARGIN_PX
     swatch_x = left + LEGEND_PADDING + 5
@@ -514,7 +561,7 @@ def test_render_base_frame_vertical_centers_the_legend_block():
     # actually catch a regression in the centering math.
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(
-        samples, (0.0, 0.0, 0.0), 100.0, 1.0, orientation="vertical"
+        samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, orientation="vertical"
     )
 
     font = _load_font(LEGEND_FONT_SIZE)
@@ -687,7 +734,7 @@ def test_render_base_frame_hides_z_by_default():
     # whose Z value is large, no pixel in the image should be Z_COLOR
     # at all when show_z is left at its default.
     samples = (_sample(0, 0, 0, 80), _sample(1000, 0, 0, 80))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     assert Z_COLOR not in set(image.getdata())
 
@@ -704,7 +751,9 @@ def test_render_base_frame_x_y_reclaim_the_full_axis_when_z_is_hidden():
     total_seconds = 1.0
     samples = (_sample(0, 50, 0, 0), _sample(1000, 50, 0, 0))
 
-    image = render_base_frame(samples, baseline, scale, total_seconds)
+    image = render_base_frame(
+        samples, baseline, (scale, scale, scale), total_seconds
+    )
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
         legend_reserve=_legend_reserve_px("horizontal"),
@@ -726,7 +775,7 @@ def test_render_base_frame_omits_the_divider_when_z_is_hidden():
     # -aliased tick-label text elsewhere, which isn't the divider and
     # isn't a bug.
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
@@ -745,7 +794,7 @@ def test_legend_has_two_rows_when_z_is_hidden():
     # Only X/Y's own rows - no "Z — Up/down" row for a trace that isn't
     # actually drawn (see _draw_legend()'s own docstring).
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     left = top = DEFAULT_MARGIN_PX
     swatch_x = left + LEGEND_PADDING + 5
@@ -783,7 +832,7 @@ def test_render_frame_playhead_still_aligns_when_z_is_hidden():
     # show_z=False now, so this should just work without either side
     # passing show_z explicitly.
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    base = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    base = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     frame = render_frame(base, 0.5, 1.0)
     left, top, right, bottom = _plot_area(

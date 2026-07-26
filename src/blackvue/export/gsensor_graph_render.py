@@ -79,11 +79,14 @@ regardless - was to stop sharing one plot entirely for Z specifically:
 (`main_lane`), but Z now gets its own separate `z_lane` (see
 _split_lanes()), so Z's own trace never crosses X's or Y's. Christer
 picked a ~1/3 share of the panel for Z's own lane (Z is one trace
-against X/Y's two) over an equal 50/50 split, and the very same
-`scale` value for both lanes (not an independent auto-scale for Z)
-so a given magnitude still looks the same size in either lane - only
-which pixels a lane owns changed, not how values map to pixels within
-one. TRACE_LINE_WIDTH itself has gone back and forth several times
+against X/Y's two) over an equal 50/50 split. Both lanes originally
+plotted using the very same shared `scale` value (not an independent
+auto-scale for Z) so a given magnitude looked the same size in either
+lane - that's since been reversed (see axis_scales_for_samples()'s own
+docstring): each axis, X/Y/Z alike, now gets its own independent scale,
+maximized to that axis' own peak for the trip, so a small-range axis
+isn't squashed down just because another axis happens to swing wider.
+TRACE_LINE_WIDTH itself has gone back and forth several times
 (1px, 2px, 1px, 2px, 1px again) as the actual sources of clutter got
 fixed one at a time - the legend's former overlap with the traces (see
 _legend_reserve_px()) and the lane split above. The final settled
@@ -361,34 +364,58 @@ def baseline_for_samples(samples) -> tuple[float, float, float]:
     )
 
 
-def scale_for_samples(
+def axis_scales_for_samples(
     samples,
     *,
     baseline: tuple[float, float, float] = (0.0, 0.0, 0.0),
     padding: float = DEFAULT_SCALE_PADDING,
     minimum: float = DEFAULT_MINIMUM_SCALE,
-) -> float:
-    """Return the shared value-axis scale (the deviation-from-baseline
-    magnitude that should sit at the very edge of the plot area) for a
-    set of g-sensor samples: the largest deviation from `baseline` seen
-    on any of the three axes, times `padding`, floored at `minimum` -
-    same reasoning as gsensor_render.scale_for_samples(), extended
-    across x/y/z so all three traces share one consistent value axis
-    rather than each auto-scaling independently (which would make
-    their relative magnitudes misleading to compare).
+) -> tuple[float, float, float]:
+    """Return (scale_x, scale_y, scale_z) - each axis' own independent
+    value-axis scale (the deviation-from-baseline magnitude that should
+    sit at the very edge of that axis' own lane): the largest deviation
+    from `baseline` seen on *that axis alone* across the whole trip's
+    samples, times `padding`, floored at `minimum`.
+
+    Christer, after the whole trip's data made clear X and Y often have
+    very different real ranges of motion (e.g. side-to-side vs.
+    forward/back braking-and-accelerating): "could the x and y be
+    optimized to have the amplitude gained to the maximum of that trip"
+    - each axis should use its own full lane height at its own peak,
+    rather than a small-range axis being squashed down to a fraction of
+    its lane just because another axis happened to swing wider. This
+    replaces the old scale_for_samples() (a single value shared across
+    all three axes, computed from whichever axis had the largest
+    deviation) - that function is gone now that nothing calls it, since
+    a single shared scale is no longer how this chart scales anything.
+    Z gets the same independent treatment as X/Y (confirmed with
+    Christer rather than assumed - see WORKING_CONTEXT.md), reversing
+    the earlier "Z shares the same scale as X/Y so a given magnitude
+    looks the same size in either lane" decision from the lane-split
+    feature; each axis is now only ever compared against its own trip-
+    wide range, not against the others.
+
+    Each axis' own scale is still computed once from the *whole trip's*
+    samples (not a windowed chunk's own subset) and reused unchanged
+    across every page when gsensor_graph_video.py paginates a long
+    trip - so a given magnitude on a given axis still reads the same
+    size on every page, exactly like the old shared scale did across
+    pages; only the three axes now differ from *each other*, not from
+    themselves across time.
     """
 
     baseline_x, baseline_y, baseline_z = baseline
-    peak = 0.0
+    peak_x = peak_y = peak_z = 0.0
     for sample in samples:
-        peak = max(
-            peak,
-            abs(sample.x - baseline_x),
-            abs(sample.y - baseline_y),
-            abs(sample.z - baseline_z),
-        )
+        peak_x = max(peak_x, abs(sample.x - baseline_x))
+        peak_y = max(peak_y, abs(sample.y - baseline_y))
+        peak_z = max(peak_z, abs(sample.z - baseline_z))
 
-    return max(peak * padding, minimum)
+    return (
+        max(peak_x * padding, minimum),
+        max(peak_y * padding, minimum),
+        max(peak_z * padding, minimum),
+    )
 
 
 def _nice_tick_interval(total_seconds: float, *, target_tick_count: int = 6) -> float:
@@ -501,11 +528,17 @@ def _split_lanes(value_start: float, value_end: float) -> tuple[
     share `main_lane` (the larger of the two), Z gets its own
     `z_lane` (Z_LANE_FRACTION of the space), so Z's trace no longer
     crosses X/Y's (Christer: "let the cluttered Z have its own line").
-    Both sub-ranges get passed the very same `scale` value by the
-    caller when actually plotting into them (see render_base_frame()),
-    so a given magnitude looks the same size in either lane - only
-    which pixels each lane owns changes here, not how values map to
-    pixels within a lane."""
+    This only decides which *pixels* each lane owns - it has nothing to
+    do with how values map to pixels within a lane, which is each
+    axis' own independent scale now (see axis_scales_for_samples()):
+    an earlier version of this docstring noted that both lanes got
+    passed the very same shared `scale` value, so a given magnitude
+    looked the same size in either lane - that's no longer true since
+    each axis was later given its own independent scale (Christer:
+    "could the x and y be optimized to have the amplitude gained to
+    the maximum of that trip", confirmed to include Z too), so X/Y/Z
+    can each use their own lane's full height regardless of how the
+    other axes happen to scale."""
 
     available = (value_end - value_start) - LANE_GAP_PX
     z_span = available * Z_LANE_FRACTION
@@ -642,7 +675,7 @@ def _draw_legend(
 def render_base_frame(
     samples,
     baseline: tuple[float, float, float],
-    scale: float,
+    scales: tuple[float, float, float],
     total_seconds: float,
     *,
     width: int | None = None,
@@ -698,6 +731,21 @@ def render_base_frame(
     each tick's own absolute trip time (e.g. "10:00", "10:10", ...),
     not time-since-window-start, so a page reads as "this slice of the
     real trip clock" rather than resetting to 00:00 every chunk.
+
+    `scales` is (scale_x, scale_y, scale_z) - each axis' own
+    independent value-axis scale (see axis_scales_for_samples()),
+    rather than one value shared by all three. X and Y still share
+    `main_lane`'s pixel range (and Z shares `z_lane`'s, when `show_z`),
+    but each axis' own trace within that shared range is normalized
+    against its own scale, not the others' - so an axis with a small
+    trip-wide range still uses its own lane's full height, rather than
+    being squashed down just because another axis happens to swing
+    wider (Christer: "could the x and y be optimized to have the
+    amplitude gained to the maximum of that trip"). All three scales
+    should be computed once from the *whole trip's* samples (not a
+    windowed chunk's own subset) so a given magnitude on a given axis
+    still reads the same size on every page when paginated - only the
+    axes differ from each other, not from themselves across time.
     """
 
     if width is None:
@@ -746,8 +794,14 @@ def render_base_frame(
         # before Z ever got its own lane. z_lane is left unused below.
         main_lane, z_lane = (value_start, value_end), None
     main_start, main_end = main_lane
+    scale_x, scale_y, scale_z = scales
 
-    main_zero_pos = _value_to_pos(0.0, scale, main_start, main_end)
+    # _value_to_pos(0.0, ...) always lands on the lane's own center
+    # regardless of which scale is passed (0 / any-scale is still 0),
+    # so the zero-line's own position doesn't actually depend on which
+    # axis' scale gets used here - scale_x is just as valid a choice as
+    # scale_y would be.
+    main_zero_pos = _value_to_pos(0.0, scale_x, main_start, main_end)
     if orientation == "vertical":
         draw.line((main_zero_pos, top, main_zero_pos, bottom), fill=AXIS_COLOR, width=1)
     else:
@@ -755,7 +809,7 @@ def render_base_frame(
 
     if show_z:
         z_start, z_end = z_lane
-        z_zero_pos = _value_to_pos(0.0, scale, z_start, z_end)
+        z_zero_pos = _value_to_pos(0.0, scale_z, z_start, z_end)
         divider_pos = (main_end + z_start) / 2
         if orientation == "vertical":
             draw.line((z_zero_pos, top, z_zero_pos, bottom), fill=AXIS_COLOR, width=1)
@@ -782,20 +836,24 @@ def render_base_frame(
         # Lightly smoothed before plotting (see _smoothed()'s own
         # docstring) - the raw per-sample values are still what
         # baseline/scale were computed from, just not what gets drawn.
+        # Each axis carries its own scale (see `scales` in this
+        # function's own docstring) so X/Y/Z each use their own lane's
+        # full height at their own peak, rather than one shared scale
+        # letting a wider-swinging axis squash a narrower one down.
         axes = (
-            (X_COLOR, baseline_x, [sample.x for sample in samples]),
-            (Y_COLOR, baseline_y, [sample.y for sample in samples]),
+            (X_COLOR, baseline_x, scale_x, [sample.x for sample in samples]),
+            (Y_COLOR, baseline_y, scale_y, [sample.y for sample in samples]),
         )
         if show_z:
             axes = axes + (
-                (Z_COLOR, baseline_z, [sample.z for sample in samples]),
+                (Z_COLOR, baseline_z, scale_z, [sample.z for sample in samples]),
             )
-        for axis_index, (color, base, raw_values) in enumerate(axes):
+        for axis_index, (color, base, axis_scale, raw_values) in enumerate(axes):
             lane_start, lane_end = z_lane if (show_z and axis_index == 2) else main_lane
             smoothed = _smoothed(raw_values)
             points = []
             for t, value in zip(times, smoothed):
-                v = _value_to_pos(value - base, scale, lane_start, lane_end)
+                v = _value_to_pos(value - base, axis_scale, lane_start, lane_end)
                 points.append((v, t) if orientation == "vertical" else (t, v))
             draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 

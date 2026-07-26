@@ -36,10 +36,10 @@ import tempfile
 from pathlib import Path
 
 from ..telemetry.gsensor_reader import GSensorSample
+from .gsensor_graph_render import axis_scales_for_samples
 from .gsensor_graph_render import baseline_for_samples
 from .gsensor_graph_render import render_base_frame
 from .gsensor_graph_render import render_frame
-from .gsensor_graph_render import scale_for_samples
 from .media import encode_frame_sequence
 
 # A slow-moving playhead over an otherwise static chart doesn't need
@@ -109,9 +109,10 @@ def render_gsensor_graph_video(
     `window_end` (see that function's own docstring) - X/Y/Z traces
     only from that chunk's own samples, tick labels showing each
     chunk's own real absolute trip time rather than resetting to 00:00
-    per chunk, but all chunks sharing the one baseline/scale computed
-    from the *whole* trip's samples, so a given magnitude still reads
-    the same size on every page. Per output frame, whichever chunk
+    per chunk, but all chunks sharing the one set of per-axis scales
+    (see gsensor_graph_render.axis_scales_for_samples()) computed from
+    the *whole* trip's samples, so a given magnitude on a given axis
+    still reads the same size on every page. Per output frame, whichever chunk
     `elapsed_seconds` currently falls in supplies the base image, and
     render_frame() gets that chunk's own chunk-relative elapsed/total
     seconds - so the playhead still sweeps left-to-right (or top-to-
@@ -145,7 +146,7 @@ def render_gsensor_graph_video(
         return None
 
     baseline = baseline_for_samples(samples)
-    scale = scale_for_samples(samples, baseline=baseline)
+    scales = axis_scales_for_samples(samples, baseline=baseline)
 
     paginated = (
         window_seconds is not None
@@ -175,7 +176,7 @@ def render_gsensor_graph_video(
                     <= sample.offset.total_seconds()
                     <= chunk_window_end
                 ],
-                baseline, scale, total_seconds,
+                baseline, scales, total_seconds,
                 window_start=chunk_window_start, window_end=chunk_window_end,
                 orientation=orientation, width=width, height=height,
                 show_z=show_z,
@@ -184,7 +185,7 @@ def render_gsensor_graph_video(
         ]
     else:
         base_image = render_base_frame(
-            samples, baseline, scale, total_seconds,
+            samples, baseline, scales, total_seconds,
             orientation=orientation, width=width, height=height, show_z=show_z,
         )
 
