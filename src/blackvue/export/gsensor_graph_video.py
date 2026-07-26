@@ -46,12 +46,15 @@ def render_gsensor_graph_video(
     *,
     fps: int = DEFAULT_FPS,
     duration_seconds: float | None = None,
+    orientation: str = "horizontal",
+    width: int | None = None,
+    height: int | None = None,
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into a strip-chart
     overlay video at `destination`: three colored X/Y/Z line traces
-    drawn once across the whole trip, with a vertical playhead moving
-    left to right as the video plays, on the same flat chroma-key
-    green background gsensor.mp4 uses.
+    drawn once across the whole trip, with a playhead moving as the
+    video plays, on the same flat chroma-key green background
+    gsensor.mp4 uses.
 
     `samples` are already trip-relative (see trip_export.py's
     _merge_gsensor()) - same assumption gsensor_video.py's
@@ -65,6 +68,18 @@ def render_gsensor_graph_video(
     `duration_seconds` parameter; see that function's docstring for
     why a recording with no trailing g-sensor data needs this to stay
     in sync with the real video length.
+
+    `orientation` ('horizontal', the default, or 'vertical') and
+    `width`/`height` are forwarded straight to
+    gsensor_graph_render.render_base_frame()/render_frame() - see
+    those functions' own docstrings, and the module docstring there,
+    for what each orientation looks like and why. `width`/`height`
+    matter in particular for --stitch's own --stitch-graph panel (see
+    stitch.py's _render_graph_panel()), which needs the video encoded
+    at an exact pixel size to hstack/vstack cleanly alongside the
+    camera composite - left as None here (the render module's own
+    per-orientation defaults) for the standalone --gsensor-graph-video
+    case, which has no such constraint.
 
     Returns None (and writes nothing) if there aren't at least two
     samples, or they span zero time - the same convention
@@ -84,7 +99,10 @@ def render_gsensor_graph_video(
 
     baseline = baseline_for_samples(samples)
     scale = scale_for_samples(samples, baseline=baseline)
-    base_image = render_base_frame(samples, baseline, scale, total_seconds)
+    base_image = render_base_frame(
+        samples, baseline, scale, total_seconds,
+        orientation=orientation, width=width, height=height,
+    )
 
     frame_count = max(2, int(total_seconds * fps) + 1)
 
@@ -95,7 +113,10 @@ def render_gsensor_graph_video(
 
         for frame_number in range(frame_count):
             elapsed_seconds = min(frame_number / fps, total_seconds)
-            frame = render_frame(base_image, elapsed_seconds, total_seconds)
+            frame = render_frame(
+                base_image, elapsed_seconds, total_seconds,
+                orientation=orientation,
+            )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 
         encode_frame_sequence(frame_dir, destination, fps)

@@ -110,3 +110,67 @@ def test_render_gsensor_graph_video_renders_the_base_chart_only_once(
     render_gsensor_graph_video(samples, tmp_path / "gsensor_graph.mp4", fps=5)
 
     assert call_count["base"] == 1
+
+
+def test_render_gsensor_graph_video_forwards_orientation_and_size_to_the_render(
+    tmp_path
+):
+    # --stitch's own --stitch-graph panel (see stitch.py's
+    # _render_graph_panel()) needs the video encoded at an exact pixel
+    # size and orientation to hstack/vstack cleanly alongside the
+    # camera composite - this confirms those three params make it all
+    # the way through to the actual encoded output, not just to
+    # gsensor_graph_render.py's own already-tested render functions.
+    samples = (
+        _sample(0, 0, 0),
+        _sample(1000, 200, -100),
+        _sample(2000, -150, 300),
+    )
+    destination = tmp_path / "gsensor_graph.mp4"
+
+    result = render_gsensor_graph_video(
+        samples, destination, fps=2,
+        orientation="vertical", width=220, height=800,
+    )
+
+    assert result == destination
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert (stream["width"], stream["height"]) == (220, 800)
+
+
+def test_render_gsensor_graph_video_defaults_to_horizontal_orientation(tmp_path):
+    samples = (_sample(0, 0, 0), _sample(1000, 200, -100))
+    destination = tmp_path / "gsensor_graph.mp4"
+
+    from blackvue.export.gsensor_graph_render import DEFAULT_HEIGHT
+    from blackvue.export.gsensor_graph_render import DEFAULT_WIDTH
+
+    render_gsensor_graph_video(samples, destination, fps=2)
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert (stream["width"], stream["height"]) == (DEFAULT_WIDTH, DEFAULT_HEIGHT)

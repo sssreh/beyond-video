@@ -1,6 +1,8 @@
 from datetime import timedelta
 
 from blackvue.export.gsensor_graph_render import DEFAULT_HEIGHT
+from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_HEIGHT
+from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_WIDTH
 from blackvue.export.gsensor_graph_render import DEFAULT_WIDTH
 from blackvue.export.gsensor_graph_render import PLAYHEAD_COLOR
 from blackvue.export.gsensor_graph_render import X_COLOR
@@ -9,8 +11,8 @@ from blackvue.export.gsensor_graph_render import Z_COLOR
 from blackvue.export.gsensor_graph_render import _format_tick
 from blackvue.export.gsensor_graph_render import _nice_tick_interval
 from blackvue.export.gsensor_graph_render import _plot_area
-from blackvue.export.gsensor_graph_render import _time_to_x
-from blackvue.export.gsensor_graph_render import _value_to_y
+from blackvue.export.gsensor_graph_render import _time_to_pos
+from blackvue.export.gsensor_graph_render import _value_to_pos
 from blackvue.export.gsensor_graph_render import baseline_for_samples
 from blackvue.export.gsensor_graph_render import render_base_frame
 from blackvue.export.gsensor_graph_render import render_frame
@@ -60,9 +62,9 @@ def test_render_base_frame_handles_fewer_than_two_samples_without_crashing():
 def test_render_base_frame_draws_each_axis_in_its_own_color():
     # Two samples produce one exact straight-line segment per axis -
     # the endpoint pixel at the strip's own left edge (elapsed=0) can
-    # be computed directly via the same _time_to_x/_value_to_y helpers
-    # the renderer itself uses, and should land exactly on that axis's
-    # own trace color.
+    # be computed directly via the same _time_to_pos/_value_to_pos
+    # helpers the renderer itself uses, and should land exactly on
+    # that axis's own trace color.
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
@@ -70,13 +72,13 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
 
     image = render_base_frame(samples, baseline, scale, total_seconds)
     left, top, right, bottom = _plot_area(
-        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal"
     )
-    x_pixel = round(_time_to_x(0.0, total_seconds, left, right))
+    x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
 
-    x_y = round(_value_to_y(50, scale, top, bottom))
-    y_y = round(_value_to_y(-30, scale, top, bottom))
-    z_y = round(_value_to_y(10, scale, top, bottom))
+    x_y = round(_value_to_pos(50, scale, top, bottom))
+    y_y = round(_value_to_pos(-30, scale, top, bottom))
+    z_y = round(_value_to_pos(10, scale, top, bottom))
 
     assert image.getpixel((x_pixel, x_y)) == X_COLOR
     assert image.getpixel((x_pixel, y_y)) == Y_COLOR
@@ -99,10 +101,79 @@ def test_render_frame_playhead_uses_the_playhead_color():
     base = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
 
     frame = render_frame(base, 0.5, 1.0)
-    left, top, right, bottom = _plot_area(DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20)
-    playhead_x = round(_time_to_x(0.5, 1.0, left, right))
+    left, top, right, bottom = _plot_area(
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal"
+    )
+    playhead_x = round(_time_to_pos(0.5, 1.0, left, right))
 
     assert frame.getpixel((playhead_x, round(top))) == PLAYHEAD_COLOR
+
+
+def test_render_base_frame_vertical_uses_the_vertical_defaults_when_unsized():
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    image = render_base_frame(
+        samples, (0.0, 0.0, 0.0), 100.0, 1.0, orientation="vertical"
+    )
+
+    assert image.size == (DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT)
+
+
+def test_render_base_frame_vertical_runs_time_top_to_bottom():
+    # Two samples produce one straight-line segment per axis - in
+    # vertical mode, elapsed=0 should land at the plot area's own top
+    # edge (time runs top to bottom - see the module docstring), not
+    # its left edge the way horizontal mode does.
+    baseline = (0.0, 0.0, 0.0)
+    scale = 100.0
+    total_seconds = 1.0
+    samples = (_sample(0, 50, -30, 10), _sample(1000, 50, -30, 10))
+
+    image = render_base_frame(
+        samples, baseline, scale, total_seconds, orientation="vertical"
+    )
+    left, top, right, bottom = _plot_area(
+        DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical"
+    )
+    y_pixel = round(_time_to_pos(0.0, total_seconds, top, bottom))
+
+    x_x = round(_value_to_pos(50, scale, left, right))
+    y_x = round(_value_to_pos(-30, scale, left, right))
+    z_x = round(_value_to_pos(10, scale, left, right))
+
+    assert image.getpixel((x_x, y_pixel)) == X_COLOR
+    assert image.getpixel((y_x, y_pixel)) == Y_COLOR
+    assert image.getpixel((z_x, y_pixel)) == Z_COLOR
+
+
+def test_render_frame_vertical_playhead_moves_down_not_across():
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    base = render_base_frame(
+        samples, (0.0, 0.0, 0.0), 100.0, 1.0, orientation="vertical"
+    )
+
+    start = render_frame(base, 0.0, 1.0, orientation="vertical")
+    middle = render_frame(base, 0.5, 1.0, orientation="vertical")
+
+    assert list(start.getdata()) != list(middle.getdata())
+
+    left, top, right, bottom = _plot_area(
+        DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical"
+    )
+    playhead_y = round(_time_to_pos(0.5, 1.0, top, bottom))
+
+    assert middle.getpixel((round(left), playhead_y)) == PLAYHEAD_COLOR
+
+
+def test_plot_area_vertical_reserves_space_on_the_left_not_the_bottom():
+    # Vertical mode keeps tick labels upright in a left-side margin
+    # (see the module docstring) rather than rotating the whole chart
+    # - the plot area's own left edge should sit further in than a
+    # plain margin would put it, while its bottom edge is just the
+    # plain margin (no reserve there in vertical mode).
+    left, top, right, bottom = _plot_area(220, 960, 32, 44, "vertical")
+
+    assert left == 32 + 44
+    assert bottom == 960 - 32
 
 
 def test_scale_for_samples_floors_at_minimum_for_flat_data():

@@ -33,6 +33,7 @@ from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_PAN_X_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_RADIUS_PERCENT
+from blackvue.export.stitch import MAX_GRAPH_SIZE_PERCENT
 from blackvue.export.stitch import MAX_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_PAN_PERCENT
@@ -40,6 +41,7 @@ from blackvue.export.stitch import MAX_MIRROR_RADIUS_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MAX_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MAX_STITCH_SCALE_PERCENT
+from blackvue.export.stitch import MIN_GRAPH_SIZE_PERCENT
 from blackvue.export.stitch import MIN_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MAP_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_PAN_PERCENT
@@ -250,6 +252,21 @@ def _parse_map_size(value: str) -> float:
     return size
 
 
+def _parse_graph_size(value: str) -> float:
+    try:
+        size = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid size {value!r} (expected a number)")
+
+    if not (MIN_GRAPH_SIZE_PERCENT <= size <= MAX_GRAPH_SIZE_PERCENT):
+        raise argparse.ArgumentTypeError(
+            f"size {value!r} out of range "
+            f"({MIN_GRAPH_SIZE_PERCENT:g}-{MAX_GRAPH_SIZE_PERCENT:g})"
+        )
+
+    return size
+
+
 def _parse_gsensor_position(value: str) -> str:
     try:
         parse_gsensor_position(value)
@@ -317,6 +334,9 @@ def bv_export(
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
     stitch_gsensor_xy: tuple[float, float] | None = None,
+    stitch_graph: bool = False,
+    stitch_graph_side: str | None = None,
+    stitch_graph_size: float | None = None,
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
@@ -729,6 +749,9 @@ def bv_export(
                 stitch_gsensor_size=stitch_gsensor_size,
                 stitch_gsensor_pos=stitch_gsensor_pos,
                 stitch_gsensor_xy=stitch_gsensor_xy,
+                stitch_graph=stitch_graph,
+                stitch_graph_side=stitch_graph_side,
+                stitch_graph_size=stitch_graph_size,
                 stitch_subtitles=stitch_subtitles,
                 stitch_subtitles_background=stitch_subtitles_background,
                 include_parking=include_parking,
@@ -1362,6 +1385,57 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument(
+        "--stitch-graph",
+        action="store_true",
+        help=(
+            "Also compose a --stitch-graph panel alongside the camera "
+            "composite in stitch.mp4: a strip chart of this trip's "
+            "X/Y/Z g-sensor readings with a moving playhead - a "
+            "second, alternate g-sensor visualization alongside "
+            "--stitch-gsensor's dot-gauge overlay. Unlike "
+            "--stitch-gsensor, this is rendered fresh at the exact "
+            "panel size and grows the composite, the same way "
+            "--stitch-map does, rather than needing an already"
+            "-rendered file overlaid on top. Composed after any "
+            "--stitch-map panel, so the two can be used together - "
+            "e.g. a map on the bottom (--stitch-map) and this graph "
+            "as a vertical side panel (its own default side). Only "
+            "used together with --stitch."
+        ),
+    )
+
+    parser.add_argument(
+        "--stitch-graph-side",
+        choices=["left", "right", "top", "down"],
+        default=None,
+        help=(
+            "Override --stitch-graph's panel side. Default: 'right' "
+            "for both --stitch-layout side_by_side and top_down - "
+            "deliberately different from --stitch-map's own defaults "
+            "so the two don't collide when both are left at their own "
+            "defaults together. The panel's own orientation follows "
+            "automatically: 'left'/'right' renders a tall, narrow "
+            "panel with upright tick labels and time running top to "
+            "bottom; 'top'/'down' renders a short, wide panel with "
+            "time running left to right, like the standalone "
+            "gsensor_graph.mp4 default."
+        ),
+    )
+    parser.add_argument(
+        "--stitch-graph-size",
+        type=_parse_graph_size,
+        default=None,
+        help=(
+            "Override --stitch-graph's panel width/height as a "
+            f"percent of the camera composite's matching dimension "
+            f"({MIN_GRAPH_SIZE_PERCENT:g}-{MAX_GRAPH_SIZE_PERCENT:g}). "
+            "Default: a fixed 25%% - there's no --stitch-map-style "
+            "automatic geography-based sizing here, a synthetic chart "
+            "has no equivalent real-world shape to derive one from."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-subtitles",
         action="store_true",
         help=(
@@ -1539,6 +1613,9 @@ def main(argv: list[str] | None = None) -> int:
         stitch_gsensor_size=args.stitch_gsensor_size,
         stitch_gsensor_pos=args.stitch_gsensor_pos,
         stitch_gsensor_xy=args.stitch_gsensor_xy,
+        stitch_graph=args.stitch_graph if args.stitch else False,
+        stitch_graph_side=args.stitch_graph_side,
+        stitch_graph_size=args.stitch_graph_size,
         stitch_subtitles=args.stitch_subtitles if args.stitch else False,
         stitch_subtitles_background=args.subtitles_bg,
         include_parking=args.include_parking,

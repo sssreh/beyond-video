@@ -3,17 +3,30 @@ G-sensor strip-chart frame rendering for bv-export.
 
 Draws a second, alternate g-sensor visualization alongside the
 existing circular dot-gauge (gsensor_render.py/gsensor_video.py):
-a horizontal strip chart with three colored line traces (X/Y/Z) drawn
-across the whole trip at once, and a vertical playhead line marking
-the current position - Christer's own reference was the BlackVue SD
-Card Viewer app's own g-sensor panel, a scrolling strip with time-tick
-labels along the bottom and a moving playhead.
+a strip chart with three colored line traces (X/Y/Z) drawn across the
+whole trip at once, and a playhead line marking the current position -
+Christer's own reference was the BlackVue SD Card Viewer app's own
+g-sensor panel, a scrolling strip with time-tick labels and a moving
+playhead.
+
+Two orientations are supported (see `orientation` on render_base_frame()/
+render_frame()): 'horizontal' (the default - a short, wide strip, time
+running left to right, matching the reference screenshot) and
+'vertical' (a tall, narrow strip, time running top to bottom) - added
+for compositing into a --stitch side panel when the bottom of the
+frame is already taken by --stitch-map ("select the graph like i
+selects map" - Christer). Rather than just rotating the horizontal
+chart wholesale (which would leave the MM:SS tick labels sideways),
+vertical mode is a genuinely separate layout: the tick labels stay
+upright and readable, reserved in a margin to the left of the plot
+area instead of below it - Christer's own explicit choice over the
+simpler rotate-the-whole-image approach.
 
 Unlike the dot-gauge (which redraws its rings/trail/dot fresh every
 frame), this is a static full-trip overview: the three traces and the
 time-axis ticks are drawn once (render_base_frame()), and each output
-frame is just that same base image with a thin vertical playhead line
-composited on top at the current elapsed time's x position
+frame is just that same base image with a thin playhead line
+composited on top at the current elapsed time's position
 (render_frame()) - see gsensor_graph_video.py's own frame loop, which
 takes advantage of this split to only pay per-frame drawing cost for
 the playhead itself, not the whole chart.
@@ -55,13 +68,21 @@ PLAYHEAD_COLOR = (255, 255, 255)
 
 # A short, wide strip - "the bottom panel", not a square gauge -
 # matching the shape of Christer's reference screenshot rather than
-# gsensor_render.py's own 480x480 dot-gauge canvas.
+# gsensor_render.py's own 480x480 dot-gauge canvas. DEFAULT_VERTICAL_*
+# is just the transpose of these, for a tall, narrow side panel.
 DEFAULT_WIDTH = 960
 DEFAULT_HEIGHT = 220
+DEFAULT_VERTICAL_WIDTH = 220
+DEFAULT_VERTICAL_HEIGHT = 960
 DEFAULT_MARGIN_PX = 32
-# Extra room below the plot area itself for the time-tick labels -
-# added to DEFAULT_MARGIN_PX on the bottom edge only.
+# Extra room reserved for time-tick labels, beyond DEFAULT_MARGIN_PX -
+# below the plot area in horizontal mode, to the left of it in vertical
+# mode (kept upright there rather than rotated - see the module
+# docstring). Vertical needs more room than horizontal's own bottom
+# strip since "00:52"-style text takes more horizontal space than it
+# does vertical space.
 DEFAULT_TICK_LABEL_HEIGHT_PX = 20
+DEFAULT_TICK_LABEL_WIDTH_PX = 44
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
@@ -133,15 +154,14 @@ def scale_for_samples(
     padding: float = DEFAULT_SCALE_PADDING,
     minimum: float = DEFAULT_MINIMUM_SCALE,
 ) -> float:
-    """Return the shared vertical scale (the deviation-from-baseline
-    magnitude that should sit at the very top/bottom edge of the plot
-    area) for a set of g-sensor samples: the largest deviation from
-    `baseline` seen on any of the three axes, times `padding`, floored
-    at `minimum` - same reasoning as
-    gsensor_render.scale_for_samples(), extended across x/y/z so all
-    three traces share one consistent vertical axis rather than each
-    auto-scaling independently (which would make their relative
-    magnitudes misleading to compare).
+    """Return the shared value-axis scale (the deviation-from-baseline
+    magnitude that should sit at the very edge of the plot area) for a
+    set of g-sensor samples: the largest deviation from `baseline` seen
+    on any of the three axes, times `padding`, floored at `minimum` -
+    same reasoning as gsensor_render.scale_for_samples(), extended
+    across x/y/z so all three traces share one consistent value axis
+    rather than each auto-scaling independently (which would make
+    their relative magnitudes misleading to compare).
     """
 
     baseline_x, baseline_y, baseline_z = baseline
@@ -190,32 +210,62 @@ def _format_tick(seconds: float) -> str:
 
 
 def _plot_area(
-    width: int, height: int, margin: int, tick_label_height: int
+    width: int,
+    height: int,
+    margin: int,
+    tick_label_reserve: int,
+    orientation: str = "horizontal",
 ) -> tuple[float, float, float, float]:
     """Return (left, top, right, bottom) pixel bounds of the trace
     -drawing area, leaving `margin` on every edge plus extra room for
-    time-tick labels beneath the bottom edge."""
+    time-tick labels - reserved below the bottom edge in horizontal
+    mode, or to the left of the left edge in vertical mode (kept
+    upright there rather than rotated - see the module docstring)."""
 
-    left = float(margin)
-    top = float(margin)
-    right = float(width - margin)
-    bottom = float(height - margin - tick_label_height)
+    if orientation == "vertical":
+        left = float(margin + tick_label_reserve)
+        top = float(margin)
+        right = float(width - margin)
+        bottom = float(height - margin)
+    else:
+        left = float(margin)
+        top = float(margin)
+        right = float(width - margin)
+        bottom = float(height - margin - tick_label_reserve)
+
     return left, top, right, bottom
 
 
-def _time_to_x(elapsed_seconds: float, total_seconds: float, left: float, right: float) -> float:
+def _time_to_pos(
+    elapsed_seconds: float, total_seconds: float, axis_start: float, axis_end: float
+) -> float:
+    """Map `elapsed_seconds` (0..total_seconds, clamped) onto the pixel
+    range [axis_start, axis_end] - the time axis is `left..right` in
+    horizontal mode, `top..bottom` in vertical mode (time running top
+    to bottom, matching the module docstring's own convention)."""
+
     if total_seconds <= 0:
-        return left
+        return axis_start
     fraction = min(max(elapsed_seconds / total_seconds, 0.0), 1.0)
-    return left + fraction * (right - left)
+    return axis_start + fraction * (axis_end - axis_start)
 
 
-def _value_to_y(value: float, scale: float, top: float, bottom: float) -> float:
-    center = (top + bottom) / 2
-    half_span = (bottom - top) / 2
-    # Pixel y grows downward; a positive reading should plot above
-    # the zero-line - flip it, same convention gsensor_render._project()
-    # uses for the dot-gauge.
+def _value_to_pos(
+    value: float, scale: float, axis_start: float, axis_end: float
+) -> float:
+    """Map a g-sensor reading (already baseline-relative) onto the
+    pixel range [axis_start, axis_end] - the value axis is
+    `top..bottom` in horizontal mode, `left..right` in vertical mode.
+    A positive reading plots toward `axis_start` (up, in horizontal
+    mode - the same convention gsensor_render._project() uses for the
+    dot-gauge; left, in vertical mode) - consistent across both
+    orientations even though the g-sensor's own raw units aren't
+    calibrated/physically meaningful (see gsensor_reader.py's module
+    docstring), so there's no independent "which way is positive"
+    convention worth chasing here."""
+
+    center = (axis_start + axis_end) / 2
+    half_span = (axis_end - axis_start) / 2
     return center - (value / scale) * half_span
 
 
@@ -225,26 +275,61 @@ def render_base_frame(
     scale: float,
     total_seconds: float,
     *,
-    width: int = DEFAULT_WIDTH,
-    height: int = DEFAULT_HEIGHT,
+    width: int | None = None,
+    height: int | None = None,
     margin: int = DEFAULT_MARGIN_PX,
-    tick_label_height: int = DEFAULT_TICK_LABEL_HEIGHT_PX,
+    tick_label_reserve: int | None = None,
+    orientation: str = "horizontal",
 ) -> Image.Image:
     """Render the static, whole-trip part of the strip chart once: the
-    three X/Y/Z traces plotted across the full width, a zero-line, and
-    time-tick labels along the bottom - everything that doesn't change
-    frame to frame. render_frame() composites the moving playhead on
-    top of a copy of this image per output frame, rather than this
-    function being called again for every frame.
+    three X/Y/Z traces plotted across the full length, a zero-line, and
+    time-tick labels - everything that doesn't change frame to frame.
+    render_frame() composites the moving playhead on top of a copy of
+    this image per output frame, rather than this function being
+    called again for every frame.
+
+    `orientation` is 'horizontal' (time runs left to right, tick labels
+    below the plot area - the default, matching Christer's reference
+    screenshot) or 'vertical' (time runs top to bottom, tick labels
+    upright in a reserved margin to the left - for a --stitch side
+    panel; see the module docstring). `width`/`height`/
+    `tick_label_reserve` default to whichever orientation's own
+    DEFAULT_*/DEFAULT_VERTICAL_* constants match `orientation` when not
+    given explicitly.
     """
+
+    if width is None:
+        width = DEFAULT_VERTICAL_WIDTH if orientation == "vertical" else DEFAULT_WIDTH
+    if height is None:
+        height = (
+            DEFAULT_VERTICAL_HEIGHT if orientation == "vertical" else DEFAULT_HEIGHT
+        )
+    if tick_label_reserve is None:
+        tick_label_reserve = (
+            DEFAULT_TICK_LABEL_WIDTH_PX
+            if orientation == "vertical"
+            else DEFAULT_TICK_LABEL_HEIGHT_PX
+        )
 
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
 
-    left, top, right, bottom = _plot_area(width, height, margin, tick_label_height)
+    left, top, right, bottom = _plot_area(
+        width, height, margin, tick_label_reserve, orientation
+    )
 
-    zero_y = _value_to_y(0.0, scale, top, bottom)
-    draw.line((left, zero_y, right, zero_y), fill=AXIS_COLOR, width=1)
+    if orientation == "vertical":
+        time_start, time_end = top, bottom
+        value_start, value_end = left, right
+    else:
+        time_start, time_end = left, right
+        value_start, value_end = top, bottom
+
+    zero_pos = _value_to_pos(0.0, scale, value_start, value_end)
+    if orientation == "vertical":
+        draw.line((zero_pos, top, zero_pos, bottom), fill=AXIS_COLOR, width=1)
+    else:
+        draw.line((left, zero_pos, right, zero_pos), fill=AXIS_COLOR, width=1)
 
     baseline_x, baseline_y, baseline_z = baseline
     for axis_index, (color, base) in enumerate((
@@ -252,16 +337,16 @@ def render_base_frame(
     )):
         if len(samples) < 2:
             continue
-        points = [
-            (
-                _time_to_x(sample.offset.total_seconds(), total_seconds, left, right),
-                _value_to_y(
-                    (sample.x, sample.y, sample.z)[axis_index] - base,
-                    scale, top, bottom,
-                ),
+        points = []
+        for sample in samples:
+            t = _time_to_pos(
+                sample.offset.total_seconds(), total_seconds, time_start, time_end
             )
-            for sample in samples
-        ]
+            v = _value_to_pos(
+                (sample.x, sample.y, sample.z)[axis_index] - base,
+                scale, value_start, value_end,
+            )
+            points.append((v, t) if orientation == "vertical" else (t, v))
         draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 
     if total_seconds > 0:
@@ -269,15 +354,24 @@ def render_base_frame(
         tick_interval = _nice_tick_interval(total_seconds)
         tick_seconds = 0.0
         while tick_seconds <= total_seconds:
-            tick_x = _time_to_x(tick_seconds, total_seconds, left, right)
-            draw.line((tick_x, bottom, tick_x, bottom + 4), fill=TICK_COLOR, width=1)
-            draw.text(
-                (tick_x, bottom + 6),
-                _format_tick(tick_seconds),
-                font=font,
-                fill=TICK_COLOR,
-                anchor="ma",
-            )
+            tick_pos = _time_to_pos(tick_seconds, total_seconds, time_start, time_end)
+            label = _format_tick(tick_seconds)
+            if orientation == "vertical":
+                draw.line(
+                    (left - 4, tick_pos, left, tick_pos), fill=TICK_COLOR, width=1
+                )
+                draw.text(
+                    (left - 6, tick_pos), label, font=font, fill=TICK_COLOR,
+                    anchor="rm",
+                )
+            else:
+                draw.line(
+                    (tick_pos, bottom, tick_pos, bottom + 4), fill=TICK_COLOR, width=1
+                )
+                draw.text(
+                    (tick_pos, bottom + 6), label, font=font, fill=TICK_COLOR,
+                    anchor="ma",
+                )
             tick_seconds += tick_interval
 
     return image
@@ -289,22 +383,44 @@ def render_frame(
     total_seconds: float,
     *,
     margin: int = DEFAULT_MARGIN_PX,
-    tick_label_height: int = DEFAULT_TICK_LABEL_HEIGHT_PX,
+    tick_label_reserve: int | None = None,
+    orientation: str = "horizontal",
 ) -> Image.Image:
     """Return a copy of `base_image` (see render_base_frame()) with a
-    vertical playhead line composited at the x position corresponding
-    to `elapsed_seconds` out of `total_seconds`."""
+    playhead line composited at the position corresponding to
+    `elapsed_seconds` out of `total_seconds` - a vertical line in
+    horizontal mode, a horizontal line in vertical mode. `orientation`
+    must match whatever render_base_frame() was called with for the
+    same `base_image`."""
+
+    if tick_label_reserve is None:
+        tick_label_reserve = (
+            DEFAULT_TICK_LABEL_WIDTH_PX
+            if orientation == "vertical"
+            else DEFAULT_TICK_LABEL_HEIGHT_PX
+        )
 
     width, height = base_image.size
-    left, top, right, bottom = _plot_area(width, height, margin, tick_label_height)
+    left, top, right, bottom = _plot_area(
+        width, height, margin, tick_label_reserve, orientation
+    )
 
     frame = base_image.copy()
     draw = ImageDraw.Draw(frame)
-    playhead_x = _time_to_x(elapsed_seconds, total_seconds, left, right)
-    draw.line(
-        (playhead_x, top, playhead_x, bottom),
-        fill=PLAYHEAD_COLOR,
-        width=PLAYHEAD_LINE_WIDTH,
-    )
+
+    if orientation == "vertical":
+        playhead_pos = _time_to_pos(elapsed_seconds, total_seconds, top, bottom)
+        draw.line(
+            (left, playhead_pos, right, playhead_pos),
+            fill=PLAYHEAD_COLOR,
+            width=PLAYHEAD_LINE_WIDTH,
+        )
+    else:
+        playhead_pos = _time_to_pos(elapsed_seconds, total_seconds, left, right)
+        draw.line(
+            (playhead_pos, top, playhead_pos, bottom),
+            fill=PLAYHEAD_COLOR,
+            width=PLAYHEAD_LINE_WIDTH,
+        )
 
     return frame

@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -2426,6 +2427,148 @@ def test_bv_export_without_gsensor_graph_video_flag_writes_no_video(tmp_path):
     assert exit_code == 0
     folder = target / "trip_20260720_100000_20260720_100000"
     assert not (folder / "gsensor_graph.mp4").exists()
+
+
+def test_main_leaves_stitch_graph_false_when_stitch_flag_is_absent(
+    tmp_path, monkeypatch
+):
+    # Same "only means anything together with --stitch" gating as
+    # --stitch-map/--stitch-gsensor's own equivalent tests.
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch-graph"])
+
+    assert captured["stitch_graph"] is False
+
+
+def test_main_parses_stitch_graph_flags(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-graph",
+        "--stitch-graph-side", "top", "--stitch-graph-size", "40",
+    ])
+
+    assert captured["stitch_graph"] is True
+    assert captured["stitch_graph_side"] == "top"
+    assert captured["stitch_graph_size"] == 40.0
+
+
+def test_main_leaves_stitch_graph_side_and_size_none_by_default(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch", "--stitch-graph"])
+
+    assert captured["stitch_graph_side"] is None
+    assert captured["stitch_graph_size"] is None
+
+
+def test_main_rejects_an_out_of_range_stitch_graph_size(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--stitch", "--stitch-graph", "--stitch-graph-size", "99",
+        ])
+
+
+def test_bv_export_stitch_graph_flag_grows_the_stitch_composite(tmp_path):
+    # End-to-end through bv_export()/export_trip()/stitch_cameras()
+    # together, not just argparse wiring - confirms `samples` (the
+    # trip's own already-merged g-sensor readings, computed once in
+    # export_trip() for --gsensor-video's sake too) actually reaches
+    # stitch_cameras() as `graph_samples` and grows stitch.mp4's own
+    # dimensions, the same way --stitch-map's panel does. Two cameras
+    # (side_by_side) so the panel path is actually exercised - the
+    # single-camera fallback ignores panels entirely, same as
+    # --stitch-map.
+    from datetime import timedelta
+
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+    from blackvue.telemetry.gsensor_reader import write_gsensor
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100000_NR.mp4")
+    write_gsensor(
+        tuple(
+            GSensorSample(
+                offset=timedelta(milliseconds=i * 200), x=100, y=-50, z=900,
+            )
+            for i in range(10)
+        ),
+        archive / "20260720_100000_N.3gf",
+    )
+
+    exit_code = bv_export(
+        str(archive), target=str(target),
+        stitch_layout="side_by_side", stitch_graph=True,
+    )
+
+    assert exit_code == 0
+    folder = target / "trip_20260720_100000_20260720_100000"
+    stitch_path = folder / "stitch.mp4"
+    assert stitch_path.exists()
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json",
+            str(stitch_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+
+    # Two 64x64 cameras side by side -> 128x64 before any panel. The
+    # graph panel's default 'right' side (--stitch-graph-side not
+    # given) hstacks on the right, so height stays 64 and width grows
+    # past 128.
+    assert stream["height"] == 64
+    assert stream["width"] > 128
 
 
 def test_bv_export_merges_srt_across_a_trip(tmp_path):

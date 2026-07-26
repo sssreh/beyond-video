@@ -26,6 +26,8 @@ from pathlib import Path
 
 from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
+from ..telemetry.gsensor_reader import GSensorSample
+from .gsensor_graph_video import render_gsensor_graph_video
 from .map_video import render_map_video
 from .media import concatenate_media
 from .media import encode_with_nvenc_fallback
@@ -197,6 +199,44 @@ _MAX_MAP_PANEL_FRACTION = 0.5
 # argument error rather than a silently degenerate panel.
 MIN_MAP_SIZE_PERCENT = 5.0
 MAX_MAP_SIZE_PERCENT = 80.0
+
+# --stitch-graph's default panel side when --stitch-graph-side isn't
+# given explicitly, keyed by camera `layout` - deliberately different
+# from _DEFAULT_MAP_SIDE_FOR_LAYOUT's own choices (side_by_side "down",
+# top_down "left") so a plain `--stitch-graph` alongside a plain
+# `--stitch-map`, both left at their own defaults, don't collide on the
+# same side: "right" for both camera layouts, complementing whichever
+# side the map panel itself defaults to. Christer's own request this
+# panel exists for - "select the graph like i selects map" - was
+# specifically framed around using both together (a map on the bottom,
+# the graph as a vertical side panel), so defaulting them to different
+# sides matters more here than it does for any single one of --stitch's
+# other add-ons.
+#
+# rearview_mirror isn't in this dict, same as _DEFAULT_MAP_SIDE_FOR_LAYOUT -
+# there's no camera-shape to nest perpendicular to (a single full-frame
+# camera, not a stack) and no geometry-based pick like the map panel's
+# own _default_rearview_mirror_map_side() to fall back on for a chart
+# with no inherent "shape" of its own - --stitch-graph-side is required
+# explicitly for that layout instead (see the panel_side is None branch
+# in _stack() below).
+_DEFAULT_GRAPH_SIDE_FOR_LAYOUT = {
+    "side_by_side": "right",
+    "top_down": "right",
+}
+
+# --stitch-graph-size's range/default (percent of the camera
+# composite's own matching dimension the graph panel's free axis is
+# sized to) - same range as --stitch-map-size, but always used
+# directly as a fixed fraction rather than --stitch-map-size's own
+# "override an otherwise-automatic geography-aspect-ratio size": a
+# synthetic g-sensor chart has no equivalent real-world shape to derive
+# an automatic size from the way a trip's own GPS bounding box does for
+# the map panel, so there's just one flat default rather than an
+# automatic/override pair.
+MIN_GRAPH_SIZE_PERCENT = 5.0
+MAX_GRAPH_SIZE_PERCENT = 80.0
+DEFAULT_GRAPH_SIZE_PERCENT = 25.0
 
 # --stitch-gsensor's size range/default (percent of the camera
 # composite's own width the overlay is scaled to) - per the agreed
@@ -434,6 +474,10 @@ def stitch_cameras(
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
     gsensor_xy: tuple[float, float] | None = None,
+    graph_samples: tuple[GSensorSample, ...] = (),
+    graph_side: str | None = None,
+    graph_size: float | None = None,
+    graph_video_duration_seconds: float | None = None,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -681,6 +725,42 @@ def stitch_cameras(
     `content_height` note). Only meaningful when both front and rear
     exist, same as `map_mode`.
 
+    `graph_samples`, if non-empty, additionally composes a --stitch-graph
+    panel alongside the composite - Christer: "I want to be able to
+    select the graph like i selects map" - so this follows _map_panel_
+    dimensions()'s/`map_mode`'s own "rendered fresh, at the exact panel
+    size, grows the composite" shape rather than `gsensor_video`'s
+    "already-rendered, overlaid on top" one (see
+    _graph_panel_dimensions()/_render_graph_panel()). `graph_side`
+    overrides the panel's default side (see
+    _DEFAULT_GRAPH_SIDE_FOR_LAYOUT - "right" for both side_by_side and
+    top_down, deliberately different from the map panel's own defaults
+    so the two don't collide when both are left at their defaults
+    together); `graph_size` (--stitch-graph-size, a percent, MIN_/MAX_
+    GRAPH_SIZE_PERCENT) overrides the fixed DEFAULT_GRAPH_SIZE_PERCENT
+    fraction otherwise used - there's no map-panel-style automatic
+    geography-based sizing here, a synthetic chart has no equivalent
+    real-world shape to derive one from. The panel's own orientation
+    (see gsensor_graph_render.py's module docstring) is derived
+    automatically from the resolved side: 'vertical' (upright tick
+    labels, time running top to bottom) for 'left'/'right', 'horizontal'
+    for 'top'/'down' - Christer's own reason for wanting a vertical
+    mode at all was fitting the graph beside a map panel that's already
+    claimed the bottom of the frame. Composed *after* any map panel (so
+    the two can combine - a map on the bottom, the graph as a vertical
+    side panel, is exactly the layout this was built for), growing
+    whatever the composite's current size already is rather than the
+    original camera-only size (see _graph_panel_dimensions()'s own
+    docstring on why that distinction matters for hstack/vstack to line
+    up correctly). `graph_video_duration_seconds`, if given, anchors the
+    panel's own timeline to the trip's real video duration, same
+    reasoning as `map_video_duration_seconds`. Fewer than two samples,
+    or no default side for an unrecognized layout, degrades to a
+    `warnings` entry and no panel, same "never fail the whole stitch
+    over an optional add-on" convention `map_mode`/`gsensor_video`
+    already follow. Only meaningful when both front and rear exist,
+    same as `map_mode`.
+
     `subtitles_path`, if given, is an already-written trip.srt (see
     trip_export.py, which always writes one whenever the trip has any
     transcript data - not gated behind its own render flag the way
@@ -723,6 +803,9 @@ def stitch_cameras(
             map_video_duration_seconds=map_video_duration_seconds,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
+            graph_samples=graph_samples, graph_side=graph_side,
+            graph_size=graph_size,
+            graph_video_duration_seconds=graph_video_duration_seconds,
             subtitles_path=subtitles_path,
             subtitles_background=subtitles_background,
             audio_path=audio_path,
@@ -1394,6 +1477,91 @@ def _render_map_panel(
     )
 
 
+def _graph_panel_dimensions(
+    comp_width: int,
+    comp_height: int,
+    *,
+    side: str,
+    size_fraction: float | None = None,
+) -> tuple[int, int]:
+    """The (width, height) --stitch-graph's panel should render at so
+    it slots onto `side` of a comp_width x comp_height composite via a
+    plain hstack ('left'/'right') or vstack ('top'/'down') - same
+    "shared axis matches exactly, free axis is sized as a fraction"
+    shape as _map_panel_dimensions(), but always a fixed fraction
+    (`size_fraction`, defaulting to DEFAULT_GRAPH_SIZE_PERCENT/100)
+    rather than that function's own automatic geography-aspect-ratio
+    sizing - a synthetic g-sensor chart has no equivalent real-world
+    shape to derive an automatic size from.
+
+    `comp_width`/`comp_height` should be the composite's *current*
+    size at the point the graph panel is being added - not necessarily
+    the camera-only size, if a map panel (or anything else) already
+    grew the composite before the graph panel gets added alongside it
+    (see _stack()'s own graph-panel block, which passes its own
+    running `final_width`/`final_height` here for exactly this
+    reason) - hstack/vstack both require the shared axis to match
+    whatever the composite's own current size on that axis actually
+    is, not its original camera-only one.
+
+    Never returns None (unlike _map_panel_dimensions()) - there's no
+    GPS-data-missing case to degrade for; the caller's own "fewer than
+    two g-sensor samples" check happens separately, before this is
+    ever called.
+    """
+
+    fraction = (
+        size_fraction if size_fraction is not None
+        else DEFAULT_GRAPH_SIZE_PERCENT / 100
+    )
+
+    if side in ("left", "right"):
+        width, height = comp_width * fraction, comp_height
+    else:
+        width, height = comp_width, comp_height * fraction
+
+    return max(2, round(width / 2) * 2), max(2, round(height / 2) * 2)
+
+
+def _render_graph_panel(
+    samples: tuple[GSensorSample, ...],
+    destination: Path,
+    *,
+    width: int,
+    height: int,
+    orientation: str,
+    duration_seconds: float | None = None,
+) -> Path | None:
+    """Render --stitch-graph's panel at exactly width x height, so
+    combining it with the composite via a plain hstack/vstack doesn't
+    distort anything - same "render fresh, at the exact target size"
+    approach _render_map_panel() uses, rather than gsensor_video's own
+    "must already exist, just overlaid" convention.
+
+    `orientation` should be 'vertical' for a 'left'/'right' panel side
+    and 'horizontal' for 'top'/'down' - see _stack()'s own graph-panel
+    block, which derives it directly from the resolved `panel_side`
+    (a tall, narrow 'left'/'right' panel needs time running top to
+    bottom to read sensibly; a short, wide 'top'/'down' one needs time
+    running left to right - see gsensor_graph_render.py's own module
+    docstring for what each orientation looks like).
+
+    Returns None (writes nothing) if there are fewer than two samples -
+    the same "nothing to render" convention render_gsensor_graph_video()
+    itself already uses, just checked here too so the caller can tell
+    "no g-sensor data for this trip" apart from a real MediaToolError.
+    """
+
+    if len(samples) < 2:
+        return None
+
+    return render_gsensor_graph_video(
+        samples, destination,
+        orientation=orientation, width=width, height=height,
+        duration_seconds=duration_seconds,
+    )
+
+
 def _ideal_shared_dimension(
     front_width: int,
     front_height: int,
@@ -1670,6 +1838,10 @@ def _stack(
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
     gsensor_xy: tuple[float, float] | None = None,
+    graph_samples: tuple[GSensorSample, ...] = (),
+    graph_side: str | None = None,
+    graph_size: float | None = None,
+    graph_video_duration_seconds: float | None = None,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -2099,7 +2271,7 @@ def _stack(
         # again while building this feature).
         if is_mirror or gsensor_video is not None or (
             map_mode is not None and map_fixes
-        ) or scale is not None or max_width is not None or max_height is not None:
+        ) or len(graph_samples) >= 2 or scale is not None or max_width is not None or max_height is not None:
             if is_mirror:
                 content_width, content_height = front_width, front_height
             else:
@@ -2406,6 +2578,95 @@ def _stack(
                         final_width = comp_width + panel_size[0]
                     else:
                         final_height = comp_height + panel_size[1]
+
+        # --stitch-graph's own panel - see stitch_cameras()'s own
+        # docstring paragraph on `graph_samples` for the full design.
+        # Deliberately placed *after* the map panel block above (not
+        # merged into it, despite the structural similarity) so the
+        # two can combine: this uses `output_label`/`final_width`/
+        # `final_height` as they stand *right now* - already reflecting
+        # any map panel just added - as the base to grow further,
+        # rather than the original camera-only `comp_width`/
+        # `comp_height` the map panel block itself starts from.
+        if len(graph_samples) >= 2:
+            if graph_side is not None:
+                panel_side = graph_side
+            else:
+                panel_side = _DEFAULT_GRAPH_SIDE_FOR_LAYOUT.get(layout)
+
+            if panel_side is None:
+                if warnings is not None:
+                    warnings.append(
+                        f"stitch graph panel: no default side for layout "
+                        f"{layout!r} - pass --stitch-graph-side "
+                        "explicitly - skipped"
+                    )
+            else:
+                # The composite's *current* size, including any map
+                # panel already added above - hstack/vstack both
+                # require the graph panel's own shared axis to match
+                # whatever that current size actually is, not the
+                # original camera-only comp_width/comp_height (see
+                # _graph_panel_dimensions()'s own docstring).
+                current_width = final_width if final_width is not None else comp_width
+                current_height = (
+                    final_height if final_height is not None else comp_height
+                )
+                panel_size = _graph_panel_dimensions(
+                    current_width, current_height, side=panel_side,
+                    size_fraction=(
+                        graph_size / 100 if graph_size is not None else None
+                    ),
+                )
+                panel_path = tmp_path / "graph_panel.mp4"
+                graph_orientation = (
+                    "vertical" if panel_side in ("left", "right") else "horizontal"
+                )
+                rendered = None
+                panel_start = time.monotonic() if debug else None
+                try:
+                    rendered = _render_graph_panel(
+                        graph_samples, panel_path,
+                        width=panel_size[0], height=panel_size[1],
+                        orientation=graph_orientation,
+                        duration_seconds=graph_video_duration_seconds,
+                    )
+                except MediaToolError as exc:
+                    if warnings is not None:
+                        warnings.append(f"stitch graph panel: {exc}")
+                if debug:
+                    print(
+                        f"stitch: graph panel render took "
+                        f"{time.monotonic() - panel_start:.1f}s",
+                        file=sys.stderr,
+                    )
+
+                if rendered is None:
+                    if warnings is not None:
+                        warnings.append(
+                            "stitch graph panel: fewer than two g-sensor "
+                            "samples for this trip - skipped"
+                        )
+                else:
+                    panel_filter_name = (
+                        "hstack" if panel_side in ("left", "right") else "vstack"
+                    )
+                    graph_index = next_input_index
+                    next_input_index += 1
+                    combine_inputs = (
+                        f"[{graph_index}:v][{output_label}]"
+                        if panel_side in ("left", "top")
+                        else f"[{output_label}][{graph_index}:v]"
+                    )
+                    clauses.append(
+                        f"{combine_inputs}{panel_filter_name}=inputs=2[withgraph]"
+                    )
+                    output_label = "withgraph"
+                    extra_inputs += ["-i", str(rendered)]
+                    if panel_side in ("left", "right"):
+                        final_width = current_width + panel_size[0]
+                    else:
+                        final_height = current_height + panel_size[1]
 
         # `scale`/`max_width`/`max_height`: a final, always-proportional
         # shrink of the *whole* frame (camera composite plus any map

@@ -14,12 +14,14 @@ from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import STACK_LAYOUTS
 from blackvue.export.stitch import _default_rearview_mirror_map_side
 from blackvue.export.stitch import _escape_subtitles_filename
+from blackvue.export.stitch import _graph_panel_dimensions
 from blackvue.export.stitch import _map_panel_dimensions
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.export.stitch import pick_stitch_layout
 from blackvue.export.stitch import stitch_cameras
 from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gps_reader import GpsFix
+from blackvue.telemetry.gsensor_reader import GSensorSample
 
 
 def _fix(offset_seconds, lat, lon):
@@ -71,6 +73,22 @@ def _extract_first_frame(video_path, png_path) -> Image.Image:
         check=True,
     )
     return Image.open(png_path).convert("RGB")
+
+
+def _graph_samples(count=10, step_ms=200):
+    # A --stitch-graph panel is rendered from raw GSensorSample tuples
+    # directly (see _render_graph_panel()), unlike --stitch-gsensor's
+    # dot-gauge overlay which needs an already-rendered gsensor.mp4 -
+    # so these tests build samples straight from GSensorSample rather
+    # than needing a fake overlay file the way _make_gsensor_fake()
+    # does for the --stitch-gsensor tests below.
+    return tuple(
+        GSensorSample(
+            offset=timedelta(milliseconds=i * step_ms),
+            x=100.0 * (i % 3), y=-50.0, z=900.0,
+        )
+        for i in range(count)
+    )
 
 
 def _make_gsensor_fake(path, size=480, box_size=200, duration_seconds=1.0):
@@ -1735,6 +1753,340 @@ def test_stitch_cameras_map_panel_ignored_for_single_camera_fallback(tmp_path):
     width, height = _video_size(destination)
     assert (width, height) == (160, 120)
     assert warnings == []
+
+
+# --- --stitch-graph panel tests ---
+
+
+def test_graph_panel_dimensions_matches_shared_axis_for_left_right():
+    width, height = _graph_panel_dimensions(1000, 400, side="left")
+
+    assert height == 400
+    assert 0 < width <= 1000
+
+
+def test_graph_panel_dimensions_matches_shared_axis_for_top_down():
+    width, height = _graph_panel_dimensions(1000, 400, side="down")
+
+    assert width == 1000
+    assert 0 < height <= 400
+
+
+def test_graph_panel_dimensions_defaults_to_25_percent_of_the_shared_axis():
+    # Unlike _map_panel_dimensions(), there's no geography to derive an
+    # automatic size from - a synthetic chart always uses the fixed
+    # DEFAULT_GRAPH_SIZE_PERCENT (25%) unless size_fraction overrides
+    # it (see the next test).
+    width, _height = _graph_panel_dimensions(1000, 400, side="left")
+
+    assert width == 250
+
+
+def test_graph_panel_dimensions_size_fraction_overrides_the_default():
+    width, height = _graph_panel_dimensions(
+        1000, 400, side="left", size_fraction=0.6,
+    )
+
+    assert width == 600
+    assert height == 400
+
+
+def test_graph_panel_dimensions_rounds_to_an_even_pixel_count():
+    width, height = _graph_panel_dimensions(
+        999, 401, side="down", size_fraction=0.33,
+    )
+
+    assert width % 2 == 0
+    assert height % 2 == 0
+
+
+def test_render_graph_panel_returns_none_for_fewer_than_two_samples(tmp_path):
+    from blackvue.export.stitch import _render_graph_panel
+
+    result = _render_graph_panel(
+        _graph_samples(count=1), tmp_path / "graph_panel.mp4",
+        width=160, height=360, orientation="vertical",
+    )
+
+    assert result is None
+    assert not (tmp_path / "graph_panel.mp4").exists()
+
+
+def test_render_graph_panel_renders_at_the_exact_requested_size_per_orientation(
+    tmp_path
+):
+    # 'left'/'right' sides need a tall narrow vertical render; 'top'/
+    # 'down' sides need a short wide horizontal one - both driven by
+    # the same width/height args, just with a different `orientation`
+    # (see _stack()'s own graph-panel block, which derives orientation
+    # straight from the resolved panel side).
+    from blackvue.export.stitch import _render_graph_panel
+
+    vertical = _render_graph_panel(
+        _graph_samples(), tmp_path / "vertical.mp4",
+        width=160, height=360, orientation="vertical",
+    )
+    horizontal = _render_graph_panel(
+        _graph_samples(), tmp_path / "horizontal.mp4",
+        width=360, height=160, orientation="horizontal",
+    )
+
+    assert _video_size(vertical) == (160, 360)
+    assert _video_size(horizontal) == (360, 160)
+
+
+def test_stitch_cameras_graph_panel_defaults_to_right_for_side_by_side(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # side_by_side alone would be 320x120 - the default 'right' side
+    # hstacks the panel on the right, so height is unchanged and width
+    # grows.
+    assert height == 120
+    assert width > 320
+
+
+def test_stitch_cameras_graph_panel_defaults_to_right_for_top_down(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="top_down",
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # top_down alone would be 160x240 - the default 'right' side
+    # hstacks the panel on the right too (see _DEFAULT_GRAPH_SIDE_FOR_
+    # LAYOUT - deliberately the same default for both layouts, unlike
+    # --stitch-map's own per-layout defaults), so height is unchanged
+    # and width grows.
+    assert height == 240
+    assert width > 160
+
+
+def test_stitch_cameras_graph_panel_side_can_be_overridden_to_top(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        graph_side="top",
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # 'top'/'down' vstacks instead of hstacking - width unchanged,
+    # height grows.
+    assert width == 320
+    assert height > 120
+
+
+def test_stitch_cameras_graph_size_overrides_the_default_25_percent(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        graph_size=50.0,
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # side_by_side's camera composite is 320 wide - 50% of that,
+    # rounded to an even pixel count, added on the default 'right'
+    # side.
+    assert height == 120
+    assert width == 320 + max(2, round(320 * 0.50 / 2) * 2)
+
+
+def test_stitch_cameras_graph_panel_skipped_for_fewer_than_two_samples(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        graph_samples=_graph_samples(count=1), warnings=warnings,
+    )
+
+    # len(graph_samples) < 2 doesn't even reach the panel-render gate
+    # (see _stack()'s own `if len(graph_samples) >= 2:` check) - no
+    # panel, no warning, camera composite untouched.
+    width, height = _video_size(destination)
+    assert (width, height) == (320, 120)
+    assert warnings == []
+
+
+def test_stitch_cameras_graph_panel_no_default_side_for_rearview_mirror_warns(
+    tmp_path
+):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="rearview_mirror",
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    # _DEFAULT_GRAPH_SIDE_FOR_LAYOUT only has entries for side_by_side
+    # and top_down (see stitch.py) - rearview_mirror has no default,
+    # so an explicit --stitch-graph-side is required; without one, the
+    # panel is skipped with a warning naming the missing flag, not a
+    # crash or a silent no-op.
+    assert len(warnings) == 1
+    assert "--stitch-graph-side" in warnings[0]
+
+
+def test_stitch_cameras_graph_panel_render_is_silent_by_default(tmp_path, capsys):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4", layout="side_by_side",
+        graph_samples=_graph_samples(),
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_stitch_cameras_graph_panel_debug_reports_render_timing(tmp_path, capsys):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4", layout="side_by_side",
+        graph_samples=_graph_samples(), debug=True,
+    )
+
+    err = capsys.readouterr().err
+    assert "stitch: graph panel render took" in err
+
+
+def test_stitch_cameras_graph_panel_combines_with_a_requested_resolution(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        # Height (not width) is the axis _graph_panel_dimensions() must
+        # match exactly for the default 'right' side (hstack) - kept
+        # even here deliberately (see _map_panel_dimensions()'s own
+        # identical "even dimensions for yuv420p encoding" rounding,
+        # which the same effective constraint applies to): an odd
+        # shared-axis resolution can round-trip to a 1px mismatch
+        # between the camera composite and the panel, which is a
+        # latent, pre-existing rounding edge case shared with
+        # --stitch-map, not something this test is meant to exercise.
+        resolution=(240, 136),
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    assert height == 136
+    assert width > 240
+
+
+def test_stitch_cameras_graph_panel_ignored_for_single_camera_fallback(tmp_path):
+    front = tmp_path / "front.mp4"
+    _make_video(front, 160, 120)
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, None, destination, layout="side_by_side",
+        graph_samples=_graph_samples(), warnings=warnings,
+    )
+
+    # Same "no panel support yet on the single-camera fallback path"
+    # behavior as --stitch-map's own equivalent test.
+    width, height = _video_size(destination)
+    assert (width, height) == (160, 120)
+    assert warnings == []
+
+
+def test_stitch_cameras_graph_panel_combines_with_a_map_panel(tmp_path):
+    # The graph panel's own docstring/comments describe sizing itself
+    # against the composite's *current* running size, not the original
+    # camera-only size, precisely so it lines up correctly when a map
+    # panel already grew the composite first - this is the real
+    # end-to-end check for that design.
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 160, 120)
+    _make_video(rear, 160, 120)
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(), map_size=20.0,
+        graph_samples=_graph_samples(), graph_size=20.0,
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    width, height = _video_size(destination)
+    # side_by_side camera composite: 320x120. Map panel (default
+    # 'down') adds 20% of 120=24 to height -> 320x144. Graph panel
+    # (default 'right') then adds 20% of the *current* width (320,
+    # unchanged by the map panel) -> final width 320+64=384, height
+    # unchanged at 144 (matching the post-map-growth height exactly,
+    # not the original camera-only 120).
+    assert height == 144
+    assert width == 320 + max(2, round(320 * 0.20 / 2) * 2)
 
 
 # --- --stitch-gsensor overlay tests ---

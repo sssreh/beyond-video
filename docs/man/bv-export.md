@@ -25,6 +25,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--stitch-map [{map,zoom}]] [--stitch-map-side SIDE] [--stitch-map-size PERCENT]
           [--stitch-gsensor] [--stitch-gsensor-size PERCENT]
           [--stitch-gsensor-pos POSITION | --stitch-gsensor-xy X,Y]
+          [--stitch-graph] [--stitch-graph-side SIDE] [--stitch-graph-size PERCENT]
           [--stitch-subtitles] [--no-subtitles-bg]
           [--overwrite] [--dry-run] [--debug]
           [PATH]
@@ -108,7 +109,7 @@ The position marker itself is hidden entirely before the trip's very first real 
 | Option | Description |
 |---|---|
 | `--gsensor-video` | Render `gsensor.mp4`: a dot moving on a gauge tracking g-sensor (x, y) readings with a fading trail, on chroma-key green - meant for compositing later, or via `--stitch-gsensor`. |
-| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of X/Y/Z readings as three colored line traces, with a vertical playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Not yet wired into `--stitch`. |
+| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of X/Y/Z readings as three colored line traces, with a playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Independent of `--stitch-graph` too, which renders its own copy fresh at the panel's exact size rather than reusing this file. |
 
 ### Stitch (combined camera video)
 
@@ -156,6 +157,16 @@ The position marker itself is hidden entirely before the trip's very first real 
 | `--stitch-gsensor-size PERCENT` | Overlay size as a percent of the composite's width (5-40). Default: 15. |
 | `--stitch-gsensor-pos POSITION` | Named position (`left`/`right`/`top`/`down`/`center` combinations, e.g. `top-right`). Default: `top-right`. Mutually exclusive with `--stitch-gsensor-xy`. |
 | `--stitch-gsensor-xy X,Y` | Explicit X,Y percent position of the footage region's top-left corner - can overlap `--stitch-map`'s panel. Mutually exclusive with `--stitch-gsensor-pos`. |
+
+### Stitch g-sensor graph panel
+
+A second, alternate g-sensor visualization alongside `--stitch-gsensor`'s dot-gauge overlay: a strip chart of this trip's X/Y/Z g-sensor readings with a moving playhead, composed as its own panel - selectable by side like `--stitch-map`, rather than overlaid on top of the footage. Unlike `--stitch-gsensor`, this is rendered fresh at the exact panel size and grows the composite, the same way `--stitch-map` does. A `left`/`right` panel renders vertically (a tall, narrow strip with upright tick labels and time running top to bottom); a `top`/`down` panel renders horizontally (time running left to right, like the standalone `gsensor_graph.mp4`). Composed after any `--stitch-map` panel, so the two can be used together - e.g. a map on the bottom (`--stitch-map`) and this graph as a vertical side panel.
+
+| Option | Description |
+|---|---|
+| `--stitch-graph` | Compose a g-sensor strip-chart panel alongside the cameras. |
+| `--stitch-graph-side {left,right,top,down}` | Panel side. Default: right, for both `side_by_side` and `top_down` - deliberately different from `--stitch-map`'s own defaults, so the two don't collide when both are left at their own defaults together. `rearview_mirror` has no default side (there's no `left`/`right`/`down` shape to fall back to the way `--stitch-map` does from GPS) - pass this explicitly for that layout. |
+| `--stitch-graph-size PERCENT` | Panel width/height as a percent of the matching composite dimension (5-80). Default: a fixed 25% - there's no `--stitch-map`-style automatic sizing here, a synthetic chart has no real-world shape to derive one from. |
 
 ### Stitch subtitles
 
@@ -219,6 +230,15 @@ bv-export /path/to/archive --target /path/to/trips --prefix Holiday \
     --stitch-mirror-pan-x -20 --stitch-mirror-icon mirror.png \
     --stitch-map zoom --stitch-gsensor --stitch-subtitles \
     --stitch-scale 25 --debug
+```
+
+A map panel on the bottom with the g-sensor strip chart as a vertical panel beside it:
+
+```
+bv-export /path/to/archive --target /path/to/trips \
+    --stitch --stitch-layout side_by_side \
+    --stitch-map --stitch-map-side down \
+    --stitch-graph
 ```
 
 Fast small test render before committing to a full-size one:

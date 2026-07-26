@@ -369,6 +369,9 @@ def export_trip(
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
     stitch_gsensor_xy: tuple[float, float] | None = None,
+    stitch_graph: bool = False,
+    stitch_graph_side: str | None = None,
+    stitch_graph_size: float | None = None,
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
@@ -541,6 +544,40 @@ def export_trip(
     explicit (x_percent, y_percent) override, allowed to land anywhere
     including on the map panel) control size/placement - see
     stitch_cameras()'s own docstring for the full detail.
+
+    `stitch_graph=True` (also requires `stitch_layout`) additionally
+    composes a --stitch-graph panel: a strip chart of this trip's X/Y/Z
+    g-sensor readings with a moving playhead (see
+    gsensor_graph_render.py's own module docstring), a second, alternate
+    g-sensor visualization alongside the dot-gauge `stitch_gsensor`
+    composites. Unlike `stitch_gsensor`, this follows the map panel's
+    own "rendered fresh, at the exact panel size, grows the composite"
+    shape rather than "must already exist, just overlaid" - Christer:
+    "I want to be able to select the graph like i selects map."
+    `stitch_graph_side` ('left', 'right', 'top', or 'down') overrides
+    the panel's default side (stitch.py's own
+    _DEFAULT_GRAPH_SIDE_FOR_LAYOUT - "right" for both side_by_side and
+    top_down, deliberately different from the map panel's own defaults
+    so a plain `stitch_graph=True` alongside a plain `stitch_map`,
+    both left at their own defaults, land on different sides rather
+    than colliding); `stitch_graph_size`, if given (a percent, MIN_/
+    MAX_GRAPH_SIZE_PERCENT in stitch.py), overrides the fixed
+    DEFAULT_GRAPH_SIZE_PERCENT fraction otherwise used - there's no
+    map-panel-style automatic geography-based sizing here, a synthetic
+    chart has no equivalent real-world shape to derive one from. The
+    panel's own orientation is picked automatically from the resolved
+    side: a tall, narrow 'left'/'right' panel renders with upright
+    tick labels and time running top to bottom; a short, wide 'top'/
+    'down' one renders like the standalone gsensor_graph.mp4 default,
+    time running left to right - Christer's own reason for wanting a
+    vertical mode at all was fitting the graph beside a map panel
+    that's already claimed the bottom of the frame, which is exactly
+    what composing both together (`stitch_map` on 'down', `stitch_graph`
+    on its own default 'right') produces. Composed after any map panel,
+    so the two combine rather than either one overwriting the other.
+    Degrades to a `warnings` entry and no panel (never a failed stitch)
+    if there's fewer than two g-sensor samples for this trip, or no
+    default side for an unrecognized layout.
 
     `stitch_subtitles=True` (also requires `stitch_layout`) burns this
     same call's own trip.srt (see `srt_path` above) into stitch.mp4's
@@ -1036,6 +1073,10 @@ def export_trip(
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,
                 gsensor_xy=stitch_gsensor_xy,
+                graph_samples=samples if stitch_graph else (),
+                graph_side=stitch_graph_side,
+                graph_size=stitch_graph_size,
+                graph_video_duration_seconds=video_duration_seconds,
                 subtitles_path=stitch_subtitles_source,
                 subtitles_background=stitch_subtitles_background,
                 audio_path=audio,
