@@ -74,14 +74,6 @@ When modifying code:
 - Wait for the result before continuing.
 - Do not end responses with "one more thing."
 - Do not redesign the architecture unless asked.
-- Don't block on a question when Christer might not be at the computer
-  to answer it soon - a pending question just leaves the work stalled.
-  Reserve actual blocking questions for genuinely high-stakes or
-  hard-to-undo decisions. Otherwise, proceed with a documented best-
-  judgment call, flag it clearly (in code comments and in the
-  WORKING_CONTEXT.md entry), and let him correct it later if it's
-  wrong - matches how the parking-transition-clip work already had to
-  proceed once after AskUserQuestion itself failed mid-session.
 
 ---
 
