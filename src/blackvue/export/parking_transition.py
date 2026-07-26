@@ -66,16 +66,21 @@ _ASSETS_DIR = Path(__file__).parent / "assets"
 
 # Christer's own six Kling-generated "no parking" clips (confirmed his
 # own AI-generated content, not third-party footage) - bv-export's CLI
-# picks one at random per trip whenever neither --parking-transition
-# -image nor --parking-transition-clip is given (Christer: "I want
-# them to be randomly inserted if not specified"), see bv_export.py's
-# main(). Kept as bv_export.py's own CLI-layer default rather than
-# this module's/export_trip()'s (same "CLI has its own opinionated
-# default, library stays neutral" split already used for --map-icon/
-# --stitch-mirror-icon - see map_video.DEFAULT_MAP_ICON_PATH's own
-# comment) - export_trip() itself still defaults to the plain
-# procedural frame when nothing at all is given, e.g. for this
-# project's own test suite or any other direct caller.
+# picks one at random per trip when --parking-transition-random is
+# given (and neither --parking-transition-image nor
+# --parking-transition-clip is), see bv_export.py's main(). This was
+# briefly the *default* behaviour whenever none of those three flags
+# was given ("I want them to be randomly inserted if not specified"),
+# but Christer later reconsidered that call ("do you think i was
+# carried away") and asked to make it opt-in instead - a personal
+# export tool showing a different one of his own clips each run,
+# unannounced, isn't the kind of predictable behaviour a default
+# should have. export_trip() itself still defaults to the plain
+# procedural frame when nothing at all is given, and bv_export()'s own
+# default now matches that exactly rather than diverging from it, same
+# "CLI has its own opinionated default, library stays neutral" split
+# already used for --map-icon/--stitch-mirror-icon - see
+# map_video.DEFAULT_MAP_ICON_PATH's own comment.
 DEFAULT_PARKING_TRANSITION_CLIPS = (
     _ASSETS_DIR / "no_parking_1.mp4",
     _ASSETS_DIR / "no_parking_2.mp4",

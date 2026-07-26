@@ -831,7 +831,7 @@ def test_main_leaves_include_parking_false_by_default(tmp_path, monkeypatch):
     assert captured["include_parking"] is False
     assert captured["parking_transition_image"] is None
     assert captured["parking_transition_clip"] is None
-    assert captured["parking_transition_standard"] is False
+    assert captured["parking_transition_random"] is False
 
 
 def test_main_sets_include_parking_true_when_flag_given(tmp_path, monkeypatch):
@@ -909,7 +909,7 @@ def test_bv_export_rejects_parking_transition_image_with_clip_together(tmp_path)
         )
 
 
-def test_bv_export_rejects_parking_transition_standard_with_image_together(
+def test_bv_export_rejects_parking_transition_random_with_image_together(
     tmp_path,
 ):
     archive = tmp_path / "archive"
@@ -920,11 +920,11 @@ def test_bv_export_rejects_parking_transition_standard_with_image_together(
         bv_export(
             str(archive), target=str(target),
             parking_transition_image=str(tmp_path / "image.png"),
-            parking_transition_standard=True,
+            parking_transition_random=True,
         )
 
 
-def test_bv_export_rejects_parking_transition_standard_with_clip_together(
+def test_bv_export_rejects_parking_transition_random_with_clip_together(
     tmp_path,
 ):
     archive = tmp_path / "archive"
@@ -935,11 +935,11 @@ def test_bv_export_rejects_parking_transition_standard_with_clip_together(
         bv_export(
             str(archive), target=str(target),
             parking_transition_clip=str(tmp_path / "clip.mp4"),
-            parking_transition_standard=True,
+            parking_transition_random=True,
         )
 
 
-def test_main_leaves_parking_transition_standard_false_by_default(
+def test_main_leaves_parking_transition_random_false_by_default(
     tmp_path, monkeypatch
 ):
     captured = {}
@@ -956,10 +956,10 @@ def test_main_leaves_parking_transition_standard_false_by_default(
 
     main(["--target", str(target), str(archive)])
 
-    assert captured["parking_transition_standard"] is False
+    assert captured["parking_transition_random"] is False
 
 
-def test_main_sets_parking_transition_standard_true_when_flag_given(
+def test_main_sets_parking_transition_random_true_when_flag_given(
     tmp_path, monkeypatch
 ):
     captured = {}
@@ -976,10 +976,10 @@ def test_main_sets_parking_transition_standard_true_when_flag_given(
 
     main([
         "--target", str(target), str(archive),
-        "--parking-transition-standard",
+        "--parking-transition-random",
     ])
 
-    assert captured["parking_transition_standard"] is True
+    assert captured["parking_transition_random"] is True
 
 
 def _parking_archive(archive):
@@ -994,7 +994,47 @@ def _parking_archive(archive):
     _make_video(archive / "20260720_100020_NF.mp4")
 
 
-def test_bv_export_picks_a_random_bundled_clip_by_default(tmp_path, monkeypatch):
+def test_bv_export_leaves_the_plain_frame_by_default(tmp_path, monkeypatch):
+    # Reverted from an earlier session's "random by default" design -
+    # Christer, on reflection: "do you think i was carried away" -
+    # concluded a personal export tool showing a different one of his
+    # own clips each run, unannounced, wasn't the kind of predictable
+    # behaviour a default should have. Plain frame by default now,
+    # matching export_trip()'s own neutral default exactly - random.
+    # choice() must never even be called without an explicit
+    # --parking-transition-random.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+    _parking_archive(archive)
+
+    captured_calls = []
+
+    def _fake_export_trip(trip, folder, **kwargs):
+        captured_calls.append(kwargs)
+        return trip_export_module.ExportResult()
+
+    monkeypatch.setattr(bv_export_module, "export_trip", _fake_export_trip)
+
+    def _fail_choice(pool):
+        raise AssertionError(
+            "random.choice() should not be called without "
+            "--parking-transition-random"
+        )
+
+    monkeypatch.setattr(bv_export_module.random, "choice", _fail_choice)
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 0
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["parking_transition_clip"] is None
+    assert captured_calls[0]["parking_transition_image"] is None
+
+
+def test_bv_export_picks_a_random_bundled_clip_when_random_flag_given(
+    tmp_path, monkeypatch
+):
     archive = tmp_path / "archive"
     archive.mkdir()
     target = tmp_path / "out"
@@ -1016,7 +1056,9 @@ def test_bv_export_picks_a_random_bundled_clip_by_default(tmp_path, monkeypatch)
 
     monkeypatch.setattr(bv_export_module.random, "choice", _fake_choice)
 
-    exit_code = bv_export(str(archive), target=str(target))
+    exit_code = bv_export(
+        str(archive), target=str(target), parking_transition_random=True
+    )
 
     assert exit_code == 0
     assert len(captured_calls) == 1
@@ -1058,46 +1100,15 @@ def test_bv_export_random_pool_can_land_on_the_procedural_frame(
 
     monkeypatch.setattr(bv_export_module.random, "choice", _fake_choice)
 
-    exit_code = bv_export(str(archive), target=str(target))
+    exit_code = bv_export(
+        str(archive), target=str(target), parking_transition_random=True
+    )
 
     assert exit_code == 0
     # None all the way through - export_trip() sees neither a clip nor
     # an image, which is exactly what already makes it draw the plain
     # procedural frame itself. No special-casing needed for this
     # outcome.
-    assert captured_calls[0]["parking_transition_clip"] is None
-    assert captured_calls[0]["parking_transition_image"] is None
-
-
-def test_bv_export_skips_the_random_pick_when_parking_transition_standard_is_true(
-    tmp_path, monkeypatch
-):
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    target = tmp_path / "out"
-    _parking_archive(archive)
-
-    captured_calls = []
-
-    def _fake_export_trip(trip, folder, **kwargs):
-        captured_calls.append(kwargs)
-        return trip_export_module.ExportResult()
-
-    monkeypatch.setattr(bv_export_module, "export_trip", _fake_export_trip)
-
-    def _fail_choice(pool):
-        raise AssertionError(
-            "random.choice() should not be called when "
-            "--parking-transition-standard is given"
-        )
-
-    monkeypatch.setattr(bv_export_module.random, "choice", _fail_choice)
-
-    exit_code = bv_export(
-        str(archive), target=str(target), parking_transition_standard=True
-    )
-
-    assert exit_code == 0
     assert captured_calls[0]["parking_transition_clip"] is None
     assert captured_calls[0]["parking_transition_image"] is None
 
@@ -1240,7 +1251,9 @@ def test_bv_export_picks_a_fresh_random_clip_per_trip(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bv_export_module.random, "choice", _fake_choice)
 
-    exit_code = bv_export(str(archive), target=str(target))
+    exit_code = bv_export(
+        str(archive), target=str(target), parking_transition_random=True
+    )
 
     assert exit_code == 0
     assert len(captured_calls) == 2
