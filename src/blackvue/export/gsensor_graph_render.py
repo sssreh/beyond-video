@@ -46,14 +46,28 @@ needs to stay green for the dot-gauge's own real chroma-key use.
 
 Each axis's own trace is now labeled by a small color-key legend drawn
 in the plot area's own top-left corner (Christer: "nothing explaining
-the colors"), and lightly smoothed - a short centered moving average,
-see _smoothed() - before being plotted at a thinner line width. Real
-accelerometer data is jittery enough, sample to sample, that the three
-raw traces blurred together at this panel's size (Christer: "vey
+the colors"), spelling out what each axis physically means -
+"X — Left/right", "Y — Forward/back", "Z — Up/down" - the standard
+accelerometer axis convention, offered as a best-effort explanation
+rather than a device-verified calibration (see gsensor_reader.py's own
+module docstring: the physical unit/orientation of these readings
+isn't independently confirmed for this device). Christer asked for
+this exact wording in both orientations, including the narrow vertical
+side-panel, even though the longest label ("Y — Forward/back") runs
+past that panel's own right edge there - his own explicit call over
+abbreviating to fit.
+
+Real accelerometer data is jittery enough, sample to sample, that the
+three raw traces blurred together at this panel's size (Christer: "vey
 cluttered output", diagnosed as the three traces overlapping/blurring
 rather than tick-mark or general detail clutter). Christer explicitly
 chose to keep one shared plot with reduced visual noise over splitting
-the three axes into separate stacked lanes.
+the three axes into separate stacked lanes - lightened trace colors
+(see _lighten()) plus light smoothing (a short centered moving
+average, see _smoothed()) do that work; TRACE_LINE_WIDTH itself was
+tried at both 1px and 2px side by side, and Christer picked 2px back -
+1px read as too faint once traces crossed each other, and the color/
+smoothing changes were already doing most of the actual decluttering.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -133,9 +147,11 @@ DEFAULT_TICK_LABEL_WIDTH_PX = 44
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
-# Thinner than the old TRACE_LINE_WIDTH=2 - one more part of "reduce
-# visual noise" alongside the lightened colors above.
-TRACE_LINE_WIDTH = 1
+# 2px - thinner (1px) read as too faint once traces cross each other;
+# Christer's own call after comparing both directly against the
+# lightened colors above, which do most of the "reduce visual noise"
+# work on their own.
+TRACE_LINE_WIDTH = 2
 PLAYHEAD_LINE_WIDTH = 3
 TICK_FONT_SIZE = 14
 
@@ -152,6 +168,20 @@ LEGEND_FONT_SIZE = 12
 LEGEND_SWATCH_LENGTH = 14
 LEGEND_ROW_HEIGHT = 14
 LEGEND_PADDING = 6
+# Full axis-meaning wording, not just "X"/"Y"/"Z" - Christer's own
+# request, kept identical in both orientations even though it runs
+# past the narrow vertical side-panel's own right edge (his explicit
+# call over abbreviating there - see the module docstring). The exact
+# physical axis mapping isn't independently confirmed for this device
+# (see gsensor_reader.py's own module docstring on the unconfirmed
+# unit/orientation) - this is the standard accelerometer convention,
+# offered as a best-effort explanation of the colors, not a verified
+# calibration.
+LEGEND_LABELS = (
+    ("X", "Left/right"),
+    ("Y", "Forward/back"),
+    ("Z", "Up/down"),
+)
 
 _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -370,14 +400,15 @@ def _draw_legend(draw: ImageDraw.ImageDraw, left: float, top: float) -> None:
     font = _load_font(LEGEND_FONT_SIZE)
     x = left + LEGEND_PADDING
     y = top + LEGEND_PADDING
-    for label, color in (("X", X_COLOR), ("Y", Y_COLOR), ("Z", Z_COLOR)):
+    colors = (X_COLOR, Y_COLOR, Z_COLOR)
+    for (axis, meaning), color in zip(LEGEND_LABELS, colors):
         row_mid = y + LEGEND_ROW_HEIGHT / 2
         draw.line(
             (x, row_mid, x + LEGEND_SWATCH_LENGTH, row_mid),
             fill=color, width=TRACE_LINE_WIDTH + 2,
         )
         draw.text(
-            (x + LEGEND_SWATCH_LENGTH + 4, row_mid), label,
+            (x + LEGEND_SWATCH_LENGTH + 4, row_mid), f"{axis} — {meaning}",
             font=font, fill=AXIS_COLOR, anchor="lm",
         )
         y += LEGEND_ROW_HEIGHT

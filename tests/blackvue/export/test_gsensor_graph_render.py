@@ -6,9 +6,11 @@ from blackvue.export.gsensor_graph_render import DEFAULT_MARGIN_PX
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_WIDTH
 from blackvue.export.gsensor_graph_render import DEFAULT_WIDTH
+from blackvue.export.gsensor_graph_render import LEGEND_LABELS
 from blackvue.export.gsensor_graph_render import LEGEND_PADDING
 from blackvue.export.gsensor_graph_render import LEGEND_ROW_HEIGHT
 from blackvue.export.gsensor_graph_render import PLAYHEAD_COLOR
+from blackvue.export.gsensor_graph_render import TRACE_LINE_WIDTH
 from blackvue.export.gsensor_graph_render import X_COLOR
 from blackvue.export.gsensor_graph_render import Y_COLOR
 from blackvue.export.gsensor_graph_render import Z_COLOR
@@ -354,3 +356,21 @@ def test_playhead_color_is_distinct_from_background_axis_and_all_three_traces():
 
     others = (BACKGROUND_COLOR, AXIS_COLOR, X_COLOR, Y_COLOR, Z_COLOR)
     assert PLAYHEAD_COLOR not in others
+
+
+def test_legend_labels_spell_out_what_each_axis_physically_means():
+    # Christer's own explicit wording, not just "X"/"Y"/"Z" - see
+    # _draw_legend()/the module docstring for why this is kept
+    # identical in both orientations even though it runs past the
+    # narrow vertical panel's own plot-area edge there.
+    assert LEGEND_LABELS == (
+        ("X", "Left/right"),
+        ("Y", "Forward/back"),
+        ("Z", "Up/down"),
+    )
+
+
+def test_trace_line_width_is_2px():
+    # Tried at 1px and 2px side by side - Christer picked 2px back
+    # (1px read as too faint once traces crossed each other).
+    assert TRACE_LINE_WIDTH == 2
