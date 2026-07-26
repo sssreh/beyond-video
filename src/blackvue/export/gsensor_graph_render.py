@@ -70,16 +70,24 @@ narrower plot area.
 Real accelerometer data is jittery enough, sample to sample, that the
 three raw traces blurred together at this panel's size (Christer: "vey
 cluttered output", diagnosed as the three traces overlapping/blurring
-rather than tick-mark or general detail clutter). Christer explicitly
-chose to keep one shared plot with reduced visual noise over splitting
-the three axes into separate stacked lanes - lightened trace colors
-(see _lighten()) plus light smoothing (a short centered moving
-average, see _smoothed()) do that work. TRACE_LINE_WIDTH itself has
-gone back and forth: 1px, then 2px (Christer's own pick after a
-side-by-side comparison), then back to 1px again once 2px plus the
-legend's own former overlap with the traces still read as too
-cluttered - the legend now having its own dedicated space (above) was
-the other half of that same fix, not line width alone.
+rather than tick-mark or general detail clutter). Lightened trace
+colors (see _lighten()) plus light smoothing (a short centered moving
+average, see _smoothed()) reduce that blur, but Christer's own
+follow-up call - after seeing X/Y/Z still crossing each other
+regardless - was to stop sharing one plot entirely for Z specifically:
+"let the cluttered Z have its own line". X and Y still share one lane
+(`main_lane`), but Z now gets its own separate `z_lane` (see
+_split_lanes()), so Z's own trace never crosses X's or Y's. Christer
+picked a ~1/3 share of the panel for Z's own lane (Z is one trace
+against X/Y's two) over an equal 50/50 split, and the very same
+`scale` value for both lanes (not an independent auto-scale for Z)
+so a given magnitude still looks the same size in either lane - only
+which pixels a lane owns changed, not how values map to pixels within
+one. TRACE_LINE_WIDTH itself has gone back and forth several times
+(1px, 2px, 1px, 2px again) as the actual sources of clutter got fixed
+one at a time - the legend's former overlap with the traces (see
+_legend_reserve_px()) and now the lane split above; once those two
+were addressed, 2px read fine again.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -159,14 +167,34 @@ DEFAULT_TICK_LABEL_WIDTH_PX = 44
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
-# Back to 1px - a 2px comparison was tried and picked at first, but
-# combined with the legend still overlapping the traces at the time it
-# still read as too cluttered; Christer's own call to go thinner again
-# once the legend also got moved into its own reserved space (see
-# _legend_reserve_px()) instead of sitting on top of the chart.
-TRACE_LINE_WIDTH = 1
+# 2px again - the 1px/2px back-and-forth (see the two preceding
+# entries in WORKING_CONTEXT.md) was really about the traces crossing
+# each other and the legend overlapping them, not line width alone;
+# now that Z has its own lane (see Z_LANE_FRACTION below) there's much
+# less crossing left for 2px to make worse, so Christer picked the
+# bolder width back.
+TRACE_LINE_WIDTH = 2
 PLAYHEAD_LINE_WIDTH = 3
 TICK_FONT_SIZE = 14
+
+# Z gets its own dedicated lane, separate from the shared X/Y plot -
+# Christer's own request ("let the cluttered Z have its own line"),
+# after X/Y/Z all sharing one plot kept crossing each other regardless
+# of line width or smoothing. Z is one trace against X/Y's two, so it
+# gets proportionally less of the panel's own value axis (~1/3, the
+# rest split none further - X and Y still share the remaining ~2/3
+# lane exactly as before). Both lanes are plotted using the very same
+# `scale` value (see render_base_frame()) - Christer explicitly chose
+# a shared scale over an independent one for Z, so a given magnitude
+# still looks the same size in either lane; only the crossing between
+# Z and X/Y is what's being removed, not comparability.
+Z_LANE_FRACTION = 1 / 3
+# Small visual gap between the two lanes, plus a thin divider line
+# drawn in it - without some separation the two lanes would look like
+# one plot with a kink in it rather than two deliberately distinct
+# regions.
+LANE_GAP_PX = 8
+LANE_DIVIDER_COLOR = (210, 210, 210)
 
 # G-sensor samples arrive roughly every 100ms (see gsensor_reader.py's
 # own module docstring), so a 5-sample centered window is roughly half
@@ -412,6 +440,32 @@ def _value_to_pos(
     return center - (value / scale) * half_span
 
 
+def _split_lanes(value_start: float, value_end: float) -> tuple[
+    tuple[float, float], tuple[float, float]
+]:
+    """Split the overall value axis [value_start, value_end] into
+    (main_lane, z_lane) sub-ranges, separated by LANE_GAP_PX - X/Y
+    share `main_lane` (the larger of the two), Z gets its own
+    `z_lane` (Z_LANE_FRACTION of the space), so Z's trace no longer
+    crosses X/Y's (Christer: "let the cluttered Z have its own line").
+    Both sub-ranges get passed the very same `scale` value by the
+    caller when actually plotting into them (see render_base_frame()),
+    so a given magnitude looks the same size in either lane - only
+    which pixels each lane owns changes here, not how values map to
+    pixels within a lane."""
+
+    available = (value_end - value_start) - LANE_GAP_PX
+    z_span = available * Z_LANE_FRACTION
+    main_span = available - z_span
+
+    main_start = value_start
+    main_end = value_start + main_span
+    z_start = main_end + LANE_GAP_PX
+    z_end = value_end
+
+    return (main_start, main_end), (z_start, z_end)
+
+
 def _legend_text_width(draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont) -> float:
     """Return the widest of the three legend rows' own rendered text
     width ("X — Left/right", "Y — Forward/back", "Z — Up/down") -
@@ -567,11 +621,29 @@ def render_base_frame(
         time_start, time_end = left, right
         value_start, value_end = top, bottom
 
-    zero_pos = _value_to_pos(0.0, scale, value_start, value_end)
+    # X/Y share main_lane, Z gets its own z_lane - see _split_lanes()'s
+    # own docstring for why (Christer: "let the cluttered Z have its
+    # own line"). Both are sub-ranges of the same overall value axis,
+    # separated by a small gap plus a light divider line.
+    main_lane, z_lane = _split_lanes(value_start, value_end)
+    main_start, main_end = main_lane
+    z_start, z_end = z_lane
+
+    main_zero_pos = _value_to_pos(0.0, scale, main_start, main_end)
+    z_zero_pos = _value_to_pos(0.0, scale, z_start, z_end)
+    divider_pos = (main_end + z_start) / 2
     if orientation == "vertical":
-        draw.line((zero_pos, top, zero_pos, bottom), fill=AXIS_COLOR, width=1)
+        draw.line((main_zero_pos, top, main_zero_pos, bottom), fill=AXIS_COLOR, width=1)
+        draw.line((z_zero_pos, top, z_zero_pos, bottom), fill=AXIS_COLOR, width=1)
+        draw.line(
+            (divider_pos, top, divider_pos, bottom), fill=LANE_DIVIDER_COLOR, width=1
+        )
     else:
-        draw.line((left, zero_pos, right, zero_pos), fill=AXIS_COLOR, width=1)
+        draw.line((left, main_zero_pos, right, main_zero_pos), fill=AXIS_COLOR, width=1)
+        draw.line((left, z_zero_pos, right, z_zero_pos), fill=AXIS_COLOR, width=1)
+        draw.line(
+            (left, divider_pos, right, divider_pos), fill=LANE_DIVIDER_COLOR, width=1
+        )
 
     baseline_x, baseline_y, baseline_z = baseline
     if len(samples) >= 2:
@@ -592,9 +664,10 @@ def render_base_frame(
         for axis_index, (color, base) in enumerate((
             (X_COLOR, baseline_x), (Y_COLOR, baseline_y), (Z_COLOR, baseline_z),
         )):
+            lane_start, lane_end = z_lane if axis_index == 2 else main_lane
             points = []
             for t, value in zip(times, smoothed_axes[axis_index]):
-                v = _value_to_pos(value - base, scale, value_start, value_end)
+                v = _value_to_pos(value - base, scale, lane_start, lane_end)
                 points.append((v, t) if orientation == "vertical" else (t, v))
             draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 

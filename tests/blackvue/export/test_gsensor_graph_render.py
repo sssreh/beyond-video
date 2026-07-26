@@ -9,6 +9,8 @@ from blackvue.export.gsensor_graph_render import DEFAULT_MARGIN_PX
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_WIDTH
 from blackvue.export.gsensor_graph_render import DEFAULT_WIDTH
+from blackvue.export.gsensor_graph_render import LANE_DIVIDER_COLOR
+from blackvue.export.gsensor_graph_render import LANE_GAP_PX
 from blackvue.export.gsensor_graph_render import LEGEND_FONT_SIZE
 from blackvue.export.gsensor_graph_render import LEGEND_LABELS
 from blackvue.export.gsensor_graph_render import LEGEND_PADDING
@@ -19,11 +21,13 @@ from blackvue.export.gsensor_graph_render import TRACE_LINE_WIDTH
 from blackvue.export.gsensor_graph_render import X_COLOR
 from blackvue.export.gsensor_graph_render import Y_COLOR
 from blackvue.export.gsensor_graph_render import Z_COLOR
+from blackvue.export.gsensor_graph_render import Z_LANE_FRACTION
 from blackvue.export.gsensor_graph_render import _format_tick
 from blackvue.export.gsensor_graph_render import _legend_reserve_px
 from blackvue.export.gsensor_graph_render import _load_font
 from blackvue.export.gsensor_graph_render import _nice_tick_interval
 from blackvue.export.gsensor_graph_render import _plot_area
+from blackvue.export.gsensor_graph_render import _split_lanes
 from blackvue.export.gsensor_graph_render import _smoothed
 from blackvue.export.gsensor_graph_render import _time_to_pos
 from blackvue.export.gsensor_graph_render import _value_to_pos
@@ -86,7 +90,11 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
     # the endpoint pixel at the strip's own left edge (elapsed=0) can
     # be computed directly via the same _time_to_pos/_value_to_pos
     # helpers the renderer itself uses, and should land exactly on
-    # that axis's own trace color.
+    # that axis's own trace color. X/Y share main_lane; Z is plotted
+    # into its own separate z_lane (see _split_lanes()) - Christer's
+    # own request ("let the cluttered Z have its own line") - so its
+    # expected position is computed against z_lane, not the full plot
+    # area X/Y still share.
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
@@ -99,9 +107,10 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
     )
     x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
 
-    x_y = round(_value_to_pos(50, scale, top, bottom))
-    y_y = round(_value_to_pos(-30, scale, top, bottom))
-    z_y = round(_value_to_pos(10, scale, top, bottom))
+    (main_top, main_bottom), (z_top, z_bottom) = _split_lanes(top, bottom)
+    x_y = round(_value_to_pos(50, scale, main_top, main_bottom))
+    y_y = round(_value_to_pos(-30, scale, main_top, main_bottom))
+    z_y = round(_value_to_pos(10, scale, z_top, z_bottom))
 
     assert image.getpixel((x_pixel, x_y)) == X_COLOR
     assert image.getpixel((x_pixel, y_y)) == Y_COLOR
@@ -158,7 +167,10 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
     # Two samples produce one straight-line segment per axis - in
     # vertical mode, elapsed=0 should land at the plot area's own top
     # edge (time runs top to bottom - see the module docstring), not
-    # its left edge the way horizontal mode does.
+    # its left edge the way horizontal mode does. X/Y share main_lane;
+    # Z is plotted into its own z_lane (see _split_lanes()), so its
+    # expected position is computed against z_lane, not the full plot
+    # area X/Y still share.
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
@@ -173,9 +185,10 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
     )
     y_pixel = round(_time_to_pos(0.0, total_seconds, top, bottom))
 
-    x_x = round(_value_to_pos(50, scale, left, right))
-    y_x = round(_value_to_pos(-30, scale, left, right))
-    z_x = round(_value_to_pos(10, scale, left, right))
+    (main_left, main_right), (z_left, z_right) = _split_lanes(left, right)
+    x_x = round(_value_to_pos(50, scale, main_left, main_right))
+    y_x = round(_value_to_pos(-30, scale, main_left, main_right))
+    z_x = round(_value_to_pos(10, scale, z_left, z_right))
 
     assert _color_near(image, x_x, y_pixel, X_COLOR)
     assert _color_near(image, y_x, y_pixel, Y_COLOR)
@@ -240,6 +253,67 @@ def test_plot_area_vertical_legend_reserve_shifts_the_top_edge():
 
     assert top_with_legend == top + 60.0
     assert (left2, right2, bottom2) == (left, right, bottom)
+
+
+def test_split_lanes_covers_the_full_original_range():
+    # main_lane's own start and z_lane's own end should be the exact
+    # ends of the range that was split - no space at either extreme
+    # goes unclaimed by either lane.
+    (main_start, main_end), (z_start, z_end) = _split_lanes(100.0, 400.0)
+
+    assert main_start == 100.0
+    assert z_end == 400.0
+
+
+def test_split_lanes_leaves_a_gap_between_the_two_lanes():
+    # X/Y's main_lane and Z's own z_lane shouldn't touch - a small gap
+    # (plus a divider line drawn in it, see render_base_frame()) is
+    # what visually separates them into two distinct regions rather
+    # than one plot with a kink in it.
+    (main_start, main_end), (z_start, z_end) = _split_lanes(100.0, 400.0)
+
+    assert z_start - main_end == LANE_GAP_PX
+
+
+def test_split_lanes_gives_z_the_smaller_share():
+    # Z is one trace against X/Y's two, so it gets proportionally less
+    # of the panel (Christer's own pick: ~1/3 for Z, over an equal
+    # 50/50 split) - Z_LANE_FRACTION applies to the space actually
+    # available for the two lanes, i.e. after LANE_GAP_PX is set aside.
+    value_start, value_end = 100.0, 400.0
+    (main_start, main_end), (z_start, z_end) = _split_lanes(value_start, value_end)
+
+    available = (value_end - value_start) - LANE_GAP_PX
+    expected_z_span = available * Z_LANE_FRACTION
+    expected_main_span = available - expected_z_span
+
+    # Computed through several chained float operations inside
+    # _split_lanes() itself (subtraction, addition, subtraction again),
+    # so the result can be a couple of ulps off an independently
+    # computed expectation even though both are mathematically the
+    # same value - a tiny tolerance avoids a false failure over that,
+    # not a real one.
+    assert abs((z_end - z_start) - expected_z_span) < 1e-9
+    assert abs((main_end - main_start) - expected_main_span) < 1e-9
+    assert (z_end - z_start) < (main_end - main_start)
+
+
+def test_render_base_frame_draws_a_divider_between_the_two_lanes():
+    # A real rendering-level check (not just the _split_lanes() geometry
+    # unit tests above) that the divider actually gets drawn where the
+    # two lanes meet - the visual cue that they're deliberately two
+    # separate regions, not a plot with a kink in it.
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+
+    left, top, right, bottom = _plot_area(
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
+    )
+    (main_top, main_bottom), (z_top, z_bottom) = _split_lanes(top, bottom)
+    divider_y = round((main_bottom + z_top) / 2)
+
+    assert image.getpixel((round(left) + 5, divider_y)) == LANE_DIVIDER_COLOR
 
 
 def test_scale_for_samples_floors_at_minimum_for_flat_data():
@@ -457,10 +531,11 @@ def test_legend_labels_spell_out_what_each_axis_physically_means():
     )
 
 
-def test_trace_line_width_is_1px():
-    # Went 1px -> 2px -> back to 1px. 2px was picked first in isolation,
-    # but still read as too cluttered combined with the legend's former
-    # overlap with the traces; once the legend got its own dedicated
-    # space (see _legend_reserve_px()), Christer asked to go back to
-    # 1px for the traces themselves.
-    assert TRACE_LINE_WIDTH == 1
+def test_trace_line_width_is_2px():
+    # Went 1px -> 2px -> 1px -> 2px again. The back-and-forth was
+    # really about the traces crossing each other (fixed by giving Z
+    # its own lane, see Z_LANE_FRACTION) and the legend overlapping
+    # the traces (fixed by _legend_reserve_px()), not line width in
+    # isolation - once those two were fixed, Christer picked the
+    # bolder 2px width back.
+    assert TRACE_LINE_WIDTH == 2
