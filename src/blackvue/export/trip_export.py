@@ -555,12 +555,16 @@ def export_trip(
     shape rather than "must already exist, just overlaid" - Christer:
     "I want to be able to select the graph like i selects map."
     `stitch_graph_side` ('left', 'right', 'top', or 'down') overrides
-    the panel's default side (stitch.py's own
-    _DEFAULT_GRAPH_SIDE_FOR_LAYOUT - "right" for both side_by_side and
-    top_down, deliberately different from the map panel's own defaults
-    so a plain `stitch_graph=True` alongside a plain `stitch_map`,
-    both left at their own defaults, land on different sides rather
-    than colliding); `stitch_graph_size`, if given (a percent, MIN_/
+    the panel's default side; left unset, stitch.py's own _stack()
+    derives the default from wherever the map panel actually ended up
+    (see `map_panel_side_used` there) - Christer: "if map to the left
+    then graph should be at the bottom, if map at bottom then graph to
+    the left ... in order to get close to 16x9 format. if no map then
+    bottom" - so a plain `stitch_graph=True` alongside a plain
+    `stitch_map`, both left at their own defaults, grow the frame on
+    perpendicular axes rather than compounding onto the same one, and
+    default to 'down' whenever no map panel actually ended up in the
+    composite at all; `stitch_graph_size`, if given (a percent, MIN_/
     MAX_GRAPH_SIZE_PERCENT in stitch.py), overrides the fixed
     DEFAULT_GRAPH_SIZE_PERCENT fraction otherwise used - there's no
     map-panel-style automatic geography-based sizing here, a synthetic
@@ -573,11 +577,10 @@ def export_trip(
     vertical mode at all was fitting the graph beside a map panel
     that's already claimed the bottom of the frame, which is exactly
     what composing both together (`stitch_map` on 'down', `stitch_graph`
-    on its own default 'right') produces. Composed after any map panel,
-    so the two combine rather than either one overwriting the other.
-    Degrades to a `warnings` entry and no panel (never a failed stitch)
-    if there's fewer than two g-sensor samples for this trip, or no
-    default side for an unrecognized layout.
+    defaulting to 'left' as a result) now produces. Composed after any
+    map panel, so the two combine rather than either one overwriting the
+    other. Degrades to a `warnings` entry and no panel (never a failed
+    stitch) if there's fewer than two g-sensor samples for this trip.
 
     `stitch_subtitles=True` (also requires `stitch_layout`) burns this
     same call's own trip.srt (see `srt_path` above) into stitch.mp4's

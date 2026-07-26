@@ -1423,16 +1423,17 @@ def main(argv: list[str] | None = None) -> int:
         choices=["left", "right", "top", "down"],
         default=None,
         help=(
-            "Override --stitch-graph's panel side. Default: 'right' "
-            "for both --stitch-layout side_by_side and top_down - "
-            "deliberately different from --stitch-map's own defaults "
-            "so the two don't collide when both are left at their own "
-            "defaults together. The panel's own orientation follows "
-            "automatically: 'left'/'right' renders a tall, narrow "
-            "panel with upright tick labels and time running top to "
-            "bottom; 'top'/'down' renders a short, wide panel with "
-            "time running left to right, like the standalone "
-            "gsensor_graph.mp4 default."
+            "Override --stitch-graph's panel side. Default: whichever "
+            "side --stitch-map's own panel *didn't* use (e.g. a map on "
+            "the left defaults the graph to the bottom, and vice versa), "
+            "so the two grow the frame in different directions and stay "
+            "closer to a 16:9 shape overall; defaults to the bottom if "
+            "there's no map panel actually present at all. The panel's "
+            "own orientation follows automatically: 'left'/'right' "
+            "renders a tall, narrow panel with upright tick labels and "
+            "time running top to bottom; 'top'/'down' renders a short, "
+            "wide panel with time running left to right, like the "
+            "standalone gsensor_graph.mp4 default."
         ),
     )
     parser.add_argument(

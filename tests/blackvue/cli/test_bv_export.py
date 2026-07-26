@@ -2563,12 +2563,12 @@ def test_bv_export_stitch_graph_flag_grows_the_stitch_composite(tmp_path):
     )
     stream = json.loads(probe.stdout)["streams"][0]
 
-    # Two 64x64 cameras side by side -> 128x64 before any panel. The
-    # graph panel's default 'right' side (--stitch-graph-side not
-    # given) hstacks on the right, so height stays 64 and width grows
-    # past 128.
-    assert stream["height"] == 64
-    assert stream["width"] > 128
+    # Two 64x64 cameras side by side -> 128x64 before any panel. No map
+    # panel is present, so the graph panel defaults to 'down' (see
+    # stitch.py's own _stack() - Christer: "if no map then bottom"),
+    # which vstacks below, so width stays 128 and height grows past 64.
+    assert stream["width"] == 128
+    assert stream["height"] > 64
 
 
 def test_bv_export_merges_srt_across_a_trip(tmp_path):

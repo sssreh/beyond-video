@@ -165,7 +165,7 @@ A second, alternate g-sensor visualization alongside `--stitch-gsensor`'s dot-ga
 | Option | Description |
 |---|---|
 | `--stitch-graph` | Compose a g-sensor strip-chart panel alongside the cameras. |
-| `--stitch-graph-side {left,right,top,down}` | Panel side. Default: right, for both `side_by_side` and `top_down` - deliberately different from `--stitch-map`'s own defaults, so the two don't collide when both are left at their own defaults together. `rearview_mirror` has no default side (there's no `left`/`right`/`down` shape to fall back to the way `--stitch-map` does from GPS) - pass this explicitly for that layout. |
+| `--stitch-graph-side {left,right,top,down}` | Panel side. Default: whichever side `--stitch-map`'s own panel *didn't* use (a map on the left defaults the graph to the bottom, and vice versa), so the two grow the frame on perpendicular axes and stay closer to a 16:9 shape overall; defaults to the bottom if there's no map panel actually present at all. |
 | `--stitch-graph-size PERCENT` | Panel width/height as a percent of the matching composite dimension (5-80). Default: a fixed 25% - there's no `--stitch-map`-style automatic sizing here, a synthetic chart has no real-world shape to derive one from. |
 
 ### Stitch subtitles
