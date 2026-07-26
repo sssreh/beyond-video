@@ -1800,6 +1800,35 @@ def test_graph_panel_dimensions_rounds_to_an_even_pixel_count():
     assert height % 2 == 0
 
 
+def test_render_graph_panel_always_uses_the_rolling_window(tmp_path, monkeypatch):
+    # --stitch-graph's own panel always renders as the rolling
+    # GRAPH_PANEL_WINDOW_SECONDS window (Christer: "maybe a rolling
+    # windows of 10 minutes", scoped to this panel specifically, as
+    # its own new default rather than an opt-in flag - see
+    # WORKING_CONTEXT.md) - unlike the standalone --gsensor-graph-video
+    # output (trip_export.py's own separate render_gsensor_graph_video()
+    # call site), which never passes window_seconds at all and stays a
+    # whole-trip chart.
+    from blackvue.export import stitch as module
+
+    captured = {}
+
+    def _fake_render_gsensor_graph_video(*args, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        module, "render_gsensor_graph_video", _fake_render_gsensor_graph_video
+    )
+
+    module._render_graph_panel(
+        _graph_samples(), tmp_path / "graph_panel.mp4",
+        width=160, height=360, orientation="vertical",
+    )
+
+    assert captured.get("window_seconds") == module.GRAPH_PANEL_WINDOW_SECONDS
+
+
 def test_render_graph_panel_returns_none_for_fewer_than_two_samples(tmp_path):
     from blackvue.export.stitch import _render_graph_panel
 

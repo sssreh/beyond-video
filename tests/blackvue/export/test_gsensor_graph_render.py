@@ -57,6 +57,65 @@ def test_render_base_frame_returns_image_of_requested_size():
     assert image.mode == "RGB"
 
 
+def test_render_base_frame_windowed_places_samples_relative_to_the_window():
+    # gsensor_graph_video.py's own paginated mode (see its
+    # `window_seconds` docstring) renders one base image per fixed
+    # chunk of a long trip, passing window_start/window_end so the
+    # chunk's own samples plot across the *whole* chart width even
+    # though they only span a slice of the trip's real total_seconds.
+    # Two samples sitting exactly at the window's own start/end - not
+    # the trip's - should draw a trace spanning the full plot width;
+    # if the old (pre-windowing) total_seconds-fraction math were used
+    # instead, a 20s window out of a 100s trip would only occupy the
+    # left ~20% of the plot, well short of the pixel checked below.
+    # X and Y are given different constant values (rather than the
+    # same one) so their traces don't land on the exact same pixels -
+    # Y is drawn after X in render_base_frame()'s own axes loop and
+    # would otherwise silently overdraw X's identical line.
+    baseline = (0.0, 0.0, 0.0)
+    scale = 100.0
+    total_seconds = 100.0
+    samples = (_sample(10_000, 50, -50, 0), _sample(30_000, 50, -50, 0))
+
+    image = render_base_frame(
+        samples, baseline, scale, total_seconds, width=320, height=180,
+        window_start=10.0, window_end=30.0,
+    )
+
+    left, top, right, bottom = _plot_area(
+        320, 180, DEFAULT_MARGIN_PX, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal", show_z=False),
+    )
+    x_y = round(_value_to_pos(50, scale, top, bottom))
+    near_right_edge_x = round(left + 0.9 * (right - left))
+
+    assert _color_near(image, near_right_edge_x, x_y, X_COLOR)
+
+
+def test_render_base_frame_default_window_matches_explicit_full_span():
+    # window_start=0.0/window_end=None (the defaults) must render
+    # pixel-identical to explicitly passing window_start=0.0,
+    # window_end=total_seconds - every pre-windowing caller (the
+    # standalone gsensor_graph.mp4 path, and every other test in this
+    # file) relies on that exact equivalence.
+    samples = (
+        _sample(0, 40, -20, 5), _sample(5000, -10, 30, -15), _sample(9000, 0, 0, 0),
+    )
+    baseline = (0.0, 0.0, 0.0)
+    scale = 50.0
+    total_seconds = 9.0
+
+    default_image = render_base_frame(
+        samples, baseline, scale, total_seconds, width=400, height=200, show_z=True,
+    )
+    explicit_image = render_base_frame(
+        samples, baseline, scale, total_seconds, width=400, height=200, show_z=True,
+        window_start=0.0, window_end=total_seconds,
+    )
+
+    assert list(default_image.getdata()) == list(explicit_image.getdata())
+
+
 def test_render_base_frame_background_is_a_flat_light_color():
     # This panel is never chroma-keyed/composited over footage (unlike
     # the dot-gauge overlay) - stitch.py just hstacks/vstacks it

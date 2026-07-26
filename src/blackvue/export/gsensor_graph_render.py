@@ -651,6 +651,8 @@ def render_base_frame(
     tick_label_reserve: int | None = None,
     orientation: str = "horizontal",
     show_z: bool = False,
+    window_start: float = 0.0,
+    window_end: float | None = None,
 ) -> Image.Image:
     """Render the static, whole-trip part of the strip chart once: the
     X/Y traces (and Z's own, when `show_z`) plotted across the full
@@ -681,6 +683,21 @@ def render_base_frame(
     `tick_label_reserve` default to whichever orientation's own
     DEFAULT_*/DEFAULT_VERTICAL_* constants match `orientation` when not
     given explicitly.
+
+    `window_start`/`window_end` (default 0.0 / None, meaning the whole
+    0..`total_seconds` trip - unchanged from before these existed)
+    bound the chart to a slice of the trip's own absolute time range
+    instead of the full thing - used by gsensor_graph_video.py's own
+    paginated-window mode (see its `window_seconds` parameter) to
+    render one base image per fixed-length chunk of a long trip rather
+    than one image spanning the whole thing. `samples` should already
+    be filtered to the window by the caller - a sample outside
+    [`window_start`, `window_end`] would otherwise plot pinned to
+    whichever edge it clamps to, corrupting the trace with a spurious
+    flat segment, rather than being left out. Tick labels still show
+    each tick's own absolute trip time (e.g. "10:00", "10:10", ...),
+    not time-since-window-start, so a page reads as "this slice of the
+    real trip clock" rather than resetting to 00:00 every chunk.
     """
 
     if width is None:
@@ -695,6 +712,11 @@ def render_base_frame(
             if orientation == "vertical"
             else DEFAULT_TICK_LABEL_HEIGHT_PX
         )
+    # Defaults (window_start=0.0, window_end=None) make window_span
+    # equal to total_seconds and window_start_actual (used below) 0.0 -
+    # identical to every pre-windowing caller's own math, bit for bit.
+    window_end_actual = window_end if window_end is not None else total_seconds
+    window_span = window_end_actual - window_start
 
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
@@ -752,7 +774,8 @@ def render_base_frame(
     if len(samples) >= 2:
         times = [
             _time_to_pos(
-                sample.offset.total_seconds(), total_seconds, time_start, time_end
+                sample.offset.total_seconds() - window_start, window_span,
+                time_start, time_end,
             )
             for sample in samples
         ]
@@ -781,12 +804,14 @@ def render_base_frame(
             show_z=show_z,
         )
 
-    if total_seconds > 0:
+    if window_span > 0:
         font = _load_font()
-        tick_interval = _nice_tick_interval(total_seconds)
-        tick_seconds = 0.0
-        while tick_seconds <= total_seconds:
-            tick_pos = _time_to_pos(tick_seconds, total_seconds, time_start, time_end)
+        tick_interval = _nice_tick_interval(window_span)
+        tick_seconds = window_start
+        while tick_seconds <= window_end_actual:
+            tick_pos = _time_to_pos(
+                tick_seconds - window_start, window_span, time_start, time_end
+            )
             label = _format_tick(tick_seconds)
             if orientation == "vertical":
                 draw.line(

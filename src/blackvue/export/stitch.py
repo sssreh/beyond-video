@@ -232,6 +232,19 @@ MIN_GRAPH_SIZE_PERCENT = 5.0
 MAX_GRAPH_SIZE_PERCENT = 80.0
 DEFAULT_GRAPH_SIZE_PERCENT = 25.0
 
+# --stitch-graph's panel always renders as a rolling 10-minute window
+# rather than one static whole-trip chart (falling back to the whole
+# trip when it's under 10 minutes long - see
+# render_gsensor_graph_video()'s own `window_seconds` docstring for the
+# paginated-chunk mechanics) - Christer: "maybe a rolling windows of 10
+# minutes", scoped after discussion to --stitch-graph specifically
+# (not the standalone --gsensor-graph-video output, which stays a
+# whole-trip chart) and as the panel's own new default rather than an
+# opt-in flag - see WORKING_CONTEXT.md for the full scoping discussion.
+# Not user-configurable (no --stitch-graph-window flag) since Christer
+# didn't ask for one; revisit if he wants a different window length.
+GRAPH_PANEL_WINDOW_SECONDS = 600.0
+
 # --stitch-gsensor's size range/default (percent of the camera
 # composite's own width the overlay is scaled to) - per the agreed
 # spec, its own separate range from the (not yet built) rearview
@@ -1561,6 +1574,16 @@ def _render_graph_panel(
     docstring for Christer's reasoning (Z hidden by default, opt-in
     for a specific look at a bump/vibration event).
 
+    Always renders as a rolling GRAPH_PANEL_WINDOW_SECONDS (10-minute)
+    window rather than one static whole-trip chart - see that
+    constant's own comment and render_gsensor_graph_video()'s
+    `window_seconds` docstring. Unlike `show_z`, this isn't a
+    parameter here: it's this panel's own new default, not something
+    stitch_cameras() callers opt into, and the standalone
+    --gsensor-graph-video output (render_gsensor_graph_video() called
+    directly from trip_export.py, not through this function) is
+    unaffected.
+
     Returns None (writes nothing) if there are fewer than two samples -
     the same "nothing to render" convention render_gsensor_graph_video()
     itself already uses, just checked here too so the caller can tell
@@ -1574,6 +1597,7 @@ def _render_graph_panel(
         samples, destination,
         orientation=orientation, width=width, height=height,
         duration_seconds=duration_seconds, show_z=show_z,
+        window_seconds=GRAPH_PANEL_WINDOW_SECONDS,
     )
 
 
