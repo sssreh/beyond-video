@@ -31,11 +31,29 @@ composited on top at the current elapsed time's position
 takes advantage of this split to only pay per-frame drawing cost for
 the playhead itself, not the whole chart.
 
-Same chroma-key green background as gsensor_render.py (see that
-module's own docstring for why) - this is meant to be composited over
-front/rear footage later too, so BACKGROUND_COLOR is imported from
-there rather than redefined, guaranteeing both g-sensor overlays key
-out identically.
+Background is a plain, light near-white - NOT gsensor_render.py's own
+chroma-key green. Unlike the dot-gauge, this panel is never
+chroma-keyed/composited over footage; stitch.py just hstacks/vstacks
+it straight onto the --stitch composite, the same way it handles the
+map panel. The green was inherited from gsensor_render.py's own
+BACKGROUND_COLOR without checking whether that reasoning actually
+applied here, and it read as a plain solid green box in real rendered
+output (Christer's own feedback: "awful green background"; verified
+via stitch.py - no colorkey/chromakey filter is ever applied to this
+panel). BACKGROUND_COLOR is defined locally in this module now,
+decoupled from gsensor_render.py's own chroma-key green, which still
+needs to stay green for the dot-gauge's own real chroma-key use.
+
+Each axis's own trace is now labeled by a small color-key legend drawn
+in the plot area's own top-left corner (Christer: "nothing explaining
+the colors"), and lightly smoothed - a short centered moving average,
+see _smoothed() - before being plotted at a thinner line width. Real
+accelerometer data is jittery enough, sample to sample, that the three
+raw traces blurred together at this panel's size (Christer: "vey
+cluttered output", diagnosed as the three traces overlapping/blurring
+rather than tick-mark or general detail clutter). Christer explicitly
+chose to keep one shared plot with reduced visual noise over splitting
+the three axes into separate stacked lanes.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -48,23 +66,52 @@ from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 
-from .gsensor_render import BACKGROUND_COLOR
+# Plain light near-white - not chroma-keyed (see module docstring for
+# why this panel is decoupled from gsensor_render.py's own green).
+BACKGROUND_COLOR = (250, 250, 250)
 
-# Three distinct, non-green trace colors (green is reserved for the
-# chroma-key background - a green trace would key out along with it
-# once composited). Red picks up gsensor_render.py's own dot/trail
-# accent color for a little visual continuity between the two g-sensor
-# views; blue and amber are chosen for contrast against both red and
-# each other, and against the black axis/tick text.
-X_COLOR = (230, 57, 70)
-Y_COLOR = (69, 123, 157)
-Z_COLOR = (241, 196, 15)
+
+def _lighten(color: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
+    """Blend `color` toward BACKGROUND_COLOR by `amount` (0..1) - used
+    to soften the trace colors below so overlapping traces read as
+    less of a solid blur (Christer: "vey cluttered output", the three
+    traces overlapping) without losing which color is which."""
+
+    r, g, b = color
+    bg_r, bg_g, bg_b = BACKGROUND_COLOR
+    return (
+        round(r + (bg_r - r) * amount),
+        round(g + (bg_g - g) * amount),
+        round(b + (bg_b - b) * amount),
+    )
+
+
+# Base identity colors before lightening - red picks up
+# gsensor_render.py's own dot/trail accent color for a little visual
+# continuity between the two g-sensor views; blue and amber are chosen
+# for contrast against both red and each other, and against the black
+# axis/tick text.
+_BASE_X_COLOR = (230, 57, 70)
+_BASE_Y_COLOR = (69, 123, 157)
+_BASE_Z_COLOR = (241, 196, 15)
+
+# The actual trace (and legend swatch) colors - lightened from the
+# base identity colors above so the three overlapping traces read as
+# softer, less cluttered lines rather than a solid blur. The legend
+# draws these exact colors, not the (darker) base ones, so what's
+# labeled always matches what's actually on the chart.
+X_COLOR = _lighten(_BASE_X_COLOR, 0.25)
+Y_COLOR = _lighten(_BASE_Y_COLOR, 0.25)
+Z_COLOR = _lighten(_BASE_Z_COLOR, 0.25)
+
 AXIS_COLOR = (0, 0, 0)
 TICK_COLOR = (0, 0, 0)
-# White reads clearly against all three trace colors and the black
-# zero-line/ticks alike - no single trace color would stay visible
-# against a trace of its own color crossing it.
-PLAYHEAD_COLOR = (255, 255, 255)
+# A saturated purple - white (the old choice) would be invisible
+# against the new light background. Purple stays clearly distinct
+# from the red/blue/amber trace family, the black axis/tick text, and
+# the light background alike, including where it crosses a trace or
+# the zero-line.
+PLAYHEAD_COLOR = (156, 39, 176)
 
 # A short, wide strip - "the bottom panel", not a square gauge -
 # matching the shape of Christer's reference screenshot rather than
@@ -86,9 +133,25 @@ DEFAULT_TICK_LABEL_WIDTH_PX = 44
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
-TRACE_LINE_WIDTH = 2
+# Thinner than the old TRACE_LINE_WIDTH=2 - one more part of "reduce
+# visual noise" alongside the lightened colors above.
+TRACE_LINE_WIDTH = 1
 PLAYHEAD_LINE_WIDTH = 3
 TICK_FONT_SIZE = 14
+
+# G-sensor samples arrive roughly every 100ms (see gsensor_reader.py's
+# own module docstring), so a 5-sample centered window is roughly half
+# a second of smoothing - enough to blur out sample-to-sample jitter on
+# real accelerometer data (Christer's own complaint: "vey cluttered
+# output", diagnosed as the three traces overlapping/blurring) without
+# erasing genuine driving events (braking, cornering), which play out
+# over a second or more.
+SMOOTHING_WINDOW_SAMPLES = 5
+
+LEGEND_FONT_SIZE = 12
+LEGEND_SWATCH_LENGTH = 14
+LEGEND_ROW_HEIGHT = 14
+LEGEND_PADDING = 6
 
 _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -113,6 +176,33 @@ def _load_font(size: int = TICK_FONT_SIZE) -> ImageFont.ImageFont:
             _CACHED_FONT_BY_SIZE[size] = ImageFont.load_default()
 
     return _CACHED_FONT_BY_SIZE[size]
+
+
+def _smoothed(
+    values: list[float], window: int = SMOOTHING_WINDOW_SAMPLES
+) -> list[float]:
+    """Return `values` replaced by a centered moving average over
+    `window` samples, shrinking the window near both ends rather than
+    padding with a fixed value there (which would drag the smoothed
+    line toward an artificial reading right where the trip starts/ends).
+
+    Applied only to the drawn trace in render_base_frame() - NOT to the
+    raw samples baseline_for_samples()/scale_for_samples() use, since a
+    smoothed peak would under-report the trip's real scale.
+    """
+
+    if window <= 1 or len(values) < 2:
+        return list(values)
+
+    half = window // 2
+    count = len(values)
+    smoothed = []
+    for i in range(count):
+        lo = max(0, i - half)
+        hi = min(count, i + half + 1)
+        window_slice = values[lo:hi]
+        smoothed.append(sum(window_slice) / len(window_slice))
+    return smoothed
 
 
 def _median(values: list[float]) -> float:
@@ -269,6 +359,30 @@ def _value_to_pos(
     return center - (value / scale) * half_span
 
 
+def _draw_legend(draw: ImageDraw.ImageDraw, left: float, top: float) -> None:
+    """Draw a small X/Y/Z color-key, one row per axis, anchored at the
+    plot area's own top-left corner (`left`/`top`, from _plot_area()) -
+    the chart otherwise has no indication of which trace is which
+    (Christer: "nothing explaining the colors"). Works the same way in
+    both orientations, since a top-left corner exists in either.
+    """
+
+    font = _load_font(LEGEND_FONT_SIZE)
+    x = left + LEGEND_PADDING
+    y = top + LEGEND_PADDING
+    for label, color in (("X", X_COLOR), ("Y", Y_COLOR), ("Z", Z_COLOR)):
+        row_mid = y + LEGEND_ROW_HEIGHT / 2
+        draw.line(
+            (x, row_mid, x + LEGEND_SWATCH_LENGTH, row_mid),
+            fill=color, width=TRACE_LINE_WIDTH + 2,
+        )
+        draw.text(
+            (x + LEGEND_SWATCH_LENGTH + 4, row_mid), label,
+            font=font, fill=AXIS_COLOR, anchor="lm",
+        )
+        y += LEGEND_ROW_HEIGHT
+
+
 def render_base_frame(
     samples,
     baseline: tuple[float, float, float],
@@ -332,22 +446,31 @@ def render_base_frame(
         draw.line((left, zero_pos, right, zero_pos), fill=AXIS_COLOR, width=1)
 
     baseline_x, baseline_y, baseline_z = baseline
-    for axis_index, (color, base) in enumerate((
-        (X_COLOR, baseline_x), (Y_COLOR, baseline_y), (Z_COLOR, baseline_z),
-    )):
-        if len(samples) < 2:
-            continue
-        points = []
-        for sample in samples:
-            t = _time_to_pos(
+    if len(samples) >= 2:
+        times = [
+            _time_to_pos(
                 sample.offset.total_seconds(), total_seconds, time_start, time_end
             )
-            v = _value_to_pos(
-                (sample.x, sample.y, sample.z)[axis_index] - base,
-                scale, value_start, value_end,
-            )
-            points.append((v, t) if orientation == "vertical" else (t, v))
-        draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
+            for sample in samples
+        ]
+        # Lightly smoothed before plotting (see _smoothed()'s own
+        # docstring) - the raw per-sample values are still what
+        # baseline/scale were computed from, just not what gets drawn.
+        smoothed_axes = (
+            _smoothed([sample.x for sample in samples]),
+            _smoothed([sample.y for sample in samples]),
+            _smoothed([sample.z for sample in samples]),
+        )
+        for axis_index, (color, base) in enumerate((
+            (X_COLOR, baseline_x), (Y_COLOR, baseline_y), (Z_COLOR, baseline_z),
+        )):
+            points = []
+            for t, value in zip(times, smoothed_axes[axis_index]):
+                v = _value_to_pos(value - base, scale, value_start, value_end)
+                points.append((v, t) if orientation == "vertical" else (t, v))
+            draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
+
+        _draw_legend(draw, left, top)
 
     if total_seconds > 0:
         font = _load_font()

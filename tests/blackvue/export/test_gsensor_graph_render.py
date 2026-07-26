@@ -1,9 +1,13 @@
 from datetime import timedelta
 
+from blackvue.export.gsensor_graph_render import BACKGROUND_COLOR
 from blackvue.export.gsensor_graph_render import DEFAULT_HEIGHT
+from blackvue.export.gsensor_graph_render import DEFAULT_MARGIN_PX
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_WIDTH
 from blackvue.export.gsensor_graph_render import DEFAULT_WIDTH
+from blackvue.export.gsensor_graph_render import LEGEND_PADDING
+from blackvue.export.gsensor_graph_render import LEGEND_ROW_HEIGHT
 from blackvue.export.gsensor_graph_render import PLAYHEAD_COLOR
 from blackvue.export.gsensor_graph_render import X_COLOR
 from blackvue.export.gsensor_graph_render import Y_COLOR
@@ -11,13 +15,14 @@ from blackvue.export.gsensor_graph_render import Z_COLOR
 from blackvue.export.gsensor_graph_render import _format_tick
 from blackvue.export.gsensor_graph_render import _nice_tick_interval
 from blackvue.export.gsensor_graph_render import _plot_area
+from blackvue.export.gsensor_graph_render import _smoothed
 from blackvue.export.gsensor_graph_render import _time_to_pos
 from blackvue.export.gsensor_graph_render import _value_to_pos
 from blackvue.export.gsensor_graph_render import baseline_for_samples
 from blackvue.export.gsensor_graph_render import render_base_frame
 from blackvue.export.gsensor_graph_render import render_frame
 from blackvue.export.gsensor_graph_render import scale_for_samples
-from blackvue.export.gsensor_render import BACKGROUND_COLOR
+from blackvue.export.gsensor_render import BACKGROUND_COLOR as DOT_GAUGE_BACKGROUND_COLOR
 from blackvue.telemetry.gsensor_reader import GSensorSample
 
 
@@ -35,17 +40,25 @@ def test_render_base_frame_returns_image_of_requested_size():
     assert image.mode == "RGB"
 
 
-def test_render_base_frame_background_is_a_flat_chroma_key_green():
-    # Same reasoning as gsensor_render.py's own equivalent test - this
-    # strip chart is meant to be composited over front/rear footage
-    # later too, so a chroma-key filter needs a single flat background
-    # color to match exactly. Checked at a far corner, well outside
-    # where any trace/tick could land.
+def test_render_base_frame_background_is_a_flat_light_color():
+    # This panel is never chroma-keyed/composited over footage (unlike
+    # the dot-gauge overlay) - stitch.py just hstacks/vstacks it
+    # straight onto the --stitch composite, so there's no reason for
+    # its own BACKGROUND_COLOR to be chroma-key green (Christer's own
+    # feedback: "awful green background"). Checked at a far corner,
+    # well outside where any trace/tick/legend could land.
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
 
     assert image.getpixel((0, 0)) == BACKGROUND_COLOR
-    assert BACKGROUND_COLOR == (0, 255, 0)
+
+
+def test_graph_background_color_is_decoupled_from_the_dot_gauges_chroma_key_green():
+    # The dot-gauge overlay (gsensor_render.py) still needs to stay
+    # chroma-key green for its own real compositing use - this strip
+    # chart's own BACKGROUND_COLOR must not be tied to it any more.
+    assert BACKGROUND_COLOR != DOT_GAUGE_BACKGROUND_COLOR
+    assert DOT_GAUGE_BACKGROUND_COLOR == (0, 255, 0)
 
 
 def test_render_base_frame_handles_fewer_than_two_samples_without_crashing():
@@ -118,6 +131,18 @@ def test_render_base_frame_vertical_uses_the_vertical_defaults_when_unsized():
     assert image.size == (DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT)
 
 
+def _color_near(image, x, y, expected):
+    # TRACE_LINE_WIDTH is now 1px (thinner - see module docstring), so
+    # a fractional pixel position like 148.8 can rasterize to either
+    # its floor or its round() depending on PIL's own sub-pixel
+    # placement - a single exact-pixel check is too fragile at width 1.
+    # Accept the expected color landing on any of the pixel's own
+    # immediate neighbors instead of demanding one exact column.
+    return any(
+        image.getpixel((x + dx, y)) == expected for dx in (-1, 0, 1)
+    )
+
+
 def test_render_base_frame_vertical_runs_time_top_to_bottom():
     # Two samples produce one straight-line segment per axis - in
     # vertical mode, elapsed=0 should land at the plot area's own top
@@ -140,9 +165,9 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
     y_x = round(_value_to_pos(-30, scale, left, right))
     z_x = round(_value_to_pos(10, scale, left, right))
 
-    assert image.getpixel((x_x, y_pixel)) == X_COLOR
-    assert image.getpixel((y_x, y_pixel)) == Y_COLOR
-    assert image.getpixel((z_x, y_pixel)) == Z_COLOR
+    assert _color_near(image, x_x, y_pixel, X_COLOR)
+    assert _color_near(image, y_x, y_pixel, Y_COLOR)
+    assert _color_near(image, z_x, y_pixel, Z_COLOR)
 
 
 def test_render_frame_vertical_playhead_moves_down_not_across():
@@ -239,3 +264,93 @@ def test_format_tick_formats_as_mm_ss():
     assert _format_tick(0) == "00:00"
     assert _format_tick(52) == "00:52"
     assert _format_tick(125) == "02:05"
+
+
+def test_render_base_frame_draws_a_legend_swatch_for_each_axis_color():
+    # No indication anywhere else of which trace is which color
+    # (Christer: "nothing explaining the colors") - a small legend is
+    # drawn in the plot area's own top-left corner. Exact pixel
+    # positions derived the same way _plot_area()'s own margin is
+    # used elsewhere in this file: default margin puts the plot area's
+    # own top-left at (DEFAULT_MARGIN_PX, DEFAULT_MARGIN_PX), and the
+    # legend itself starts LEGEND_PADDING further in, one
+    # LEGEND_ROW_HEIGHT-tall row per axis.
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+
+    left = top = DEFAULT_MARGIN_PX
+    swatch_x = left + LEGEND_PADDING + 5
+    for row, expected_color in enumerate((X_COLOR, Y_COLOR, Z_COLOR)):
+        row_mid = round(
+            top + LEGEND_PADDING + row * LEGEND_ROW_HEIGHT + LEGEND_ROW_HEIGHT / 2
+        )
+        assert image.getpixel((swatch_x, row_mid)) == expected_color
+
+
+def test_render_base_frame_skips_the_legend_for_fewer_than_two_samples():
+    # Nothing to plot with only one sample - the legend would be
+    # labeling traces that were never drawn, so it's skipped too (same
+    # "if len(samples) >= 2" guard the traces themselves use).
+    samples = (_sample(0, 0, 0, 0),)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 1.0, 1.0)
+
+    left = top = DEFAULT_MARGIN_PX
+    swatch_x = left + LEGEND_PADDING + 5
+    row_mid = round(top + LEGEND_PADDING + LEGEND_ROW_HEIGHT / 2)
+
+    assert image.getpixel((swatch_x, row_mid)) == BACKGROUND_COLOR
+
+
+def test_smoothed_returns_the_same_length_list():
+    values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+    assert len(_smoothed(values)) == len(values)
+
+
+def test_smoothed_leaves_flat_data_unchanged():
+    values = [5.0] * 10
+
+    assert _smoothed(values) == values
+
+
+def test_smoothed_flattens_a_single_sample_spike():
+    # A single jittery outlier surrounded by flat, identical
+    # neighbors - the smoothed value at the spike should land well
+    # short of the spike's own raw value, and every neighbor covered
+    # by the same averaging window should also move at least a little
+    # (proving the window is centered on each point, not just
+    # replacing the spike in isolation).
+    values = [0.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0]
+
+    smoothed = _smoothed(values, window=5)
+
+    assert smoothed[4] < 100.0
+    assert smoothed[4] > 0.0
+    assert smoothed[2] > 0.0  # pulled up slightly by the spike two steps away
+
+
+def test_smoothed_shrinks_the_window_at_the_edges_rather_than_padding():
+    # The first/last values only have themselves and their real
+    # neighbors to average over - no padding with zeros or repeated
+    # edge values, which would drag the smoothed line toward an
+    # artificial reading right where the trip starts/ends.
+    values = [10.0, 0.0, 0.0, 0.0, 0.0]
+
+    smoothed = _smoothed(values, window=5)
+
+    # First point: window covers indices 0..2 -> (10+0+0)/3.
+    assert smoothed[0] == (10.0 + 0.0 + 0.0) / 3
+
+
+def test_smoothed_is_a_no_op_for_a_window_of_one_or_less():
+    values = [1.0, 5.0, 2.0, 9.0]
+
+    assert _smoothed(values, window=1) == values
+    assert _smoothed(values, window=0) == values
+
+
+def test_playhead_color_is_distinct_from_background_axis_and_all_three_traces():
+    from blackvue.export.gsensor_graph_render import AXIS_COLOR
+
+    others = (BACKGROUND_COLOR, AXIS_COLOR, X_COLOR, Y_COLOR, Z_COLOR)
+    assert PLAYHEAD_COLOR not in others
