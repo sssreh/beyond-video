@@ -797,6 +797,20 @@ def main(argv: list[str] | None = None) -> int:
             "(concatenated video/audio/text, merged GPX track, merged "
             "g-sensor log) into its own folder."
         ),
+        # argparse's default prefix-abbreviation matching (e.g. an
+        # unambiguous --gsensor standing in for --gsensor-video) breaks
+        # silently the moment a sibling flag is added later that shares
+        # the same prefix - which happened for real: --gsensor-graph
+        # -video's own addition turned a previously-fine --gsensor into
+        # "ambiguous option: --gsensor could match --gsensor-video,
+        # --gsensor-graph-video". This CLI has several other flag
+        # families sharing a prefix too (--stitch-map/-side/-size,
+        # --stitch-gsensor + 3 variants, --stitch-graph + 2 variants,
+        # --stitch-mirror + 6 variants) that are just as exposed to the
+        # same failure mode as more flags get added - so abbreviation
+        # is turned off globally rather than patched flag-by-flag.
+        # Every flag must be spelled out in full from here on.
+        allow_abbrev=False,
     )
 
     parser.add_argument(
