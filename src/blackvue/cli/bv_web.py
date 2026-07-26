@@ -101,11 +101,19 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Serve the Beyond Video web app, and manage its user accounts."
         ),
+        # See bv_export.py's own ArgumentParser for why: argparse's
+        # default prefix-abbreviation matching silently breaks the
+        # moment a sibling flag sharing a prefix gets added later.
+        # Subparsers don't inherit this from their parent - each
+        # add_parser() call below needs its own allow_abbrev=False too.
+        allow_abbrev=False,
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    serve_parser = subparsers.add_parser("serve", help="Run the web server.")
+    serve_parser = subparsers.add_parser(
+        "serve", help="Run the web server.", allow_abbrev=False,
+    )
     serve_parser.add_argument(
         "target",
         metavar="TARGET",
@@ -134,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     adduser_parser = subparsers.add_parser(
-        "adduser", help="Create a user account (prompts for a password)."
+        "adduser", help="Create a user account (prompts for a password).",
+        allow_abbrev=False,
     )
     adduser_parser.add_argument("username", metavar="USERNAME")
     adduser_parser.add_argument(

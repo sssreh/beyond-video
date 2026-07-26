@@ -119,6 +119,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "this on an existing id edits it, defaulting every question "
             "to the current value."
         ),
+        # See bv_export.py's own ArgumentParser for why: argparse's
+        # default prefix-abbreviation matching silently breaks the
+        # moment a sibling flag sharing a prefix gets added later.
+        allow_abbrev=False,
     )
 
     parser.add_argument(

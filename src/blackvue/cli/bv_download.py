@@ -156,6 +156,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(thumbnails, GPS, gsensor) is always downloaded for every "
             "recording, regardless of mode."
         ),
+        # See bv_export.py's own ArgumentParser for why: argparse's
+        # default prefix-abbreviation matching silently breaks the
+        # moment a sibling flag sharing a prefix gets added later.
+        allow_abbrev=False,
     )
 
     parser.add_argument(

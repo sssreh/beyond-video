@@ -56,6 +56,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "recordings in a local BlackVue archive. Generated files are "
             "written next to their source recording and appear in bv-ls."
         ),
+        # See bv_export.py's own ArgumentParser for why: argparse's
+        # default prefix-abbreviation matching silently breaks the
+        # moment a sibling flag sharing a prefix gets added later.
+        allow_abbrev=False,
     )
 
     parser.add_argument(

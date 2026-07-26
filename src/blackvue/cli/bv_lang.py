@@ -145,12 +145,18 @@ def main(argv: list[str] | None = None) -> int:
             "Manage argos-translate language packages used by "
             "bv-generate --translate."
         ),
+        # See bv_export.py's own ArgumentParser for why: argparse's
+        # default prefix-abbreviation matching silently breaks the
+        # moment a sibling flag sharing a prefix gets added later.
+        # Subparsers don't inherit this from their parent - each
+        # add_parser() call below needs its own allow_abbrev=False too.
+        allow_abbrev=False,
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser(
-        "list", help="List language packages."
+        "list", help="List language packages.", allow_abbrev=False,
     )
     list_parser.add_argument(
         "--available",
@@ -162,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     install_parser = subparsers.add_parser(
-        "install", help="Download and install a language package."
+        "install", help="Download and install a language package.",
+        allow_abbrev=False,
     )
     install_parser.add_argument(
         "source", metavar="SOURCE", help="Source language (e.g. en, eng)."

@@ -284,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="bv-ls",
         description="List recordings in a BlackVue archive.",
+        # See bv_export.py's own ArgumentParser for why: argparse's
+        # default prefix-abbreviation matching silently breaks the
+        # moment a sibling flag sharing a prefix gets added later.
+        allow_abbrev=False,
     )
 
     parser.add_argument(
