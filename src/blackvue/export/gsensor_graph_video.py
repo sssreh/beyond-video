@@ -49,12 +49,13 @@ def render_gsensor_graph_video(
     orientation: str = "horizontal",
     width: int | None = None,
     height: int | None = None,
+    show_z: bool = False,
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into a strip-chart
-    overlay video at `destination`: three colored X/Y/Z line traces
-    drawn once across the whole trip, with a playhead moving as the
-    video plays, on the same flat chroma-key green background
-    gsensor.mp4 uses.
+    overlay video at `destination`: colored X/Y (and Z, when `show_z`)
+    line traces drawn once across the whole trip, with a playhead
+    moving as the video plays, on the same flat chroma-key green
+    background gsensor.mp4 uses.
 
     `samples` are already trip-relative (see trip_export.py's
     _merge_gsensor()) - same assumption gsensor_video.py's
@@ -81,6 +82,13 @@ def render_gsensor_graph_video(
     per-orientation defaults) for the standalone --gsensor-graph-video
     case, which has no such constraint.
 
+    `show_z` (default False, also forwarded straight to
+    render_base_frame()/render_frame()) - Z is hidden by default; see
+    gsensor_graph_render.py's own module docstring for Christer's
+    reasoning ("Z is just not useful, unless you hit a giant pothole,
+    but then the video probably got that and the reaction of the
+    driver"). Pass True for a specific look at a bump/vibration event.
+
     Returns None (and writes nothing) if there aren't at least two
     samples, or they span zero time - the same convention
     render_gsensor_video() and export_trip()'s other outputs use.
@@ -101,7 +109,7 @@ def render_gsensor_graph_video(
     scale = scale_for_samples(samples, baseline=baseline)
     base_image = render_base_frame(
         samples, baseline, scale, total_seconds,
-        orientation=orientation, width=width, height=height,
+        orientation=orientation, width=width, height=height, show_z=show_z,
     )
 
     frame_count = max(2, int(total_seconds * fps) + 1)
@@ -115,7 +123,7 @@ def render_gsensor_graph_video(
             elapsed_seconds = min(frame_number / fps, total_seconds)
             frame = render_frame(
                 base_image, elapsed_seconds, total_seconds,
-                orientation=orientation,
+                orientation=orientation, show_z=show_z,
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 

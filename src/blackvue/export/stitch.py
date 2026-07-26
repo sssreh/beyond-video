@@ -472,6 +472,7 @@ def stitch_cameras(
     graph_side: str | None = None,
     graph_size: float | None = None,
     graph_video_duration_seconds: float | None = None,
+    graph_z: bool = False,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -757,6 +758,16 @@ def stitch_cameras(
     `gsensor_video` already follow. Only meaningful when both front and
     rear exist, same as `map_mode`.
 
+    `graph_z` (default False), forwarded straight to
+    gsensor_graph_render.render_base_frame()/render_frame() (see
+    gsensor_graph_video.render_gsensor_graph_video()'s own `show_z`
+    parameter), controls whether the panel plots Z at all. Christer's
+    own reasoning for the default: "Z is just not useful, unless you
+    hit a giant pothole, but then the video probably got that and the
+    reaction of the driver" - the one situation where Z genuinely
+    matters is already captured by the footage itself, so it's opt-in
+    rather than on by default.
+
     `subtitles_path`, if given, is an already-written trip.srt (see
     trip_export.py, which always writes one whenever the trip has any
     transcript data - not gated behind its own render flag the way
@@ -802,6 +813,7 @@ def stitch_cameras(
             graph_samples=graph_samples, graph_side=graph_side,
             graph_size=graph_size,
             graph_video_duration_seconds=graph_video_duration_seconds,
+            graph_z=graph_z,
             subtitles_path=subtitles_path,
             subtitles_background=subtitles_background,
             audio_path=audio_path,
@@ -1527,6 +1539,7 @@ def _render_graph_panel(
     height: int,
     orientation: str,
     duration_seconds: float | None = None,
+    show_z: bool = False,
 ) -> Path | None:
     """Render --stitch-graph's panel at exactly width x height, so
     combining it with the composite via a plain hstack/vstack doesn't
@@ -1542,6 +1555,12 @@ def _render_graph_panel(
     running left to right - see gsensor_graph_render.py's own module
     docstring for what each orientation looks like).
 
+    `show_z` (default False) is forwarded straight to
+    render_gsensor_graph_video() - see stitch_cameras()'s own
+    docstring for `graph_z` and gsensor_graph_render.py's module
+    docstring for Christer's reasoning (Z hidden by default, opt-in
+    for a specific look at a bump/vibration event).
+
     Returns None (writes nothing) if there are fewer than two samples -
     the same "nothing to render" convention render_gsensor_graph_video()
     itself already uses, just checked here too so the caller can tell
@@ -1554,7 +1573,7 @@ def _render_graph_panel(
     return render_gsensor_graph_video(
         samples, destination,
         orientation=orientation, width=width, height=height,
-        duration_seconds=duration_seconds,
+        duration_seconds=duration_seconds, show_z=show_z,
     )
 
 
@@ -1838,6 +1857,7 @@ def _stack(
     graph_side: str | None = None,
     graph_size: float | None = None,
     graph_video_duration_seconds: float | None = None,
+    graph_z: bool = False,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -2649,6 +2669,7 @@ def _stack(
                     width=panel_size[0], height=panel_size[1],
                     orientation=graph_orientation,
                     duration_seconds=graph_video_duration_seconds,
+                    show_z=graph_z,
                 )
             except MediaToolError as exc:
                 if warnings is not None:

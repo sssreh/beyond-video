@@ -921,6 +921,57 @@ def test_export_trip_render_gsensor_is_silent_by_default(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_export_trip_gsensor_graph_z_defaults_to_false(tmp_path, monkeypatch):
+    # Christer: "Z is just not useful, unless you hit a giant pothole,
+    # but then the video probably got that and the reaction of the
+    # driver" - see gsensor_graph_render.py's own module docstring.
+    # Confirms export_trip()'s own default (gsensor_graph_z=False)
+    # actually reaches render_gsensor_graph_video(), not just that
+    # gsensor_graph_video.py's own default does the right thing in
+    # isolation.
+    captured = {}
+    original = trip_export_module.render_gsensor_graph_video
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "render_gsensor_graph_video", _capture
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    export_trip(trip, dest_dir, render_gsensor_graph=True)
+
+    assert captured["show_z"] is False
+
+
+def test_export_trip_gsensor_graph_z_forwarded_when_true(tmp_path, monkeypatch):
+    captured = {}
+    original = trip_export_module.render_gsensor_graph_video
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "render_gsensor_graph_video", _capture
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_gsensor_samples(source_dir)
+
+    export_trip(trip, dest_dir, render_gsensor_graph=True, gsensor_graph_z=True)
+
+    assert captured["show_z"] is True
+
+
 def test_export_trip_render_gsensor_logs_elapsed_seconds_to_trip_log(tmp_path):
     # trip.log records this regardless of --debug (see export_trip()'s
     # own docstring) - unlike the stderr print above, which only
@@ -1823,6 +1874,82 @@ def test_export_trip_stitch_gsensor_options_are_forwarded(tmp_path, monkeypatch)
     assert captured["gsensor_video"] == dest_dir / "gsensor.mp4"
     assert captured["gsensor_size"] == 25.0
     assert captured["gsensor_xy"] == (5.0, 5.0)
+
+
+def _trip_with_front_rear_and_gsensor(source_dir):
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    gsensor_a = source_dir / "a.3gf"
+    gsensor_a.write_bytes(
+        _gsensor_bytes((0, 100, -200, 900), (500, -300, 400, 950))
+    )
+
+    return Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a),
+            },
+        ),
+    ))
+
+
+def test_export_trip_stitch_graph_z_defaults_to_false(tmp_path, monkeypatch):
+    # Same reasoning as test_export_trip_gsensor_graph_z_defaults_to_false
+    # above, but for the --stitch-graph panel path (stitch_cameras()'s
+    # own `graph_z` kwarg) rather than the standalone gsensor_graph.mp4
+    # path - the two share one CLI switch (see bv_export.py), but are
+    # two separate call sites inside export_trip() that both need to
+    # forward it correctly.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gsensor(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(trip, dest_dir, stitch_layout="side_by_side", stitch_graph=True)
+
+    assert captured["graph_z"] is False
+
+
+def test_export_trip_stitch_graph_z_forwarded_when_true(tmp_path, monkeypatch):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gsensor(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_graph=True,
+        gsensor_graph_z=True,
+    )
+
+    assert captured["graph_z"] is True
 
 
 def _trip_with_front_rear_and_subtitles(source_dir):

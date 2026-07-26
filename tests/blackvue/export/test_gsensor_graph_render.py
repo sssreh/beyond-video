@@ -6,6 +6,7 @@ from PIL import ImageDraw
 from PIL import ImageFont
 
 from blackvue.export import gsensor_graph_render as gsensor_graph_render_module
+from blackvue.export.gsensor_graph_render import AXIS_COLOR
 from blackvue.export.gsensor_graph_render import BACKGROUND_COLOR
 from blackvue.export.gsensor_graph_render import DEFAULT_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_MARGIN_PX
@@ -97,16 +98,18 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
     # into its own separate z_lane (see _split_lanes()) - Christer's
     # own request ("let the cluttered Z have its own line") - so its
     # expected position is computed against z_lane, not the full plot
-    # area X/Y still share.
+    # area X/Y still share. show_z=True since this test is specifically
+    # about Z's own trace/lane - Z is hidden by default (see
+    # test_render_base_frame_hides_z_by_default()).
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
     samples = (_sample(0, 50, -30, 10), _sample(1000, 50, -30, 10))
 
-    image = render_base_frame(samples, baseline, scale, total_seconds)
+    image = render_base_frame(samples, baseline, scale, total_seconds, show_z=True)
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
-        legend_reserve=_legend_reserve_px("horizontal"),
+        legend_reserve=_legend_reserve_px("horizontal", show_z=True),
     )
     x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
 
@@ -173,18 +176,21 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
     # its left edge the way horizontal mode does. X/Y share main_lane;
     # Z is plotted into its own z_lane (see _split_lanes()), so its
     # expected position is computed against z_lane, not the full plot
-    # area X/Y still share.
+    # area X/Y still share. show_z=True since this test is specifically
+    # about Z's own trace/lane - Z is hidden by default (see
+    # test_render_base_frame_hides_z_by_default()).
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
     samples = (_sample(0, 50, -30, 10), _sample(1000, 50, -30, 10))
 
     image = render_base_frame(
-        samples, baseline, scale, total_seconds, orientation="vertical"
+        samples, baseline, scale, total_seconds, orientation="vertical",
+        show_z=True,
     )
     left, top, right, bottom = _plot_area(
         DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical",
-        legend_reserve=_legend_reserve_px("vertical"),
+        legend_reserve=_legend_reserve_px("vertical", show_z=True),
     )
     y_pixel = round(_time_to_pos(0.0, total_seconds, top, bottom))
 
@@ -305,13 +311,15 @@ def test_render_base_frame_draws_a_divider_between_the_two_lanes():
     # A real rendering-level check (not just the _split_lanes() geometry
     # unit tests above) that the divider actually gets drawn where the
     # two lanes meet - the visual cue that they're deliberately two
-    # separate regions, not a plot with a kink in it.
+    # separate regions, not a plot with a kink in it. Only drawn when
+    # show_z (no lane split at all otherwise - see
+    # test_render_base_frame_hides_z_by_default()).
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0, show_z=True)
 
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
-        legend_reserve=_legend_reserve_px("horizontal"),
+        legend_reserve=_legend_reserve_px("horizontal", show_z=True),
     )
     (main_top, main_bottom), (z_top, z_bottom) = _split_lanes(top, bottom)
     divider_y = round((main_bottom + z_top) / 2)
@@ -392,9 +400,11 @@ def test_render_base_frame_draws_a_legend_swatch_for_each_axis_color():
     # used elsewhere in this file: default margin puts the plot area's
     # own top-left at (DEFAULT_MARGIN_PX, DEFAULT_MARGIN_PX), and the
     # legend itself starts LEGEND_PADDING further in, one
-    # LEGEND_ROW_HEIGHT-tall row per axis.
+    # LEGEND_ROW_HEIGHT-tall row per axis. show_z=True to check all
+    # three rows including Z's own - Z is hidden (and so is its legend
+    # row) by default, see test_render_base_frame_hides_z_by_default().
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0, show_z=True)
 
     left = top = DEFAULT_MARGIN_PX
     swatch_x = left + LEGEND_PADDING + 5
@@ -586,3 +596,122 @@ def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
 
     assert (right - left) > 150
     assert (bottom - top) > 15
+
+
+def test_render_base_frame_hides_z_by_default():
+    # Christer, after seeing Z get its own dedicated lane: "Z is just
+    # not useful, unless you hit a giant pothole, but then the video
+    # probably got that and the reaction of the driver" - so Z is now
+    # hidden entirely unless explicitly asked for via show_z=True. This
+    # checks the *pixel-level* consequence: with two samples whose X/Y
+    # are flat at the shared zero-line (so X/Y's own zero-line trace
+    # pixels don't accidentally coincide with where Z would be) but
+    # whose Z value is large, no pixel in the image should be Z_COLOR
+    # at all when show_z is left at its default.
+    samples = (_sample(0, 0, 0, 80), _sample(1000, 0, 0, 80))
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+
+    assert Z_COLOR not in set(image.getdata())
+
+
+def test_render_base_frame_x_y_reclaim_the_full_axis_when_z_is_hidden():
+    # Christer's own explicit pick ("X/Y reclaim the space") over
+    # leaving z_lane's own share of the panel empty when Z is hidden -
+    # X's trace should land at the position _value_to_pos() computes
+    # against the *entire* plot area's own value axis, not against
+    # main_lane (_split_lanes()'s smaller ~2/3 share), confirming X/Y
+    # aren't still confined to their old lane once Z is gone.
+    baseline = (0.0, 0.0, 0.0)
+    scale = 100.0
+    total_seconds = 1.0
+    samples = (_sample(0, 50, 0, 0), _sample(1000, 50, 0, 0))
+
+    image = render_base_frame(samples, baseline, scale, total_seconds)
+    left, top, right, bottom = _plot_area(
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
+    )
+    x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
+    full_axis_y = round(_value_to_pos(50, scale, top, bottom))
+
+    assert image.getpixel((x_pixel, full_axis_y)) == X_COLOR
+
+
+def test_render_base_frame_omits_the_divider_when_z_is_hidden():
+    # No second lane, nothing to divide - only one zero-line should be
+    # drawn across the value axis when Z is hidden, not the two (plus a
+    # LANE_DIVIDER_COLOR line between them) show_z=True draws (see
+    # test_render_base_frame_draws_a_divider_between_the_two_lanes).
+    # Counts AXIS_COLOR rows in a single column rather than checking
+    # "LANE_DIVIDER_COLOR absent anywhere in the image" - that plain
+    # mid-gray (210, 210, 210) can coincidentally appear in anti
+    # -aliased tick-label text elsewhere, which isn't the divider and
+    # isn't a bug.
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+
+    left, top, right, bottom = _plot_area(
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
+    )
+    scan_x = round(left) + 5
+    axis_color_rows = [
+        y for y in range(round(top), round(bottom))
+        if image.getpixel((scan_x, y)) == AXIS_COLOR
+    ]
+
+    assert len(axis_color_rows) == 1
+
+
+def test_legend_has_two_rows_when_z_is_hidden():
+    # Only X/Y's own rows - no "Z — Up/down" row for a trace that isn't
+    # actually drawn (see _draw_legend()'s own docstring).
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+
+    left = top = DEFAULT_MARGIN_PX
+    swatch_x = left + LEGEND_PADDING + 5
+
+    for row, expected_color in enumerate((X_COLOR, Y_COLOR)):
+        row_mid = round(
+            top + LEGEND_PADDING + row * LEGEND_ROW_HEIGHT + LEGEND_ROW_HEIGHT / 2
+        )
+        assert image.getpixel((swatch_x, row_mid)) == expected_color
+
+    # A third row, where Z's would have gone, should just be background
+    # - nothing drawn there at all.
+    third_row_mid = round(
+        top + LEGEND_PADDING + 2 * LEGEND_ROW_HEIGHT + LEGEND_ROW_HEIGHT / 2
+    )
+    assert image.getpixel((swatch_x, third_row_mid)) == BACKGROUND_COLOR
+
+
+def test_legend_reserve_is_smaller_when_z_is_hidden():
+    # Two rows need less reserved space than three - checked in
+    # vertical mode since that reserve is a simple fixed row count
+    # (horizontal mode's reserve also depends on text width, which
+    # doesn't change between 2 and 3 rows since Y's own row is already
+    # the widest either way).
+    assert _legend_reserve_px("vertical", show_z=False) < _legend_reserve_px(
+        "vertical", show_z=True
+    )
+
+
+def test_render_frame_playhead_still_aligns_when_z_is_hidden():
+    # render_frame() has to compute the exact same legend_reserve (and
+    # therefore the exact same plot area) render_base_frame() used, or
+    # the playhead drifts out of alignment with the base chart's own
+    # traces - see render_frame()'s own docstring. Both default to
+    # show_z=False now, so this should just work without either side
+    # passing show_z explicitly.
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    base = render_base_frame(samples, (0.0, 0.0, 0.0), 100.0, 1.0)
+
+    frame = render_frame(base, 0.5, 1.0)
+    left, top, right, bottom = _plot_area(
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
+    )
+    playhead_x = round(_time_to_pos(0.5, 1.0, left, right))
+
+    assert frame.getpixel((playhead_x, round(top))) == PLAYHEAD_COLOR

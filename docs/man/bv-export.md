@@ -14,7 +14,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-parking-duration MINUTES]
           [--include-parking] [--parking-transition-image PATH | --parking-transition-clip PATH | --parking-transition-random]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
-          [--gsensor-video] [--gsensor-graph-video]
+          [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-z]
           [--stitch] [--stitch-layout LAYOUT]
           [--stitch-mirror-size PERCENT] [--stitch-mirror-radius PERCENT]
           [--stitch-mirror-zoom PERCENT]
@@ -109,7 +109,8 @@ The position marker itself is hidden entirely before the trip's very first real 
 | Option | Description |
 |---|---|
 | `--gsensor-video` | Render `gsensor.mp4`: a dot moving on a gauge tracking g-sensor (x, y) readings with a fading trail, on chroma-key green - meant for compositing later, or via `--stitch-gsensor`. |
-| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of X/Y/Z readings as three colored line traces, with a playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Independent of `--stitch-graph` too, which renders its own copy fresh at the panel's exact size rather than reusing this file. |
+| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of X/Y (and Z, see `--gsensor-graph-z`) readings as colored line traces, with a playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Independent of `--stitch-graph` too, which renders its own copy fresh at the panel's exact size rather than reusing this file. |
+| `--gsensor-graph-z` | Also plot Z on the g-sensor graph - both `--gsensor-graph-video`'s own file and `--stitch-graph`'s panel share this one switch. Z is hidden by default: the one situation where it genuinely matters (a real bump/pothole) is already captured by the footage itself, so it's opt-in rather than on by default. Meaningless without `--gsensor-graph-video` and/or `--stitch-graph` also given. |
 
 ### Stitch (combined camera video)
 
@@ -164,7 +165,7 @@ A second, alternate g-sensor visualization alongside `--stitch-gsensor`'s dot-ga
 
 | Option | Description |
 |---|---|
-| `--stitch-graph` | Compose a g-sensor strip-chart panel alongside the cameras. |
+| `--stitch-graph` | Compose a g-sensor strip-chart panel alongside the cameras. Plots X/Y by default; add `--gsensor-graph-z` to also plot Z. |
 | `--stitch-graph-side {left,right,top,down}` | Panel side. Default: whichever side `--stitch-map`'s own panel *didn't* use (a map on the left defaults the graph to the bottom, and vice versa), so the two grow the frame on perpendicular axes and stay closer to a 16:9 shape overall; defaults to the bottom if there's no map panel actually present at all. |
 | `--stitch-graph-size PERCENT` | Panel width/height as a percent of the matching composite dimension (5-80). Default: a fixed 25% - there's no `--stitch-map`-style automatic sizing here, a synthetic chart has no real-world shape to derive one from. |
 

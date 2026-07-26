@@ -89,6 +89,21 @@ one at a time - the legend's former overlap with the traces (see
 _legend_reserve_px()) and now the lane split above; once those two
 were addressed, 2px read fine again.
 
+Z is hidden entirely by default (`show_z=False` on render_base_frame()/
+render_frame()) - a further step past giving it its own lane. Christer's
+own reasoning: "Z is just not useful, unless you hit a giant pothole,
+but then the video probably got that and the reaction of the driver" -
+the one situation where Z genuinely matters is already captured by the
+footage itself, so day to day it mostly just adds visual noise even in
+its own dedicated lane. Pass `show_z=True` to opt back in for a
+specific look at a bump/vibration event - the full lane-split layout
+above applies unchanged in that case. When Z is hidden, X/Y reclaim the
+entire value axis rather than leaving z_lane's own space empty (no
+Z_LANE_FRACTION split, no lane divider, no Z legend row) - the same
+plain single-lane layout this chart used before Z ever got its own
+lane, per Christer's own explicit "X/Y reclaim the space" choice over
+leaving a blank lane.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -483,21 +498,34 @@ def _split_lanes(value_start: float, value_end: float) -> tuple[
     return (main_start, main_end), (z_start, z_end)
 
 
-def _legend_text_width(draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont) -> float:
-    """Return the widest of the three legend rows' own rendered text
-    width ("X — Left/right", "Y — Forward/back", "Z — Up/down") -
-    shared by _legend_reserve_px() (how much space to set aside) and
-    _draw_legend() (where exactly to center the block within it), so
-    the two can never disagree with each other about the same width.
+def _legend_rows(show_z: bool) -> tuple[tuple[str, str], ...]:
+    """Return the legend rows to actually draw/measure - all three
+    (X/Y/Z) when `show_z` is True, just the first two (X/Y) otherwise.
+    Shared by _legend_text_width()/_legend_reserve_px()/_draw_legend()
+    so all three always agree on exactly which rows exist - see
+    render_base_frame()'s own docstring for why Z is opt-in at all."""
+
+    return LEGEND_LABELS if show_z else LEGEND_LABELS[:2]
+
+
+def _legend_text_width(
+    draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, show_z: bool = False
+) -> float:
+    """Return the widest of the legend's own rendered rows' text width
+    ("X — Left/right", "Y — Forward/back", and "Z — Up/down" when
+    `show_z`) - shared by _legend_reserve_px() (how much space to set
+    aside) and _draw_legend() (where exactly to center the block within
+    it), so the two can never disagree with each other about the same
+    width.
     """
 
     return max(
         draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
-        for axis, meaning in LEGEND_LABELS
+        for axis, meaning in _legend_rows(show_z)
     )
 
 
-def _legend_reserve_px(orientation: str) -> float:
+def _legend_reserve_px(orientation: str, show_z: bool = False) -> float:
     """Return how much extra room, beyond DEFAULT_MARGIN_PX, the plot
     area should give up so the legend gets its own dedicated space
     instead of sitting on top of the traces (Christer: "legend should
@@ -505,17 +533,21 @@ def _legend_reserve_px(orientation: str) -> float:
     and at the top for vertical"). Horizontal mode reserves a column
     wide enough for the widest legend row (swatch + gap + text, plus
     padding on both sides); vertical mode reserves a row tall enough
-    for all three stacked legend rows (plus padding top and bottom).
-    See _plot_area()'s own `legend_reserve` parameter for where this
+    for however many legend rows are actually drawn (plus padding top
+    and bottom) - two rows when `show_z` is False (see
+    render_base_frame()'s own docstring), three when it's True. See
+    _plot_area()'s own `legend_reserve` parameter for where this
     actually gets applied.
     """
 
+    row_count = len(_legend_rows(show_z))
+
     if orientation == "vertical":
-        return 3 * LEGEND_ROW_HEIGHT + LEGEND_PADDING * 2
+        return row_count * LEGEND_ROW_HEIGHT + LEGEND_PADDING * 2
 
     font = _load_font(LEGEND_FONT_SIZE)
     measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    text_width = _legend_text_width(measuring_draw, font)
+    text_width = _legend_text_width(measuring_draw, font, show_z)
     return LEGEND_SWATCH_LENGTH + 4 + text_width + LEGEND_PADDING * 2
 
 
@@ -526,14 +558,20 @@ def _draw_legend(
     *,
     canvas_width: float | None = None,
     orientation: str = "horizontal",
+    show_z: bool = False,
 ) -> None:
-    """Draw a small X/Y/Z color-key, one row per axis - the chart
-    otherwise has no indication of which trace is which (Christer:
-    "nothing explaining the colors"). Draws into the legend's own
-    dedicated space (see _legend_reserve_px()/_plot_area()'s own
-    `legend_reserve`), not on top of the plot area, so it never
-    competes visually with whatever traces happen to pass through the
-    same spot.
+    """Draw a small color-key, one row per axis actually plotted - the
+    chart otherwise has no indication of which trace is which
+    (Christer: "nothing explaining the colors"). Draws into the
+    legend's own dedicated space (see _legend_reserve_px()/
+    _plot_area()'s own `legend_reserve`), not on top of the plot area,
+    so it never competes visually with whatever traces happen to pass
+    through the same spot.
+
+    Only X/Y rows are drawn when `show_z` is False (Z's own trace isn't
+    plotted at all in that case - see render_base_frame()'s own
+    docstring), so the legend never lists a color that isn't actually
+    on the chart.
 
     Horizontal mode (the default): anchored at (`left`, `top`) -
     callers pass the panel's own margin corner here, since the legend's
@@ -544,9 +582,9 @@ def _draw_legend(
     `canvas_width` (the panel's own full image width) rather than
     left-anchored - Christer's own request, and also what keeps the
     longest row ("Y — Forward/back", ~123px) comfortably inside the
-    panel rather than running past an edge. All three rows share one
-    swatch x position (the widest row's own left edge) so the block
-    reads as one clean centered unit rather than each row independently
+    panel rather than running past an edge. All rows share one swatch
+    x position (the widest row's own left edge) so the block reads as
+    one clean centered unit rather than each row independently
     re-centering around its own, differently-long text. `top` still
     anchors the block's own y position - callers pass the panel's own
     margin corner here too, since the legend's reserved row sits above
@@ -557,11 +595,11 @@ def _draw_legend(
     colors = (X_COLOR, Y_COLOR, Z_COLOR)
     rows = [
         (axis, meaning, color, f"{axis} — {meaning}")
-        for (axis, meaning), color in zip(LEGEND_LABELS, colors)
+        for (axis, meaning), color in zip(_legend_rows(show_z), colors)
     ]
 
     if orientation == "vertical" and canvas_width is not None:
-        block_width = LEGEND_SWATCH_LENGTH + 4 + _legend_text_width(draw, font)
+        block_width = LEGEND_SWATCH_LENGTH + 4 + _legend_text_width(draw, font, show_z)
         x = (canvas_width - block_width) / 2
     else:
         x = left + LEGEND_PADDING
@@ -591,13 +629,28 @@ def render_base_frame(
     margin: int = DEFAULT_MARGIN_PX,
     tick_label_reserve: int | None = None,
     orientation: str = "horizontal",
+    show_z: bool = False,
 ) -> Image.Image:
     """Render the static, whole-trip part of the strip chart once: the
-    three X/Y/Z traces plotted across the full length, a zero-line, and
-    time-tick labels - everything that doesn't change frame to frame.
-    render_frame() composites the moving playhead on top of a copy of
-    this image per output frame, rather than this function being
-    called again for every frame.
+    X/Y traces (and Z's own, when `show_z`) plotted across the full
+    length, a zero-line, and time-tick labels - everything that doesn't
+    change frame to frame. render_frame() composites the moving
+    playhead on top of a copy of this image per output frame, rather
+    than this function being called again for every frame.
+
+    `show_z` (default False) controls whether Z is plotted at all.
+    Christer's own reasoning for the default: "Z is just not useful,
+    unless you hit a giant pothole, but then the video probably got
+    that and the reaction of the driver" - the one situation where Z
+    genuinely matters is already captured by the footage itself, so it
+    mostly just adds visual noise to the graph day to day. When False,
+    only X and Y are drawn (sharing the *entire* value axis - no
+    Z_LANE_FRACTION split, no lane divider, no Z legend row - the same
+    plain single-lane layout this chart used before Z ever got its own
+    lane), and the legend only lists X/Y. When True, the full
+    X/Y-shared-lane-plus-Z's-own-lane layout from before applies
+    unchanged (see _split_lanes()) - opt in when you actually want to
+    dig into a specific bump/vibration event.
 
     `orientation` is 'horizontal' (time runs left to right, tick labels
     below the plot area - the default, matching Christer's reference
@@ -625,7 +678,7 @@ def render_base_frame(
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
 
-    legend_reserve = _legend_reserve_px(orientation)
+    legend_reserve = _legend_reserve_px(orientation, show_z)
     left, top, right, bottom = _plot_area(
         width, height, margin, tick_label_reserve, orientation,
         legend_reserve=legend_reserve,
@@ -638,29 +691,41 @@ def render_base_frame(
         time_start, time_end = left, right
         value_start, value_end = top, bottom
 
-    # X/Y share main_lane, Z gets its own z_lane - see _split_lanes()'s
-    # own docstring for why (Christer: "let the cluttered Z have its
-    # own line"). Both are sub-ranges of the same overall value axis,
-    # separated by a small gap plus a light divider line.
-    main_lane, z_lane = _split_lanes(value_start, value_end)
+    if show_z:
+        # X/Y share main_lane, Z gets its own z_lane - see
+        # _split_lanes()'s own docstring for why (Christer: "let the
+        # cluttered Z have its own line"). Both are sub-ranges of the
+        # same overall value axis, separated by a small gap plus a
+        # light divider line.
+        main_lane, z_lane = _split_lanes(value_start, value_end)
+    else:
+        # No Z at all - X/Y get the entire value axis back, same as
+        # before Z ever got its own lane. z_lane is left unused below.
+        main_lane, z_lane = (value_start, value_end), None
     main_start, main_end = main_lane
-    z_start, z_end = z_lane
 
     main_zero_pos = _value_to_pos(0.0, scale, main_start, main_end)
-    z_zero_pos = _value_to_pos(0.0, scale, z_start, z_end)
-    divider_pos = (main_end + z_start) / 2
     if orientation == "vertical":
         draw.line((main_zero_pos, top, main_zero_pos, bottom), fill=AXIS_COLOR, width=1)
-        draw.line((z_zero_pos, top, z_zero_pos, bottom), fill=AXIS_COLOR, width=1)
-        draw.line(
-            (divider_pos, top, divider_pos, bottom), fill=LANE_DIVIDER_COLOR, width=1
-        )
     else:
         draw.line((left, main_zero_pos, right, main_zero_pos), fill=AXIS_COLOR, width=1)
-        draw.line((left, z_zero_pos, right, z_zero_pos), fill=AXIS_COLOR, width=1)
-        draw.line(
-            (left, divider_pos, right, divider_pos), fill=LANE_DIVIDER_COLOR, width=1
-        )
+
+    if show_z:
+        z_start, z_end = z_lane
+        z_zero_pos = _value_to_pos(0.0, scale, z_start, z_end)
+        divider_pos = (main_end + z_start) / 2
+        if orientation == "vertical":
+            draw.line((z_zero_pos, top, z_zero_pos, bottom), fill=AXIS_COLOR, width=1)
+            draw.line(
+                (divider_pos, top, divider_pos, bottom),
+                fill=LANE_DIVIDER_COLOR, width=1,
+            )
+        else:
+            draw.line((left, z_zero_pos, right, z_zero_pos), fill=AXIS_COLOR, width=1)
+            draw.line(
+                (left, divider_pos, right, divider_pos),
+                fill=LANE_DIVIDER_COLOR, width=1,
+            )
 
     baseline_x, baseline_y, baseline_z = baseline
     if len(samples) >= 2:
@@ -673,22 +738,27 @@ def render_base_frame(
         # Lightly smoothed before plotting (see _smoothed()'s own
         # docstring) - the raw per-sample values are still what
         # baseline/scale were computed from, just not what gets drawn.
-        smoothed_axes = (
-            _smoothed([sample.x for sample in samples]),
-            _smoothed([sample.y for sample in samples]),
-            _smoothed([sample.z for sample in samples]),
+        axes = (
+            (X_COLOR, baseline_x, [sample.x for sample in samples]),
+            (Y_COLOR, baseline_y, [sample.y for sample in samples]),
         )
-        for axis_index, (color, base) in enumerate((
-            (X_COLOR, baseline_x), (Y_COLOR, baseline_y), (Z_COLOR, baseline_z),
-        )):
-            lane_start, lane_end = z_lane if axis_index == 2 else main_lane
+        if show_z:
+            axes = axes + (
+                (Z_COLOR, baseline_z, [sample.z for sample in samples]),
+            )
+        for axis_index, (color, base, raw_values) in enumerate(axes):
+            lane_start, lane_end = z_lane if (show_z and axis_index == 2) else main_lane
+            smoothed = _smoothed(raw_values)
             points = []
-            for t, value in zip(times, smoothed_axes[axis_index]):
+            for t, value in zip(times, smoothed):
                 v = _value_to_pos(value - base, scale, lane_start, lane_end)
                 points.append((v, t) if orientation == "vertical" else (t, v))
             draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 
-        _draw_legend(draw, margin, margin, canvas_width=width, orientation=orientation)
+        _draw_legend(
+            draw, margin, margin, canvas_width=width, orientation=orientation,
+            show_z=show_z,
+        )
 
     if total_seconds > 0:
         font = _load_font()
@@ -726,13 +796,18 @@ def render_frame(
     margin: int = DEFAULT_MARGIN_PX,
     tick_label_reserve: int | None = None,
     orientation: str = "horizontal",
+    show_z: bool = False,
 ) -> Image.Image:
     """Return a copy of `base_image` (see render_base_frame()) with a
     playhead line composited at the position corresponding to
     `elapsed_seconds` out of `total_seconds` - a vertical line in
     horizontal mode, a horizontal line in vertical mode. `orientation`
-    must match whatever render_base_frame() was called with for the
-    same `base_image`."""
+    and `show_z` must match whatever render_base_frame() was called
+    with for the same `base_image` - both affect how much room the
+    legend reserves, which shifts the plot area's own bounds (see
+    _plot_area()'s `legend_reserve`), and the playhead has to land on
+    those same bounds or it'll drift out of alignment with the base
+    chart's own traces."""
 
     if tick_label_reserve is None:
         tick_label_reserve = (
@@ -742,7 +817,7 @@ def render_frame(
         )
 
     width, height = base_image.size
-    legend_reserve = _legend_reserve_px(orientation)
+    legend_reserve = _legend_reserve_px(orientation, show_z)
     left, top, right, bottom = _plot_area(
         width, height, margin, tick_label_reserve, orientation,
         legend_reserve=legend_reserve,
