@@ -84,10 +84,15 @@ against X/Y's two) over an equal 50/50 split, and the very same
 so a given magnitude still looks the same size in either lane - only
 which pixels a lane owns changed, not how values map to pixels within
 one. TRACE_LINE_WIDTH itself has gone back and forth several times
-(1px, 2px, 1px, 2px again) as the actual sources of clutter got fixed
-one at a time - the legend's former overlap with the traces (see
-_legend_reserve_px()) and now the lane split above; once those two
-were addressed, 2px read fine again.
+(1px, 2px, 1px, 2px, 1px again) as the actual sources of clutter got
+fixed one at a time - the legend's former overlap with the traces (see
+_legend_reserve_px()) and the lane split above. The final settled
+combination isn't a thinner line in isolation, though: alongside
+reverting to 1px, Christer also doubled DEFAULT_WIDTH/DEFAULT_HEIGHT/
+DEFAULT_VERTICAL_WIDTH/DEFAULT_VERTICAL_HEIGHT ("i want 1px back but
+also bigger output, lets say 2 times") - a thin line reads as clean
+rather than sparse once it has twice the canvas to work with, instead
+of competing with a bolder line for the same cramped space.
 
 Z is hidden entirely by default (`show_z=False` on render_base_frame()/
 render_frame()) - a further step past giving it its own lane. Christer's
@@ -168,10 +173,25 @@ PLAYHEAD_COLOR = (156, 39, 176)
 # matching the shape of Christer's reference screenshot rather than
 # gsensor_render.py's own 480x480 dot-gauge canvas. DEFAULT_VERTICAL_*
 # is just the transpose of these, for a tall, narrow side panel.
-DEFAULT_WIDTH = 960
-DEFAULT_HEIGHT = 220
-DEFAULT_VERTICAL_WIDTH = 220
-DEFAULT_VERTICAL_HEIGHT = 960
+#
+# Doubled from the original 960x220/220x960 - Christer: "bigger
+# output, lets say 2 times", asked for alongside reverting to 1px
+# lines (see TRACE_LINE_WIDTH below). Only affects the standalone
+# gsensor_graph.mp4's own default resolution (used whenever
+# render_gsensor_graph_video()'s width/height are left as None) -
+# the --stitch-graph panel is sized separately, as a percentage of
+# the stitch composite's own current dimensions (see stitch.py's
+# _graph_panel_dimensions()), and was never driven by these
+# defaults in the first place. Every other pixel constant below
+# (margins, font sizes, tick/legend reserves, swatch sizes) is left
+# at its existing absolute size on purpose - doubling the canvas
+# alone gives the chart more real room without also blowing up the
+# text/margins, which fits the "less cluttered" direction this
+# panel's whole redesign history has been heading in.
+DEFAULT_WIDTH = 1920
+DEFAULT_HEIGHT = 440
+DEFAULT_VERTICAL_WIDTH = 440
+DEFAULT_VERTICAL_HEIGHT = 1920
 DEFAULT_MARGIN_PX = 32
 # Extra room reserved for time-tick labels, beyond DEFAULT_MARGIN_PX -
 # below the plot area in horizontal mode, to the left of it in vertical
@@ -184,13 +204,14 @@ DEFAULT_TICK_LABEL_WIDTH_PX = 44
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
-# 2px again - the 1px/2px back-and-forth (see the two preceding
-# entries in WORKING_CONTEXT.md) was really about the traces crossing
-# each other and the legend overlapping them, not line width alone;
-# now that Z has its own lane (see Z_LANE_FRACTION below) there's much
-# less crossing left for 2px to make worse, so Christer picked the
-# bolder width back.
-TRACE_LINE_WIDTH = 2
+# Back to 1px again - Christer: "i want 1px back but also bigger
+# output" - rather than another round of "is it the line width or
+# something else" (see the several preceding entries in
+# WORKING_CONTEXT.md for that whole back-and-forth), this time paired
+# with doubling the default canvas size above, so a thin line has more
+# real pixels to occupy instead of competing with a bolder one for the
+# same cramped space.
+TRACE_LINE_WIDTH = 1
 PLAYHEAD_LINE_WIDTH = 3
 TICK_FONT_SIZE = 14
 

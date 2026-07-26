@@ -118,9 +118,14 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
     y_y = round(_value_to_pos(-30, scale, main_top, main_bottom))
     z_y = round(_value_to_pos(10, scale, z_top, z_bottom))
 
-    assert image.getpixel((x_pixel, x_y)) == X_COLOR
-    assert image.getpixel((x_pixel, y_y)) == Y_COLOR
-    assert image.getpixel((x_pixel, z_y)) == Z_COLOR
+    # _color_near_row rather than an exact getpixel() check - at 1px
+    # TRACE_LINE_WIDTH (see module docstring), this near-horizontal
+    # line's own sub-pixel y position can rasterize a row off from a
+    # plain round(), same fragility test_render_base_frame_vertical_
+    # runs_time_top_to_bottom() already needed _color_near() for.
+    assert _color_near_row(image, x_pixel, x_y, X_COLOR)
+    assert _color_near_row(image, x_pixel, y_y, Y_COLOR)
+    assert _color_near_row(image, x_pixel, z_y, Z_COLOR)
 
 
 def test_render_frame_draws_a_playhead_that_moves_with_elapsed_seconds():
@@ -166,6 +171,17 @@ def _color_near(image, x, y, expected):
     # immediate neighbors instead of demanding one exact column.
     return any(
         image.getpixel((x + dx, y)) == expected for dx in (-1, 0, 1)
+    )
+
+
+def _color_near_row(image, x, y, expected):
+    # Same reasoning as _color_near() above, but checking the pixel's
+    # immediate row neighbors instead of column neighbors - for traces
+    # that are (near-)horizontal in the image, where a 1px line's own
+    # sub-pixel rasterization fragility shows up as a +/-1 row offset
+    # rather than a +/-1 column one.
+    return any(
+        image.getpixel((x, y + dy)) == expected for dy in (-1, 0, 1)
     )
 
 
@@ -544,14 +560,17 @@ def test_legend_labels_spell_out_what_each_axis_physically_means():
     )
 
 
-def test_trace_line_width_is_2px():
-    # Went 1px -> 2px -> 1px -> 2px again. The back-and-forth was
-    # really about the traces crossing each other (fixed by giving Z
-    # its own lane, see Z_LANE_FRACTION) and the legend overlapping
-    # the traces (fixed by _legend_reserve_px()), not line width in
-    # isolation - once those two were fixed, Christer picked the
-    # bolder 2px width back.
-    assert TRACE_LINE_WIDTH == 2
+def test_trace_line_width_is_1px():
+    # Went 1px -> 2px -> 1px -> 2px -> 1px again. The back-and-forth
+    # was really about the traces crossing each other (fixed by
+    # giving Z its own lane, see Z_LANE_FRACTION) and the legend
+    # overlapping the traces (fixed by _legend_reserve_px()), not
+    # line width in isolation - once those two were fixed, and the
+    # canvas doubled in size (see DEFAULT_WIDTH/DEFAULT_HEIGHT),
+    # Christer picked the thinner 1px width back, now that the
+    # traces have more real pixels to occupy instead of competing
+    # for the same cramped space.
+    assert TRACE_LINE_WIDTH == 1
 
 
 def test_font_candidates_lists_the_bundled_font_first():
