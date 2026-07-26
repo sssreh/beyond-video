@@ -1,20 +1,26 @@
 from datetime import timedelta
 
+from PIL import Image
+from PIL import ImageDraw
+
 from blackvue.export.gsensor_graph_render import BACKGROUND_COLOR
 from blackvue.export.gsensor_graph_render import DEFAULT_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_MARGIN_PX
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_HEIGHT
 from blackvue.export.gsensor_graph_render import DEFAULT_VERTICAL_WIDTH
 from blackvue.export.gsensor_graph_render import DEFAULT_WIDTH
+from blackvue.export.gsensor_graph_render import LEGEND_FONT_SIZE
 from blackvue.export.gsensor_graph_render import LEGEND_LABELS
 from blackvue.export.gsensor_graph_render import LEGEND_PADDING
 from blackvue.export.gsensor_graph_render import LEGEND_ROW_HEIGHT
+from blackvue.export.gsensor_graph_render import LEGEND_SWATCH_LENGTH
 from blackvue.export.gsensor_graph_render import PLAYHEAD_COLOR
 from blackvue.export.gsensor_graph_render import TRACE_LINE_WIDTH
 from blackvue.export.gsensor_graph_render import X_COLOR
 from blackvue.export.gsensor_graph_render import Y_COLOR
 from blackvue.export.gsensor_graph_render import Z_COLOR
 from blackvue.export.gsensor_graph_render import _format_tick
+from blackvue.export.gsensor_graph_render import _load_font
 from blackvue.export.gsensor_graph_render import _nice_tick_interval
 from blackvue.export.gsensor_graph_render import _plot_area
 from blackvue.export.gsensor_graph_render import _smoothed
@@ -301,6 +307,54 @@ def test_render_base_frame_skips_the_legend_for_fewer_than_two_samples():
     row_mid = round(top + LEGEND_PADDING + LEGEND_ROW_HEIGHT / 2)
 
     assert image.getpixel((swatch_x, row_mid)) == BACKGROUND_COLOR
+
+
+def test_render_base_frame_vertical_centers_the_legend_block():
+    # The narrow vertical side-panel doesn't have room to left-anchor
+    # the legend the way the wide horizontal panel does - "Y — Forward/
+    # back" alone runs past the plot area's own right edge from there.
+    # Christer's own request: center it instead. Expected x computed
+    # the same way _draw_legend() itself does, independently here
+    # rather than importing the private helper, so this test would
+    # actually catch a regression in the centering math.
+    samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
+    image = render_base_frame(
+        samples, (0.0, 0.0, 0.0), 100.0, 1.0, orientation="vertical"
+    )
+
+    font = _load_font(LEGEND_FONT_SIZE)
+    measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    widest_text_width = max(
+        measuring_draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
+        for axis, meaning in LEGEND_LABELS
+    )
+    block_width = LEGEND_SWATCH_LENGTH + 4 + widest_text_width
+    expected_x = round((DEFAULT_VERTICAL_WIDTH - block_width) / 2)
+
+    top = DEFAULT_MARGIN_PX
+    row_mid = round(top + LEGEND_PADDING + LEGEND_ROW_HEIGHT / 2)
+
+    assert image.getpixel((expected_x + 5, row_mid)) == X_COLOR
+    # And it isn't just coincidentally sitting at the old left-anchored
+    # position - centering should have actually moved it.
+    old_left_anchored_x = DEFAULT_MARGIN_PX + 44 + LEGEND_PADDING
+    assert expected_x != old_left_anchored_x
+
+
+def test_vertical_legend_block_fits_within_the_panels_own_canvas_width():
+    # The whole point of centering against canvas_width (not just the
+    # narrower plot area) is that the block no longer runs off the
+    # right edge - assert the math itself guarantees that, independent
+    # of any single pixel check.
+    font = _load_font(LEGEND_FONT_SIZE)
+    measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    widest_text_width = max(
+        measuring_draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
+        for axis, meaning in LEGEND_LABELS
+    )
+    block_width = LEGEND_SWATCH_LENGTH + 4 + widest_text_width
+
+    assert block_width <= DEFAULT_VERTICAL_WIDTH
 
 
 def test_smoothed_returns_the_same_length_list():

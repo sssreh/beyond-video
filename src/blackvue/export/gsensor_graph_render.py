@@ -389,26 +389,59 @@ def _value_to_pos(
     return center - (value / scale) * half_span
 
 
-def _draw_legend(draw: ImageDraw.ImageDraw, left: float, top: float) -> None:
-    """Draw a small X/Y/Z color-key, one row per axis, anchored at the
-    plot area's own top-left corner (`left`/`top`, from _plot_area()) -
-    the chart otherwise has no indication of which trace is which
-    (Christer: "nothing explaining the colors"). Works the same way in
-    both orientations, since a top-left corner exists in either.
+def _draw_legend(
+    draw: ImageDraw.ImageDraw,
+    left: float,
+    top: float,
+    *,
+    canvas_width: float | None = None,
+    orientation: str = "horizontal",
+) -> None:
+    """Draw a small X/Y/Z color-key, one row per axis - the chart
+    otherwise has no indication of which trace is which (Christer:
+    "nothing explaining the colors").
+
+    Horizontal mode (the default): anchored at the plot area's own
+    top-left corner (`left`/`top`, from _plot_area()), same as before -
+    plenty of horizontal room there, nothing to center against.
+
+    Vertical mode: horizontally centered as a block within
+    `canvas_width` (the panel's own full image width, not just the
+    narrower plot area) instead of left-anchored - Christer's own
+    request, and also what actually fixes the longest row ("Y —
+    Forward/back", ~123px) running past the plot area's own right edge
+    when left-anchored there: centered against the full ~220px-wide
+    panel, it comfortably fits with room either side. All three rows
+    share one swatch x position (the widest row's own left edge) so
+    the block reads as one clean centered unit rather than each row
+    independently re-centering around its own, differently-long text.
     """
 
     font = _load_font(LEGEND_FONT_SIZE)
-    x = left + LEGEND_PADDING
-    y = top + LEGEND_PADDING
     colors = (X_COLOR, Y_COLOR, Z_COLOR)
-    for (axis, meaning), color in zip(LEGEND_LABELS, colors):
+    rows = [
+        (axis, meaning, color, f"{axis} — {meaning}")
+        for (axis, meaning), color in zip(LEGEND_LABELS, colors)
+    ]
+
+    if orientation == "vertical" and canvas_width is not None:
+        text_widths = [
+            draw.textbbox((0, 0), text, font=font)[2] for _, _, _, text in rows
+        ]
+        block_width = LEGEND_SWATCH_LENGTH + 4 + max(text_widths)
+        x = (canvas_width - block_width) / 2
+    else:
+        x = left + LEGEND_PADDING
+
+    y = top + LEGEND_PADDING
+    for _, _, color, text in rows:
         row_mid = y + LEGEND_ROW_HEIGHT / 2
         draw.line(
             (x, row_mid, x + LEGEND_SWATCH_LENGTH, row_mid),
             fill=color, width=TRACE_LINE_WIDTH + 2,
         )
         draw.text(
-            (x + LEGEND_SWATCH_LENGTH + 4, row_mid), f"{axis} — {meaning}",
+            (x + LEGEND_SWATCH_LENGTH + 4, row_mid), text,
             font=font, fill=AXIS_COLOR, anchor="lm",
         )
         y += LEGEND_ROW_HEIGHT
@@ -501,7 +534,7 @@ def render_base_frame(
                 points.append((v, t) if orientation == "vertical" else (t, v))
             draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 
-        _draw_legend(draw, left, top)
+        _draw_legend(draw, left, top, canvas_width=width, orientation=orientation)
 
     if total_seconds > 0:
         font = _load_font()
