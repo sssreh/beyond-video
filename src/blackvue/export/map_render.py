@@ -323,23 +323,32 @@ def _draw_gps_badge(
         ),
         fill=GPS_BADGE_ICON_COLOR,
     )
-    # ... and a short antenna with a signal dot at its tip, angled up
-    # toward the top-right corner of the badge.
+    # ... and a short antenna angled up toward the top-right corner of
+    # the badge, broadcasting three concentric signal arcs from its tip
+    # instead of the small dot the original design used there -
+    # Christer, shown several bolder alternatives side by side, picked
+    # this "satellite + signal arcs" shape (candidate 5) but asked to
+    # keep the existing colors (green icon on the dark circle) rather
+    # than that candidate's own red/orange - the arcs read as clearly
+    # "transmitting" even at the small size a --map badge renders at,
+    # more so than a lone dot did.
+    tip_x = cx + body_half + 4 * scale
+    tip_y = cy - body_half - 4 * scale
     badge_draw.line(
-        (
-            cx + body_half, cy - body_half,
-            cx + body_half + 4 * scale, cy - body_half - 4 * scale,
-        ),
+        (cx + body_half, cy - body_half, tip_x, tip_y),
         fill=GPS_BADGE_ICON_COLOR,
         width=line_width,
     )
-    badge_draw.ellipse(
-        (
-            cx + body_half + 3 * scale, cy - body_half - 6 * scale,
-            cx + body_half + 5 * scale, cy - body_half - 4 * scale,
-        ),
-        fill=GPS_BADGE_ICON_COLOR,
-    )
+    for arc_radius in (2 * scale, 3.5 * scale, 5 * scale):
+        badge_draw.arc(
+            (
+                tip_x - arc_radius, tip_y - arc_radius,
+                tip_x + arc_radius, tip_y + arc_radius,
+            ),
+            300, 30,
+            fill=GPS_BADGE_ICON_COLOR,
+            width=line_width,
+        )
 
     x = width - margin - diameter
     y = margin
