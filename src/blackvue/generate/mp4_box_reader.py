@@ -39,6 +39,8 @@ class Mp4Info:
 
     duration_seconds: float
     frame_count: int | None
+    width: int | None = None
+    height: int | None = None
 
 
 def _read_box_header(
@@ -199,6 +201,26 @@ def _parse_stsz_sample_count(data: bytes, start: int, end: int) -> int | None:
     return int.from_bytes(data[start + 8:start + 12], "big")
 
 
+def _parse_tkhd_dimensions(data: bytes, start: int, end: int) -> tuple[int, int] | None:
+    """Return (width, height) from a tkhd payload, rounded to the
+    nearest pixel from their stored 16.16 fixed-point form.
+
+    tkhd's version (0 or 1) only changes the size of the earlier
+    creation/modification/duration timestamp fields - width and
+    height are always the last two 32-bit fields in the payload
+    (following a fixed 36-byte transformation matrix), so reading
+    from the *end* of the payload works for either version without
+    needing to branch on it at all, unlike _parse_mvhd() above.
+    """
+
+    if end - start < 8:
+        return None
+
+    width_raw = int.from_bytes(data[end - 8:end - 4], "big")
+    height_raw = int.from_bytes(data[end - 4:end], "big")
+    return round(width_raw / 65536), round(height_raw / 65536)
+
+
 def read_mp4_info(path: Path) -> Mp4Info:
     """Read duration (and, if available, video frame count) directly
     from an MP4's box structure, bypassing ffprobe entirely.
@@ -233,6 +255,8 @@ def read_mp4_info(path: Path) -> Mp4Info:
     duration_seconds, _timescale = parsed_mvhd
 
     frame_count = None
+    width = None
+    height = None
 
     for box_type, trak_start, trak_end in _iter_boxes(data, 0, size):
         if box_type != "trak":
@@ -248,6 +272,19 @@ def read_mp4_info(path: Path) -> Mp4Info:
 
         if _parse_hdlr_type(data, *hdlr) != "vide":
             continue
+
+        # tkhd (track header - width/height) is a direct sibling of
+        # mdia within this same trak, not something under mdia
+        # itself. Missing/unparseable is non-fatal, same as a missing
+        # stsz below - callers (e.g. parking_transition.py's
+        # probe_video_properties()) decide for themselves whether
+        # width/height being None still gives them enough to work
+        # with.
+        tkhd = _find_box(data, trak_start, trak_end, "tkhd")
+        if tkhd is not None:
+            dimensions = _parse_tkhd_dimensions(data, *tkhd)
+            if dimensions is not None:
+                width, height = dimensions
 
         minf = _find_box(data, *mdia, "minf")
         if minf is None:
@@ -267,4 +304,6 @@ def read_mp4_info(path: Path) -> Mp4Info:
     return Mp4Info(
         duration_seconds=duration_seconds,
         frame_count=frame_count,
+        width=width,
+        height=height,
     )

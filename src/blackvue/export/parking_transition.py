@@ -54,6 +54,7 @@ from PIL import ImageDraw
 from PIL import ImageFont
 
 from ..generate.media import MediaToolError
+from ..generate.mp4_box_reader import read_mp4_info
 from .media import encode_with_nvenc_fallback
 
 # Christer: "a 3 second video ... that clearly shows that we skip
@@ -225,6 +226,21 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
     """Return (width, height, frame_rate) for a video file - what
     render_parking_transition_video() needs to encode a placeholder
     clip that ffmpeg's concat demuxer will accept alongside it.
+
+    Tries ffprobe first; falls back to reading the MP4's own box
+    structure directly (mp4_box_reader.read_mp4_info(), the same
+    tolerant reader media.py's get_span() already falls back to for
+    duration) if ffprobe fails. This isn't a rare-corruption edge
+    case for Parking-mode recordings specifically: BlackVue's own
+    Parking-mode time-lapse container structure is a known quirk that
+    trips ffmpeg's strict STSC/STCO consistency check ("contradictionary
+    STSC and STCO", "error reading header") on every such file, not
+    just damaged ones - other players (VLC, the BlackVue viewer itself)
+    open them fine, so the video data is intact even though ffprobe
+    refuses it. Falling back here means a Parking recording's own
+    genuinely-intact video can still be probed for a placeholder's
+    sizing, rather than every single one always failing straight to
+    the "drop this segment" path.
     """
 
     try:
@@ -243,9 +259,7 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
     except FileNotFoundError as exc:
         raise MediaToolError("ffprobe not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
-        raise MediaToolError(
-            f"ffprobe failed for {path.name}: {exc.stderr.strip()}"
-        ) from exc
+        return _probe_video_properties_from_boxes(path, exc)
 
     try:
         stream = json.loads(result.stdout)["streams"][0]
@@ -258,6 +272,36 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
         ) from exc
 
     return width, height, frame_rate
+
+
+def _probe_video_properties_from_boxes(
+    path: Path, ffprobe_error: "subprocess.CalledProcessError"
+) -> tuple[int, int, float]:
+    """The probe_video_properties() ffprobe fallback - see that
+    function's own docstring. Re-raises ffprobe's own original error
+    (not a box-reader-specific one) if the box reader can't produce a
+    complete (width, height, frame_rate) either, since that's still
+    the more informative message - it names the real file and ffmpeg's
+    own diagnostic, rather than "no tkhd box" or similar.
+    """
+
+    try:
+        info = read_mp4_info(path)
+    except MediaToolError:
+        info = None
+
+    if (
+        info is not None
+        and info.width is not None
+        and info.height is not None
+        and info.frame_count is not None
+        and info.duration_seconds > 0
+    ):
+        return info.width, info.height, info.frame_count / info.duration_seconds
+
+    raise MediaToolError(
+        f"ffprobe failed for {path.name}: {ffprobe_error.stderr.strip()}"
+    ) from ffprobe_error
 
 
 def probe_audio_properties(path: Path) -> tuple[str, int, int] | None:

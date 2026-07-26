@@ -9,7 +9,6 @@ from PIL import ImageFont
 
 from blackvue.export import parking_transition as parking_transition_module
 from blackvue.export.parking_transition import ParkingTransitionCache
-from blackvue.generate.media import MediaToolError
 from blackvue.export.parking_transition import PARKING_TRANSITION_DURATION_SECONDS
 from blackvue.export.parking_transition import _load_font
 from blackvue.export.parking_transition import probe_audio_properties
@@ -17,6 +16,8 @@ from blackvue.export.parking_transition import probe_video_properties
 from blackvue.export.parking_transition import render_parking_transition_image
 from blackvue.export.parking_transition import render_parking_transition_silence
 from blackvue.export.parking_transition import render_parking_transition_video
+from blackvue.generate.media import MediaToolError
+from blackvue.generate.mp4_box_reader import Mp4Info
 
 
 def _make_video(path, duration_seconds=0.5, size="64x48", rate=10) -> None:
@@ -92,6 +93,76 @@ def test_probe_video_properties_reads_width_height_frame_rate(tmp_path):
 
     assert (width, height) == (64, 48)
     assert abs(frame_rate - 10.0) < 0.01
+
+
+def test_probe_video_properties_falls_back_to_the_box_reader_when_ffprobe_fails(
+    tmp_path, monkeypatch,
+):
+    # The real bug: BlackVue's own Parking-mode time-lapse container
+    # structure trips ffprobe's strict STSC/STCO validation on every
+    # such file - not per-file corruption (see probe_video_properties()'s
+    # own docstring) - so the fallback needs to actually kick in for a
+    # video whose *box structure* is perfectly readable even though
+    # ffprobe itself refuses it. Simulated here by making the real
+    # ffprobe call fail while a stand-in read_mp4_info() returns a
+    # normal, complete Mp4Info - isolating probe_video_properties()'s
+    # own fallback-selection logic from needing a real hand-crafted
+    # STSC/STCO-broken fixture file.
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    real_run = subprocess.run
+
+    def _fake_run(command, **kwargs):
+        if command[0] == "ffprobe":
+            raise subprocess.CalledProcessError(
+                1, command,
+                stderr="contradictionary STSC and STCO\nerror reading header\n",
+            )
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(
+            duration_seconds=60.0, frame_count=1800, width=1920, height=1080,
+        ),
+    )
+
+    width, height, frame_rate = probe_video_properties(video)
+
+    assert (width, height) == (1920, 1080)
+    assert abs(frame_rate - 30.0) < 0.01  # 1800 frames / 60s
+
+
+def test_probe_video_properties_raises_original_ffprobe_error_when_box_reader_lacks_dimensions(
+    tmp_path, monkeypatch,
+):
+    # If the box reader can't find a tkhd (width/height stay None),
+    # probe_video_properties() must not return a bogus result - it
+    # should surface ffprobe's own original error instead, since that
+    # names the real file and ffmpeg's own diagnostic.
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    def _fake_run(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr="error reading header\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(duration_seconds=60.0, frame_count=1800, width=None, height=None),
+    )
+
+    with pytest.raises(MediaToolError) as excinfo:
+        probe_video_properties(video)
+
+    assert "20260726_144116_PF.mp4" in str(excinfo.value)
+    assert "error reading header" in str(excinfo.value)
 
 
 def test_probe_audio_properties_reads_codec_rate_channels(tmp_path):

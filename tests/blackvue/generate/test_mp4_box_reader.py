@@ -33,11 +33,28 @@ def _stsz(sample_count: int, sample_size: int = 0) -> bytes:
     return bytes(payload)
 
 
-def _video_trak(frame_count: int) -> bytes:
+def _tkhd(width: int, height: int) -> bytes:
+    # Real tkhd v0 payload is 84 bytes (4 version/flags + 20 timestamp/
+    # track-ID/reserved/duration fields + 8 reserved + 4 layer/group +
+    # 4 volume/reserved + 36 matrix + 4 width + 4 height); only the
+    # trailing width/height fields matter for _parse_tkhd_dimensions(),
+    # so everything before them is left zeroed.
+    payload = bytearray(84)
+    payload[-8:-4] = (width << 16).to_bytes(4, "big")
+    payload[-4:] = (height << 16).to_bytes(4, "big")
+    return bytes(payload)
+
+
+def _video_trak(
+    frame_count: int, *, width: int | None = None, height: int | None = None
+) -> bytes:
     stbl = _box(b"stsz", _stsz(frame_count, sample_size=100))
     minf = _box(b"minf", _box(b"stbl", stbl))
     mdia = _box(b"hdlr", _hdlr(b"vide")) + minf
-    return _box(b"trak", _box(b"mdia", mdia))
+    trak_payload = _box(b"mdia", mdia)
+    if width is not None and height is not None:
+        trak_payload = _box(b"tkhd", _tkhd(width, height)) + trak_payload
+    return _box(b"trak", trak_payload)
 
 
 def _audio_trak_with_garbage() -> bytes:
@@ -119,3 +136,60 @@ def test_read_mp4_info_duration_only_when_no_video_track(tmp_path):
 
     assert info.duration_seconds == 3.0
     assert info.frame_count is None
+
+
+def test_read_mp4_info_reads_width_and_height_from_tkhd(tmp_path):
+    # The real-world motivation: parking_transition.py's
+    # probe_video_properties() needs width/height to size a placeholder
+    # clip when ffprobe itself refuses to open a Parking-mode
+    # time-lapse recording (a known BlackVue container quirk, not
+    # per-file corruption - see that function's own docstring).
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        _video_trak(frame_count=1800, width=1920, height=1080),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert info.width == 1920
+    assert info.height == 1080
+
+
+def test_read_mp4_info_width_and_height_none_without_a_tkhd_box(tmp_path):
+    # Missing/unparseable tkhd is non-fatal, same treatment as a
+    # missing stsz already gets for frame_count - callers decide
+    # whether None dimensions still leave them enough to work with.
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        _video_trak(frame_count=1800),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert info.width is None
+    assert info.height is None
+
+
+def test_read_mp4_info_ignores_a_non_video_traks_tkhd(tmp_path):
+    # An audio track's own tkhd (if it has one) must never be mistaken
+    # for the video track's dimensions - only a trak whose hdlr type is
+    # 'vide' should ever contribute width/height.
+    audio_with_tkhd = _box(
+        b"trak",
+        _box(b"tkhd", _tkhd(64, 48)) + _box(b"mdia", _box(b"hdlr", _hdlr(b"soun"))),
+    )
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        audio_with_tkhd,
+        _video_trak(frame_count=1800, width=1920, height=1080),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert (info.width, info.height) == (1920, 1080)
