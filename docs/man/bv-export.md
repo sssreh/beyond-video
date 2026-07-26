@@ -14,7 +14,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-parking-duration MINUTES]
           [--include-parking] [--parking-transition-image PATH | --parking-transition-clip PATH | --parking-transition-random]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
-          [--gsensor-video]
+          [--gsensor-video] [--gsensor-graph-video]
           [--stitch] [--stitch-layout LAYOUT]
           [--stitch-mirror-size PERCENT] [--stitch-mirror-radius PERCENT]
           [--stitch-mirror-zoom PERCENT]
@@ -108,6 +108,7 @@ The position marker itself is hidden entirely before the trip's very first real 
 | Option | Description |
 |---|---|
 | `--gsensor-video` | Render `gsensor.mp4`: a dot moving on a gauge tracking g-sensor (x, y) readings with a fading trail, on chroma-key green - meant for compositing later, or via `--stitch-gsensor`. |
+| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of X/Y/Z readings as three colored line traces, with a vertical playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Not yet wired into `--stitch`. |
 
 ### Stitch (combined camera video)
 
@@ -189,6 +190,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 | `map.mp4` | `--map` |
 | `map_zoom_METERSm.mp4` | `--map-zoom` |
 | `gsensor.mp4` | `--gsensor-video` |
+| `gsensor_graph.mp4` | `--gsensor-graph-video` |
 | `stitch.mp4` | `--stitch` |
 
 ## EXAMPLES

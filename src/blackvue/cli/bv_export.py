@@ -297,6 +297,7 @@ def bv_export(
     map_icon: str | Path | None = None,
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
+    render_gsensor_graph: bool = False,
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
@@ -708,6 +709,7 @@ def bv_export(
                 map_icon=map_icon_path,
                 map_zoom_meters=map_zoom_meters,
                 render_gsensor=render_gsensor,
+                render_gsensor_graph=render_gsensor_graph,
                 stitch_layout=stitch_layout,
                 stitch_resolution=stitch_resolution,
                 stitch_bitrate=stitch_bitrate,
@@ -750,7 +752,8 @@ def bv_export(
             for written_path in (
                 result.front_video, result.rear_video, result.audio,
                 result.gpx, result.gsensor, result.map, result.map_zoom,
-                result.gsensor_video, result.stitch, result.srt, result.lrc,
+                result.gsensor_video, result.gsensor_graph_video,
+                result.stitch, result.srt, result.lrc,
             )
             if written_path is not None
         ] + list(result.text)
@@ -1013,6 +1016,23 @@ def main(argv: list[str] | None = None) -> int:
             "background meant for compositing over the front/rear "
             "footage later. No network involved, but off by default "
             "- it adds real render time per trip."
+        ),
+    )
+
+    parser.add_argument(
+        "--gsensor-graph-video",
+        dest="render_gsensor_graph",
+        action="store_true",
+        help=(
+            "Also render gsensor_graph.mp4: a second, alternate "
+            "g-sensor visualization - a static whole-trip strip chart "
+            "of the trip's X/Y/Z g-sensor readings as three colored "
+            "line traces, with a vertical playhead marking the "
+            "current position, on the same flat chroma-key green "
+            "background as --gsensor-video's dot-gauge. Independent "
+            "of --gsensor-video - either, both, or neither can be "
+            "given; this is a separate file, not a replacement. Off "
+            "by default - it adds real render time per trip."
         ),
     )
 
@@ -1499,6 +1519,7 @@ def main(argv: list[str] | None = None) -> int:
         map_icon=args.map_icon,
         map_zoom_meters=args.map_zoom_meters,
         render_gsensor=args.render_gsensor,
+        render_gsensor_graph=args.render_gsensor_graph,
         stitch_layout=args.stitch_layout if args.stitch else None,
         stitch_resolution=args.stitch_resolution,
         stitch_bitrate=args.stitch_bitrate,

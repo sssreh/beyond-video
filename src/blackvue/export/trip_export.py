@@ -31,6 +31,7 @@ from ..telemetry.gsensor_reader import write_gsensor
 from ..trip.trip import Trip
 from .geocoding import load_or_reverse_geocode
 from .gpx_writer import write_gpx
+from .gsensor_graph_video import render_gsensor_graph_video
 from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
 from .media import concatenate_media
@@ -78,6 +79,7 @@ class ExportResult:
     map: Path | None = None
     map_zoom: Path | None = None
     gsensor_video: Path | None = None
+    gsensor_graph_video: Path | None = None
     stitch: Path | None = None
     srt: Path | None = None
     lrc: Path | None = None
@@ -347,6 +349,7 @@ def export_trip(
     map_icon: Path | None = None,
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
+    render_gsensor_graph: bool = False,
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
@@ -414,6 +417,17 @@ def export_trip(
     later (see gsensor_render.py/gsensor_video.py). No network
     involved, but off by default since it's extra render time most
     exports won't want.
+
+    `render_gsensor_graph=True` additionally renders
+    gsensor_graph.mp4 - a second, alternate g-sensor visualization: a
+    static whole-trip strip chart of the trip's X/Y/Z g-sensor
+    readings as three colored line traces, with a vertical playhead
+    marking the current position, modeled on the BlackVue SD Card
+    Viewer app's own g-sensor panel (see
+    gsensor_graph_render.py/gsensor_graph_video.py). Independent of
+    `render_gsensor` - either, both, or neither can be requested; this
+    is a standalone file alongside gsensor.mp4, not a replacement for
+    it. Also off by default for the same reason.
 
     `stitch_layout`, if given ('side_by_side', 'top_down',
     'rearview_mirror', or stitch.AUTO_LAYOUT - see stitch.py),
@@ -867,6 +881,30 @@ def export_trip(
                 file=sys.stderr,
             )
 
+    gsensor_graph_video_path = None
+    if render_gsensor_graph and samples:
+        log.step(f"starting gsensor_graph.mp4 render ({len(samples)} sample(s))")
+        gsensor_graph_start = time.monotonic()
+        try:
+            gsensor_graph_video_path = render_gsensor_graph_video(
+                samples, destination / "gsensor_graph.mp4",
+                duration_seconds=video_duration_seconds,
+            )
+        except MediaToolError as exc:
+            warnings.append(f"gsensor graph video: {exc}")
+            log.warning(f"gsensor graph video: {exc}")
+        else:
+            log.step(
+                "rendered gsensor_graph.mp4",
+                elapsed_seconds=time.monotonic() - gsensor_graph_start,
+            )
+        if debug:
+            print(
+                f"bv-export: gsensor_graph phase took "
+                f"{time.monotonic() - gsensor_graph_start:.1f}s",
+                file=sys.stderr,
+            )
+
     # --stitch-gsensor never generates gsensor.mp4 itself - it only
     # checks whether one already exists on disk (this run's own
     # render_gsensor=True, or a previous run's that wasn't wiped), the
@@ -1029,6 +1067,7 @@ def export_trip(
         map=map_path,
         map_zoom=map_zoom_path,
         gsensor_video=gsensor_video_path,
+        gsensor_graph_video=gsensor_graph_video_path,
         stitch=stitch_path,
         srt=srt_path,
         lrc=lrc_path,
