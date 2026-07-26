@@ -20,6 +20,7 @@ from blackvue.export.gsensor_graph_render import X_COLOR
 from blackvue.export.gsensor_graph_render import Y_COLOR
 from blackvue.export.gsensor_graph_render import Z_COLOR
 from blackvue.export.gsensor_graph_render import _format_tick
+from blackvue.export.gsensor_graph_render import _legend_reserve_px
 from blackvue.export.gsensor_graph_render import _load_font
 from blackvue.export.gsensor_graph_render import _nice_tick_interval
 from blackvue.export.gsensor_graph_render import _plot_area
@@ -93,7 +94,8 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
 
     image = render_base_frame(samples, baseline, scale, total_seconds)
     left, top, right, bottom = _plot_area(
-        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal"
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
     )
     x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
 
@@ -123,7 +125,8 @@ def test_render_frame_playhead_uses_the_playhead_color():
 
     frame = render_frame(base, 0.5, 1.0)
     left, top, right, bottom = _plot_area(
-        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal"
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
+        legend_reserve=_legend_reserve_px("horizontal"),
     )
     playhead_x = round(_time_to_pos(0.5, 1.0, left, right))
 
@@ -165,7 +168,8 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
         samples, baseline, scale, total_seconds, orientation="vertical"
     )
     left, top, right, bottom = _plot_area(
-        DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical"
+        DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical",
+        legend_reserve=_legend_reserve_px("vertical"),
     )
     y_pixel = round(_time_to_pos(0.0, total_seconds, top, bottom))
 
@@ -190,7 +194,8 @@ def test_render_frame_vertical_playhead_moves_down_not_across():
     assert list(start.getdata()) != list(middle.getdata())
 
     left, top, right, bottom = _plot_area(
-        DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical"
+        DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical",
+        legend_reserve=_legend_reserve_px("vertical"),
     )
     playhead_y = round(_time_to_pos(0.5, 1.0, top, bottom))
 
@@ -207,6 +212,34 @@ def test_plot_area_vertical_reserves_space_on_the_left_not_the_bottom():
 
     assert left == 32 + 44
     assert bottom == 960 - 32
+
+
+def test_plot_area_horizontal_legend_reserve_shifts_the_left_edge():
+    # The legend now gets its own dedicated column to the left of the
+    # chart (Christer: "legend should not be on top of lines ... a
+    # little space to the left on horizontal") - legend_reserve adds
+    # onto the plain margin on the left edge only; every other edge is
+    # unaffected.
+    left, top, right, bottom = _plot_area(960, 220, 32, 20, "horizontal")
+    left_with_legend, top2, right2, bottom2 = _plot_area(
+        960, 220, 32, 20, "horizontal", legend_reserve=100.0
+    )
+
+    assert left_with_legend == left + 100.0
+    assert (top2, right2, bottom2) == (top, right, bottom)
+
+
+def test_plot_area_vertical_legend_reserve_shifts_the_top_edge():
+    # Same idea, rotated: vertical mode's own legend gets a dedicated
+    # row above the chart (Christer: "...at the top for vertical") -
+    # legend_reserve adds onto the plain margin on the top edge only.
+    left, top, right, bottom = _plot_area(220, 960, 32, 44, "vertical")
+    left2, top_with_legend, right2, bottom2 = _plot_area(
+        220, 960, 32, 44, "vertical", legend_reserve=60.0
+    )
+
+    assert top_with_legend == top + 60.0
+    assert (left2, right2, bottom2) == (left, right, bottom)
 
 
 def test_scale_for_samples_floors_at_minimum_for_flat_data():
@@ -424,7 +457,10 @@ def test_legend_labels_spell_out_what_each_axis_physically_means():
     )
 
 
-def test_trace_line_width_is_2px():
-    # Tried at 1px and 2px side by side - Christer picked 2px back
-    # (1px read as too faint once traces crossed each other).
-    assert TRACE_LINE_WIDTH == 2
+def test_trace_line_width_is_1px():
+    # Went 1px -> 2px -> back to 1px. 2px was picked first in isolation,
+    # but still read as too cluttered combined with the legend's former
+    # overlap with the traces; once the legend got its own dedicated
+    # space (see _legend_reserve_px()), Christer asked to go back to
+    # 1px for the traces themselves.
+    assert TRACE_LINE_WIDTH == 1

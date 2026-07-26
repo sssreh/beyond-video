@@ -44,18 +44,28 @@ panel). BACKGROUND_COLOR is defined locally in this module now,
 decoupled from gsensor_render.py's own chroma-key green, which still
 needs to stay green for the dot-gauge's own real chroma-key use.
 
-Each axis's own trace is now labeled by a small color-key legend drawn
-in the plot area's own top-left corner (Christer: "nothing explaining
-the colors"), spelling out what each axis physically means -
-"X — Left/right", "Y — Forward/back", "Z — Up/down" - the standard
-accelerometer axis convention, offered as a best-effort explanation
-rather than a device-verified calibration (see gsensor_reader.py's own
-module docstring: the physical unit/orientation of these readings
-isn't independently confirmed for this device). Christer asked for
-this exact wording in both orientations, including the narrow vertical
-side-panel, even though the longest label ("Y — Forward/back") runs
-past that panel's own right edge there - his own explicit call over
-abbreviating to fit.
+Each axis's own trace is labeled by a small color-key legend (Christer:
+"nothing explaining the colors"), spelling out what each axis
+physically means - "X — Left/right", "Y — Forward/back",
+"Z — Up/down" - the standard accelerometer axis convention, offered as
+a best-effort explanation rather than a device-verified calibration
+(see gsensor_reader.py's own module docstring: the physical unit/
+orientation of these readings isn't independently confirmed for this
+device). Christer asked for this exact wording in both orientations.
+
+The legend gets its own dedicated space rather than sitting on top of
+the traces: `_legend_reserve_px(orientation)` adds extra room to the
+plot area's own left edge in horizontal mode, or its own top edge in
+vertical mode (on top of the ordinary DEFAULT_MARGIN_PX), so the chart
+itself never renders underneath the legend text - Christer's own
+explicit request ("legend should not be on top of lines ... a little
+space to the left on horizontal and at the top for vertical"), after
+an earlier version drew the legend directly inside the plot area's own
+top-left corner where it could visually compete with whatever traces
+happened to pass through that exact spot. In vertical mode the legend
+is still centered horizontally within the full panel width (see
+_draw_legend()), now within its own reserved top strip rather than the
+narrower plot area.
 
 Real accelerometer data is jittery enough, sample to sample, that the
 three raw traces blurred together at this panel's size (Christer: "vey
@@ -64,10 +74,12 @@ rather than tick-mark or general detail clutter). Christer explicitly
 chose to keep one shared plot with reduced visual noise over splitting
 the three axes into separate stacked lanes - lightened trace colors
 (see _lighten()) plus light smoothing (a short centered moving
-average, see _smoothed()) do that work; TRACE_LINE_WIDTH itself was
-tried at both 1px and 2px side by side, and Christer picked 2px back -
-1px read as too faint once traces crossed each other, and the color/
-smoothing changes were already doing most of the actual decluttering.
+average, see _smoothed()) do that work. TRACE_LINE_WIDTH itself has
+gone back and forth: 1px, then 2px (Christer's own pick after a
+side-by-side comparison), then back to 1px again once 2px plus the
+legend's own former overlap with the traces still read as too
+cluttered - the legend now having its own dedicated space (above) was
+the other half of that same fix, not line width alone.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -147,11 +159,12 @@ DEFAULT_TICK_LABEL_WIDTH_PX = 44
 DEFAULT_MINIMUM_SCALE = 1.0
 DEFAULT_SCALE_PADDING = 1.2
 
-# 2px - thinner (1px) read as too faint once traces cross each other;
-# Christer's own call after comparing both directly against the
-# lightened colors above, which do most of the "reduce visual noise"
-# work on their own.
-TRACE_LINE_WIDTH = 2
+# Back to 1px - a 2px comparison was tried and picked at first, but
+# combined with the legend still overlapping the traces at the time it
+# still read as too cluttered; Christer's own call to go thinner again
+# once the legend also got moved into its own reserved space (see
+# _legend_reserve_px()) instead of sitting on top of the chart.
+TRACE_LINE_WIDTH = 1
 PLAYHEAD_LINE_WIDTH = 3
 TICK_FONT_SIZE = 14
 
@@ -335,20 +348,30 @@ def _plot_area(
     margin: int,
     tick_label_reserve: int,
     orientation: str = "horizontal",
+    legend_reserve: float = 0.0,
 ) -> tuple[float, float, float, float]:
     """Return (left, top, right, bottom) pixel bounds of the trace
     -drawing area, leaving `margin` on every edge plus extra room for
     time-tick labels - reserved below the bottom edge in horizontal
     mode, or to the left of the left edge in vertical mode (kept
-    upright there rather than rotated - see the module docstring)."""
+    upright there rather than rotated - see the module docstring).
+
+    `legend_reserve` reserves further room, on top of `margin`, for the
+    legend to have its own dedicated space rather than sitting on top
+    of the traces (Christer: "legend should not be on top of lines") -
+    added to the left edge in horizontal mode (the legend's own column
+    sits to the left of the chart), or to the top edge in vertical mode
+    (the legend's own row sits above the chart). See
+    _legend_reserve_px() for how this is actually computed.
+    """
 
     if orientation == "vertical":
         left = float(margin + tick_label_reserve)
-        top = float(margin)
+        top = float(margin + legend_reserve)
         right = float(width - margin)
         bottom = float(height - margin)
     else:
-        left = float(margin)
+        left = float(margin + legend_reserve)
         top = float(margin)
         right = float(width - margin)
         bottom = float(height - margin - tick_label_reserve)
@@ -389,6 +412,42 @@ def _value_to_pos(
     return center - (value / scale) * half_span
 
 
+def _legend_text_width(draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont) -> float:
+    """Return the widest of the three legend rows' own rendered text
+    width ("X — Left/right", "Y — Forward/back", "Z — Up/down") -
+    shared by _legend_reserve_px() (how much space to set aside) and
+    _draw_legend() (where exactly to center the block within it), so
+    the two can never disagree with each other about the same width.
+    """
+
+    return max(
+        draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
+        for axis, meaning in LEGEND_LABELS
+    )
+
+
+def _legend_reserve_px(orientation: str) -> float:
+    """Return how much extra room, beyond DEFAULT_MARGIN_PX, the plot
+    area should give up so the legend gets its own dedicated space
+    instead of sitting on top of the traces (Christer: "legend should
+    not be on top of lines ... a little space to the left on horizontal
+    and at the top for vertical"). Horizontal mode reserves a column
+    wide enough for the widest legend row (swatch + gap + text, plus
+    padding on both sides); vertical mode reserves a row tall enough
+    for all three stacked legend rows (plus padding top and bottom).
+    See _plot_area()'s own `legend_reserve` parameter for where this
+    actually gets applied.
+    """
+
+    if orientation == "vertical":
+        return 3 * LEGEND_ROW_HEIGHT + LEGEND_PADDING * 2
+
+    font = _load_font(LEGEND_FONT_SIZE)
+    measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    text_width = _legend_text_width(measuring_draw, font)
+    return LEGEND_SWATCH_LENGTH + 4 + text_width + LEGEND_PADDING * 2
+
+
 def _draw_legend(
     draw: ImageDraw.ImageDraw,
     left: float,
@@ -399,22 +458,28 @@ def _draw_legend(
 ) -> None:
     """Draw a small X/Y/Z color-key, one row per axis - the chart
     otherwise has no indication of which trace is which (Christer:
-    "nothing explaining the colors").
+    "nothing explaining the colors"). Draws into the legend's own
+    dedicated space (see _legend_reserve_px()/_plot_area()'s own
+    `legend_reserve`), not on top of the plot area, so it never
+    competes visually with whatever traces happen to pass through the
+    same spot.
 
-    Horizontal mode (the default): anchored at the plot area's own
-    top-left corner (`left`/`top`, from _plot_area()), same as before -
-    plenty of horizontal room there, nothing to center against.
+    Horizontal mode (the default): anchored at (`left`, `top`) -
+    callers pass the panel's own margin corner here, since the legend's
+    reserved column sits between the margin and the (now further
+    right) plot area's own left edge.
 
     Vertical mode: horizontally centered as a block within
-    `canvas_width` (the panel's own full image width, not just the
-    narrower plot area) instead of left-anchored - Christer's own
-    request, and also what actually fixes the longest row ("Y —
-    Forward/back", ~123px) running past the plot area's own right edge
-    when left-anchored there: centered against the full ~220px-wide
-    panel, it comfortably fits with room either side. All three rows
-    share one swatch x position (the widest row's own left edge) so
-    the block reads as one clean centered unit rather than each row
-    independently re-centering around its own, differently-long text.
+    `canvas_width` (the panel's own full image width) rather than
+    left-anchored - Christer's own request, and also what keeps the
+    longest row ("Y — Forward/back", ~123px) comfortably inside the
+    panel rather than running past an edge. All three rows share one
+    swatch x position (the widest row's own left edge) so the block
+    reads as one clean centered unit rather than each row independently
+    re-centering around its own, differently-long text. `top` still
+    anchors the block's own y position - callers pass the panel's own
+    margin corner here too, since the legend's reserved row sits above
+    the (now further down) plot area's own top edge.
     """
 
     font = _load_font(LEGEND_FONT_SIZE)
@@ -425,10 +490,7 @@ def _draw_legend(
     ]
 
     if orientation == "vertical" and canvas_width is not None:
-        text_widths = [
-            draw.textbbox((0, 0), text, font=font)[2] for _, _, _, text in rows
-        ]
-        block_width = LEGEND_SWATCH_LENGTH + 4 + max(text_widths)
+        block_width = LEGEND_SWATCH_LENGTH + 4 + _legend_text_width(draw, font)
         x = (canvas_width - block_width) / 2
     else:
         x = left + LEGEND_PADDING
@@ -492,8 +554,10 @@ def render_base_frame(
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
 
+    legend_reserve = _legend_reserve_px(orientation)
     left, top, right, bottom = _plot_area(
-        width, height, margin, tick_label_reserve, orientation
+        width, height, margin, tick_label_reserve, orientation,
+        legend_reserve=legend_reserve,
     )
 
     if orientation == "vertical":
@@ -534,7 +598,7 @@ def render_base_frame(
                 points.append((v, t) if orientation == "vertical" else (t, v))
             draw.line(points, fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 
-        _draw_legend(draw, left, top, canvas_width=width, orientation=orientation)
+        _draw_legend(draw, margin, margin, canvas_width=width, orientation=orientation)
 
     if total_seconds > 0:
         font = _load_font()
@@ -588,8 +652,10 @@ def render_frame(
         )
 
     width, height = base_image.size
+    legend_reserve = _legend_reserve_px(orientation)
     left, top, right, bottom = _plot_area(
-        width, height, margin, tick_label_reserve, orientation
+        width, height, margin, tick_label_reserve, orientation,
+        legend_reserve=legend_reserve,
     )
 
     frame = base_image.copy()
