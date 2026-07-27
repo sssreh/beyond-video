@@ -23,13 +23,21 @@ from blackvue.telemetry.gsensor_reader import read_gsensor
 from blackvue.trip.trip import Trip
 
 
-def _make_video(path, duration_seconds: float) -> None:
+def _make_video(path, duration_seconds: float, codec: str | None = None) -> None:
+    # codec="libx265" (tagged "hvc1", matching real BlackVue 4K
+    # cameras - see media.py's _VIDEO_CODEC_ENCODERS comment) is used
+    # by the codec-matching regression test below - every other
+    # existing call site leaves codec unset, letting ffmpeg pick its
+    # own default (H.264) exactly as before this parameter existed.
+    codec_args = ["-c:v", codec, "-pix_fmt", "yuv420p"] if codec else []
+    tag_args = ["-tag:v", "hvc1"] if codec == "libx265" else []
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-f", "lavfi",
             "-i", "testsrc=size=64x64:rate=10",
             "-t", str(duration_seconds),
+            *codec_args, *tag_args,
             str(path),
         ],
         capture_output=True,
@@ -378,6 +386,62 @@ def test_export_trip_parking_placeholder_falls_back_to_sibling_camera_when_one_s
     expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
     assert abs(_video_duration(result.front_video) - expected) < 0.5
     assert abs(_video_duration(result.rear_video) - expected) < 0.5
+
+
+def test_export_trip_hevc_camera_front_video_decodes_cleanly_after_parking_placeholder(
+    tmp_path,
+):
+    # Christer's real-world report on his own 4K HEVC camera: a
+    # mid-trip Parking recording's placeholder was always encoded as
+    # H.264 (bv-export's original, only-ever codec), then spliced via
+    # concatenate_media()'s stream-copy concat into a front.mp4
+    # declared as HEVC. ffmpeg's concat demuxer doesn't validate codec
+    # consistency, so this produced a file with no error at export
+    # time - but real decoders (and Christer's own player) choked on
+    # it from the splice point onward: "Invalid NAL unit size", the
+    # picture frozen on the last good frame while audio (muxed
+    # entirely separately) kept playing normally - "P files still show
+    # 1 frame for the duration ... I can hear by the sound that the
+    # car is moving again, but still show the same frame". None of the
+    # duration/warning assertions the other tests in this file use
+    # would have caught that class of bug - only actually decoding the
+    # resulting front.mp4 does, which is what this test does.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    front_p = source_dir / "front_p.mp4"
+    front_b = source_dir / "front_b.mp4"
+    _make_video(front_a, 1.0, codec="libx265")
+    _make_video(front_p, 1.0, codec="libx265")
+    _make_video(front_b, 1.0, codec="libx265")
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)},
+        ),
+        Recording(
+            id=RecordingId("20260720_100010_P"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)},
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)},
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.warnings == ()
+    decode = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(result.front_video), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    assert decode.returncode == 0
+    assert decode.stderr.strip() == ""
 
 
 def test_export_trip_include_parking_keeps_the_real_parking_footage(tmp_path):

@@ -20,7 +20,9 @@ fields directly:
 
 - moov/mvhd: overall movie duration and timescale.
 - moov/trak/mdia/hdlr: which track is the video track ('vide').
+- that track's moov/trak/tkhd: width/height.
 - that track's moov/trak/mdia/minf/stbl/stsz: sample (frame) count.
+- that track's moov/trak/mdia/minf/stbl/stsd: codec (H.264/HEVC).
 
 It never looks at the audio track's contents at all.
 """
@@ -41,6 +43,11 @@ class Mp4Info:
     frame_count: int | None
     width: int | None = None
     height: int | None = None
+    # Normalized ("h264"/"hevc") from the video track's stsd sample
+    # entry fourcc - see _parse_stsd_codec(). None if the fourcc isn't
+    # one this reader recognizes, or no stsd was found - same
+    # "non-fatal, caller decides" treatment as width/height above.
+    codec: str | None = None
 
 
 def _read_box_header(
@@ -221,6 +228,46 @@ def _parse_tkhd_dimensions(data: bytes, start: int, end: int) -> tuple[int, int]
     return round(width_raw / 65536), round(height_raw / 65536)
 
 
+# Video sample entry fourccs, mapped to the same normalized codec
+# names ffprobe's own "codec_name" reports ("h264"/"hevc") - so
+# whichever probing path succeeds (ffprobe directly, or this reader as
+# its fallback), the caller gets back the same vocabulary either way.
+# "avc1"/"avc3" both mean H.264 (they only differ in how parameter
+# sets are signaled, in-band vs out-of-band); "hvc1"/"hev1" both mean
+# H.265/HEVC, same distinction. Anything else (e.g. "mp4v" for
+# MPEG-4 Part 2, seen on some older/lower-res dashcam firmware) isn't
+# mapped - callers treat an unrecognized fourcc the same as "unknown".
+_CODEC_FOURCC_MAP = {
+    "avc1": "h264",
+    "avc3": "h264",
+    "hvc1": "hevc",
+    "hev1": "hevc",
+}
+
+
+def _parse_stsd_codec(data: bytes, start: int, end: int) -> str | None:
+    """Return a normalized codec name ("h264"/"hevc") from a video
+    track's stsd payload.
+
+    stsd holds one "sample entry" per distinct codec/format the track
+    uses (a BlackVue recording only ever has one) - each entry is
+    itself box-shaped (a 4-byte size, then a 4-byte type that's the
+    actual codec fourcc, e.g. "avc1" or "hvc1"), preceded by 4 bytes
+    of stsd's own version/flags and a 4-byte entry_count. That means
+    the entries can be walked with _iter_boxes() exactly like any
+    other box list, just starting 8 bytes into the payload rather than
+    at its very start.
+    """
+
+    if end - start < 8:
+        return None
+
+    for fourcc, _entry_start, _entry_end in _iter_boxes(data, start + 8, end):
+        return _CODEC_FOURCC_MAP.get(fourcc)
+
+    return None
+
+
 def read_mp4_info(path: Path) -> Mp4Info:
     """Read duration (and, if available, video frame count) directly
     from an MP4's box structure, bypassing ffprobe entirely.
@@ -257,6 +304,7 @@ def read_mp4_info(path: Path) -> Mp4Info:
     frame_count = None
     width = None
     height = None
+    codec = None
 
     for box_type, trak_start, trak_end in _iter_boxes(data, 0, size):
         if box_type != "trak":
@@ -294,6 +342,15 @@ def read_mp4_info(path: Path) -> Mp4Info:
         if stbl is None:
             continue
 
+        # stsd (codec identification) is a sibling of stsz within the
+        # same stbl, not dependent on stsz existing - read it even if
+        # stsz turns out to be missing/unreadable below, same
+        # "independent, both non-fatal" treatment tkhd already gets
+        # above relative to mdia.
+        stsd = _find_box(data, *stbl, "stsd")
+        if stsd is not None:
+            codec = _parse_stsd_codec(data, *stsd)
+
         stsz = _find_box(data, *stbl, "stsz")
         if stsz is None:
             continue
@@ -306,4 +363,5 @@ def read_mp4_info(path: Path) -> Mp4Info:
         frame_count=frame_count,
         width=width,
         height=height,
+        codec=codec,
     )

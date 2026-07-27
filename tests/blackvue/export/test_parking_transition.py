@@ -8,6 +8,7 @@ from PIL import ImageDraw
 from PIL import ImageFont
 
 from blackvue.export import parking_transition as parking_transition_module
+from blackvue.export.media import concatenate_media
 from blackvue.export.parking_transition import ParkingTransitionCache
 from blackvue.export.parking_transition import PARKING_TRANSITION_DURATION_SECONDS
 from blackvue.export.parking_transition import _load_font
@@ -20,14 +21,20 @@ from blackvue.generate.media import MediaToolError
 from blackvue.generate.mp4_box_reader import Mp4Info
 
 
-def _make_video(path, duration_seconds=0.5, size="64x48", rate=10) -> None:
+def _make_video(path, duration_seconds=0.5, size="64x48", rate=10, codec="libx264") -> None:
+    # codec="libx265" produces an HEVC fixture, tagged "hvc1" to match
+    # what real BlackVue 4K cameras use (see media.py's
+    # _VIDEO_CODEC_ENCODERS comment) - used by the codec-matching
+    # tests below, which reproduce the real splice-corruption bug a
+    # mismatched-codec placeholder caused on Christer's own camera.
+    tag_args = ["-tag:v", "hvc1"] if codec == "libx265" else []
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-f", "lavfi",
             "-i", f"testsrc=size={size}:rate={rate}",
             "-t", str(duration_seconds),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:v", codec, "-pix_fmt", "yuv420p", *tag_args,
             str(path),
         ],
         capture_output=True,
@@ -89,7 +96,7 @@ def test_probe_video_properties_reads_width_height_frame_rate(tmp_path):
     video = tmp_path / "front.mp4"
     _make_video(video, size="64x48", rate=10)
 
-    width, height, frame_rate = probe_video_properties(video)
+    width, height, frame_rate, _codec = probe_video_properties(video)
 
     assert (width, height) == (64, 48)
     assert abs(frame_rate - 10.0) < 0.01
@@ -130,7 +137,7 @@ def test_probe_video_properties_falls_back_to_the_box_reader_when_ffprobe_fails(
         ),
     )
 
-    width, height, frame_rate = probe_video_properties(video)
+    width, height, frame_rate, _codec = probe_video_properties(video)
 
     assert (width, height) == (1920, 1080)
     assert abs(frame_rate - 30.0) < 0.01  # 1800 frames / 60s
@@ -201,7 +208,7 @@ def test_probe_video_properties_falls_back_to_the_box_reader_when_ffprobe_report
         ),
     )
 
-    width, height, frame_rate = probe_video_properties(video)
+    width, height, frame_rate, _codec = probe_video_properties(video)
 
     assert (width, height) == (1920, 1080)
     assert abs(frame_rate - 30.0) < 0.01  # 1800 frames / 60s
@@ -276,6 +283,82 @@ def test_probe_video_properties_raises_original_error_when_box_reader_frame_coun
     assert "20260726_144116_PF.mp4" in str(excinfo.value)
 
 
+def test_probe_video_properties_reads_codec_via_ffprobe(tmp_path):
+    # The real bug this exists to prevent: concatenate_media() stream-
+    # copies (see media.py's own docstring), so a placeholder encoded
+    # in the wrong codec silently corrupts the spliced result instead
+    # of erroring - confirmed on Christer's own 4K HEVC camera. Codec
+    # has to be probed and matched the same way width/height/frame_rate
+    # already are.
+    h264_video = tmp_path / "front_n.mp4"
+    _make_video(h264_video, size="64x48", rate=10)
+    hevc_video = tmp_path / "front_p.mp4"
+    _make_video(hevc_video, size="64x48", rate=10, codec="libx265")
+
+    *_, h264_codec = probe_video_properties(h264_video)
+    *_, hevc_codec = probe_video_properties(hevc_video)
+
+    assert h264_codec == "h264"
+    assert hevc_codec == "hevc"
+
+
+def test_probe_video_properties_box_reader_fallback_returns_codec(
+    tmp_path, monkeypatch,
+):
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    def _fake_run(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr="contradictionary STSC and STCO\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(
+            duration_seconds=60.0, frame_count=1800, width=1920, height=1080,
+            codec="hevc",
+        ),
+    )
+
+    *_, codec = probe_video_properties(video)
+
+    assert codec == "hevc"
+
+
+def test_probe_video_properties_codec_none_when_box_reader_codec_unknown(
+    tmp_path, monkeypatch,
+):
+    # A missing/unrecognized codec must not fail the whole probe the
+    # way a missing width/height/frame_count does - width/height/
+    # frame_rate are still usable, the caller just falls back to the
+    # H.264 default for the placeholder's own encode.
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    def _fake_run(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr="contradictionary STSC and STCO\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(
+            duration_seconds=60.0, frame_count=1800, width=1920, height=1080,
+            codec=None,
+        ),
+    )
+
+    width, height, frame_rate, codec = probe_video_properties(video)
+
+    assert (width, height) == (1920, 1080)
+    assert codec is None
+
+
 def test_probe_audio_properties_reads_codec_rate_channels(tmp_path):
     audio = tmp_path / "audio.aac"
     _make_audio(audio, sample_rate=44100, channels=1)
@@ -304,10 +387,30 @@ def test_render_parking_transition_video_matches_requested_dimensions(tmp_path):
     )
 
     assert destination.exists()
-    width, height, frame_rate = probe_video_properties(destination)
+    width, height, frame_rate, _codec = probe_video_properties(destination)
     assert (width, height) == (64, 48)
     assert abs(frame_rate - 10.0) < 0.5
     assert abs(_decoded_duration(destination) - 1.0) < 0.3
+
+
+def test_render_parking_transition_video_encodes_the_requested_codec(tmp_path):
+    h264_destination = tmp_path / "placeholder_h264.mp4"
+    hevc_destination = tmp_path / "placeholder_hevc.mp4"
+
+    render_parking_transition_video(
+        h264_destination, width=64, height=48, frame_rate=10.0,
+        duration_seconds=0.5, codec="h264",
+    )
+    render_parking_transition_video(
+        hevc_destination, width=64, height=48, frame_rate=10.0,
+        duration_seconds=0.5, codec="hevc",
+    )
+
+    *_, h264_codec = probe_video_properties(h264_destination)
+    *_, hevc_codec = probe_video_properties(hevc_destination)
+
+    assert h264_codec == "h264"
+    assert hevc_codec == "hevc"
 
 
 def test_render_parking_transition_video_uses_a_custom_image_when_given(tmp_path):
@@ -321,7 +424,7 @@ def test_render_parking_transition_video_uses_a_custom_image_when_given(tmp_path
     )
 
     assert destination.exists()
-    width, height, _ = probe_video_properties(destination)
+    width, height, _fr, _codec = probe_video_properties(destination)
     # Fitted/padded to the requested size, not left at the source
     # image's own (much smaller) 10x10.
     assert (width, height) == (64, 48)
@@ -352,7 +455,7 @@ def test_render_parking_transition_video_uses_a_custom_clip_when_given(tmp_path)
     )
 
     assert destination.exists()
-    width, height, frame_rate = probe_video_properties(destination)
+    width, height, frame_rate, _codec = probe_video_properties(destination)
     assert (width, height) == (64, 48)
     assert abs(frame_rate - 10.0) < 0.5
     assert probe_audio_properties(destination) is None
@@ -458,6 +561,69 @@ def test_parking_transition_cache_renders_a_new_video_for_different_properties(
     assert placeholder_small != placeholder_large
     assert probe_video_properties(placeholder_small)[:2] == (64, 48)
     assert probe_video_properties(placeholder_large)[:2] == (96, 64)
+
+
+def test_parking_transition_cache_video_for_matches_source_codec(tmp_path):
+    # Same resolution/frame rate, different codec - must still be two
+    # separate cache entries, each encoded to match its own source.
+    # This is the fix for a real bug: a placeholder encoded in the
+    # wrong codec doesn't error when spliced in via concatenate_media()'s
+    # stream copy, it just corrupts the result from the splice point
+    # onward (see the end-to-end decode test below).
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    cache = ParkingTransitionCache(work_dir=work_dir)
+
+    h264_source = tmp_path / "front_n.mp4"
+    hevc_source = tmp_path / "front_p.mp4"
+    _make_video(h264_source, size="64x48", rate=10)
+    _make_video(hevc_source, size="64x48", rate=10, codec="libx265")
+
+    h264_placeholder = cache.video_for(h264_source)
+    hevc_placeholder = cache.video_for(hevc_source)
+
+    assert h264_placeholder != hevc_placeholder
+    *_, h264_placeholder_codec = probe_video_properties(h264_placeholder)
+    *_, hevc_placeholder_codec = probe_video_properties(hevc_placeholder)
+    assert h264_placeholder_codec == "h264"
+    assert hevc_placeholder_codec == "hevc"
+
+
+def test_parking_transition_cache_video_for_hevc_splice_decodes_cleanly(tmp_path):
+    # The actual real-world bug, reproduced end-to-end: Christer's own
+    # 4K HEVC camera, a mid-trip Parking placeholder spliced in via
+    # concatenate_media() (ffmpeg's concat demuxer, a stream copy, not
+    # a re-encode - see media.py's own docstring). Before codec
+    # matching existed, the placeholder was always H.264, so the
+    # spliced file mixed two codecs' raw bitstreams under one declared
+    # HEVC codec - ffmpeg's own concat muxer doesn't validate that and
+    # produces the file without complaint, but no real decoder can
+    # parse it from the splice point onward ("Invalid NAL unit size").
+    # None of the metadata-only assertions elsewhere in this file
+    # (dimensions, codec_name, cache identity) would have caught that
+    # - only actually decoding the spliced output does, which is what
+    # this test does.
+    before = tmp_path / "before.mp4"
+    after = tmp_path / "after.mp4"
+    _make_video(before, duration_seconds=1.0, size="64x48", rate=10, codec="libx265")
+    _make_video(after, duration_seconds=1.0, size="64x48", rate=10, codec="libx265")
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    cache = ParkingTransitionCache(work_dir=work_dir)
+    placeholder = cache.video_for(before)
+
+    spliced = tmp_path / "spliced.mp4"
+    concatenate_media([before, placeholder, after], spliced)
+
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(spliced), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr.strip() == ""
 
 
 def test_parking_transition_cache_video_for_falls_back_to_sibling_on_probe_failure(

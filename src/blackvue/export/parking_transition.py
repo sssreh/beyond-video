@@ -222,10 +222,15 @@ def _fit_and_pad_image(image: Image.Image, width: int, height: int) -> Image.Ima
     return canvas
 
 
-def probe_video_properties(path: Path) -> tuple[int, int, float]:
-    """Return (width, height, frame_rate) for a video file - what
-    render_parking_transition_video() needs to encode a placeholder
-    clip that ffmpeg's concat demuxer will accept alongside it.
+def probe_video_properties(path: Path) -> tuple[int, int, float, str | None]:
+    """Return (width, height, frame_rate, codec) for a video file -
+    what render_parking_transition_video() needs to encode a
+    placeholder clip that ffmpeg's concat demuxer will accept
+    alongside it. `codec` is a normalized "h264"/"hevc" (matching
+    ffprobe's own codec_name for the ones this matters for), or None
+    if it couldn't be determined - callers then fall back to
+    bv-export's original default (H.264), same as before codec
+    detection existed.
 
     Tries ffprobe first; falls back to reading the MP4's own box
     structure directly (mp4_box_reader.read_mp4_info(), the same
@@ -249,6 +254,20 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
     straight to the "drop this segment" path, or worse, silently
     producing a 0.0 frame rate placeholder (Christer's real-world
     report: "P files still show 1 frame for the duration").
+
+    Codec detection specifically exists for a *third*, more serious
+    variant of the same class of bug: even when width/height/frame_rate
+    all come back correct, render_parking_transition_video() used to
+    always encode the placeholder as H.264 regardless of what the real
+    recording actually used. On a real trip from Christer's own 4K
+    HEVC camera, that meant an H.264 placeholder got spliced via
+    concatenate_media()'s stream-copy concat into a stream declared as
+    HEVC - which doesn't error (ffmpeg's concat demuxer doesn't
+    validate codec consistency), but produces a file no real decoder
+    can parse from the splice point onward ("Invalid NAL unit size",
+    the picture frozen while separately-muxed audio keeps playing -
+    reproduced directly against a minimal HEVC+H.264 concat fixture
+    before this fix, and confirmed clean after matching the codec).
     """
 
     try:
@@ -256,7 +275,7 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,avg_frame_rate",
+                "-show_entries", "stream=width,height,avg_frame_rate,codec_name",
                 "-of", "json",
                 str(path),
             ],
@@ -281,6 +300,15 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
             f"could not parse ffprobe output for {path.name}"
         ) from exc
 
+    # codec_name is read best-effort, separately from the
+    # width/height/frame_rate parse above - an unrecognized or missing
+    # codec_name isn't a reason to fail the whole probe (unlike a bad
+    # width/height/frame_rate), it just means the caller falls back to
+    # the H.264 default, same as every recording had before this
+    # existed.
+    codec = stream.get("codec_name") if isinstance(stream, dict) else None
+    codec = codec if codec in _RECOGNIZED_CODECS else None
+
     if width <= 0 or height <= 0 or frame_rate <= 0:
         # ffprobe can exit 0 and still hand back a useless
         # avg_frame_rate of "0/0" - seen on a real Parking recording
@@ -302,12 +330,20 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
             f"avg_frame_rate={stream['avg_frame_rate']!r})",
         )
 
-    return width, height, frame_rate
+    return width, height, frame_rate, codec
+
+
+# Recognized ffprobe codec_name values for probe_video_properties()'s
+# own codec detection - kept in the same vocabulary
+# mp4_box_reader._CODEC_FOURCC_MAP maps its own fourcc readings to, so
+# either probing path (ffprobe or the box-reader fallback) hands the
+# caller back the same two possible values.
+_RECOGNIZED_CODECS = ("h264", "hevc")
 
 
 def _probe_video_properties_from_boxes(
     path: Path, error_message: str
-) -> tuple[int, int, float]:
+) -> tuple[int, int, float, str | None]:
     """The probe_video_properties() ffprobe fallback - see that
     function's own docstring. Called both when ffprobe itself fails
     (a `subprocess.CalledProcessError`, e.g. "contradictionary STSC
@@ -339,6 +375,15 @@ def _probe_video_properties_from_boxes(
     segment" behavior instead of producing a broken placeholder -
     properly reading fragmented MP4 sample counts would need moof/trun
     parsing this reader doesn't have yet.
+
+    `info.codec`, unlike width/height/frame_count, is never required
+    for this to return successfully - a Parking recording whose codec
+    the box reader couldn't identify still gets a placeholder, just
+    encoded as bv-export's H.264 default, exactly like it always was
+    before per-recording codec matching existed. Only the STSC/STCO
+    class of file (ffprobe fails outright, box reader also can't help)
+    was ever "no codec info" in practice, since that's the same file
+    the box reader's own stsz/tkhd reads already fail on.
     """
 
     try:
@@ -354,7 +399,11 @@ def _probe_video_properties_from_boxes(
         and info.frame_count > 0
         and info.duration_seconds > 0
     ):
-        return info.width, info.height, info.frame_count / info.duration_seconds
+        return (
+            info.width, info.height,
+            info.frame_count / info.duration_seconds,
+            info.codec,
+        )
 
     raise MediaToolError(error_message)
 
@@ -412,11 +461,21 @@ def render_parking_transition_video(
     duration_seconds: float = PARKING_TRANSITION_DURATION_SECONDS,
     image_path: Path | None = None,
     clip_path: Path | None = None,
+    codec: str = "h264",
 ) -> None:
     """Render the "parking footage skipped" placeholder video at
     `destination`, sized/timed to match a real recording's own
     width/height/frame_rate - see this module's docstring for why
     that matters for the concat demuxer.
+
+    `codec` ("h264" or "hevc", see media.py's
+    encode_with_nvenc_fallback()) should be the same recording's own
+    video codec too, for the same reason: concatenate_media()'s
+    stream-copy concat needs a byte-compatible splice, not just a
+    matching resolution/frame rate - see probe_video_properties()'s
+    own docstring for the real-world bug this fixes. Defaults to
+    "h264" (bv-export's original, only-ever codec) for any caller that
+    doesn't know the source's codec (e.g. it couldn't be detected).
 
     `clip_path`, if given (Christer's own --parking-transition-clip -
     e.g. one of his own AI-generated "no parking" clips), takes
@@ -443,7 +502,7 @@ def render_parking_transition_video(
         _render_from_clip(
             clip_path, destination,
             width=width, height=height, frame_rate=frame_rate,
-            duration_seconds=duration_seconds,
+            duration_seconds=duration_seconds, codec=codec,
         )
         return
 
@@ -465,6 +524,7 @@ def render_parking_transition_video(
                 "-r", str(frame_rate),
             ],
             destination,
+            video_codec=codec,
         )
     finally:
         frame_path.unlink(missing_ok=True)
@@ -478,6 +538,7 @@ def _render_from_clip(
     height: int,
     frame_rate: float,
     duration_seconds: float,
+    codec: str = "h264",
 ) -> None:
     """Re-encode `clip_path` (a real video, not a still image) into
     `destination`: fitted/padded to width x height without distorting
@@ -489,6 +550,12 @@ def _render_from_clip(
     option, placed after -i) always wins - re-timed to `frame_rate`,
     and stripped of its own audio track with -an (see
     render_parking_transition_video()'s own docstring for why).
+
+    `codec` - see render_parking_transition_video()'s own docstring;
+    threaded through here the same way regardless of whether the
+    placeholder's own visual content came from Christer's clip or the
+    default procedural frame, since it's about matching the *neighbour
+    recordings'* codec, unrelated to which source image/clip was used.
 
     Since the loop always restarts from `clip_path`'s own frame 0, a
     source longer than `duration_seconds` effectively contributes only
@@ -514,6 +581,7 @@ def _render_from_clip(
             ),
         ],
         destination,
+        video_codec=codec,
     )
 
 
@@ -576,15 +644,21 @@ class ParkingTransitionCache:
     work_dir: Path
     image_path: Path | None = None
     clip_path: Path | None = None
-    _video_cache: dict[tuple[int, int, float], Path] = field(default_factory=dict)
+    _video_cache: dict[tuple[int, int, float, str], Path] = field(default_factory=dict)
     _silence_cache: dict[tuple[str, int, int], Path] = field(default_factory=dict)
     _next_id: int = 0
 
     def video_for(self, source: Path, *, fallback_source: Path | None = None) -> Path:
         """Return a placeholder video matching `source`'s own width/
-        height/frame_rate, rendering one if this is the first request
-        for that combination. `clip_path`, if set, takes priority over
-        `image_path` - see render_parking_transition_video().
+        height/frame_rate/codec, rendering one if this is the first
+        request for that combination. `clip_path`, if set, takes
+        priority over `image_path` - see render_parking_transition_video().
+
+        Matching `source`'s own codec (falling back to "h264", the
+        original always-used default, if it couldn't be determined)
+        matters as much as matching width/height/frame_rate - see
+        probe_video_properties()'s own docstring for the real-world
+        splice corruption this fixes.
 
         `fallback_source`, if given (trip_export.py passes the sibling
         FRONT/REAR file from the same recording), is probed instead
@@ -605,16 +679,19 @@ class ParkingTransitionCache:
         """
 
         try:
-            width, height, frame_rate = probe_video_properties(source)
+            width, height, frame_rate, codec = probe_video_properties(source)
         except MediaToolError as exc:
             if fallback_source is None:
                 raise
             try:
-                width, height, frame_rate = probe_video_properties(fallback_source)
+                width, height, frame_rate, codec = probe_video_properties(
+                    fallback_source
+                )
             except MediaToolError:
                 raise exc from None
 
-        key = (width, height, round(frame_rate, 3))
+        codec = codec or "h264"
+        key = (width, height, round(frame_rate, 3), codec)
 
         if key not in self._video_cache:
             self._next_id += 1
@@ -626,6 +703,7 @@ class ParkingTransitionCache:
                 frame_rate=frame_rate,
                 image_path=self.image_path,
                 clip_path=self.clip_path,
+                codec=codec,
             )
             self._video_cache[key] = destination
 

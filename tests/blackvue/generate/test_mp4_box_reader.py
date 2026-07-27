@@ -45,11 +45,29 @@ def _tkhd(width: int, height: int) -> bytes:
     return bytes(payload)
 
 
+def _stsd(fourcc: bytes) -> bytes:
+    # Real stsd payload: 4 bytes version/flags + 4 bytes entry_count,
+    # then one "sample entry" per distinct format the track uses - a
+    # BlackVue recording only ever has one. A sample entry is itself
+    # box-shaped (size + its own 4-character type, which *is* the
+    # codec fourcc - "avc1" for H.264, "hvc1" for HEVC, etc.) followed
+    # by codec-specific fields _parse_stsd_codec() never reads, so an
+    # arbitrary zeroed payload is enough here.
+    entry = _box(fourcc, b"\x00" * 16)
+    return b"\x00" * 4 + (1).to_bytes(4, "big") + entry
+
+
 def _video_trak(
-    frame_count: int, *, width: int | None = None, height: int | None = None
+    frame_count: int,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    codec_fourcc: bytes | None = None,
 ) -> bytes:
-    stbl = _box(b"stsz", _stsz(frame_count, sample_size=100))
-    minf = _box(b"minf", _box(b"stbl", stbl))
+    stbl_children = _box(b"stsz", _stsz(frame_count, sample_size=100))
+    if codec_fourcc is not None:
+        stbl_children += _box(b"stsd", _stsd(codec_fourcc))
+    minf = _box(b"minf", _box(b"stbl", stbl_children))
     mdia = _box(b"hdlr", _hdlr(b"vide")) + minf
     trak_payload = _box(b"mdia", mdia)
     if width is not None and height is not None:
@@ -193,3 +211,66 @@ def test_read_mp4_info_ignores_a_non_video_traks_tkhd(tmp_path):
     info = read_mp4_info(path)
 
     assert (info.width, info.height) == (1920, 1080)
+
+
+def test_read_mp4_info_reads_h264_codec_from_stsd(tmp_path):
+    # The real-world motivation: a placeholder clip spliced via
+    # ffmpeg's concat demuxer (a stream-copy, not a re-encode) has to
+    # be encoded in the *same* codec as the real recording it stands
+    # in for, or the resulting file mixes two codecs' raw bitstreams
+    # under one declared codec - a real bug found on Christer's own 4K
+    # HEVC camera (see parking_transition.py's probe_video_properties()
+    # docstring).
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        _video_trak(frame_count=1800, codec_fourcc=b"avc1"),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert info.codec == "h264"
+
+
+def test_read_mp4_info_reads_hevc_codec_from_stsd(tmp_path):
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        _video_trak(frame_count=1800, codec_fourcc=b"hvc1"),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert info.codec == "hevc"
+
+
+def test_read_mp4_info_codec_none_for_an_unrecognized_fourcc(tmp_path):
+    # mp4v (MPEG-4 Part 2), seen on some older/lower-res dashcam
+    # firmware, isn't in _CODEC_FOURCC_MAP - callers treat this the
+    # same as "couldn't be determined", falling back to bv-export's
+    # H.264 default rather than guessing.
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        _video_trak(frame_count=1800, codec_fourcc=b"mp4v"),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert info.codec is None
+
+
+def test_read_mp4_info_codec_none_without_an_stsd_box(tmp_path):
+    data = _build_mp4(
+        _mvhd_v0(timescale=30, duration=60),
+        _video_trak(frame_count=1800),
+    )
+    path = tmp_path / "20260715_133255_PF.mp4"
+    path.write_bytes(data)
+
+    info = read_mp4_info(path)
+
+    assert info.codec is None
