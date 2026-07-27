@@ -293,13 +293,55 @@ def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
     assert "trimmed front to match rear" in warnings[0]
 
 
-def test_align_front_rear_durations_leaves_pairs_within_tolerance_alone(tmp_path):
+def test_align_front_rear_durations_trims_even_a_small_real_difference(tmp_path):
+    # Replaces an earlier version of this test, which asserted a 0.2s
+    # difference was left alone under a 5-second skip-tolerance.
+    # Dropped after a real export came back 8s out of sync overall
+    # with no single recording differing by anywhere near 5s - small
+    # per-recording differences, each individually "within tolerance,"
+    # had simply added up across the whole trip with nothing ever
+    # triggering a trim. Christer's call once that surfaced: "Best is
+    # to trim every recording" - so any real difference, however
+    # small, is now aligned exactly, every time.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     front = source_dir / "front.mp4"
     rear = source_dir / "rear.mp4"
     _make_video(front, 3.0)
     _make_video(rear, 3.2)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _align_front_rear_durations(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True
+    )
+
+    assert list(overrides.keys()) == [(RecordingId("20260720_100000_N"), Asset.REAR)]
+    assert len(warnings) == 1
+    assert "trimmed rear to match front" in warnings[0]
+
+
+def test_align_front_rear_durations_ignores_sub_epsilon_float_noise(tmp_path):
+    # Two videos generated identically (same duration, same encode
+    # parameters) should probe back as equal, or near enough that the
+    # tiny gap is ffprobe's own floating-point rounding rather than a
+    # real difference - this shouldn't trigger a pointless trim on
+    # every single recording of every export.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 3.0)
+    _make_video(rear, 3.0)
 
     trip = Trip((
         Recording(

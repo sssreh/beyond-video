@@ -97,19 +97,20 @@ def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
     return trip.label
 
 
-# How far apart a recording's own front and rear video durations can
-# be before it's treated as a real mismatch (see
-# _align_front_rear_durations()) rather than the small, ordinary
-# jitter (a second or less, in every real trip.log Christer has
-# shared) two independently-timed camera modules naturally show.
-# Christer's own choice, given his real archive's normal recordings
-# varied by up to ~1s on their own: enough headroom that ordinary
-# variation never triggers a trim, tight enough to still catch a
-# genuinely broken file quickly (the case that prompted this: a
-# corrupted download left one recording's front video at 34.9s
-# against a normal 179.8s rear - a 144.9s gap, nothing close to this
-# threshold).
-FRONT_REAR_DURATION_TOLERANCE_SECONDS = 5.0
+# Below this, a front/rear duration difference is treated as
+# floating-point/rounding noise in ffprobe's own duration reporting,
+# not a real difference - not a "tolerance" in the sense of ignoring
+# small real mismatches. Christer's original design used a 5-second
+# tolerance (deliberately ignoring anything smaller as ordinary
+# per-camera jitter), but that let small per-recording differences -
+# each individually under 5s, none ever triggering a trim - add up
+# across a whole trip: a real export came back with front/rear 8s out
+# of sync overall despite no single recording differing by anywhere
+# near 5s, and trip.log showing no trim had happened anywhere. His
+# call once that surfaced: "Best is to trim every recording" - so
+# every recording's own front/rear pair is now aligned exactly,
+# every export, with no headroom for drift to accumulate through.
+FRONT_REAR_DURATION_EPSILON_SECONDS = 0.01
 
 
 def _align_front_rear_durations(
@@ -119,40 +120,38 @@ def _align_front_rear_durations(
     log: TripLog | None,
     *,
     include_parking: bool,
-    tolerance_seconds: float = FRONT_REAR_DURATION_TOLERANCE_SECONDS,
+    epsilon_seconds: float = FRONT_REAR_DURATION_EPSILON_SECONDS,
 ) -> dict[tuple[RecordingId, Asset], Path]:
-    """Detect a recording whose own front and rear video durations
-    differ by more than `tolerance_seconds`, and trim the *longer*
-    side down to match the shorter one - never the other way around.
-    Padding the shorter side would mean splicing synthetically
-    generated frames onto the end of a real camera file, the exact
-    class of corruption the parking-placeholder feature was removed
-    over this same session (see WORKING_CONTEXT.md) - a plain tail
-    trim only ever removes real bytes from a file that's already one
-    continuous, valid encoder session, so it carries none of that
-    risk (see media.py's trim_media() docstring).
+    """Trim every recording's own front/rear video pair to exactly
+    match each other, whenever they differ at all (beyond
+    `epsilon_seconds`' worth of floating-point noise) - always the
+    *longer* side trimmed down to the shorter one, never the other
+    way around. Padding the shorter side would mean splicing
+    synthetically generated frames onto the end of a real camera
+    file, the exact class of corruption the parking-placeholder
+    feature was removed over this same session (see
+    WORKING_CONTEXT.md) - a plain tail trim only ever removes real
+    bytes from a file that's already one continuous, valid encoder
+    session, so it carries none of that risk (see media.py's
+    trim_media() docstring).
 
-    Found for real on Christer's own archive: one recording's front
-    video was 34.9s - a corrupted download, full file size on disk
-    but badly truncated content - while its own rear video was a
-    normal 179.8s. `_concatenate_asset()` had no way to notice
-    anything wrong: it just appends whatever each side's own file
-    contains, so front.mp4 came out 144.9s shorter than rear.mp4 from
-    that recording onward, with the two permanently out of sync for
-    the rest of the trip and not so much as a warning anywhere.
-    Redownloading the one corrupted file fixed that specific case,
-    but nothing in the pipeline would catch a similar mismatch from
-    any other cause (camera-side timelapse/frame-count differences
-    between the two channels during Parking mode being a plausible
-    one) - this exists so any future mismatch gets caught and
-    corrected automatically rather than silently drifting the rest
-    of the trip out of sync.
+    Originally gated behind a 5-second tolerance (skip anything
+    smaller as ordinary per-camera jitter) - found for real on
+    Christer's own archive that this let per-recording drift, each
+    individually under 5s, accumulate across a whole trip with
+    nothing ever triggering a trim: one export came back 8s out of
+    sync overall with trip.log showing no trim had fired anywhere.
+    Trimming every recording's pair exactly, every time, closes that
+    gap - there's no accumulation window left for drift to hide in.
+    The first real case that motivated this feature at all was more
+    dramatic still: a corrupted download left one recording's front
+    video at 34.9s against a normal 179.8s rear, a 144.9s gap from a
+    single file.
 
     Returns a `{(recording id, asset): trimmed path}` map -
     `_concatenate_asset()` substitutes the trimmed file in place of
     the recording's own real one for whichever side (FRONT or REAR)
-    was too long; the shorter side, and every other recording, is
-    left completely untouched.
+    was too long; the shorter side is left completely untouched.
 
     A recording that will be dropped anyway (Parking-mode, when
     `include_parking` is False) is skipped without probing either
@@ -183,7 +182,7 @@ def _align_front_rear_durations(
             continue
 
         diff = front_duration - rear_duration
-        if abs(diff) <= tolerance_seconds:
+        if abs(diff) <= epsilon_seconds:
             continue
 
         if diff > 0:
@@ -199,7 +198,7 @@ def _align_front_rear_durations(
         except MediaToolError as exc:
             message = (
                 f"{recording.id}: front/rear duration differs by "
-                f"{abs(diff):.1f}s but could not be aligned: {exc}"
+                f"{abs(diff):.2f}s but could not be aligned: {exc}"
             )
             warnings.append(message)
             if log is not None:
@@ -208,10 +207,15 @@ def _align_front_rear_durations(
 
         overrides[(recording.id, longer_asset)] = trimmed_path
 
+        # Logged for every trim regardless of size, not just the
+        # dramatic ones - Christer, once small per-recording
+        # differences turned out to add up across a whole trip
+        # without any single one being large enough to look
+        # suspicious on its own: "Log every trim, any size."
         message = (
             f"{recording.id}: front/rear duration differs by "
-            f"{abs(diff):.1f}s (front={front_duration:.1f}s, "
-            f"rear={rear_duration:.1f}s) - trimmed {longer_label} to "
+            f"{abs(diff):.2f}s (front={front_duration:.2f}s, "
+            f"rear={rear_duration:.2f}s) - trimmed {longer_label} to "
             f"match {shorter_label}"
         )
         warnings.append(message)

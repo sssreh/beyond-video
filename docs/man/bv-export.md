@@ -89,7 +89,9 @@ An earlier version of this feature replaced a mid-trip Parking recording with a 
 
 ### Front/rear duration alignment
 
-Every recording's front and rear video are expected to run the same length. If a single recording's own front and rear durations differ by more than 5 seconds (a corrupted or truncated download is the confirmed real-world cause so far), `bv-export` automatically trims the *longer* side down to match the shorter one for that recording, and adds a message to `trip.log` and the run's own warning output naming the recording and which side was trimmed. The shorter side, and every other recording in the trip, is left untouched. Only the longer side is ever trimmed - never is the shorter side padded or extended, since that would require splicing in synthetically generated content, the same class of corruption described above for the removed Parking-placeholder feature. This check runs regardless of `--include-parking`; a Parking recording that will be dropped anyway is skipped without probing either side.
+Every recording's front and rear video are expected to run the same length. `bv-export` probes both for every recording and, whenever they differ at all (beyond a hundredth of a second, which is treated as ffprobe's own floating-point rounding rather than a real gap), automatically trims the *longer* side down to match the shorter one for that recording - every recording, every export, not just the dramatic cases. A message is added to `trip.log` and the run's own warning output for every trim, naming the recording, the size of the gap, and which side was trimmed. The shorter side is left untouched. Only the longer side is ever trimmed - never is the shorter side padded or extended, since that would require splicing in synthetically generated content, the same class of corruption described above for the removed Parking-placeholder feature. This check runs regardless of `--include-parking`; a Parking recording that will be dropped anyway is skipped without probing either side.
+
+An earlier version of this only trimmed a recording once its own front/rear gap passed a 5-second tolerance, on the theory that anything smaller was ordinary per-camera jitter not worth acting on. Dropped after a real export came back with `front.mp4`/`rear.mp4`/`stitch.mp4` all 8 seconds out of sync overall, despite no single recording differing by anywhere near 5 seconds and `trip.log` showing no trim had fired anywhere - small per-recording gaps, each individually below the tolerance, had simply accumulated across the whole trip. Trimming every recording's pair exactly, every time, closes that gap: there's no accumulation window left for drift to hide in.
 
 ### Map
 
@@ -192,7 +194,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 
 | File | Written by |
 |---|---|
-| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a Parking-mode recording is left out entirely unless `--include-parking` is given; a recording whose own front/rear durations differ by more than 5s has its longer side auto-trimmed to match (see "Front/rear duration alignment" above) |
+| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a Parking-mode recording is left out entirely unless `--include-parking` is given; a recording whose own front/rear durations differ at all has its longer side auto-trimmed to match (see "Front/rear duration alignment" above) |
 | `trip.gpx` | always, if GPS data exists |
 | `trip.3gf` | always, if g-sensor data exists |
 | `trip.srt`, `trip.lrc` | always, if transcript data exists |
