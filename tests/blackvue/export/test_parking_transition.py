@@ -165,6 +165,81 @@ def test_probe_video_properties_raises_original_ffprobe_error_when_box_reader_la
     assert "error reading header" in str(excinfo.value)
 
 
+def test_probe_video_properties_falls_back_to_the_box_reader_when_ffprobe_reports_zero_frame_rate(
+    tmp_path, monkeypatch,
+):
+    # A second, quieter variant of the same real-world bug: ffprobe
+    # can exit 0 while reporting avg_frame_rate "0/0" for a Parking
+    # time-lapse file whose frame count isn't in the stream header it
+    # read - no CalledProcessError at all, so probe_video_properties()
+    # has to check the parsed frame_rate itself, not just catch
+    # ffprobe failing outright. Confirmed via Christer's real-world
+    # report ("P files still show 1 frame for the duration, it
+    # shouldn't even be included by default") on a *mid-trip* Parking
+    # file - i.e. going through the placeholder path, whose earlier
+    # frame_count==0 fix only covered the ffprobe-raises-an-error
+    # case, not this quieter one.
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    def _fake_run(command, **kwargs):
+        assert command[0] == "ffprobe"
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=json.dumps(
+                {"streams": [{"width": 1920, "height": 1080, "avg_frame_rate": "0/0"}]}
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(
+            duration_seconds=60.0, frame_count=1800, width=1920, height=1080,
+        ),
+    )
+
+    width, height, frame_rate = probe_video_properties(video)
+
+    assert (width, height) == (1920, 1080)
+    assert abs(frame_rate - 30.0) < 0.01  # 1800 frames / 60s
+
+
+def test_probe_video_properties_raises_when_ffprobe_frame_rate_is_zero_and_box_reader_also_fails(
+    tmp_path, monkeypatch,
+):
+    # Same "0/0" ffprobe scenario as above, but the box reader can't
+    # help either (frame_count == 0, the same "unreadable" value a
+    # fragmented moof/trun track produces) - must raise rather than
+    # ever handing ffmpeg -r 0.0.
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    def _fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=json.dumps(
+                {"streams": [{"width": 1920, "height": 1080, "avg_frame_rate": "0/0"}]}
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(duration_seconds=60.0, frame_count=0, width=1920, height=1080),
+    )
+
+    with pytest.raises(MediaToolError) as excinfo:
+        probe_video_properties(video)
+
+    assert "20260726_144116_PF.mp4" in str(excinfo.value)
+    assert "avg_frame_rate" in str(excinfo.value)
+
+
 def test_probe_video_properties_raises_original_error_when_box_reader_frame_count_is_zero(
     tmp_path, monkeypatch,
 ):

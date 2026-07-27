@@ -230,17 +230,25 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
     Tries ffprobe first; falls back to reading the MP4's own box
     structure directly (mp4_box_reader.read_mp4_info(), the same
     tolerant reader media.py's get_span() already falls back to for
-    duration) if ffprobe fails. This isn't a rare-corruption edge
-    case for Parking-mode recordings specifically: BlackVue's own
-    Parking-mode time-lapse container structure is a known quirk that
-    trips ffmpeg's strict STSC/STCO consistency check ("contradictionary
-    STSC and STCO", "error reading header") on every such file, not
-    just damaged ones - other players (VLC, the BlackVue viewer itself)
-    open them fine, so the video data is intact even though ffprobe
-    refuses it. Falling back here means a Parking recording's own
-    genuinely-intact video can still be probed for a placeholder's
-    sizing, rather than every single one always failing straight to
-    the "drop this segment" path.
+    duration) if ffprobe fails outright, *or* if it exits cleanly but
+    hands back an unusable width/height/frame_rate. This isn't a
+    rare-corruption edge case for Parking-mode recordings specifically:
+    BlackVue's own Parking-mode time-lapse container structure is a
+    known quirk that trips ffmpeg's strict STSC/STCO consistency check
+    ("contradictionary STSC and STCO", "error reading header") on
+    every such file, not just damaged ones - other players (VLC, the
+    BlackVue viewer itself) open them fine, so the video data is
+    intact even though ffprobe refuses it. A second, quieter variant
+    of the same underlying problem: ffprobe can also exit 0 while
+    reporting `avg_frame_rate` as "0/0" for these files (it can't
+    derive an average from the stream header alone) - no exception at
+    all, so this has to be checked explicitly rather than only caught
+    via `except`. Falling back here (either way) means a Parking
+    recording's own genuinely-intact video can still be probed for a
+    placeholder's sizing, rather than every single one always failing
+    straight to the "drop this segment" path, or worse, silently
+    producing a 0.0 frame rate placeholder (Christer's real-world
+    report: "P files still show 1 frame for the duration").
     """
 
     try:
@@ -259,7 +267,9 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
     except FileNotFoundError as exc:
         raise MediaToolError("ffprobe not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
-        return _probe_video_properties_from_boxes(path, exc)
+        return _probe_video_properties_from_boxes(
+            path, f"ffprobe failed for {path.name}: {(exc.stderr or '').strip()}"
+        )
 
     try:
         stream = json.loads(result.stdout)["streams"][0]
@@ -271,18 +281,43 @@ def probe_video_properties(path: Path) -> tuple[int, int, float]:
             f"could not parse ffprobe output for {path.name}"
         ) from exc
 
+    if width <= 0 or height <= 0 or frame_rate <= 0:
+        # ffprobe can exit 0 and still hand back a useless
+        # avg_frame_rate of "0/0" - seen on a real Parking recording
+        # (Christer: "P files still show 1 frame for the duration, it
+        # shouldn't even be included by default", a *mid-trip* file,
+        # so this was going through the placeholder path, not raw
+        # inclusion). "0/0" happens when ffprobe can't derive an
+        # average from the stream header it read - a different
+        # failure mode than the STSC/STCO error _probe_video_properties_from_boxes()
+        # was originally written for (that one makes ffprobe exit
+        # non-zero; this one doesn't), but the same fix applies: don't
+        # hand render_parking_transition_video() a 0.0 frame rate,
+        # fall back to the box reader's own frame_count/duration
+        # instead, same as an outright ffprobe failure.
+        return _probe_video_properties_from_boxes(
+            path,
+            f"ffprobe returned an unusable frame rate for {path.name} "
+            f"(width={width}, height={height}, "
+            f"avg_frame_rate={stream['avg_frame_rate']!r})",
+        )
+
     return width, height, frame_rate
 
 
 def _probe_video_properties_from_boxes(
-    path: Path, ffprobe_error: "subprocess.CalledProcessError"
+    path: Path, error_message: str
 ) -> tuple[int, int, float]:
     """The probe_video_properties() ffprobe fallback - see that
-    function's own docstring. Re-raises ffprobe's own original error
-    (not a box-reader-specific one) if the box reader can't produce a
-    complete (width, height, frame_rate) either, since that's still
-    the more informative message - it names the real file and ffmpeg's
-    own diagnostic, rather than "no tkhd box" or similar.
+    function's own docstring. Called both when ffprobe itself fails
+    (a `subprocess.CalledProcessError`, e.g. "contradictionary STSC
+    and STCO") and when ffprobe exits cleanly but hands back a
+    degenerate `avg_frame_rate` of "0/0" - `error_message` is already
+    formatted for whichever case applies, and is what gets raised if
+    the box reader can't produce a complete (width, height,
+    frame_rate) either, since that's still the more informative
+    message - it names the real file and ffmpeg's own diagnostic,
+    rather than "no tkhd box" or similar.
 
     `frame_count > 0` (not just "is not None") matters: a real-world
     Parking recording, from Christer's own report, produced a
@@ -321,9 +356,7 @@ def _probe_video_properties_from_boxes(
     ):
         return info.width, info.height, info.frame_count / info.duration_seconds
 
-    raise MediaToolError(
-        f"ffprobe failed for {path.name}: {ffprobe_error.stderr.strip()}"
-    ) from ffprobe_error
+    raise MediaToolError(error_message)
 
 
 def probe_audio_properties(path: Path) -> tuple[str, int, int] | None:
