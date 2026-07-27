@@ -9,8 +9,10 @@ from blackvue.export.map_render import _arrow_points
 from blackvue.export.map_render import _FONT_CANDIDATES
 from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
+from blackvue.export.map_render import DEFAULT_MARGIN_PX
 from blackvue.export.map_render import render_base_map
 from blackvue.export.map_render import render_frame
+from blackvue.export.map_render import TEXT_MARGIN_PX
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
 
@@ -46,6 +48,47 @@ def test_render_frame_draws_something_when_route_and_roads_given():
     # environments) - just confirms drawing actually changed pixels
     # relative to a blank background of the same size.
     assert list(background.getdata()) != list(with_content.getdata())
+
+
+def test_render_frame_draws_timestamp_text_close_to_the_left_edge():
+    # Regression test: on a narrow --stitch-map vertical panel,
+    # Christer found the timestamp's seconds running past the right
+    # edge and getting clipped off-frame, since the text is drawn at
+    # a fixed font size starting at the same wide margin used to frame
+    # the route/roads projection. TEXT_MARGIN_PX gives the text its
+    # own, much tighter left inset (matching GPS_BADGE_MARGIN_PX)
+    # instead, buying back real width for the line before it runs out
+    # of room - this only checks the text now starts left of the old
+    # shared DEFAULT_MARGIN_PX, not an exact pixel offset (font
+    # rendering/AA can vary across environments).
+    width, height = 320, 240
+    with_text = render_frame(
+        _BBOX, roads=(), route_points=(), position=None,
+        timestamp_text="2026-07-27 14:25:17", width=width, height=height,
+    )
+    without_text = render_frame(
+        _BBOX, roads=(), route_points=(), position=None,
+        width=width, height=height,
+    )
+
+    diff_columns = [
+        x for x in range(width)
+        if any(
+            with_text.getpixel((x, y)) != without_text.getpixel((x, y))
+            for y in range(height)
+        )
+    ]
+
+    assert diff_columns, "expected timestamp text to draw something"
+    assert min(diff_columns) < DEFAULT_MARGIN_PX
+    assert min(diff_columns) >= 0
+
+
+def test_text_margin_is_tighter_than_the_default_projection_margin():
+    # The whole point of a separate constant - if these ever became
+    # equal (or TEXT_MARGIN_PX ever grew past DEFAULT_MARGIN_PX) the
+    # fix above would silently stop doing anything.
+    assert TEXT_MARGIN_PX < DEFAULT_MARGIN_PX
 
 
 def test_render_frame_handles_a_single_route_point_without_crashing():

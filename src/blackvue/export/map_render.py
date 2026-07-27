@@ -139,6 +139,18 @@ GPS_BADGE_MARGIN_PX = 10
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 640
 DEFAULT_MARGIN_PX = 24
+
+# The speed/timestamp text's own left inset - deliberately much
+# tighter than DEFAULT_MARGIN_PX (which also frames the route/roads
+# projection and needs real breathing room). Christer, on a narrow
+# --stitch-map vertical panel at its default size: the timestamp's
+# seconds were running past the right edge and getting clipped off
+# -frame, since the text is a fixed 18px font drawn at a fixed x
+# regardless of how narrow the panel is. Moving the text as far left
+# as this project's other small-badge margins go (matches
+# GPS_BADGE_MARGIN_PX) buys back real width for the line before it
+# runs out of room, without touching the route's own framing margin.
+TEXT_MARGIN_PX = 10
 DEFAULT_MARKER_LENGTH_PX = 16
 DEFAULT_MARKER_HALF_WIDTH_PX = 8
 
@@ -567,7 +579,7 @@ def render_frame(
         text = "\n".join(lines)
         font = _load_font()
         draw.multiline_text(
-            (margin, height - margin - 24 * len(lines)),
+            (TEXT_MARGIN_PX, height - margin - 24 * len(lines)),
             text,
             fill=TEXT_COLOR,
             font=font,
