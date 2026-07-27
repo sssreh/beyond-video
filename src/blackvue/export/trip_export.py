@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +34,7 @@ from .gsensor_graph_video import render_gsensor_graph_video
 from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
 from .media import concatenate_media
+from .media import trim_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
@@ -95,6 +97,130 @@ def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
     return trip.label
 
 
+# How far apart a recording's own front and rear video durations can
+# be before it's treated as a real mismatch (see
+# _align_front_rear_durations()) rather than the small, ordinary
+# jitter (a second or less, in every real trip.log Christer has
+# shared) two independently-timed camera modules naturally show.
+# Christer's own choice, given his real archive's normal recordings
+# varied by up to ~1s on their own: enough headroom that ordinary
+# variation never triggers a trim, tight enough to still catch a
+# genuinely broken file quickly (the case that prompted this: a
+# corrupted download left one recording's front video at 34.9s
+# against a normal 179.8s rear - a 144.9s gap, nothing close to this
+# threshold).
+FRONT_REAR_DURATION_TOLERANCE_SECONDS = 5.0
+
+
+def _align_front_rear_durations(
+    trip: Trip,
+    work_dir: Path,
+    warnings: list[str],
+    log: TripLog | None,
+    *,
+    include_parking: bool,
+    tolerance_seconds: float = FRONT_REAR_DURATION_TOLERANCE_SECONDS,
+) -> dict[tuple[RecordingId, Asset], Path]:
+    """Detect a recording whose own front and rear video durations
+    differ by more than `tolerance_seconds`, and trim the *longer*
+    side down to match the shorter one - never the other way around.
+    Padding the shorter side would mean splicing synthetically
+    generated frames onto the end of a real camera file, the exact
+    class of corruption the parking-placeholder feature was removed
+    over this same session (see WORKING_CONTEXT.md) - a plain tail
+    trim only ever removes real bytes from a file that's already one
+    continuous, valid encoder session, so it carries none of that
+    risk (see media.py's trim_media() docstring).
+
+    Found for real on Christer's own archive: one recording's front
+    video was 34.9s - a corrupted download, full file size on disk
+    but badly truncated content - while its own rear video was a
+    normal 179.8s. `_concatenate_asset()` had no way to notice
+    anything wrong: it just appends whatever each side's own file
+    contains, so front.mp4 came out 144.9s shorter than rear.mp4 from
+    that recording onward, with the two permanently out of sync for
+    the rest of the trip and not so much as a warning anywhere.
+    Redownloading the one corrupted file fixed that specific case,
+    but nothing in the pipeline would catch a similar mismatch from
+    any other cause (camera-side timelapse/frame-count differences
+    between the two channels during Parking mode being a plausible
+    one) - this exists so any future mismatch gets caught and
+    corrected automatically rather than silently drifting the rest
+    of the trip out of sync.
+
+    Returns a `{(recording id, asset): trimmed path}` map -
+    `_concatenate_asset()` substitutes the trimmed file in place of
+    the recording's own real one for whichever side (FRONT or REAR)
+    was too long; the shorter side, and every other recording, is
+    left completely untouched.
+
+    A recording that will be dropped anyway (Parking-mode, when
+    `include_parking` is False) is skipped without probing either
+    side - no point trimming footage that never reaches
+    front.mp4/rear.mp4 regardless. A recording missing either side,
+    or one ffprobe can't read at all, is also left alone - this
+    function only ever acts on two files it can both successfully
+    probe; anything else surfaces through `_concatenate_asset()`'s
+    own existing per-file error handling instead, same as before this
+    existed.
+    """
+
+    overrides: dict[tuple[RecordingId, Asset], Path] = {}
+
+    for recording in trip.recordings:
+        if recording.id.is_parking and not include_parking:
+            continue
+        if not recording.has(Asset.FRONT) or not recording.has(Asset.REAR):
+            continue
+
+        front_path = recording.file(Asset.FRONT).path
+        rear_path = recording.file(Asset.REAR).path
+
+        try:
+            front_duration = probe(front_path).duration_seconds
+            rear_duration = probe(rear_path).duration_seconds
+        except MediaToolError:
+            continue
+
+        diff = front_duration - rear_duration
+        if abs(diff) <= tolerance_seconds:
+            continue
+
+        if diff > 0:
+            longer_asset, longer_path, longer_label = Asset.FRONT, front_path, "front"
+            shorter_duration, shorter_label = rear_duration, "rear"
+        else:
+            longer_asset, longer_path, longer_label = Asset.REAR, rear_path, "rear"
+            shorter_duration, shorter_label = front_duration, "front"
+
+        trimmed_path = work_dir / f"{recording.id}_{longer_label}_aligned.mp4"
+        try:
+            trim_media(longer_path, trimmed_path, shorter_duration)
+        except MediaToolError as exc:
+            message = (
+                f"{recording.id}: front/rear duration differs by "
+                f"{abs(diff):.1f}s but could not be aligned: {exc}"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        overrides[(recording.id, longer_asset)] = trimmed_path
+
+        message = (
+            f"{recording.id}: front/rear duration differs by "
+            f"{abs(diff):.1f}s (front={front_duration:.1f}s, "
+            f"rear={rear_duration:.1f}s) - trimmed {longer_label} to "
+            f"match {shorter_label}"
+        )
+        warnings.append(message)
+        if log is not None:
+            log.warning(message)
+
+    return overrides
+
+
 def _concatenate_asset(
     trip: Trip,
     asset: Asset,
@@ -104,6 +230,7 @@ def _concatenate_asset(
     log: TripLog | None = None,
     *,
     include_parking: bool = True,
+    duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
 ) -> Path | None:
     """Build `sources` in trip order, leaving out any Parking-mode
     recording entirely - wherever it falls in the trip - whenever
@@ -132,6 +259,14 @@ def _concatenate_asset(
     great back. Just skip it altogether" - so a Parking recording is
     now simply left out, the same as if it never had this asset in the
     first place, with no substitute of any kind.
+
+    `duration_overrides`, if given, is the `{(recording id, asset):
+    trimmed path}` map `_align_front_rear_durations()` builds - for
+    any recording/asset pair present there, the trimmed file is
+    spliced in instead of the recording's own real one, keeping this
+    asset's total duration in step with its counterpart (FRONT with
+    REAR) even when the two sides' own real files ran different
+    lengths. See that function's own docstring for why.
     """
 
     sources: list[Path] = []
@@ -143,7 +278,12 @@ def _concatenate_asset(
         if recording.id.is_parking and not include_parking:
             continue
 
-        sources.append(recording.file(asset).path)
+        override_path = (
+            duration_overrides.get((recording.id, asset))
+            if duration_overrides is not None
+            else None
+        )
+        sources.append(override_path or recording.file(asset).path)
 
     if not sources:
         if log is not None:
@@ -676,22 +816,31 @@ def export_trip(
     log.step("starting concatenation (front/rear/audio)")
     concat_start = time.monotonic()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        front_future = executor.submit(
-            _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
-            include_parking=include_parking,
+    # Scoped to just this phase - no later phase (map/gsensor/stitch
+    # rendering, subtitle merging) reads from the aligned files
+    # directly, they all work from front.mp4/rear.mp4 once
+    # concatenation is done.
+    with tempfile.TemporaryDirectory(prefix="bv_export_align_") as align_dir:
+        duration_overrides = _align_front_rear_durations(
+            trip, Path(align_dir), warnings, log, include_parking=include_parking,
         )
-        rear_future = executor.submit(
-            _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
-            include_parking=include_parking,
-        )
-        audio_future = executor.submit(
-            _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,
-            include_parking=include_parking,
-        )
-        front_video = front_future.result()
-        rear_video = rear_future.result()
-        audio = audio_future.result()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            front_future = executor.submit(
+                _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
+                include_parking=include_parking, duration_overrides=duration_overrides,
+            )
+            rear_future = executor.submit(
+                _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
+                include_parking=include_parking, duration_overrides=duration_overrides,
+            )
+            audio_future = executor.submit(
+                _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,
+                include_parking=include_parking,
+            )
+            front_video = front_future.result()
+            rear_video = rear_future.result()
+            audio = audio_future.result()
 
     if debug:
         print(

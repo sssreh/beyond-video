@@ -8,6 +8,7 @@ from blackvue.export import media as media_module
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
+from blackvue.export.media import trim_media
 from blackvue.generate.media import MediaToolError
 
 
@@ -311,3 +312,38 @@ def test_encode_with_nvenc_fallback_default_quality_survives_a_real_encode(
 
     assert destination.exists()
     assert destination.stat().st_size > 0
+
+
+def _make_silent_video(path, duration_seconds: float) -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_trim_media_shortens_a_real_video_via_stream_copy(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_silent_video(source, 5.0)
+
+    destination = tmp_path / "trimmed.mp4"
+    trim_media(source, destination, 2.0)
+
+    assert destination.exists()
+    # A plain stream copy can only cut on keyframe boundaries, so this
+    # won't be exactly 2.0s - it should be noticeably shorter than the
+    # 5.0s source and not wildly longer than what was asked for.
+    trimmed_duration = _audio_duration_seconds(destination)
+    assert trimmed_duration < 5.0
+    assert trimmed_duration < 3.0
+
+
+def test_trim_media_raises_when_the_source_does_not_exist(tmp_path):
+    with pytest.raises(MediaToolError):
+        trim_media(tmp_path / "missing.mp4", tmp_path / "out.mp4", 2.0)

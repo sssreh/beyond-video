@@ -249,3 +249,46 @@ def concatenate_media(sources: list[Path], destination: Path) -> None:
         ) from exc
     finally:
         list_path.unlink(missing_ok=True)
+
+
+def trim_media(source: Path, destination: Path, duration_seconds: float) -> None:
+    """Cut `source` down to its own first `duration_seconds` via a
+    plain ffmpeg stream copy - no re-encode, no filters, nothing
+    generated. This only ever removes packets from the tail of a
+    file that's already one continuous, valid encoder session, so
+    it's safe in exactly the way padding the *shorter* side of a
+    front/rear mismatch would not be: extending a file means
+    splicing in synthetically generated frames from a different
+    encoder session, the same class of corruption that
+    concatenate_media()'s docstring (and the removed parking
+    -placeholder feature - see WORKING_CONTEXT.md) already covers in
+    detail. Shortening a file needs nothing new spliced in at all.
+
+    Used by trip_export.py's _align_front_rear_durations() to bring
+    a recording's longer side (front or rear) down to match its
+    shorter side when the two differ by more than a small tolerance
+    - see that function's own docstring for why the two can differ
+    in the first place.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(source),
+                "-t", str(duration_seconds),
+                "-c", "copy",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg trim failed for {source.name}: {exc.stderr.strip()}"
+        ) from exc

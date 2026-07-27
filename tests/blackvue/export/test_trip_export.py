@@ -12,6 +12,7 @@ from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
+from blackvue.export.trip_export import _align_front_rear_durations
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.generate.media import MediaToolError
@@ -257,6 +258,151 @@ def test_export_trip_concatenates_front_rear_audio_independently(
     assert result.rear_video.exists()
     assert result.audio.exists()
     assert len(result.warnings) == 1
+
+
+def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 10.0)
+    _make_video(rear, 2.0)
+
+    recording_id = RecordingId("20260720_100000_N")
+    trip = Trip((
+        Recording(
+            id=recording_id,
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _align_front_rear_durations(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True
+    )
+
+    assert list(overrides.keys()) == [(recording_id, Asset.FRONT)]
+    trimmed = overrides[(recording_id, Asset.FRONT)]
+    assert trimmed.exists()
+    assert _video_duration(trimmed) < 10.0
+    assert _video_duration(trimmed) < 3.0
+    assert len(warnings) == 1
+    assert "trimmed front to match rear" in warnings[0]
+
+
+def test_align_front_rear_durations_leaves_pairs_within_tolerance_alone(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 3.0)
+    _make_video(rear, 3.2)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _align_front_rear_durations(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True
+    )
+
+    assert overrides == {}
+    assert warnings == []
+
+
+def test_align_front_rear_durations_skips_parking_when_not_included(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 10.0)
+    _make_video(rear, 2.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_P"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _align_front_rear_durations(
+        trip, tmp_path / "work", warnings, log=None, include_parking=False
+    )
+
+    # Dropped from the export entirely regardless of any mismatch - no
+    # point probing or trimming footage that never reaches
+    # front.mp4/rear.mp4.
+    assert overrides == {}
+    assert warnings == []
+
+
+def test_align_front_rear_durations_skips_a_recording_missing_one_side(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    _make_video(front, 10.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _align_front_rear_durations(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True
+    )
+
+    assert overrides == {}
+    assert warnings == []
+
+
+def test_export_trip_aligns_a_mismatched_front_rear_recording(tmp_path):
+    # End-to-end: a corrupted/truncated download (Christer's real
+    # case - see WORKING_CONTEXT.md) left one recording's front video
+    # much shorter than its rear. export_trip() should warn and trim
+    # rear down to match, keeping front.mp4/rear.mp4 in sync for the
+    # rest of the trip, rather than silently drifting out of sync from
+    # this recording onward.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 2.0)
+    _make_video(rear, 10.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert len(result.warnings) == 1
+    assert "trimmed rear to match front" in result.warnings[0]
+    assert abs(_video_duration(result.front_video) - 2.0) < 0.5
+    assert _video_duration(result.rear_video) < 3.0
 
 
 def _parking_trip(source_dir, *, with_audio: bool = False):
