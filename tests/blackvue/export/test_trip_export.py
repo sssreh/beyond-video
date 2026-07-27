@@ -1855,13 +1855,19 @@ def test_export_trip_stitch_gsensor_warns_when_trip_has_no_gsensor_data(
     assert "--gsensor-video" not in result.warnings[0]
 
 
-def test_export_trip_stitch_gsensor_warns_when_gsensor_mp4_not_yet_rendered(
+def test_export_trip_stitch_gsensor_renders_gsensor_mp4_when_missing(
     tmp_path
 ):
     # This trip DOES have g-sensor data (a GSENSOR asset), but this
     # run neither rendered it (render_gsensor=False) nor has an
-    # earlier run's gsensor.mp4 sitting in the destination folder -
-    # here the "go run --gsensor-video" advice is the correct one.
+    # earlier run's gsensor.mp4 sitting in the destination folder.
+    # Christer: "do you think that same behaviour [--translate implying
+    # --transcribe] [should apply] to bv-export like that --stitch-graph
+    # should imply --gsensor-graph-video" - --stitch-graph turned out to
+    # already self-render, so --stitch-gsensor was brought in line with
+    # it: gsensor.mp4 gets rendered fresh right here (and left behind in
+    # the destination folder for a later run's own reuse check to find),
+    # rather than warning and skipping.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -1889,9 +1895,47 @@ def test_export_trip_stitch_gsensor_warns_when_gsensor_mp4_not_yet_rendered(
     )
 
     assert result.stitch.exists()
-    assert len(result.warnings) == 1
-    assert "gsensor.mp4 not found" in result.warnings[0]
-    assert "--gsensor-video" in result.warnings[0]
+    assert (dest_dir / "gsensor.mp4").exists()
+    assert result.warnings == ()
+    # Rendered for the stitch overlay's own sake, not because
+    # --gsensor-video was requested - ExportResult.gsensor_video keeps
+    # meaning "the standalone output was produced this run", unchanged.
+    assert result.gsensor_video is None
+
+
+def test_export_trip_stitch_gsensor_debug_prints_when_rendering_on_demand(
+    tmp_path, capsys
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    gsensor_a = source_dir / "a.3gf"
+    gsensor_a.write_bytes(_gsensor_bytes((0, 100, -50, 900), (100, 90, -40, 950)))
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a),
+            },
+        ),
+    ))
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side", stitch_gsensor=True,
+        debug=True,
+    )
+
+    err = capsys.readouterr().err
+    assert "stitch gsensor overlay" in err
+    assert "rendered gsensor.mp4" in err
 
 
 def test_export_trip_stitch_gsensor_options_are_forwarded(tmp_path, monkeypatch):

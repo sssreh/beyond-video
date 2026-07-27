@@ -561,14 +561,23 @@ def export_trip(
     composite's matching dimension - can read as "too thin" for a
     near-straight-line trip) with an exact fraction instead.
 
-    `stitch_gsensor=True` (also requires `stitch_layout`) composites
-    an *already-rendered* gsensor.mp4 as a transparent chroma-keyed
-    overlay on top of the camera footage - unlike the map panel,
-    --stitch never generates this itself; if `destination/gsensor.mp4`
-    doesn't already exist on disk (from `render_gsensor=True` earlier
-    in this same call, or a previous run that wasn't wiped), the
-    overlay is skipped with a warning telling Christer to run
-    `--gsensor-video` first. `stitch_gsensor_size` (percent of the
+    `stitch_gsensor=True` (also requires `stitch_layout`) composites a
+    gsensor.mp4 as a transparent chroma-keyed overlay on top of the
+    camera footage. If `destination/gsensor.mp4` already exists on
+    disk (from `render_gsensor=True` earlier in this same call, or a
+    previous run that wasn't wiped), that file is reused as-is rather
+    than re-rendered; otherwise it's now rendered fresh right here,
+    same as `stitch_graph` below already does for gsensor_graph.mp4 -
+    Christer: "on bv-generate ... --translate ... Implies transcription
+    internally ... do you think that same behaviour [should apply] to
+    bv-export like ... --stitch-graph should imply --gsensor-graph-video"
+    (--stitch-graph turned out to already work this way; this is the
+    other half, --stitch-gsensor, brought in line with it). This
+    reverses an earlier, deliberate "compose only what's already
+    there" choice that matched --stitch's other inputs (front/rear
+    video, audio, subtitles) - worth remembering if a future overlay
+    input is added and its own default behavior needs picking again.
+    `stitch_gsensor_size` (percent of the
     camera composite's width, 5-40, default
     stitch.DEFAULT_GSENSOR_SIZE_PERCENT) and either
     `stitch_gsensor_pos` (a named position like "top-right" - see
@@ -982,20 +991,26 @@ def export_trip(
                 file=sys.stderr,
             )
 
-    # --stitch-gsensor never generates gsensor.mp4 itself - it only
-    # checks whether one already exists on disk (this run's own
-    # render_gsensor=True, or a previous run's that wasn't wiped), the
-    # same "compose only what's already there" convention --stitch's
-    # camera/subtitle inputs already follow (unlike the map panel,
-    # which is a deliberate, confirmed exception to that rule).
+    # --stitch-gsensor reuses gsensor.mp4 if one already exists on
+    # disk (this run's own render_gsensor=True, or a previous run's
+    # that wasn't wiped) - avoids paying for a second render of
+    # something already sitting right there. If it's missing, this
+    # now renders it fresh right here instead of warning Christer to
+    # go run --gsensor-video separately first - Christer: "do you
+    # think that same behaviour [--translate implying --transcribe]
+    # [should apply] to bv-export like that --stitch-graph should
+    # imply --gsensor-graph-video" (turned out --stitch-graph already
+    # worked this way; this reverses the same "compose only what's
+    # already there" choice --stitch-gsensor used to deliberately
+    # make, to match).
     #
-    # Two distinct reasons the file can be missing, and they need two
-    # different messages: `samples` (computed above from
+    # Two distinct reasons the file can still end up missing, and they
+    # need different handling: `samples` (computed above from
     # _merge_gsensor()) being empty means this trip has no g-sensor
-    # data at all - no flag will ever produce a gsensor.mp4 for it, so
-    # telling the user to "run --gsensor-video first" is actively
-    # wrong advice. Only when samples exist but no gsensor.mp4 is on
-    # disk does the "go render it" message actually apply.
+    # data at all - no render attempt would ever produce a gsensor.mp4
+    # for it, so there's nothing to try, straight to a warning. Only
+    # when samples exist but no gsensor.mp4 is on disk yet is a fresh
+    # render actually attempted below.
     stitch_gsensor_source = None
     if stitch_gsensor and stitch_layout is not None:
         candidate = destination / "gsensor.mp4"
@@ -1018,14 +1033,46 @@ def export_trip(
                 "trip - skipped"
             )
         else:
-            warnings.append(
-                "stitch gsensor overlay: gsensor.mp4 not found - run "
-                "bv-export --gsensor-video first"
+            log.step(
+                f"stitch gsensor overlay: gsensor.mp4 not found - "
+                f"rendering it now ({len(samples)} sample(s))"
             )
-            log.warning(
-                "stitch gsensor overlay: gsensor.mp4 not found - run "
-                "bv-export --gsensor-video first"
-            )
+            stitch_gsensor_render_start = time.monotonic()
+            try:
+                stitch_gsensor_source = render_gsensor_video(
+                    samples, candidate, duration_seconds=video_duration_seconds,
+                )
+            except MediaToolError as exc:
+                warnings.append(f"stitch gsensor overlay: {exc}")
+                log.warning(f"stitch gsensor overlay: {exc}")
+            else:
+                elapsed = time.monotonic() - stitch_gsensor_render_start
+                if stitch_gsensor_source is not None:
+                    log.step(
+                        "rendered gsensor.mp4 for stitch overlay",
+                        elapsed_seconds=elapsed,
+                    )
+                    if debug:
+                        print(
+                            "bv-export: stitch gsensor overlay - rendered "
+                            f"gsensor.mp4 ({elapsed:.1f}s)",
+                            file=sys.stderr,
+                        )
+                else:
+                    # render_gsensor_video() itself returns None (writes
+                    # nothing) for fewer than two samples, or samples
+                    # spanning zero time - see its own docstring. Same
+                    # "not enough data" shape as the `not samples` branch
+                    # above, just caught one level later since `samples`
+                    # itself was non-empty here.
+                    warnings.append(
+                        "stitch gsensor overlay: not enough g-sensor "
+                        "data to render an overlay - skipped"
+                    )
+                    log.warning(
+                        "stitch gsensor overlay: not enough g-sensor "
+                        "data to render an overlay - skipped"
+                    )
 
     # --stitch-subtitles reuses this same call's own srt_path - unlike
     # --stitch-gsensor, trip.srt isn't gated behind its own render
