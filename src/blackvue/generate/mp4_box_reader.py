@@ -324,8 +324,7 @@ def read_mp4_info(path: Path) -> Mp4Info:
         # tkhd (track header - width/height) is a direct sibling of
         # mdia within this same trak, not something under mdia
         # itself. Missing/unparseable is non-fatal, same as a missing
-        # stsz below - callers (e.g. parking_transition.py's
-        # probe_video_properties()) decide for themselves whether
+        # stsz below - callers decide for themselves whether
         # width/height being None still gives them enough to work
         # with.
         tkhd = _find_box(data, trak_start, trak_end, "tkhd")

@@ -13,14 +13,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from ..archive.asset import Asset
-from ..archive.recording import Recording
 from ..archive.recording_id import RecordingId
 from ..generate.media import MediaToolError
 from ..generate.media import probe
@@ -38,7 +36,6 @@ from .media import concatenate_media
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
-from .parking_transition import ParkingTransitionCache
 from .trip_info import write_trip_info
 from .trip_stats import compute_trip_stats
 from .stitch import AUTO_LAYOUT
@@ -98,59 +95,6 @@ def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
     return trip.label
 
 
-# The other camera's own video asset for the same recording - used as
-# a probe fallback below when one side's Parking file is corrupted,
-# since front/rear share resolution/frame rate in practice.
-_SIBLING_VIDEO_ASSET = {
-    Asset.FRONT: Asset.REAR,
-    Asset.REAR: Asset.FRONT,
-}
-
-
-def _parking_transition_source(
-    asset: Asset,
-    recording: Recording,
-    parking_transitions: ParkingTransitionCache | None,
-    warnings: list[str],
-    log: TripLog | None,
-) -> Path | None:
-    """Return a placeholder clip standing in for `recording`'s own
-    `asset` file - a silent audio clip for Asset.AUDIO, a "parking
-    footage skipped" video clip for anything else (Asset.FRONT/REAR) -
-    or None if no placeholder could be produced, in which case the
-    caller leaves this recording's contribution to `asset` out
-    entirely (the same as if it never had the asset in the first
-    place, rather than falling back to the real Parking footage
-    Christer asked to have skipped).
-
-    For Asset.FRONT/REAR, the sibling camera's own file (same
-    `recording`) is passed to ParkingTransitionCache.video_for() as a
-    fallback probe source - see that function's docstring for why:
-    it's what lets one corrupted side (e.g. a truncated _PF.mp4) still
-    get a correctly-sized placeholder from its working sibling
-    (_PR.mp4), rather than the two ending up different lengths."""
-
-    if parking_transitions is None:
-        return None
-
-    source = recording.file(asset).path
-    try:
-        if asset is Asset.AUDIO:
-            return parking_transitions.silence_for(source)
-        sibling_asset = _SIBLING_VIDEO_ASSET.get(asset)
-        sibling_file = (
-            recording.file(sibling_asset) if sibling_asset is not None else None
-        )
-        fallback_source = sibling_file.path if sibling_file is not None else None
-        return parking_transitions.video_for(source, fallback_source=fallback_source)
-    except MediaToolError as exc:
-        message = f"parking transition clip for {recording.id}: {exc}"
-        warnings.append(message)
-        if log is not None:
-            log.warning(message)
-        return None
-
-
 def _concatenate_asset(
     trip: Trip,
     asset: Asset,
@@ -160,34 +104,43 @@ def _concatenate_asset(
     log: TripLog | None = None,
     *,
     include_parking: bool = True,
-    parking_transitions: ParkingTransitionCache | None = None,
 ) -> Path | None:
-    """Build `sources` in trip order, substituting a synthetic
-    placeholder (see _parking_transition_source() above) for any
-    Parking-mode recording strictly in the middle of the trip -
-    flanked by another recording on both sides, so a Parking
-    recording that happens to start or end the trip is always left
-    untouched - whenever `include_parking` is False. Christer: "we
-    include parking files as is in the middle of a trip otherwise we
-    skip them with a nice transition". `include_parking=True` (or no
-    `parking_transitions` cache given) reproduces the original
-    behavior: every recording's own file, unconditionally.
+    """Build `sources` in trip order, leaving out any Parking-mode
+    recording entirely - wherever it falls in the trip - whenever
+    `include_parking` is False. `include_parking=True` reproduces the
+    original behavior: every recording's own file, unconditionally.
+
+    A synthetic transition clip used to stand in for a *mid-trip*
+    Parking recording here (still included as-is at the very start or
+    end of a trip) - dropped in favor of a plain, uniform "just leave
+    it out" for every position, after a real-world HEVC-camera export
+    from Christer showed the placeholder approach corrupting
+    front.mp4/rear.mp4 from the splice point onward. Root cause: MP4's
+    "hvc1"/"avc1" tagging declares a track's SPS/PPS/VPS parameter
+    sets once, at the container level - any two files from *separate*
+    encoder sessions (the dashcam's own hardware encoder vs. anything
+    bv-export renders itself) generally don't share compatible
+    parameter sets, so ffmpeg's concat demuxer (concatenate_media()'s
+    stream copy, not a re-encode) can mux them together with no error
+    at export time, but no real decoder can parse the result past that
+    point - confirmed directly against Christer's own archive:
+    "Invalid NAL unit size", "No ref lists in the SPS", the picture
+    corrupted/frozen while the separately-muxed audio track kept
+    playing. A full re-encode would sidestep this, but at real
+    trip-length/4K cost for comparatively little benefit - Christer:
+    "we don't want time consuming stuff if it not gives us something
+    great back. Just skip it altogether" - so a Parking recording is
+    now simply left out, the same as if it never had this asset in the
+    first place, with no substitute of any kind.
     """
 
     sources: list[Path] = []
-    last_index = len(trip.recordings) - 1
 
-    for index, recording in enumerate(trip.recordings):
+    for recording in trip.recordings:
         if not recording.has(asset):
             continue
 
-        is_mid_trip_parking = recording.id.is_parking and 0 < index < last_index
-        if is_mid_trip_parking and not include_parking:
-            placeholder = _parking_transition_source(
-                asset, recording, parking_transitions, warnings, log
-            )
-            if placeholder is not None:
-                sources.append(placeholder)
+        if recording.id.is_parking and not include_parking:
             continue
 
         sources.append(recording.file(asset).path)
@@ -397,8 +350,6 @@ def export_trip(
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
-    parking_transition_image: Path | None = None,
-    parking_transition_clip: Path | None = None,
     command_line: str | None = None,
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
@@ -642,34 +593,34 @@ def export_trip(
     -transparent bar behind the text for readability - see
     stitch.py's _subtitles_filter().
 
-    `include_parking=False` (the default) leaves any Parking-mode
-    recording strictly in the middle of the trip - flanked by another
-    recording on both sides - out of front.mp4/rear.mp4/audio.aac,
-    replacing it with a short synthetic clip instead: a still frame
-    reading "PARKING FOOTAGE SKIPPED" for the video assets, and
-    matching silence for audio.aac, both exactly
-    parking_transition.PARKING_TRANSITION_DURATION_SECONDS long so
-    every substituted asset for that one recording stays in sync with
-    the others (Christer: "swap in matching silence" - otherwise
-    stitch.mp4's muxed audio would drift out of sync with the video
-    for the rest of the trip). A Parking recording at the very start
-    or end of the trip is always left as-is, regardless of this flag
-    - there's nothing to transition from/to on one side. Set
-    `include_parking=True` to turn this off and include every
-    Parking recording's own footage/audio unconditionally, the
-    original behavior. `parking_transition_image`, if given, replaces
-    the default "no parking" placeholder frame with Christer's own
-    picture (fitted/padded to match, see parking_transition.py) - the
-    same bundled-default-with-override convention as `map_icon`/
-    `stitch_mirror_icon`. `parking_transition_clip`, if given, takes
-    priority over `parking_transition_image` and replaces the
-    placeholder with a real video instead of a still frame (e.g. one
-    of Christer's own AI-generated "no parking" clips) - looped or
-    trimmed to match the fixed transition duration exactly, re-encoded
-    to each trip's own resolution/frame rate, and always stripped of
-    its own audio track (front.mp4/rear.mp4 are video-only throughout
-    this whole pipeline; the matching-silence audio.aac swap above is
-    unaffected either way).
+    `include_parking=False` (the default) leaves every Parking-mode
+    recording out of front.mp4/rear.mp4/audio.aac entirely, wherever
+    it falls in the trip - leading, trailing, or mid-trip - with
+    nothing substituted in its place. Set `include_parking=True` to
+    include every Parking recording's own footage/audio
+    unconditionally instead, the original behavior.
+
+    An earlier version of this feature spliced in a short synthetic
+    "PARKING FOOTAGE SKIPPED" clip for mid-trip Parking recordings
+    (leaving recordings at the very start/end of the trip untouched
+    either way). That approach was dropped after a real export from
+    Christer's own 4K HEVC dashcam showed it silently corrupting
+    front.mp4/rear.mp4 from the splice point onward - the picture froze
+    or broke up while the separately-muxed audio kept playing normally.
+    Root cause: MP4's "hvc1"/"avc1" sample-entry tagging declares a
+    track's SPS/PPS/VPS parameter sets once, at the container level;
+    two files from separate encoder sessions (the dashcam's own
+    hardware encoder vs. anything bv-export rendered itself) generally
+    don't share compatible parameter sets, so `concatenate_media()`'s
+    stream-copy splice (ffmpeg's concat demuxer, `-c copy` - no
+    validation, unlike the concat filter) muxes them together without
+    complaint at export time, but no real decoder can parse the result
+    past that point. A full decode+re-encode would avoid this, but at
+    real trip-length/4K cost for one skipped recording's worth of
+    benefit - Christer: "we don't want time consuming stuff if it not
+    gives us something great back. Just skip it altogether" - so a
+    Parking recording is now simply left out, matching the treatment
+    leading/trailing Parking recordings already had.
 
     `command_line`, if given, is written verbatim into this trip's own
     trip.log (see below) as the exact command that produced it - bv-
@@ -725,44 +676,22 @@ def export_trip(
     log.step("starting concatenation (front/rear/audio)")
     concat_start = time.monotonic()
 
-    # Only spun up when actually needed - most trips have no Parking
-    # footage at all, and this cache's own directory/tempfile.
-    # TemporaryDirectory() call is pure overhead for them. Scoped to
-    # just the concatenation phase below: no later phase (map/gsensor/
-    # stitch rendering, subtitle merging) reads from it, they all work
-    # from front.mp4/rear.mp4/audio.aac once concatenation is done.
-    parking_transitions = None
-    parking_transitions_dir = None
-    if not include_parking and trip.has_parking_footage:
-        parking_transitions_dir = tempfile.TemporaryDirectory(
-            prefix="bv_export_parking_transition_"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        front_future = executor.submit(
+            _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
+            include_parking=include_parking,
         )
-        parking_transitions = ParkingTransitionCache(
-            work_dir=Path(parking_transitions_dir.name),
-            image_path=parking_transition_image,
-            clip_path=parking_transition_clip,
+        rear_future = executor.submit(
+            _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
+            include_parking=include_parking,
         )
-
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            front_future = executor.submit(
-                _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
-                include_parking=include_parking, parking_transitions=parking_transitions,
-            )
-            rear_future = executor.submit(
-                _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
-                include_parking=include_parking, parking_transitions=parking_transitions,
-            )
-            audio_future = executor.submit(
-                _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,
-                include_parking=include_parking, parking_transitions=parking_transitions,
-            )
-            front_video = front_future.result()
-            rear_video = rear_future.result()
-            audio = audio_future.result()
-    finally:
-        if parking_transitions_dir is not None:
-            parking_transitions_dir.cleanup()
+        audio_future = executor.submit(
+            _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,
+            include_parking=include_parking,
+        )
+        front_video = front_future.result()
+        rear_video = rear_future.result()
+        audio = audio_future.result()
 
     if debug:
         print(

@@ -287,7 +287,7 @@ _FONT_CANDIDATES = (
 
 # Cached by size, same pattern (and same reasoning - avoid re-parsing
 # the same TTF file from disk once per frame) as map_render.py's own
-# _load_font()/parking_transition.py's _load_font().
+# _load_font().
 _CACHED_FONT_BY_SIZE: dict[int, ImageFont.ImageFont] = {}
 
 

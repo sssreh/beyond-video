@@ -172,7 +172,7 @@ _FONT_CANDIDATES = (
 # (rather than the single-slot cache this used to be) since road-name
 # labels (_draw_roads() below) need a second, smaller size alongside
 # the speed/timestamp overlay's own - same dict-cache pattern
-# parking_transition.py's own _load_font() already uses for the same
+# gsensor_graph_render.py's own _load_font() already uses for the same
 # reason.
 _CACHED_FONT_BY_SIZE: dict[int, ImageFont.ImageFont] = {}
 

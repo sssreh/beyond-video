@@ -711,8 +711,8 @@ def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
     # as blank/tofu boxes - a real DejaVu font renders noticeably
     # wider text for the same string. This module's own text (tick
     # labels, legend) is ASCII-only today, but the font is shared
-    # infrastructure with map_render.py/parking_transition.py, so it's
-    # worth confirming it actually works for non-ASCII text here too.
+    # infrastructure with map_render.py, so it's worth confirming it
+    # actually works for non-ASCII text here too.
     monkeypatch.setattr(gsensor_graph_render_module, "_CACHED_FONT_BY_SIZE", {})
 
     font = _load_font(24)

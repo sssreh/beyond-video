@@ -12,7 +12,6 @@ from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
-from blackvue.export.parking_transition import PARKING_TRANSITION_DURATION_SECONDS
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.generate.media import MediaToolError
@@ -23,21 +22,13 @@ from blackvue.telemetry.gsensor_reader import read_gsensor
 from blackvue.trip.trip import Trip
 
 
-def _make_video(path, duration_seconds: float, codec: str | None = None) -> None:
-    # codec="libx265" (tagged "hvc1", matching real BlackVue 4K
-    # cameras - see media.py's _VIDEO_CODEC_ENCODERS comment) is used
-    # by the codec-matching regression test below - every other
-    # existing call site leaves codec unset, letting ffmpeg pick its
-    # own default (H.264) exactly as before this parameter existed.
-    codec_args = ["-c:v", codec, "-pix_fmt", "yuv420p"] if codec else []
-    tag_args = ["-tag:v", "hvc1"] if codec == "libx265" else []
+def _make_video(path, duration_seconds: float) -> None:
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-f", "lavfi",
             "-i", "testsrc=size=64x64:rate=10",
             "-t", str(duration_seconds),
-            *codec_args, *tag_args,
             str(path),
         ],
         capture_output=True,
@@ -307,9 +298,19 @@ def _parking_trip(source_dir, *, with_audio: bool = False):
     return Trip((first, middle, last))
 
 
-def test_export_trip_replaces_a_mid_trip_parking_recording_with_a_transition_clip(
-    tmp_path,
-):
+def test_export_trip_drops_a_mid_trip_parking_recording_entirely(tmp_path):
+    # Replaces an earlier version of this test, which asserted the
+    # mid-trip Parking recording was swapped for a short synthetic
+    # transition clip. That approach was dropped after a real export
+    # from Christer's own 4K HEVC dashcam showed the splice corrupting
+    # front.mp4/rear.mp4 from that point onward - any two files from
+    # separate encoder sessions can carry incompatible MP4-container
+    # -level parameter sets, and ffmpeg's concat demuxer (a stream
+    # copy, not a re-encode) doesn't validate that before muxing them
+    # together. See WORKING_CONTEXT.md for the full root-cause writeup.
+    # Christer: "Just skip it altogether" - now a mid-trip Parking
+    # recording is simply left out, the same as a leading/trailing one
+    # already was.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -318,130 +319,9 @@ def test_export_trip_replaces_a_mid_trip_parking_recording_with_a_transition_cli
     result = export_trip(trip, dest_dir)
 
     assert result.warnings == ()
-    # 1s + PARKING_TRANSITION_DURATION_SECONDS + 1s, not 1s + 6s + 1s -
-    # the real (6s) Parking footage was swapped for the shorter
-    # transition clip.
-    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
-    assert abs(_video_duration(result.front_video) - expected) < 0.5
-
-
-def test_export_trip_parking_placeholder_falls_back_to_sibling_camera_when_one_side_is_corrupted(
-    tmp_path,
-):
-    # Christer's real-world report: a mid-trip Parking recording's own
-    # front file was corrupted on the SD card (ffprobe's own
-    # "contradictionary STSC and STCO"/"error reading header"), while
-    # the paired rear file for the same recording probed fine. Without
-    # ParkingTransitionCache.video_for()'s sibling-fallback, only the
-    # front placeholder would fail to render and that segment would be
-    # dropped from front.mp4 entirely - while rear.mp4 still got its
-    # normal 3-second placeholder - leaving the two videos different
-    # lengths from that point on. With the fallback, front's
-    # placeholder is sized from rear's own (readable) properties
-    # instead, keeping both in sync and producing no warning at all.
-    source_dir = tmp_path / "archive"
-    source_dir.mkdir()
-    dest_dir = tmp_path / "export"
-
-    front_a = source_dir / "front_a.mp4"
-    rear_a = source_dir / "rear_a.mp4"
-    front_p = source_dir / "front_p.mp4"  # corrupted - ffprobe can't read it
-    rear_p = source_dir / "rear_p.mp4"
-    front_b = source_dir / "front_b.mp4"
-    rear_b = source_dir / "rear_b.mp4"
-    _make_video(front_a, 1.0)
-    _make_video(rear_a, 1.0)
-    front_p.write_bytes(b"not a real mp4 at all")
-    _make_video(rear_p, 6.0)
-    _make_video(front_b, 1.0)
-    _make_video(rear_b, 1.0)
-
-    trip = Trip((
-        Recording(
-            id=RecordingId("20260720_100000_N"),
-            assets={
-                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
-                Asset.REAR: AssetFile(Asset.REAR, rear_a),
-            },
-        ),
-        Recording(
-            id=RecordingId("20260720_100010_P"),
-            assets={
-                Asset.FRONT: AssetFile(Asset.FRONT, front_p),
-                Asset.REAR: AssetFile(Asset.REAR, rear_p),
-            },
-        ),
-        Recording(
-            id=RecordingId("20260720_100100_N"),
-            assets={
-                Asset.FRONT: AssetFile(Asset.FRONT, front_b),
-                Asset.REAR: AssetFile(Asset.REAR, rear_b),
-            },
-        ),
-    ))
-
-    result = export_trip(trip, dest_dir)
-
-    assert result.warnings == ()
-    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
-    assert abs(_video_duration(result.front_video) - expected) < 0.5
-    assert abs(_video_duration(result.rear_video) - expected) < 0.5
-
-
-def test_export_trip_hevc_camera_front_video_decodes_cleanly_after_parking_placeholder(
-    tmp_path,
-):
-    # Christer's real-world report on his own 4K HEVC camera: a
-    # mid-trip Parking recording's placeholder was always encoded as
-    # H.264 (bv-export's original, only-ever codec), then spliced via
-    # concatenate_media()'s stream-copy concat into a front.mp4
-    # declared as HEVC. ffmpeg's concat demuxer doesn't validate codec
-    # consistency, so this produced a file with no error at export
-    # time - but real decoders (and Christer's own player) choked on
-    # it from the splice point onward: "Invalid NAL unit size", the
-    # picture frozen on the last good frame while audio (muxed
-    # entirely separately) kept playing normally - "P files still show
-    # 1 frame for the duration ... I can hear by the sound that the
-    # car is moving again, but still show the same frame". None of the
-    # duration/warning assertions the other tests in this file use
-    # would have caught that class of bug - only actually decoding the
-    # resulting front.mp4 does, which is what this test does.
-    source_dir = tmp_path / "archive"
-    source_dir.mkdir()
-    dest_dir = tmp_path / "export"
-
-    front_a = source_dir / "front_a.mp4"
-    front_p = source_dir / "front_p.mp4"
-    front_b = source_dir / "front_b.mp4"
-    _make_video(front_a, 1.0, codec="libx265")
-    _make_video(front_p, 1.0, codec="libx265")
-    _make_video(front_b, 1.0, codec="libx265")
-
-    trip = Trip((
-        Recording(
-            id=RecordingId("20260720_100000_N"),
-            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)},
-        ),
-        Recording(
-            id=RecordingId("20260720_100010_P"),
-            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)},
-        ),
-        Recording(
-            id=RecordingId("20260720_100100_N"),
-            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)},
-        ),
-    ))
-
-    result = export_trip(trip, dest_dir)
-
-    assert result.warnings == ()
-    decode = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(result.front_video), "-f", "null", "-"],
-        capture_output=True,
-        text=True,
-    )
-    assert decode.returncode == 0
-    assert decode.stderr.strip() == ""
+    # 1s + 1s, not 1s + 6s + 1s - the real (6s) Parking footage was
+    # left out entirely, with nothing substituted in its place.
+    assert abs(_video_duration(result.front_video) - 2.0) < 0.5
 
 
 def test_export_trip_include_parking_keeps_the_real_parking_footage(tmp_path):
@@ -458,9 +338,17 @@ def test_export_trip_include_parking_keeps_the_real_parking_footage(tmp_path):
     assert abs(_video_duration(result.front_video) - 8.0) < 0.5
 
 
-def test_export_trip_leaves_a_parking_recording_at_the_trip_start_untouched(
-    tmp_path,
-):
+def test_export_trip_drops_a_parking_recording_at_the_trip_start(tmp_path):
+    # Replaces an earlier version of this test, which asserted a
+    # leading Parking recording was always left untouched regardless
+    # of `include_parking`. Christer, once mid-trip Parking recordings
+    # were also being dropped rather than replaced with a placeholder
+    # (see test_export_trip_drops_a_mid_trip_parking_recording_entirely
+    # above): "I think they should be dropped ... Usually a N/M/P
+    # ta[k]es a couple of minutes to activate parking mode, so we will
+    # probably have a good ending any way. In the beginning we might
+    # miss a couple of seconds before it exits P mode." - so a leading
+    # Parking recording is now dropped too, the same as any other.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -481,18 +369,14 @@ def test_export_trip_leaves_a_parking_recording_at_the_trip_start_untouched(
         ),
     ))
 
-    # Default include_parking=False - but this Parking recording
-    # starts the trip, with nothing before it to transition from, so
-    # it's always left as-is regardless of the flag.
     result = export_trip(trip, dest_dir)
 
     assert result.warnings == ()
-    assert abs(_video_duration(result.front_video) - 7.0) < 0.5
+    # Only front_b (1s) - front_p (6s) dropped entirely.
+    assert abs(_video_duration(result.front_video) - 1.0) < 0.5
 
 
-def test_export_trip_leaves_a_parking_recording_at_the_trip_end_untouched(
-    tmp_path,
-):
+def test_export_trip_drops_a_parking_recording_at_the_trip_end(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -516,12 +400,17 @@ def test_export_trip_leaves_a_parking_recording_at_the_trip_end_untouched(
     result = export_trip(trip, dest_dir)
 
     assert result.warnings == ()
-    assert abs(_video_duration(result.front_video) - 7.0) < 0.5
+    # Only front_a (1s) - front_p (6s) dropped entirely.
+    assert abs(_video_duration(result.front_video) - 1.0) < 0.5
 
 
-def test_export_trip_swaps_matching_silence_for_a_skipped_parking_recordings_audio(
-    tmp_path,
-):
+def test_export_trip_drops_a_skipped_parking_recordings_audio_too(tmp_path):
+    # Replaces an earlier version of this test, which asserted a
+    # matching-length silent clip was swapped in for the skipped
+    # recording's own audio.aac contribution, to keep it in sync with
+    # the (then-substituted) video. With no video substitute anymore
+    # either, there's nothing to keep in sync with - the recording's
+    # audio is simply left out too, same as its video.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -532,115 +421,14 @@ def test_export_trip_swaps_matching_silence_for_a_skipped_parking_recordings_aud
     assert result.warnings == ()
     assert result.audio is not None
     assert result.audio.exists()
-    # Christer: "swap in matching silence" - the audio placeholder has
-    # to be exactly as long as the video placeholder for stitch.mp4's
-    # later muxed-audio step to stay in sync, so audio.aac's own real
-    # total content should reflect the same 1s + 3s + 1s shape as
-    # front.mp4 (see media.py's concatenate_media() docstring on why a
-    # raw AAC elementary stream's own *reported* container duration
-    # isn't trustworthy - decoding is the only reliable check).
     decoded = dest_dir / "audio_decoded.wav"
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(result.audio), str(decoded)],
         capture_output=True, text=True, check=True,
     )
-    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
-    assert abs(_video_duration(decoded) - expected) < 0.5
-
-
-def test_export_trip_parking_transition_image_override_is_used(tmp_path):
-    source_dir = tmp_path / "archive"
-    source_dir.mkdir()
-    dest_dir = tmp_path / "export"
-    trip = _parking_trip(source_dir)
-
-    # A tiny, real still image (not a video) - render_parking_transition
-    # _video() fits/pads whatever image it's given to the trip's own
-    # resolution, so any valid image works here.
-    custom_image = source_dir / "no_parking.png"
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "color=c=blue:s=32x32",
-            "-frames:v", "1",
-            str(custom_image),
-        ],
-        capture_output=True, text=True, check=True,
-    )
-
-    result = export_trip(
-        trip, dest_dir, parking_transition_image=custom_image
-    )
-
-    assert result.warnings == ()
-    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
-    assert abs(_video_duration(result.front_video) - expected) < 0.5
-
-
-def test_export_trip_parking_transition_clip_override_is_used(tmp_path):
-    source_dir = tmp_path / "archive"
-    source_dir.mkdir()
-    dest_dir = tmp_path / "export"
-    trip = _parking_trip(source_dir)
-
-    # A real (short) video clip, deliberately a different resolution
-    # than the trip's own front.mp4 recordings and with its own
-    # embedded audio track - render_parking_transition_video() should
-    # scale/pad it to match and strip the audio, not fail or carry
-    # either through unchanged.
-    custom_clip = source_dir / "no_parking_clip.mp4"
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24",
-            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-            "-t", "1.0", "-shortest",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-            str(custom_clip),
-        ],
-        capture_output=True, text=True, check=True,
-    )
-
-    result = export_trip(
-        trip, dest_dir, parking_transition_clip=custom_clip
-    )
-
-    assert result.warnings == ()
-    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
-    assert abs(_video_duration(result.front_video) - expected) < 0.5
-    assert not _has_audio_stream(result.front_video)
-
-
-def test_export_trip_parking_transition_clip_takes_priority_over_image(tmp_path):
-    source_dir = tmp_path / "archive"
-    source_dir.mkdir()
-    dest_dir = tmp_path / "export"
-    trip = _parking_trip(source_dir)
-
-    custom_image = source_dir / "no_parking.png"
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "color=c=blue:s=32x32",
-            "-frames:v", "1",
-            str(custom_image),
-        ],
-        capture_output=True, text=True, check=True,
-    )
-    custom_clip = source_dir / "no_parking_clip.mp4"
-    _make_video(custom_clip, 1.0)
-
-    # Both given - shouldn't raise; export_trip()/ParkingTransitionCache
-    # give the clip priority (see parking_transition.py's own docstring).
-    result = export_trip(
-        trip, dest_dir,
-        parking_transition_image=custom_image,
-        parking_transition_clip=custom_clip,
-    )
-
-    assert result.warnings == ()
-    expected = 1.0 + PARKING_TRANSITION_DURATION_SECONDS + 1.0
-    assert abs(_video_duration(result.front_video) - expected) < 0.5
+    # 1s + 1s, not 1s + 6s + 1s - the middle recording's own audio
+    # dropped along with its video, nothing substituted.
+    assert abs(_video_duration(decoded) - 2.0) < 0.5
 
 
 def test_export_trip_skips_missing_assets_cleanly(tmp_path):

@@ -81,24 +81,26 @@ bv-web = "blackvue.cli.bv_web:main"
 [tool.setuptools.package-data]
 "blackvue.web" = ["templates/*.html"]
 # The bundled default --stitch-mirror-icon photo (mirror_icon.py's
-# DEFAULT_MIRROR_ICON_PATH) and the bundled default
-# --parking-transition-clip pool (parking_transition.py's
-# DEFAULT_PARKING_TRANSITION_CLIPS, Christer's own Kling-generated "no
-# parking" clips) - same reasoning as templates/*.html above: without
-# this, `pip install .` silently drops them, and the defaults only
-# work from inside a repo checkout instead of any real install
-# (Dockerfile.cli, a PC pip install, ...).
+# DEFAULT_MIRROR_ICON_PATH) - same reasoning as templates/*.html
+# above: without this, `pip install .` silently drops it, and the
+# default only works from inside a repo checkout instead of any real
+# install (Dockerfile.cli, a PC pip install, ...).
 #
 # assets/*.ttf (DejaVuSans-Bold.ttf) and the accompanying
 # LICENSE_DEJAVU.txt: the bundled Unicode-capable font used by
-# map_render.py, gsensor_graph_render.py, and parking_transition.py
-# to draw text (street names, etc.) that can contain non-ASCII
-# characters like Swedish a-ring, a-umlaut, o-umlaut. Before this, all three modules only tried
-# a Linux system font path and a bare filename, both of which are
+# map_render.py and gsensor_graph_render.py to draw text (street
+# names, etc.) that can contain non-ASCII characters like Swedish
+# a-ring, a-umlaut, o-umlaut. Before this, both modules only tried a
+# Linux system font path and a bare filename, both of which are
 # absent on Christer's Windows machine and in the ffmpeg-only
 # Dockerfile.cli image, so they silently fell back to PIL's built-in
 # default font - which has no a/a/o glyphs at all and rendered them
 # as blank boxes. Same package-data lesson as templates/*.html: a
 # file sitting in the repo's assets/ folder isn't enough by itself,
 # it must be listed here too or a real install drops it.
-"blackvue.export" = ["assets/*.png", "assets/*.mp4", "assets/*.ttf", "assets/*.txt"]
+#
+# assets/*.mp4 used to be listed here too, for the six bundled
+# Kling-generated "no parking" clips the removed --parking-transition
+# -clip default pool used - dropped along with that whole feature
+# (see WORKING_CONTEXT.md); no .mp4 assets remain in this folder.
+"blackvue.export" = ["assets/*.png", "assets/*.ttf", "assets/*.txt"]

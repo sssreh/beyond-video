@@ -12,7 +12,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-gap MINUTES] [--movement] [--no-duration] [--duration-heal-archive]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
-          [--include-parking] [--parking-transition-image PATH | --parking-transition-clip PATH | --parking-transition-random]
+          [--include-parking]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
           [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-z]
           [--stitch] [--stitch-layout LAYOUT]
@@ -79,18 +79,13 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 
 ### Parking footage
 
-`--max-parking-duration` above decides which recordings end up *inside* a trip in the first place; these flags decide what happens to a Parking-mode recording that already is one, once that trip is actually assembled.
+`--max-parking-duration` above decides which recordings end up *inside* a trip in the first place; `--include-parking` decides what happens to a Parking-mode recording that already is one, once that trip is actually assembled.
 
 | Option | Description |
 |---|---|
-| `--include-parking` | Include a Parking-mode recording strictly in the middle of a trip - flanked by another recording on both sides - as-is in `front.mp4`/`rear.mp4`/`audio.aac`. **Off by default**: that footage is left out instead and replaced with a 3-second synthetic clip (the plain procedural "PARKING FOOTAGE SKIPPED" frame, and matching silence in `audio.aac`) so the rest of the trip's audio stays in sync with the video. A Parking recording at the very start or end of a trip is always included as-is, regardless of this flag - there's nothing to transition from/to on one side. |
-| `--parking-transition-image PATH` | Use a custom picture for the "parking footage skipped" placeholder frame instead of the default plain frame, fitted/padded (not stretched) to match each trip's own camera resolution. Only meaningful when `--include-parking` is not given. Rejected together with `--parking-transition-clip`/`--parking-transition-random`. |
-| `--parking-transition-clip PATH` | Use a custom video instead of a still picture for the placeholder, instead of the default plain frame. Its own first 3 seconds are used if it's longer than that; looped to fill the full 3 seconds if it's shorter. Scaled/padded (not stretched) to match each trip's own camera resolution and frame rate, and always stripped of its own audio track (`front.mp4`/`rear.mp4` are video-only throughout this pipeline - any embedded audio in the clip is simply discarded, not muxed in anywhere). Only meaningful when `--include-parking` is not given. Rejected together with `--parking-transition-image`/`--parking-transition-random`. |
-| `--parking-transition-random` | Pick the placeholder at random per trip from a pool of 7: six bundled "no parking" clips (Christer's own Kling-AI-generated footage) plus the plain procedural frame itself, each equally likely - instead of the default plain frame every time. A fresh pick per trip, not once for the whole run, so a multi-trip export isn't locked into showing the same thing every time. Only meaningful when `--include-parking` is not given. Rejected together with `--parking-transition-image`/`--parking-transition-clip`. |
+| `--include-parking` | Include every Parking-mode recording as-is in `front.mp4`/`rear.mp4`/`audio.aac`. **Off by default**: a Parking recording is left out entirely instead - wherever it falls in the trip (leading, trailing, or mid-trip) - with nothing substituted in its place. |
 
-By default, none of the three flags above is given and every trip that needs a transition gets the plain procedural "PARKING FOOTAGE SKIPPED" frame - the same neutral default used when calling the underlying export function directly. (An earlier version of this feature made the random pick the default; reconsidered - a personal export tool showing a different one of Christer's own clips each run, unannounced, wasn't a good property for a default to have. Opt into it with `--parking-transition-random`.)
-
-The placeholder video/silence pair is re-rendered per distinct camera resolution/frame rate (video) or sample rate/channel count (audio) actually encountered, not shipped as one fixed file - `ffmpeg`'s concat demuxer stream-copies rather than re-encodes, so every source has to already match its neighbours exactly. A trip with several skipped Parking recordings at the same camera settings only pays for one real render of each.
+An earlier version of this feature replaced a mid-trip Parking recording with a short synthetic "PARKING FOOTAGE SKIPPED" transition clip (optionally one of several bundled or custom clips/images), leaving a leading/trailing Parking recording untouched either way. This was removed after a real export from a 4K HEVC dashcam showed the splice corrupting `front.mp4`/`rear.mp4` from that point onward: MP4's `hvc1`/`avc1` sample-entry tagging declares a track's SPS/PPS/VPS parameter sets once, at the container level, and two files from separate encoder sessions (the dashcam's own hardware encoder vs. anything `bv-export` rendered itself) generally don't share compatible parameter sets - so `ffmpeg`'s concat demuxer (a stream copy, not a re-encode) muxed them together with no error at export time, but no real decoder could parse the result past the splice point. A full decode-and-re-encode would avoid this, but at real trip-length/4K cost for one skipped recording's worth of benefit, so a Parking recording is now simply left out - matching the treatment leading/trailing Parking recordings already had.
 
 ### Map
 
@@ -193,7 +188,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 
 | File | Written by |
 |---|---|
-| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a mid-trip Parking recording is replaced by a 3-second transition clip unless `--include-parking` is given |
+| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a Parking-mode recording is left out entirely unless `--include-parking` is given |
 | `trip.gpx` | always, if GPS data exists |
 | `trip.3gf` | always, if g-sensor data exists |
 | `trip.srt`, `trip.lrc` | always, if transcript data exists |
