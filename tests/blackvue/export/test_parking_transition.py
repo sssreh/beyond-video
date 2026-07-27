@@ -165,6 +165,42 @@ def test_probe_video_properties_raises_original_ffprobe_error_when_box_reader_la
     assert "error reading header" in str(excinfo.value)
 
 
+def test_probe_video_properties_raises_original_error_when_box_reader_frame_count_is_zero(
+    tmp_path, monkeypatch,
+):
+    # Christer's real-world report: a placeholder that "only showed 1
+    # frame, but lasted the duration of the P file" - traced to a real
+    # Parking recording whose stsz reports a sample_count of exactly
+    # 0 (a fragmented-MP4 shape this reader can't fully parse), which
+    # previously survived the box-reader-fallback's "is not None"
+    # check and produced frame_rate=0.0 - a degenerate placeholder,
+    # not the intended one. frame_count=0 must be treated the same as
+    # "unusable", falling back to the original ffprobe error (the
+    # pre-existing safe "warn and drop this segment" path) rather than
+    # ever handing ffmpeg a 0.0 frame rate.
+    video = tmp_path / "20260726_144116_PF.mp4"
+    video.write_bytes(b"looks like an mp4 to the box reader, not to ffprobe")
+
+    def _fake_run(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr="contradictionary STSC and STCO\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        parking_transition_module,
+        "read_mp4_info",
+        lambda path: Mp4Info(
+            duration_seconds=60.0, frame_count=0, width=1920, height=1080,
+        ),
+    )
+
+    with pytest.raises(MediaToolError) as excinfo:
+        probe_video_properties(video)
+
+    assert "20260726_144116_PF.mp4" in str(excinfo.value)
+
+
 def test_probe_audio_properties_reads_codec_rate_channels(tmp_path):
     audio = tmp_path / "audio.aac"
     _make_audio(audio, sample_rate=44100, channels=1)

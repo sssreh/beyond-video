@@ -283,6 +283,27 @@ def _probe_video_properties_from_boxes(
     complete (width, height, frame_rate) either, since that's still
     the more informative message - it names the real file and ffmpeg's
     own diagnostic, rather than "no tkhd box" or similar.
+
+    `frame_count > 0` (not just "is not None") matters: a real-world
+    Parking recording, from Christer's own report, produced a
+    placeholder that "only showed 1 frame, but lasted the duration of
+    the P file" - traced to a video track whose stsz reported a
+    sample_count of exactly 0 (a fragmented-MP4 track stores its real
+    per-fragment sample counts in moof/trun boxes this reader doesn't
+    parse, not in the top-level stsz table this reader does; stsz's
+    own count field just reads back as 0 in that shape, which is a
+    legitimate, distinct-from-"unknown" box value, not a sentinel).
+    frame_count=0 previously survived this check and produced
+    frame_rate=0.0, which render_parking_transition_video() then
+    handed to ffmpeg as `-r 0.0` - a degenerate placeholder rather
+    than the intended 3-second one, and (per Christer's own second
+    symptom, footage missing for a stretch right after) apparently
+    also confused the concat demuxer's timeline for whatever followed
+    it. Treating 0 the same as missing here means this specific class
+    of file falls back to the pre-existing, safe "warn and drop this
+    segment" behavior instead of producing a broken placeholder -
+    properly reading fragmented MP4 sample counts would need moof/trun
+    parsing this reader doesn't have yet.
     """
 
     try:
@@ -295,6 +316,7 @@ def _probe_video_properties_from_boxes(
         and info.width is not None
         and info.height is not None
         and info.frame_count is not None
+        and info.frame_count > 0
         and info.duration_seconds > 0
     ):
         return info.width, info.height, info.frame_count / info.duration_seconds
