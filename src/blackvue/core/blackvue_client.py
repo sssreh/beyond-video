@@ -14,7 +14,28 @@ from urllib.error import HTTPError
 from urllib.request import Request
 from urllib.request import urlopen
 
+from ..domain.live_gps_fix import LiveGpsFix
 from ..domain.vod_entry import VodEntry
+from ..parser.livedata import parse_gps_fix
+
+# blackvue_livedata.cgi never closes its own connection - it's a
+# never-ending multipart/x-mixed-replace stream, the same shape as
+# blackvue_live.cgi's MJPEG feed but for GPS/g-sensor JSON instead of
+# JPEG frames (see WORKING_CONTEXT.md's bv-live entry). live_gps()
+# reads it in bounded chunks and returns as soon as one full GPS
+# object has been seen, rather than trying to read the response to
+# completion - a plain `.read()` here would hang forever. This caps
+# how much of the stream we're willing to read before giving up if no
+# GPS object ever appears (a livedata.cgi that's serving something
+# unexpected, or is g-sensor-only for an implausibly long stretch).
+LIVE_GPS_MAX_BYTES = 65536
+
+
+class NoGpsDataError(RuntimeError):
+    """Raised when blackvue_livedata.cgi's response never yielded a
+    GPS reading within LIVE_GPS_MAX_BYTES - a protocol-level failure,
+    distinct from LiveGpsFix.has_fix being False (a normal reading
+    that just says "no fix currently")."""
 
 
 class BlackVueClient:
@@ -61,6 +82,40 @@ class BlackVueClient:
         rear = self._get("/blackvue_live.cgi?direction=R")
 
         return front, rear
+
+    def live_gps(self) -> LiveGpsFix:
+        """Return the camera's current GPS reading, read live from
+        blackvue_livedata.cgi.
+
+        Raises NoGpsDataError if no GPS object appears within
+        LIVE_GPS_MAX_BYTES of the stream. A GPS object that does
+        appear but reads (0.0, 0.0) is returned normally as a
+        LiveGpsFix with has_fix False, not treated as an error - see
+        LiveGpsFix.has_fix's own docstring for why.
+        """
+
+        url = f"{self._base_url}/blackvue_livedata.cgi"
+
+        with urlopen(url, timeout=self._timeout) as response:
+            buffer = b""
+
+            while len(buffer) < LIVE_GPS_MAX_BYTES:
+                chunk = response.read(4096)
+
+                if not chunk:
+                    break
+
+                buffer += chunk
+                fix = parse_gps_fix(buffer.decode("utf-8", errors="replace"))
+
+                if fix is not None:
+                    latitude, longitude = fix
+                    return LiveGpsFix(latitude=latitude, longitude=longitude)
+
+        raise NoGpsDataError(
+            "no GPS reading found in blackvue_livedata.cgi's response "
+            f"within {LIVE_GPS_MAX_BYTES} bytes"
+        )
 
     def size(self, entry: VodEntry) -> int:
         """Return the size of a remote file."""

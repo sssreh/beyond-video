@@ -6,14 +6,17 @@ This page documents the one thing shared across every `bv-*` command that reads 
 
 ## Camera system ID
 
-`bv-config` and `bv-download` take a camera system ID as their first argument:
+`bv-config`, `bv-download`, and `bv-live` take a camera system ID as their first argument:
 
 ```text
 bv-config Kirby
 bv-download Kirby
+bv-live Kirby
 ```
 
 The ID identifies the camera's configuration and, through it, the local archive directory downloads are saved into (see `docs/man/bv-config.md`). It's an ASCII string suitable for filenames and command lines - a separate, free-form display name (which may contain UTF-8/emoji) is set alongside it in the config wizard.
+
+`bv-live` is the odd one out among these three: it doesn't touch the archive at all, only a live connection to the camera itself (see `docs/man/bv-live.md`) - it's listed here purely because it shares the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because it takes part in recording selection below.
 
 `bv-ls`, `bv-generate`, and `bv-export` don't take a camera ID - they operate directly on an archive directory (the same directory `bv-download` wrote into), given as a plain path argument.
 

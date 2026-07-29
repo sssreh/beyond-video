@@ -65,6 +65,7 @@ web = [
 bv-ls = "blackvue.cli.bv_ls:main"
 bv-download = "blackvue.cli.bv_download:main"
 bv-config = "blackvue.cli.bv_config:main"
+bv-live = "blackvue.cli.bv_live:main"
 bv-generate = "blackvue.cli.bv_generate:main"
 bv-lang = "blackvue.cli.bv_lang:main"
 bv-export = "blackvue.cli.bv_export:main"

@@ -1,8 +1,11 @@
 from datetime import datetime
 from pathlib import PurePosixPath
 
+import pytest
+
 from blackvue.core import blackvue_client as blackvue_client_module
 from blackvue.core.blackvue_client import BlackVueClient
+from blackvue.core.blackvue_client import NoGpsDataError
 from blackvue.domain.vod_entry import VodEntry
 
 
@@ -129,3 +132,61 @@ def test_download_skips_metadata_already_on_disk_without_reporting(
 
     assert changed is False
     assert reported == []
+
+
+def test_live_gps_parses_a_gps_reading_from_the_stream(monkeypatch):
+    stream = (
+        b'--ptaboundary\r\nContent-Type: application/json\r\n\r\n'
+        b'{"3G":{"FrontRear":1, "LeftRight":2, "UpperLower":3}}\r\n'
+        b'--ptaboundary\r\nContent-Type: application/json\r\n\r\n'
+        b'{"GPS":{"LATITUDE":59.334591, "LONGITUDE":18.063240}}\r\n'
+    )
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    fix = client.live_gps()
+
+    assert (fix.latitude, fix.longitude) == (59.334591, 18.063240)
+    assert fix.has_fix is True
+
+
+def test_live_gps_recovers_from_a_gps_object_split_across_reads(monkeypatch):
+    # live_gps() reads in fixed 4096-byte chunks (see its own
+    # docstring). Padding the stream well past that with 3G-only
+    # noise before the GPS object forces _FakeResponse.read(4096) to
+    # hand it back across more than one call, exercising live_gps()'s
+    # own re-parse-a-growing-buffer loop exactly like a real chunked
+    # socket read splitting a GPS object mid-way would.
+    padding = b'{"3G":{"FrontRear":1, "LeftRight":2, "UpperLower":3}}' * 200
+    stream = padding + b'{"GPS":{"LATITUDE":59.334591, "LONGITUDE":18.063240}}\r\n'
+    assert len(padding) > 4096
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    fix = client.live_gps()
+
+    assert (fix.latitude, fix.longitude) == (59.334591, 18.063240)
+
+
+def test_live_gps_returns_a_zero_reading_as_no_fix_rather_than_erroring(
+    monkeypatch,
+):
+    stream = b'{"GPS":{"LATITUDE":0.0, "LONGITUDE":0.0}}\r\n'
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    fix = client.live_gps()
+
+    assert fix.has_fix is False
+
+
+def test_live_gps_raises_when_the_stream_never_yields_a_gps_object(
+    monkeypatch,
+):
+    stream = b'{"3G":{"FrontRear":1, "LeftRight":2, "UpperLower":3}}\r\n'
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+
+    with pytest.raises(NoGpsDataError):
+        client.live_gps()
