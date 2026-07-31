@@ -15,6 +15,23 @@ the live camera feed itself is comparatively small (see
 map_stream.py's/gsensor_stream.py's own DEFAULT_WIDTH/DEFAULT_HEIGHT
 comments).
 
+The camera panel is the one panel that should never be the first
+thing to disappear as the browser window shrinks - "the stream should
+be there as long as possible since it is the star", per Christer's
+own follow-up once he'd actually resized the window and watched the
+camera feed vanish before the map/g-sensor did. Fixed with three
+things together, in _PAGE_HTML's own CSS: `min-width: 0` on every
+`.panel` (flex items refuse to shrink below their own content's
+natural size by default - without this, the camera feed's native
+resolution, likely larger than the map/g-sensor panels' own fixed
+render size, kept the whole row from shrinking at all rather than
+letting it scale down); the camera panel gets a bigger `flex-grow`
+share (3 vs. the map's 1) so it's the last to give up space; and
+`order: -1` puts the camera panel first both in the flex row and,
+below a 700px width breakpoint, first in the stacked column layout
+too - so on a small window it's the one panel guaranteed still on
+screen without scrolling.
+
 A plain hand-written HTML string, not a Jinja2 template like
 blackvue.web's pages - there's exactly one page here, its only dynamic
 content is the camera's own display name, and pulling in a templates/
@@ -129,16 +146,35 @@ _PAGE_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>bv-live - {camera_name}</title>
 <style>
-  body {{
+  html, body {{
     margin: 0; background: #111; color: #eee;
     font-family: system-ui, sans-serif;
   }}
   header {{ padding: 10px 16px; }}
   header h1 {{ font-size: 18px; font-weight: 600; margin: 0; }}
   .dashboard {{ display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; padding: 0 12px; }}
-  .panel {{ background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 8px; }}
-  .panel img {{ display: block; max-width: 100%; border-radius: 4px; }}
-  #camera-panel {{ display: flex; flex-direction: column; align-items: center; }}
+  .panel {{
+    background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 8px;
+    box-sizing: border-box;
+    /* Flex items refuse to shrink below their own content's natural
+       size by default (min-width: auto) - without this, a camera
+       feed sent at a larger native resolution than the map/gsensor
+       panels' own fixed render size won't shrink to fit a narrower
+       window at all, forcing the row to overflow instead. */
+    min-width: 0;
+  }}
+  .panel img {{ display: block; width: 100%; height: auto; border-radius: 4px; }}
+  /* The camera feed is the star - it should be the last panel to
+     give up space as the window narrows, not the first. order: -1
+     also puts it first when panels stack vertically (see the
+     max-width: 700px rule below), so it's the one thing guaranteed
+     still on screen without scrolling on a small window. */
+  #camera-panel {{
+    display: flex; flex-direction: column; align-items: center;
+    flex: 3 1 320px;
+    order: -1;
+  }}
+  #map-panel {{ flex: 1 1 220px; }}
   #camera-controls {{ margin-top: 8px; display: flex; gap: 8px; }}
   button {{
     background: #222; color: #eee; border: 1px solid #444; border-radius: 4px;
@@ -146,13 +182,19 @@ _PAGE_HTML = """<!DOCTYPE html>
   }}
   button.active {{ background: #3a5a78; border-color: #5a86ab; }}
   #gsensor-panel {{ width: 100%; box-sizing: border-box; }}
-  #gsensor-panel img {{ width: 100%; }}
+  /* Narrow window: stack everything full-width instead of shrinking
+     the map/camera side by side into illegibility. order: -1 above
+     already puts the camera panel first in this stacked order too. */
+  @media (max-width: 700px) {{
+    .dashboard {{ flex-direction: column; }}
+    #camera-panel, #map-panel {{ flex-basis: auto; width: 100%; }}
+  }}
 </style>
 </head>
 <body>
 <header><h1>{camera_name} - live</h1></header>
 <div class="dashboard">
-  <div class="panel"><img src="/stream/map" alt="live map"></div>
+  <div class="panel" id="map-panel"><img src="/stream/map" alt="live map"></div>
   <div class="panel" id="camera-panel">
     <img id="camera-stream" src="/stream/camera?direction=F" alt="camera feed">
     <div id="camera-controls">

@@ -8,13 +8,15 @@
 
 ```
 bv-live [--config-dir DIR] [--timeout SECONDS] [--host HOST] [--port PORT]
-        [--map-zoom METERS] [--gsensor-window SECONDS]
+        [--map-zoom METERS] [--gsensor-window SECONDS] [--no-browser]
         ID
 ```
 
 ## DESCRIPTION
 
 `bv-live` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and serves a one-page live dashboard in your browser: the camera's own front/rear video feed (switchable with a button), a map that scrolls to follow its current position, and a strip chart of its live g-sensor readings - all fed live from the camera's own endpoints for as long as this command keeps running.
+
+A browser window opens automatically a moment after the server starts (pass `--no-browser` to skip this and just print the URL). The camera feed is the star of the dashboard: as the browser window is resized smaller, the map and g-sensor panels give up space (and eventually stack below it) before the camera feed does.
 
 The dashboard has three panels:
 
@@ -40,6 +42,7 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 | `--port PORT` | Port to listen on. Default: 8100 (different from `bv-web`'s own default 8000, so both can run at once). |
 | `--map-zoom METERS` | Live map follow-camera radius in meters. Default: 100. |
 | `--gsensor-window SECONDS` | How many seconds of live g-sensor history the scrolling strip shows at once. Default: 60. |
+| `--no-browser` | Don't automatically open a browser window once the server starts - just print the URL. |
 | `-h`, `--help` | Show help and exit. |
 
 ## EXIT STATUS
