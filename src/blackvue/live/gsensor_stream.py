@@ -49,9 +49,12 @@ from .telemetry import TelemetryState
 # "the gsensor line too" [bigger than usual] - Christer, since the
 # live camera feed itself is small. A short, wide strip - matching
 # export/gsensor_graph_render.py's own horizontal-mode shape - rather
-# than a square gauge.
+# than a square gauge. Height halved from the original 260 per
+# Christer's own follow-up ("make the gsensor halv the height it has
+# now") once he'd actually seen it alongside the taller map/camera
+# panels from the height-matching change above it.
 DEFAULT_WIDTH = 1600
-DEFAULT_HEIGHT = 260
+DEFAULT_HEIGHT = 130
 
 # Default rolling window - bv-live's own --gsensor-window flag
 # overrides this. Long enough to read as a real trend (a corner, a
