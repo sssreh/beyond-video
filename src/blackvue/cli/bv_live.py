@@ -9,6 +9,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -128,20 +130,94 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # refresh - not worth the complexity of polling the socket instead.
 BROWSER_OPEN_DELAY_SECONDS = 1.0
 
+# Direct-launch candidates for browsers that support an explicit "open
+# in a new window" command-line flag - see _open_new_window()'s own
+# docstring for why this exists at all instead of just calling
+# webbrowser.open_new(). Absolute paths are checked directly (typical
+# Windows/macOS install locations); bare names are looked up on PATH
+# (typical on Linux, and for anyone who's added a browser to PATH
+# themselves on any OS). Edge/Chrome are tried before Firefox simply
+# because Edge ships by default on every Windows install, Christer's
+# own platform, and is Chromium-based like Chrome - not a judgment
+# about which browser is "better".
+_CHROMIUM_PATHS = (
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+)
+_CHROMIUM_COMMANDS = ("microsoft-edge", "google-chrome", "chromium-browser", "chromium")
+_FIREFOX_PATHS = (
+    r"C:\Program Files\Mozilla Firefox\firefox.exe",
+    r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+    "/Applications/Firefox.app/Contents/MacOS/firefox",
+)
+_FIREFOX_COMMANDS = ("firefox",)
+
+
+def _find_browser(paths: tuple[str, ...], commands: tuple[str, ...]) -> str | None:
+    for path in paths:
+        if Path(path).exists():
+            return path
+    for command in commands:
+        found = shutil.which(command)
+        if found:
+            return found
+    return None
+
+
+def _open_new_window(url: str) -> None:
+    """Open `url` in a genuinely new browser *window*, not just a new
+    tab in whatever window is already open.
+
+    webbrowser.open_new() asks for a new window too, but on Windows it
+    goes through os.startfile(), which just hands the URL to the OS's
+    default-app association - the browser's own already-running
+    instance almost always reuses itself and opens a tab instead,
+    regardless of what was actually asked for (confirmed by Christer:
+    "It doesnt get its own window, it became a tab"). The only
+    reliable way around that is launching the browser's own executable
+    directly with a flag it actually respects for this
+    (`--new-window` for Chromium browsers, `-new-window` for Firefox -
+    see _find_browser()) - tried first here, falling back to plain
+    webbrowser.open_new() (still opens *something*, just possibly a
+    tab again) if no known browser executable can be found at all.
+    """
+
+    chromium = _find_browser(_CHROMIUM_PATHS, _CHROMIUM_COMMANDS)
+    if chromium is not None:
+        try:
+            subprocess.Popen([chromium, "--new-window", url])
+            return
+        except OSError:
+            pass
+
+    firefox = _find_browser(_FIREFOX_PATHS, _FIREFOX_COMMANDS)
+    if firefox is not None:
+        try:
+            subprocess.Popen([firefox, "-new-window", url])
+            return
+        except OSError:
+            pass
+
+    webbrowser.open_new(url)
+
 
 def _open_browser_soon(url: str) -> None:
-    """Schedule `webbrowser.open_new(url)` to run shortly, on a
-    background timer thread rather than inline - called just before
-    uvicorn.run() below, which then blocks the main thread until the
-    server stops, so opening the browser has to happen out-of-line to
-    not get stuck waiting behind it.
+    """Schedule _open_new_window(url) to run shortly, on a background
+    timer thread rather than inline - called just before uvicorn.run()
+    below, which then blocks the main thread until the server stops,
+    so opening the browser has to happen out-of-line to not get stuck
+    waiting behind it.
 
     A plain function (not inlined into _run()) so tests can swap out
     threading.Timer for something that fires immediately instead of
     actually waiting/spawning a thread.
     """
 
-    threading.Timer(BROWSER_OPEN_DELAY_SECONDS, webbrowser.open_new, args=(url,)).start()
+    threading.Timer(BROWSER_OPEN_DELAY_SECONDS, _open_new_window, args=(url,)).start()
 
 
 def _run(args: argparse.Namespace) -> int:

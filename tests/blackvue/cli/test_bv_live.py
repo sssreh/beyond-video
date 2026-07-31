@@ -159,8 +159,112 @@ def test_open_browser_soon_schedules_a_timer_that_opens_the_url(monkeypatch):
     assert len(calls) == 1
     delay, func, args = calls[0]
     assert delay == bv_live_module.BROWSER_OPEN_DELAY_SECONDS
-    assert func is bv_live_module.webbrowser.open_new
+    assert func is bv_live_module._open_new_window
     assert args == ("http://127.0.0.1:8100/",)
+
+
+def test_open_new_window_launches_a_found_chromium_browser_with_new_window_flag(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+            if paths is bv_live_module._CHROMIUM_PATHS
+            else None
+        ),
+    )
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert calls == [
+        [
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            "--new-window",
+            "http://127.0.0.1:8100/",
+        ]
+    ]
+
+
+def test_open_new_window_falls_back_to_firefox_when_no_chromium_found(monkeypatch):
+    def fake_find(paths, commands):
+        if paths is bv_live_module._FIREFOX_PATHS:
+            return "/usr/bin/firefox"
+        return None
+
+    monkeypatch.setattr(bv_live_module, "_find_browser", fake_find)
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert calls == [["/usr/bin/firefox", "-new-window", "http://127.0.0.1:8100/"]]
+
+
+def test_open_new_window_falls_back_to_webbrowser_when_nothing_found(monkeypatch):
+    monkeypatch.setattr(bv_live_module, "_find_browser", lambda paths, commands: None)
+
+    opened = []
+    monkeypatch.setattr(bv_live_module.webbrowser, "open_new", opened.append)
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert opened == ["http://127.0.0.1:8100/"]
+
+
+def test_open_new_window_falls_back_when_popen_raises(monkeypatch):
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            "chrome-path" if paths is bv_live_module._CHROMIUM_PATHS else None
+        ),
+    )
+
+    def _raise(cmd):
+        raise OSError("could not launch")
+
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", _raise)
+
+    opened = []
+    monkeypatch.setattr(bv_live_module.webbrowser, "open_new", opened.append)
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert opened == ["http://127.0.0.1:8100/"]
+
+
+def test_find_browser_checks_paths_before_commands(monkeypatch, tmp_path):
+    existing = tmp_path / "browser.exe"
+    existing.write_text("")
+
+    monkeypatch.setattr(bv_live_module.shutil, "which", lambda command: "SHOULD_NOT_BE_USED")
+
+    found = bv_live_module._find_browser((str(existing),), ())
+
+    assert found == str(existing)
+
+
+def test_find_browser_falls_back_to_commands_on_path(monkeypatch):
+    monkeypatch.setattr(
+        bv_live_module.shutil, "which",
+        lambda command: "/usr/bin/found" if command == "google-chrome" else None,
+    )
+
+    found = bv_live_module._find_browser(("/no/such/path.exe",), ("google-chrome",))
+
+    assert found == "/usr/bin/found"
+
+
+def test_find_browser_returns_none_when_nothing_matches(monkeypatch):
+    monkeypatch.setattr(bv_live_module.shutil, "which", lambda command: None)
+
+    found = bv_live_module._find_browser(("/no/such/path.exe",), ("no-such-command",))
+
+    assert found is None
 
 
 def _stub_successful_connection(monkeypatch, sys_module):

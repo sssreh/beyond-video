@@ -165,14 +165,17 @@ _PAGE_HTML = """<!DOCTYPE html>
   }}
   .panel img {{ display: block; width: 100%; height: auto; border-radius: 4px; }}
   /* The camera feed is the star - it should be the last panel to
-     give up space as the window narrows, not the first. order: -1
-     also puts it first when panels stack vertically (see the
-     max-width: 700px rule below), so it's the one thing guaranteed
-     still on screen without scrolling on a small window. */
+     give up space as the window narrows, not the first. Deliberately
+     no `order` here at normal widths: Christer wants the map to the
+     left of the camera feed (the markup's own natural order), and an
+     earlier version's `order: -1` wrongly applied everywhere,
+     dragging the camera panel in front of the map even at full width
+     instead of only once panels stack vertically - see the
+     max-width: 700px rule below, which is the only place `order`
+     belongs. */
   #camera-panel {{
     display: flex; flex-direction: column; align-items: center;
     flex: 3 1 320px;
-    order: -1;
   }}
   #map-panel {{ flex: 1 1 220px; }}
   #camera-controls {{ margin-top: 8px; display: flex; gap: 8px; }}
@@ -183,11 +186,14 @@ _PAGE_HTML = """<!DOCTYPE html>
   button.active {{ background: #3a5a78; border-color: #5a86ab; }}
   #gsensor-panel {{ width: 100%; box-sizing: border-box; }}
   /* Narrow window: stack everything full-width instead of shrinking
-     the map/camera side by side into illegibility. order: -1 above
-     already puts the camera panel first in this stacked order too. */
+     the map/camera side by side into illegibility. This is the only
+     place the camera panel gets order: -1, so it's first (top) once
+     stacked, without disturbing the map-left/camera-right order at
+     normal widths above. */
   @media (max-width: 700px) {{
     .dashboard {{ flex-direction: column; }}
-    #camera-panel, #map-panel {{ flex-basis: auto; width: 100%; }}
+    #camera-panel {{ order: -1; flex-basis: auto; width: 100%; }}
+    #map-panel {{ flex-basis: auto; width: 100%; }}
   }}
 </style>
 </head>
