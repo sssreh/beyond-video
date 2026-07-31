@@ -553,7 +553,7 @@ def test_render_base_frame_skips_the_legend_for_fewer_than_two_samples():
 
 def test_render_base_frame_vertical_centers_the_legend_block():
     # The narrow vertical side-panel doesn't have room to left-anchor
-    # the legend the way the wide horizontal panel does - "Y — Forward/
+    # the legend the way the wide horizontal panel does - "Z — Forward/
     # back" alone runs past the plot area's own right edge from there.
     # Christer's own request: center it instead. Expected x computed
     # the same way _draw_legend() itself does, independently here
@@ -566,9 +566,16 @@ def test_render_base_frame_vertical_centers_the_legend_block():
 
     font = _load_font(LEGEND_FONT_SIZE)
     measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    # render_base_frame() above is called without show_z, so only the
+    # X/Y rows are actually drawn (see _legend_rows()) - measure
+    # against those two, not all three LEGEND_LABELS, or this drifts
+    # out of sync with _draw_legend()'s own width whenever the widest
+    # label isn't among the first two (as it no longer is: Z's
+    # "Forward/back" is now the longest of the three, but Z isn't
+    # drawn here).
     widest_text_width = max(
         measuring_draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
-        for axis, meaning in LEGEND_LABELS
+        for axis, meaning in LEGEND_LABELS[:2]
     )
     block_width = LEGEND_SWATCH_LENGTH + 4 + widest_text_width
     expected_x = round((DEFAULT_VERTICAL_WIDTH - block_width) / 2)
@@ -658,11 +665,14 @@ def test_legend_labels_spell_out_what_each_axis_physically_means():
     # Christer's own explicit wording, not just "X"/"Y"/"Z" - see
     # _draw_legend()/the module docstring for why this is kept
     # identical in both orientations even though it runs past the
-    # narrow vertical panel's own plot-area edge there.
+    # narrow vertical panel's own plot-area edge there. Y/Z (left-right/
+    # forward-back) were confirmed against a real recording with known
+    # maneuvers; X (up/down) is labeled by elimination - see
+    # gsensor_render.py's own module docstring.
     assert LEGEND_LABELS == (
-        ("X", "Left/right"),
-        ("Y", "Forward/back"),
-        ("Z", "Up/down"),
+        ("X", "Up/down"),
+        ("Y", "Left/right"),
+        ("Z", "Forward/back"),
     )
 
 
@@ -791,8 +801,8 @@ def test_render_base_frame_omits_the_divider_when_z_is_hidden():
 
 
 def test_legend_has_two_rows_when_z_is_hidden():
-    # Only X/Y's own rows - no "Z — Up/down" row for a trace that isn't
-    # actually drawn (see _draw_legend()'s own docstring).
+    # Only X/Y's own rows - no "Z — Forward/back" row for a trace that
+    # isn't actually drawn (see _draw_legend()'s own docstring).
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 

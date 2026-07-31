@@ -46,12 +46,20 @@ needs to stay green for the dot-gauge's own real chroma-key use.
 
 Each axis's own trace is labeled by a small color-key legend (Christer:
 "nothing explaining the colors"), spelling out what each axis
-physically means - "X — Left/right", "Y — Forward/back",
-"Z — Up/down" - the standard accelerometer axis convention, offered as
-a best-effort explanation rather than a device-verified calibration
-(see gsensor_reader.py's own module docstring: the physical unit/
-orientation of these readings isn't independently confirmed for this
-device). Christer asked for this exact wording in both orientations.
+physically means - "Y — Left/right", "Z — Forward/back",
+"X — Up/down". Unlike when this was first written, this is no longer
+just the standard accelerometer axis convention offered as a
+best-effort guess: Y and Z were confirmed against a real recording
+with known, timestamped maneuvers (two right turns and a left U-turn,
+plus a braking event caught right before the U-turn) - see
+gsensor_render.py's own module docstring for the raw data and
+reasoning. X showed no sustained response to any of those events and
+is labeled "Up/down" by elimination rather than independent
+confirmation - still the best available explanation, just not on the
+same footing as Y and Z. See gsensor_reader.py's own module docstring
+for the standing caveat that the physical *unit* of these readings
+(milli-g, raw ADC counts, or something else) remains unconfirmed even
+now.
 
 The legend gets its own dedicated space rather than sitting on top of
 the traces: `_legend_reserve_px(orientation)` adds extra room to the
@@ -253,16 +261,19 @@ LEGEND_PADDING = 6
 # Full axis-meaning wording, not just "X"/"Y"/"Z" - Christer's own
 # request, kept identical in both orientations even though it runs
 # past the narrow vertical side-panel's own right edge (his explicit
-# call over abbreviating there - see the module docstring). The exact
-# physical axis mapping isn't independently confirmed for this device
-# (see gsensor_reader.py's own module docstring on the unconfirmed
-# unit/orientation) - this is the standard accelerometer convention,
-# offered as a best-effort explanation of the colors, not a verified
-# calibration.
+# call over abbreviating there - see the module docstring). Y and Z's
+# meanings were confirmed against a real recording with known,
+# timestamped maneuvers - see gsensor_render.py's own module
+# docstring. X showed no sustained response to any tested event and is
+# labeled "Up/down" by elimination, not independent confirmation - see
+# the module docstring above for the distinction. The tuple order
+# (X, Y, Z) must stay fixed regardless of wording changes - it's zipped
+# with the (X_COLOR, Y_COLOR, Z_COLOR) tuple by position in
+# _draw_legend(), not matched by the "axis" string.
 LEGEND_LABELS = (
-    ("X", "Left/right"),
-    ("Y", "Forward/back"),
-    ("Z", "Up/down"),
+    ("X", "Up/down"),
+    ("Y", "Left/right"),
+    ("Z", "Forward/back"),
 )
 
 # The bundled copy is tried first (see assets/, and pyproject.toml's
@@ -566,7 +577,7 @@ def _legend_text_width(
     draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, show_z: bool = False
 ) -> float:
     """Return the widest of the legend's own rendered rows' text width
-    ("X — Left/right", "Y — Forward/back", and "Z — Up/down" when
+    ("X — Up/down", "Y — Left/right", and "Z — Forward/back" when
     `show_z`) - shared by _legend_reserve_px() (how much space to set
     aside) and _draw_legend() (where exactly to center the block within
     it), so the two can never disagree with each other about the same
@@ -635,7 +646,7 @@ def _draw_legend(
     Vertical mode: horizontally centered as a block within
     `canvas_width` (the panel's own full image width) rather than
     left-anchored - Christer's own request, and also what keeps the
-    longest row ("Y — Forward/back", ~123px) comfortably inside the
+    longest row ("Z — Forward/back", ~123px) comfortably inside the
     panel rather than running past an edge. All rows share one swatch
     x position (the widest row's own left edge) so the block reads as
     one clean centered unit rather than each row independently
