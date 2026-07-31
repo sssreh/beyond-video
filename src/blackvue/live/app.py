@@ -19,18 +19,24 @@ The camera panel is the one panel that should never be the first
 thing to disappear as the browser window shrinks - "the stream should
 be there as long as possible since it is the star", per Christer's
 own follow-up once he'd actually resized the window and watched the
-camera feed vanish before the map/g-sensor did. Fixed with three
-things together, in _PAGE_HTML's own CSS: `min-width: 0` on every
-`.panel` (flex items refuse to shrink below their own content's
-natural size by default - without this, the camera feed's native
-resolution, likely larger than the map/g-sensor panels' own fixed
-render size, kept the whole row from shrinking at all rather than
-letting it scale down); the camera panel gets a bigger `flex-grow`
-share (3 vs. the map's 1) so it's the last to give up space; and
-`order: -1` puts the camera panel first both in the flex row and,
-below a 700px width breakpoint, first in the stacked column layout
-too - so on a small window it's the one panel guaranteed still on
-screen without scrolling.
+camera feed vanish before the map/g-sensor did. At normal widths,
+`order: -1` is deliberately absent from #camera-panel so the map stays
+to its left, per Christer's own layout spec; below a 700px width
+breakpoint (see the @media rule in _PAGE_HTML's own CSS) panels stack
+into a single column and `order: -1` puts the camera panel first
+there instead, so on a small window it's the one panel guaranteed
+still on screen without scrolling.
+
+The map and camera images are sized to the same rendered height
+("the map should have the same height as the video", per Christer's
+own later follow-up) via an explicit `height: 55vh` on both
+`#camera-panel img, #map-panel img` (see _PAGE_HTML), each panel's
+own width then following from its image's own aspect ratio at that
+height - the map's square 1:1 render ends up as wide as it is tall,
+the camera feed keeps its native aspect. `min-width: 0` on every
+`.panel` still matters below the 700px breakpoint, where the panels
+go back to `width: 100%; height: auto` sizing and flex items would
+otherwise refuse to shrink below their own content's natural size.
 
 A plain hand-written HTML string, not a Jinja2 template like
 blackvue.web's pages - there's exactly one page here, its only dynamic
@@ -175,9 +181,33 @@ _PAGE_HTML = """<!DOCTYPE html>
      belongs. */
   #camera-panel {{
     display: flex; flex-direction: column; align-items: center;
-    flex: 3 1 320px;
+    flex: 0 0 auto;
   }}
-  #map-panel {{ flex: 1 1 220px; }}
+  /* Map sized to match the camera feed's own height (Christer: "The
+     map should have the same height as the video") rather than a
+     flex-grow share of the row's width - the height-matching img
+     rule below is what actually drives both panels' sizing now.
+     flex: 0 0 auto here just means "take exactly the width your
+     content needs," not a fixed share of the row. */
+  #map-panel {{ flex: 0 0 auto; }}
+  /* Force the camera and map images to the same rendered height so
+     the map visually matches the video's height - each image's own
+     width then just follows whatever its aspect ratio implies at
+     that height (the map's own square 1:1 render ends up as wide as
+     it is tall; the camera feed keeps its native aspect, unchanged).
+     No server-side resizing or cropping involved - see
+     stream_camera()'s and live_map_frames()'s own docstrings above.
+     If the row can't fit both panels side by side at this height,
+     .dashboard's existing flex-wrap: wrap (above) drops the map
+     panel to its own line rather than overflowing or distorting
+     either image's aspect ratio. 55vh is a starting point, not
+     measured against Christer's own screen - nudge it if it's too
+     tall/short in practice. */
+  #camera-panel img, #map-panel img {{
+    width: auto;
+    height: 55vh;
+    max-width: 100%;
+  }}
   #camera-controls {{ margin-top: 8px; display: flex; gap: 8px; }}
   button {{
     background: #222; color: #eee; border: 1px solid #444; border-radius: 4px;
@@ -194,6 +224,10 @@ _PAGE_HTML = """<!DOCTYPE html>
     .dashboard {{ flex-direction: column; }}
     #camera-panel {{ order: -1; flex-basis: auto; width: 100%; }}
     #map-panel {{ flex-basis: auto; width: 100%; }}
+    /* The height-matching rule above doesn't make sense once panels
+       are stacked full-width instead of sitting side by side - go
+       back to width-driven sizing here, same as before this change. */
+    #camera-panel img, #map-panel img {{ width: 100%; height: auto; }}
   }}
 </style>
 </head>

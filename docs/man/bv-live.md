@@ -20,9 +20,9 @@ A browser window opens automatically a moment after the server starts (pass `--n
 
 The dashboard has three panels:
 
-- **Map** (left) - follows the camera's current GPS position at a fixed real-world radius (`--map-zoom`), the same "follow camera" framing `bv-export --map-zoom` uses for a finished trip, but scrolling live instead. Road/water/park geometry is fetched from OpenStreetMap's Overpass API and cached to disk (under the camera's own archive directory, alongside `bv-export`'s own map cache) the first time it's needed for a given area.
-- **Camera** (top right) - the camera's own live MJPEG feed, proxied unchanged. A Front/Rear button switches which direction is shown; only the direction currently on screen is actually being streamed from the camera.
-- **G-sensor** (bottom, full width) - a scrolling strip of the last `--gsensor-window` seconds of live g-sensor readings.
+- **Map** (left) - follows the camera's current GPS position at a fixed real-world radius (`--map-zoom`), the same "follow camera" framing `bv-export --map-zoom` uses for a finished trip, but scrolling live instead. Road/water/park geometry is fetched from OpenStreetMap's Overpass API and cached to disk (under the camera's own archive directory, alongside `bv-export`'s own map cache) the first time it's needed for a given area. Displayed at the same height as the camera feed next to it (not the camera's own resolution - just matched screen height), so its own square render ends up as wide as it is tall.
+- **Camera** (top right) - the camera's own live MJPEG feed, proxied unchanged - not resized, cropped, or re-encoded, so its quality is exactly whatever the camera's own live-view stream provides. A Front/Rear button switches which direction is shown; only the direction currently on screen is actually being streamed from the camera.
+- **G-sensor** (bottom, full width) - a scrolling strip of the last `--gsensor-window` seconds of live g-sensor readings. May be below the fold on a shorter window - scroll down to see it.
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole session. This only works while the camera is actually reachable, the same as `bv-gps`/`bv-download`.
 
