@@ -9,7 +9,7 @@
 ```
 bv-live [--config-dir DIR] [--timeout SECONDS] [--host HOST] [--port PORT]
         [--map-zoom METERS] [--gsensor-window SECONDS] [--no-browser]
-        [--browser {default,chrome,edge,firefox}]
+        [--browser {default,chrome,edge,firefox,brave}]
         ID
 ```
 
@@ -17,7 +17,7 @@ bv-live [--config-dir DIR] [--timeout SECONDS] [--host HOST] [--port PORT]
 
 `bv-live` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and serves a one-page live dashboard in your browser: the camera's own front/rear video feed (switchable with a button), a map that scrolls to follow its current position, and a strip chart of its live g-sensor readings - all fed live from the camera's own endpoints for as long as this command keeps running.
 
-A browser window opens automatically a moment after the server starts (pass `--no-browser` to skip this and just print the URL) - on Windows, in whichever browser is actually set as your OS-level default, detected from the same registry key Windows itself uses to decide which browser handles a link; a fixed Edge/Chrome/Firefox search is used as a fallback if that can't be determined (a non-Windows OS, or a default browser this doesn't recognize a "new window" flag for). If Windows' own default-browser association isn't cooperating - it's been known to silently reset itself back to Edge - pass `--browser chrome` (or `edge`/`firefox`) to skip OS-default detection entirely and always use that browser; if it can't be found, this falls back to the same detection-then-fixed-list chain rather than giving up. The camera feed is the star of the dashboard: as the browser window is resized smaller, the map and g-sensor panels give up space (and eventually stack below it) before the camera feed does.
+A browser window opens automatically a moment after the server starts (pass `--no-browser` to skip this and just print the URL) - on Windows, in whichever browser is actually set as your OS-level default, detected from the same registry key Windows itself uses to decide which browser handles a link; a fixed Edge/Chrome/Firefox search is used as a fallback if that can't be determined (a non-Windows OS, or a default browser this doesn't recognize a "new window" flag for). If Windows' own default-browser association isn't cooperating - it's been known to silently reset itself back to Edge - pass `--browser chrome` (or `edge`/`firefox`/`brave`) to skip OS-default detection entirely and always use that browser; if it can't be found, this falls back to the same detection-then-fixed-list chain rather than giving up. The camera feed is the star of the dashboard: as the browser window is resized smaller, the map and g-sensor panels give up space (and eventually stack below it) before the camera feed does.
 
 The dashboard has three panels:
 
@@ -44,7 +44,7 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 | `--map-zoom METERS` | Live map follow-camera radius in meters. Default: 100. |
 | `--gsensor-window SECONDS` | How many seconds of live g-sensor history the scrolling strip shows at once. Default: 60. |
 | `--no-browser` | Don't automatically open a browser window once the server starts - just print the URL. |
-| `--browser {default,chrome,edge,firefox}` | Which browser to open. Default: `default` - auto-detect the OS-level default browser, falling back to a fixed Edge/Chrome/Firefox search if that can't be determined. Set this if the OS-level default keeps resolving to a browser you don't want. |
+| `--browser {default,chrome,edge,firefox,brave}` | Which browser to open. Default: `default` - auto-detect the OS-level default browser, falling back to a fixed Edge/Chrome/Firefox search if that can't be determined. Set this if the OS-level default keeps resolving to a browser you don't want (`brave` is explicit-only - it isn't part of the auto-detect fallback search). |
 | `-h`, `--help` | Show help and exit. |
 
 ## EXIT STATUS

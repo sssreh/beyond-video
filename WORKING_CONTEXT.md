@@ -6405,3 +6405,15 @@ The OS-default-browser detection from the previous entry turned out to work exac
 **Docs.** `docs/man/bv-live.md`: synopsis line, auto-open paragraph, and the OPTIONS table all updated to document `--browser`.
 
 **Verification.** `ast.parse()` on both changed files, full 108-test harness run, all passing (rebuilt the sandbox's `python -m tomllib` stub and re-derived the hand-rolled `run_bv_live_tests.py` harness fresh this session since neither pytest nor tomllib is available in this particular sandbox - same standing limitation noted in earlier bv-live entries). Not verified on Christer's own machine yet - next step for him is to try `bv-live kirby --browser chrome` and confirm Chrome actually opens.
+
+## bv-live: add `brave` to --browser (this session, direct follow-up)
+
+Christer: "i also use brave." Brave was already one of the `_CHROMIUM_EXE_STEMS` OS-default-detection recognizes (it takes the same `--new-window` flag as Chrome/Edge), but wasn't reachable through the new explicit `--browser` override added moments earlier, since that only had Chrome/Edge/Firefox paths.
+
+**Change - `cli/bv_live.py`.** Added `_BRAVE_PATHS`/`_BRAVE_COMMANDS` (Windows Program Files paths for both architectures, the standard macOS `.app` path, and `brave-browser`/`brave` PATH command names for Linux), registered under `"brave"` in `_BROWSER_OVERRIDES` with the same `--new-window` flag Chrome/Edge use. `--browser`'s `choices` extended to `(default, chrome, edge, firefox, brave)`. Deliberately *not* added to the generic `_CHROMIUM_PATHS`/`_CHROMIUM_COMMANDS` fallback list that `_open_new_window()` falls through to when OS-default detection fails - unlike Edge/Chrome, Brave is never a default install on any OS, so it stays explicit-only rather than silently becoming a fallback guess.
+
+**Tests.** New: `test_open_new_window_uses_brave_as_an_explicit_override`, mirroring the existing Chrome-override test (asserts `_default_browser_launch` is skipped entirely). Full harness: 109/109 passing (was 108, +1).
+
+**Docs.** `docs/man/bv-live.md`: synopsis, auto-open paragraph, and OPTIONS table all updated to list `brave` alongside the other explicit choices, with a note that it's explicit-only.
+
+**Verification.** `ast.parse()` on both changed files, full 109-test harness run, all passing.

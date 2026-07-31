@@ -255,6 +255,34 @@ def test_open_new_window_uses_an_explicit_browser_override_when_given(monkeypatc
     ]
 
 
+def test_open_new_window_uses_brave_as_an_explicit_override(monkeypatch):
+    def _fail_if_called():
+        raise AssertionError("should not consult OS-default detection")
+
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", _fail_if_called)
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+            if paths is bv_live_module._BRAVE_PATHS
+            else None
+        ),
+    )
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/", "brave")
+
+    assert calls == [
+        [
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "--new-window",
+            "http://127.0.0.1:8100/",
+        ]
+    ]
+
+
 def test_open_new_window_falls_back_when_explicit_browser_not_found(monkeypatch):
     monkeypatch.setattr(bv_live_module, "_find_browser", lambda paths, commands: None)
     monkeypatch.setattr(

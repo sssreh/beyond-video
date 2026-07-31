@@ -121,7 +121,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--browser",
-        choices=("default", "chrome", "edge", "firefox"),
+        choices=("default", "chrome", "edge", "firefox", "brave"),
         default="default",
         help=(
             "Which browser to open (default: %(default)s - auto-detect "
@@ -176,6 +176,16 @@ _FIREFOX_PATHS = (
     "/Applications/Firefox.app/Contents/MacOS/firefox",
 )
 _FIREFOX_COMMANDS = ("firefox",)
+# Brave isn't part of the generic _CHROMIUM_PATHS/_CHROMIUM_COMMANDS
+# fallback search above (unlike Edge/Chrome, it's never a Windows/macOS
+# default install), so it's only reachable via an explicit
+# --browser brave, not the OS-default-detection-failed fallback chain.
+_BRAVE_PATHS = (
+    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+)
+_BRAVE_COMMANDS = ("brave-browser", "brave")
 
 # --browser CHOICE -> (paths, commands, new-window flag), used by
 # _open_new_window() to bypass OS-default detection entirely when the
@@ -186,6 +196,7 @@ _BROWSER_OVERRIDES = {
     "chrome": (_CHROME_PATHS, _CHROME_COMMANDS, "--new-window"),
     "edge": (_EDGE_PATHS, _EDGE_COMMANDS, "--new-window"),
     "firefox": (_FIREFOX_PATHS, _FIREFOX_COMMANDS, "-new-window"),
+    "brave": (_BRAVE_PATHS, _BRAVE_COMMANDS, "--new-window"),
 }
 
 
