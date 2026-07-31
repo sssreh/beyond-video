@@ -210,5 +210,6 @@ sudo docker-compose down          # stops and removes bv-web's container (data/ 
 
 ## See also
 
+- `docs/WEB_ARCHITECTURE.md` - what bv-web is, structurally, and how it relates to the rest of the project
 - `WORKING_CONTEXT.md` - what bv-web does and doesn't do yet (increment 1: browse/watch only).
 - `docs/PIPELINE.md` - the bv-download -> bv-generate -> bv-export pipeline that produces what `data/trips` holds.

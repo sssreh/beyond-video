@@ -89,6 +89,7 @@ bv-export /path/to/archive --target /path/to/trips --map --stitch --stitch-layou
 
 ## See also
 
+- `docs/ARCHITECTURE.md` - the helicopter view this pipeline fits into (plus bv-live)
 - `docs/man/bv-config.md`
 - `docs/man/bv-download.md`
 - `docs/man/bv-ls.md`
