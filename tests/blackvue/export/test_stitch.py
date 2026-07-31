@@ -1772,14 +1772,16 @@ def test_graph_panel_dimensions_matches_shared_axis_for_top_down():
     assert 0 < height <= 400
 
 
-def test_graph_panel_dimensions_defaults_to_25_percent_of_the_shared_axis():
+def test_graph_panel_dimensions_defaults_to_50_percent_of_the_shared_axis():
     # Unlike _map_panel_dimensions(), there's no geography to derive an
     # automatic size from - a synthetic chart always uses the fixed
-    # DEFAULT_GRAPH_SIZE_PERCENT (25%) unless size_fraction overrides
-    # it (see the next test).
+    # DEFAULT_GRAPH_SIZE_PERCENT (50%, matching the map panel's own
+    # _MAX_MAP_PANEL_FRACTION ceiling - see DEFAULT_GRAPH_SIZE_PERCENT's
+    # own comment) unless size_fraction overrides it (see the next
+    # test).
     width, _height = _graph_panel_dimensions(1000, 400, side="left")
 
-    assert width == 250
+    assert width == 500
 
 
 def test_graph_panel_dimensions_size_fraction_overrides_the_default():
@@ -1938,7 +1940,7 @@ def test_stitch_cameras_graph_panel_side_can_be_overridden_to_top(tmp_path):
     assert height > 120
 
 
-def test_stitch_cameras_graph_size_overrides_the_default_25_percent(tmp_path):
+def test_stitch_cameras_graph_size_overrides_the_default_50_percent(tmp_path):
     front = tmp_path / "front.mp4"
     rear = tmp_path / "rear.mp4"
     _make_video(front, 160, 120)
@@ -1949,17 +1951,18 @@ def test_stitch_cameras_graph_size_overrides_the_default_25_percent(tmp_path):
 
     stitch_cameras(
         front, rear, destination, layout="side_by_side",
-        graph_size=50.0,
+        graph_size=70.0,
         graph_samples=_graph_samples(), warnings=warnings,
     )
 
     assert warnings == []
     width, height = _video_size(destination)
     # side_by_side's camera composite is 120 tall - no map panel
-    # present, so the graph defaults to 'down' - 50% of 120, rounded to
-    # an even pixel count, added there.
+    # present, so the graph defaults to 'down' - 70% of 120 (an
+    # explicit override, distinct from DEFAULT_GRAPH_SIZE_PERCENT's own
+    # 50%), rounded to an even pixel count, added there.
     assert width == 320
-    assert height == 120 + max(2, round(120 * 0.50 / 2) * 2)
+    assert height == 120 + max(2, round(120 * 0.70 / 2) * 2)
 
 
 def test_stitch_cameras_graph_panel_skipped_for_fewer_than_two_samples(tmp_path):

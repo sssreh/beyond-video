@@ -27,6 +27,7 @@ from blackvue.export.mirror_icon import DEFAULT_MIRROR_ICON_PATH
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
+from blackvue.export.stitch import DEFAULT_GRAPH_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_GSENSOR_POSITION
 from blackvue.export.stitch import DEFAULT_GSENSOR_SIZE_PERCENT
 from blackvue.export.stitch import DEFAULT_MIRROR_PAN_X_PERCENT
@@ -1364,9 +1365,11 @@ def main(argv: list[str] | None = None) -> int:
             "Override --stitch-graph's panel width/height as a "
             f"percent of the camera composite's matching dimension "
             f"({MIN_GRAPH_SIZE_PERCENT:g}-{MAX_GRAPH_SIZE_PERCENT:g}). "
-            "Default: a fixed 25%% - there's no --stitch-map-style "
-            "automatic geography-based sizing here, a synthetic chart "
-            "has no equivalent real-world shape to derive one from."
+            f"Default: a fixed {DEFAULT_GRAPH_SIZE_PERCENT:g}%%, "
+            "matching --stitch-map's own size ceiling - there's no "
+            "--stitch-map-style automatic geography-based sizing here, "
+            "a synthetic chart has no equivalent real-world shape to "
+            "derive one from."
         ),
     )
 

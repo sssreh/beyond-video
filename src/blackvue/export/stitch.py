@@ -228,9 +228,21 @@ MAX_MAP_SIZE_PERCENT = 80.0
 # an automatic size from the way a trip's own GPS bounding box does for
 # the map panel, so there's just one flat default rather than an
 # automatic/override pair.
+#
+# DEFAULT_GRAPH_SIZE_PERCENT deliberately matches
+# _MAX_MAP_PANEL_FRACTION above (0.5 / 50%), not just a round number -
+# Christer: "I still feel that the output of gsensor should be bigger.
+# At max the size of the running time marker" (the map panel, the one
+# with the moving position marker) - confirmed via AskUserQuestion that
+# he meant the graph panel's default should match the map panel's own
+# size ceiling, not just "somewhat bigger than 25%". The map panel's
+# own *actual* rendered size still varies trip to trip within its
+# 20-50% auto range (see _MIN_/_MAX_MAP_PANEL_FRACTION), so this only
+# guarantees the same upper bound, not that the two panels always end
+# up the same size on any given export.
 MIN_GRAPH_SIZE_PERCENT = 5.0
 MAX_GRAPH_SIZE_PERCENT = 80.0
-DEFAULT_GRAPH_SIZE_PERCENT = 25.0
+DEFAULT_GRAPH_SIZE_PERCENT = 50.0
 
 # --stitch-graph's panel always renders as a rolling 10-minute window
 # rather than one static whole-trip chart (falling back to the whole
