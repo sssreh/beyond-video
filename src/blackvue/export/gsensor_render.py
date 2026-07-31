@@ -2,14 +2,25 @@
 G-sensor dot-gauge frame rendering for bv-export.
 
 Draws one frame of a racing-telemetry-style "dot gauge": a circular
-dial with a dot at the current sample's (x, y) position (relative to
-a per-trip baseline - see baseline_for_samples()) and a short fading
-trail behind it. The g-sensor's raw units aren't calibrated (see
+dial with a dot at the current sample's (lateral, longitudinal)
+position (relative to a per-trip baseline - see
+baseline_for_samples()) and a short fading trail behind it. The
+horizontal axis is the raw g-sensor's Y field, the vertical axis is
+its Z field - confirmed against a real recording with known,
+timestamped maneuvers (two right turns and a left U-turn, plus a
+braking event caught incidentally just before the U-turn): Y tracks
+turning (sustained positive during both right turns, sustained
+negative - roughly double the magnitude - during the sharper left
+U-turn) and Z tracks acceleration/braking (a sustained dip right
+before the U-turn, lining up with the driver braking into it). The
+raw X field showed no sustained response to any of those events and
+is not used here - it's presumed to be the vertical/mounting axis,
+picking up road vibration rather than a directional force. The
+g-sensor's raw units still aren't calibrated (see
 telemetry.gsensor_reader's module docstring - could be milli-g, raw
-ADC counts, or something else), so this scales purely to the trip's
-own observed range rather than claiming any absolute g-force value,
-and axes are labeled X/Y rather than "lateral"/"braking" - which
-physical direction each axis corresponds to isn't confirmed either.
+ADC counts, or something else), so this still scales purely to the
+trip's own observed range rather than claiming any absolute g-force
+value.
 
 The background is a flat chroma-key green rather than the cream tone
 map_render.py uses - gsensor.mp4 is meant to be composited over the
@@ -73,9 +84,9 @@ def _median(values: list[float]) -> float:
 
 
 def baseline_for_samples(samples) -> tuple[float, float]:
-    """Return the (x, y) reading gsensor.mp4's gauge should treat as
-    its center, for a set of g-sensor samples: the trip's own median
-    x and median y.
+    """Return the (lateral, longitudinal) reading gsensor.mp4's gauge
+    should treat as its center, for a set of g-sensor samples: the
+    trip's own median Y (lateral) and median Z (longitudinal).
 
     A dashcam mounted at even a slight angle - or a plain sensor bias
     - means "level, driving straight" rarely reads exactly raw (0, 0),
@@ -89,8 +100,8 @@ def baseline_for_samples(samples) -> tuple[float, float]:
         return 0.0, 0.0
 
     return (
-        _median([float(sample.x) for sample in samples]),
         _median([float(sample.y) for sample in samples]),
+        _median([float(sample.z) for sample in samples]),
     )
 
 
@@ -101,21 +112,25 @@ def scale_for_samples(
     padding: float = DEFAULT_SCALE_PADDING,
     minimum: float = DEFAULT_MINIMUM_SCALE,
 ) -> float:
-    """Return the gauge scale (the (x, y) magnitude that should sit at
-    the gauge's outer ring) for a set of g-sensor samples: the largest
-    deviation from `baseline` seen in either axis across all of them,
-    times `padding` so the busiest moment doesn't sit exactly on the
-    rim.
+    """Return the gauge scale (the (lateral, longitudinal) magnitude
+    that should sit at the gauge's outer ring) for a set of g-sensor
+    samples: the largest deviation from `baseline` seen in either axis
+    across all of them, times `padding` so the busiest moment doesn't
+    sit exactly on the rim.
 
     Floors at `minimum` so a trip with a near-flat sensor reading
     (parked, or a very gentle drive) still gets a sane, non-degenerate
     scale instead of dividing by ~0.
     """
 
-    baseline_x, baseline_y = baseline
+    baseline_lateral, baseline_longitudinal = baseline
     peak = 0.0
     for sample in samples:
-        peak = max(peak, abs(sample.x - baseline_x), abs(sample.y - baseline_y))
+        peak = max(
+            peak,
+            abs(sample.y - baseline_lateral),
+            abs(sample.z - baseline_longitudinal),
+        )
 
     return max(peak * padding, minimum)
 

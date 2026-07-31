@@ -7,8 +7,15 @@ from blackvue.telemetry.gsensor_reader import GSensorSample
 from datetime import timedelta
 
 
-def _sample(offset_ms, x, y, z=900):
-    return GSensorSample(offset=timedelta(milliseconds=offset_ms), x=x, y=y, z=z)
+def _sample(offset_ms, lateral, longitudinal, x=900):
+    # baseline_for_samples()/scale_for_samples() read the raw Y field
+    # as lateral (left/right) and the raw Z field as longitudinal
+    # (forward/back) - see gsensor_render.py's module docstring for
+    # how that mapping was confirmed. Raw X isn't used by either
+    # function, so it's an arbitrary filler value here.
+    return GSensorSample(
+        offset=timedelta(milliseconds=offset_ms), x=x, y=lateral, z=longitudinal
+    )
 
 
 def test_render_frame_returns_image_of_requested_size():
@@ -95,9 +102,28 @@ def test_render_frame_handles_a_single_trail_point_without_crashing():
     assert image.size == (480, 480)
 
 
+def test_baseline_and_scale_for_samples_ignore_the_raw_x_field():
+    # Regression guard for the axis remap: raw X showed no sustained
+    # response to any real turning or braking event in a real test
+    # recording (see gsensor_render.py's module docstring), so it
+    # isn't used by either function - only Y (lateral) and Z
+    # (longitudinal) are. Wildly varying X here should have zero
+    # effect on either result.
+    samples = (
+        _sample(0, 10, 20, x=-99999),
+        _sample(100, 30, 40, x=99999),
+    )
+
+    assert baseline_for_samples(samples) == (20.0, 30.0)
+    # Deviations from raw (0, 0): lateral (10, 30), longitudinal
+    # (20, 40) - largest is 40 (from longitudinal=40), unaffected by
+    # X's huge swing.
+    assert scale_for_samples(samples, padding=1.0, minimum=1.0) == 40.0
+
+
 def test_scale_for_samples_floors_at_minimum_for_flat_data():
-    # A parked/idling trip: zero x/y everywhere shouldn't produce a
-    # zero (divide-by-zero-prone) scale.
+    # A parked/idling trip: zero lateral/longitudinal everywhere
+    # shouldn't produce a zero (divide-by-zero-prone) scale.
     samples = (_sample(0, 0, 0), _sample(100, 0, 0))
 
     assert scale_for_samples(samples, minimum=1.0) == 1.0
@@ -106,7 +132,8 @@ def test_scale_for_samples_floors_at_minimum_for_flat_data():
 def test_scale_for_samples_scales_to_the_observed_peak_with_padding():
     samples = (_sample(0, 100, -50), _sample(100, -300, 200))
 
-    # Largest |x| or |y| across both samples is 300 (from x=-300).
+    # Largest |lateral| or |longitudinal| across both samples is 300
+    # (from lateral=-300).
     assert scale_for_samples(samples, padding=1.2, minimum=1.0) == 360.0
 
 
@@ -123,7 +150,7 @@ def test_scale_for_samples_measures_deviation_from_a_given_baseline():
     assert scale == 800.0
 
 
-def test_baseline_for_samples_is_the_median_x_and_median_y():
+def test_baseline_for_samples_is_the_median_lateral_and_median_longitudinal():
     samples = (
         _sample(0, 10, 100),
         _sample(100, 20, 300),

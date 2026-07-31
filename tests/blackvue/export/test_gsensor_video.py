@@ -235,12 +235,16 @@ def test_render_gsensor_video_centers_positions_on_the_trips_median_reading(
     )
 
     # A constant offset baked into every sample - a dashcam mounted at
-    # an angle, say. Median x/y across these three samples is
-    # (500, -300).
+    # an angle, say. render_gsensor_video() centers on the median of
+    # the raw Y (lateral) and Z (longitudinal) fields - see
+    # gsensor_render.py's module docstring for why those are the two
+    # fields used. Raw X (the 3rd positional arg here) is unused by
+    # the gauge, so it's an arbitrary filler value. Median y/z across
+    # these three samples is (500, -300).
     samples = (
-        _sample(0, 500, -300),
-        _sample(500, 700, -100),
-        _sample(1000, 300, -500),
+        _sample(0, 999, 500, -300),
+        _sample(500, 999, 700, -100),
+        _sample(1000, 999, 300, -500),
     )
 
     render_gsensor_video(samples, tmp_path / "gsensor.mp4", fps=2)

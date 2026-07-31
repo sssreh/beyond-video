@@ -4,10 +4,14 @@ g-sensor samples into gsensor.mp4 - rendering one frame per interval
 (a dot moving around a gauge, centered on the trip's own median
 reading rather than raw (0, 0), with a short fading trail) on a flat
 chroma-key green background, then handing the frame sequence to
-ffmpeg. See gsensor_render.py for why the background is green rather
-than transparent - h264/mp4 has no alpha channel, so a chroma-key
-background is the way to make this compositable later (the future
---stitch item), not a real transparent video file.
+ffmpeg. The gauge's horizontal axis is the raw Y field (lateral -
+left/right) and its vertical axis is the raw Z field (longitudinal -
+forward/back, i.e. acceleration/braking); see gsensor_render.py's
+module docstring for how that mapping was confirmed against a real
+recording. See gsensor_render.py for why the background is green
+rather than transparent - h264/mp4 has no alpha channel, so a
+chroma-key background is the way to make this compositable later (the
+future --stitch item), not a real transparent video file.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -162,10 +166,11 @@ def render_gsensor_video(
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into an overlay video
     at `destination`: a dot moving around a gauge (see
-    gsensor_render.py), centered on the trip's own median (x, y)
-    reading rather than raw (0, 0) (see baseline_for_samples()), with
-    a fading trail, on a flat chroma-key green background meant to be
-    keyed out when composited over the front/rear footage later.
+    gsensor_render.py), centered on the trip's own median
+    (lateral, longitudinal) reading rather than raw (0, 0) (see
+    baseline_for_samples()), with a fading trail, on a flat chroma-key
+    green background meant to be keyed out when composited over the
+    front/rear footage later.
 
     `samples` are already trip-relative (see trip_export.py's
     _merge_gsensor(), which rebases each recording's own offsets by
@@ -210,8 +215,10 @@ def render_gsensor_video(
     # sensor's own bias) means "level, driving straight" rarely reads
     # exactly zero, so drawing around literal (0, 0) leaves the dot
     # sitting off-center the whole trip. See baseline_for_samples().
-    baseline_x, baseline_y = baseline_for_samples(samples)
-    scale = scale_for_samples(samples, baseline=(baseline_x, baseline_y))
+    baseline_lateral, baseline_longitudinal = baseline_for_samples(samples)
+    scale = scale_for_samples(
+        samples, baseline=(baseline_lateral, baseline_longitudinal)
+    )
     frame_count = max(2, int(total_seconds * fps) + 1)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -230,8 +237,8 @@ def render_gsensor_video(
             elapsed = timedelta(seconds=elapsed_seconds)
 
             search_index = _advance_search_index(samples, elapsed, search_index)
-            x, y, _z = _interpolate_from_index(samples, elapsed, search_index)
-            position = (x - baseline_x, y - baseline_y)
+            _x, y, z = _interpolate_from_index(samples, elapsed, search_index)
+            position = (y - baseline_lateral, z - baseline_longitudinal)
 
             trail.append(position)
             if len(trail) > DEFAULT_TRAIL_LENGTH:
