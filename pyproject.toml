@@ -50,10 +50,14 @@ speech = [
 translate = [
     "argostranslate>=1.9",
 ]
-# bv-web. Deliberately its own group, not bundled with the above -
-# the Docker image bv-web actually runs in (see Dockerfile) has no
-# need to pull in faster-whisper/pyannote.audio/argostranslate (and
-# torch, transitively) just to serve trip-browsing pages.
+# bv-web and bv-live. Deliberately its own group, not bundled with the
+# above - the Docker image bv-web actually runs in (see Dockerfile)
+# has no need to pull in faster-whisper/pyannote.audio/argostranslate
+# (and torch, transitively) just to serve trip-browsing/live-camera
+# pages. bv-live shares this group rather than getting its own: it
+# needs the exact same fastapi/uvicorn stack, just for a different
+# app (see live/app.py's own docstring for why it's a separate
+# top-level package from web/ despite the shared dependency).
 web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
@@ -70,6 +74,7 @@ bv-generate = "blackvue.cli.bv_generate:main"
 bv-lang = "blackvue.cli.bv_lang:main"
 bv-export = "blackvue.cli.bv_export:main"
 bv-web = "blackvue.cli.bv_web:main"
+bv-live = "blackvue.cli.bv_live:main"
 
 # setuptools only bundles .py files into the installed wheel by
 # default - without this, web/templates/*.html (login.html,

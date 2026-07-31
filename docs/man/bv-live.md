@@ -1,0 +1,72 @@
+# bv-live(1)
+
+## NAME
+
+`bv-live` - serve a live browser dashboard for a BlackVue camera
+
+## SYNOPSIS
+
+```
+bv-live [--config-dir DIR] [--timeout SECONDS] [--host HOST] [--port PORT]
+        [--map-zoom METERS] [--gsensor-window SECONDS]
+        ID
+```
+
+## DESCRIPTION
+
+`bv-live` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and serves a one-page live dashboard in your browser: the camera's own front/rear video feed (switchable with a button), a map that scrolls to follow its current position, and a strip chart of its live g-sensor readings - all fed live from the camera's own endpoints for as long as this command keeps running.
+
+The dashboard has three panels:
+
+- **Map** (left) - follows the camera's current GPS position at a fixed real-world radius (`--map-zoom`), the same "follow camera" framing `bv-export --map-zoom` uses for a finished trip, but scrolling live instead. Road/water/park geometry is fetched from OpenStreetMap's Overpass API and cached to disk (under the camera's own archive directory, alongside `bv-export`'s own map cache) the first time it's needed for a given area.
+- **Camera** (top right) - the camera's own live MJPEG feed, proxied unchanged. A Front/Rear button switches which direction is shown; only the direction currently on screen is actually being streamed from the camera.
+- **G-sensor** (bottom, full width) - a scrolling strip of the last `--gsensor-window` seconds of live g-sensor readings.
+
+Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole session. This only works while the camera is actually reachable, the same as `bv-gps`/`bv-download`.
+
+## ARGUMENTS
+
+| Argument | Description |
+|---|---|
+| `ID` | Camera system id (see `bv-config(1)`). |
+
+## OPTIONS
+
+| Option | Description |
+|---|---|
+| `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
+| `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
+| `--host HOST` | Address to listen on. Default: 127.0.0.1 - this is a personal, run-when-you-want-it tool, not meant to sit reachable by anyone else on the network. |
+| `--port PORT` | Port to listen on. Default: 8100 (different from `bv-web`'s own default 8000, so both can run at once). |
+| `--map-zoom METERS` | Live map follow-camera radius in meters. Default: 100. |
+| `--gsensor-window SECONDS` | How many seconds of live g-sensor history the scrolling strip shows at once. Default: 60. |
+| `-h`, `--help` | Show help and exit. |
+
+## EXIT STATUS
+
+| Code | Meaning |
+|---|---|
+| 0 | OK (only reached after the server is stopped, e.g. Ctrl-C). |
+| 1 | Config error (missing/invalid camera config, or no endpoints configured). |
+| 2 | Camera unreachable on every configured endpoint. |
+| 3 | fastapi/uvicorn aren't installed (`pip install beyond-video[web]`). |
+
+## EXAMPLES
+
+```
+bv-live Kirby
+```
+
+```
+bv-live: serving Kirby (via home) at http://127.0.0.1:8100/ - press Ctrl-C to stop
+```
+
+Open `http://127.0.0.1:8100/` in a browser to see the dashboard. A wider map, following more closely:
+
+```
+bv-live Kirby --map-zoom 60
+```
+
+## SEE ALSO
+
+`bv-config(1)` to set up the camera this connects to, `bv-gps(1)` for a one-shot live GPS reading instead of a persistent dashboard, `bv-export(1)`'s `--map`/`--map-zoom` for the equivalent rendered-once-per-trip map on already-downloaded recordings.

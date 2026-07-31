@@ -6,17 +6,18 @@ This page documents the one thing shared across every `bv-*` command that reads 
 
 ## Camera system ID
 
-`bv-config`, `bv-download`, and `bv-gps` take a camera system ID as their first argument:
+`bv-config`, `bv-download`, `bv-gps`, and `bv-live` take a camera system ID as their first argument:
 
 ```text
 bv-config Kirby
 bv-download Kirby
 bv-gps Kirby
+bv-live Kirby
 ```
 
 The ID identifies the camera's configuration and, through it, the local archive directory downloads are saved into (see `docs/man/bv-config.md`). It's an ASCII string suitable for filenames and command lines - a separate, free-form display name (which may contain UTF-8/emoji) is set alongside it in the config wizard.
 
-`bv-gps` is the odd one out among these three: it doesn't touch the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`) - it's listed here purely because it shares the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because it takes part in recording selection below.
+`bv-gps` and `bv-live` are the odd ones out among these four: neither touches the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`/`docs/man/bv-live.md` - one prints a single GPS reading and exits, the other serves a persistent live dashboard) - they're listed here purely because they share the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because they take part in recording selection below.
 
 `bv-ls`, `bv-generate`, and `bv-export` don't take a camera ID - they operate directly on an archive directory (the same directory `bv-download` wrote into), given as a plain path argument.
 

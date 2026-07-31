@@ -1,4 +1,7 @@
+from blackvue.parser.livedata import find_next_gps
+from blackvue.parser.livedata import find_next_gsensor_reading
 from blackvue.parser.livedata import parse_gps_fix
+from blackvue.parser.livedata import parse_gsensor_reading
 
 
 def test_parse_gps_fix_finds_a_plain_gps_object():
@@ -48,3 +51,63 @@ def test_parse_gps_fix_finds_the_gps_object_after_a_3g_object():
     )
 
     assert parse_gps_fix(text) == (10.0, 20.0)
+
+
+def test_parse_gsensor_reading_finds_a_plain_3g_object():
+    text = '{"3G":{"FrontRear":1.5, "LeftRight":-2.5, "UpperLower":3.0}}'
+
+    assert parse_gsensor_reading(text) == (1.5, -2.5, 3.0)
+
+
+def test_parse_gsensor_reading_ignores_a_gps_only_chunk():
+    text = '{"GPS":{"LATITUDE":1.0, "LONGITUDE":2.0}}'
+
+    assert parse_gsensor_reading(text) is None
+
+
+def test_parse_gsensor_reading_returns_none_for_a_3g_object_cut_off_mid_way():
+    text = '{"3G":{"FrontRear":1.5, "LeftRight":-2'
+
+    assert parse_gsensor_reading(text) is None
+
+
+def test_find_next_gps_returns_the_match_end_index():
+    # The pattern itself only matches the inner {"LATITUDE":..,
+    # "LONGITUDE":..} object, not the outer {"GPS": ...} wrapper - so
+    # .end() lands right after the inner object's own closing brace,
+    # one character before the wrapper's own closing brace.
+    text = '{"GPS":{"LATITUDE":1.0, "LONGITUDE":2.0}}TRAILING'
+
+    result = find_next_gps(text)
+
+    assert result is not None
+    (fix, start, end) = result
+    assert fix == (1.0, 2.0)
+    assert start == 1
+    assert text[end:] == "}TRAILING"
+
+
+def test_find_next_gps_returns_none_when_absent():
+    text = '{"3G":{"FrontRear":1, "LeftRight":2, "UpperLower":3}}'
+
+    assert find_next_gps(text) is None
+
+
+def test_find_next_gsensor_reading_returns_the_match_end_index():
+    # Same "matches the inner object only" shape as find_next_gps()'s
+    # own test above.
+    text = '{"3G":{"FrontRear":1, "LeftRight":2, "UpperLower":3}}TRAILING'
+
+    result = find_next_gsensor_reading(text)
+
+    assert result is not None
+    (reading, start, end) = result
+    assert reading == (1.0, 2.0, 3.0)
+    assert start == 1
+    assert text[end:] == "}TRAILING"
+
+
+def test_find_next_gsensor_reading_returns_none_when_absent():
+    text = '{"GPS":{"LATITUDE":1.0, "LONGITUDE":2.0}}'
+
+    assert find_next_gsensor_reading(text) is None

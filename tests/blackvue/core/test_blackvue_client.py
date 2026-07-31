@@ -190,3 +190,32 @@ def test_live_gps_raises_when_the_stream_never_yields_a_gps_object(
 
     with pytest.raises(NoGpsDataError):
         client.live_gps()
+
+
+def test_open_stream_returns_the_raw_response_for_reading_in_chunks(monkeypatch):
+    data = b"chunk-one" + b"chunk-two"
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(data))
+
+    client = BlackVueClient("http://camera")
+    response = client.open_stream("/blackvue_livedata.cgi")
+
+    first = response.read(9)
+    second = response.read(9)
+
+    assert first == b"chunk-one"
+    assert second == b"chunk-two"
+
+
+def test_open_stream_url_includes_the_given_path(monkeypatch):
+    seen_urls = []
+
+    def urlopen(request_or_url, timeout=None):
+        seen_urls.append(request_or_url)
+        return _FakeResponse(b"")
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    client.open_stream("/blackvue_live.cgi?direction=R")
+
+    assert seen_urls == ["http://camera/blackvue_live.cgi?direction=R"]

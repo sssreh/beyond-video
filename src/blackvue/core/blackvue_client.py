@@ -117,6 +117,27 @@ class BlackVueClient:
             f"within {LIVE_GPS_MAX_BYTES} bytes"
         )
 
+    def open_stream(self, path: str):
+        """Open a raw, long-lived streaming connection to `path` on
+        the camera (e.g. blackvue_live.cgi's MJPEG feed, or
+        blackvue_livedata.cgi's telemetry feed) and return the raw
+        urlopen() response for the caller to .read() from in chunks
+        and close() when done.
+
+        Neither of these camera endpoints ever closes its own
+        connection (see live_gps()'s own docstring). Unlike
+        live_gps(), which reads a single bounded slice and returns one
+        parsed reading, this is the lower-level primitive bv-live's
+        continuous camera-passthrough relay and telemetry pump (see
+        blackvue.live.mjpeg/blackvue.live.telemetry) use to keep a
+        stream open for as long as they want it, reading and parsing
+        indefinitely rather than stopping after the first result.
+        """
+
+        url = f"{self._base_url}{path}"
+
+        return urlopen(url, timeout=self._timeout)
+
     def size(self, entry: VodEntry) -> int:
         """Return the size of a remote file."""
 
