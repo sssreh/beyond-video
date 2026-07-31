@@ -32,6 +32,16 @@ lane-split machinery. Expected to get the same kind of iterative
 polish once Christer's actually seen it live, same as every other
 visual piece of this project has.
 
+One round of that polish already happened: Christer, watching a
+*parked* car's strip sit visibly offset from its own zero line, asked
+for zero-offset calibration plus a scale that only ever grows, never
+shrinks back down as an old peak scrolls out of view - see
+render_live_gsensor_frame()'s own `baseline`/`max_deviation` params
+and TelemetryState.gsensor_baseline()/gsensor_max_deviation() in
+telemetry.py, where that state actually lives (it has to persist for
+the whole session, not just whatever's inside this module's own
+`window_seconds`).
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -82,8 +92,9 @@ UPPER_LOWER_COLOR = (241, 196, 15)
 # aren't independently confirmed to be on the same scale as that
 # either. MINIMUM_SCALE floors the auto-scale so a near-motionless
 # vehicle's own tiny jitter doesn't get amplified into a wild-looking
-# trace; SCALE_PADDING leaves a little headroom above the window's own
-# peak so a trace never runs exactly to the very edge of its lane.
+# trace; SCALE_PADDING leaves a little headroom above the session's own
+# peak-so-far (see TelemetryState.gsensor_max_deviation()) so a trace
+# never runs exactly to the very edge of its lane.
 MINIMUM_SCALE = 1.0
 SCALE_PADDING = 1.2
 
@@ -112,6 +123,8 @@ def render_live_gsensor_frame(
     samples: tuple[GSensorSample, ...],
     window_seconds: float,
     *,
+    baseline: tuple[float, float, float] | None = None,
+    max_deviation: float = 0.0,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     margin: int = MARGIN_PX,
@@ -123,7 +136,31 @@ def render_live_gsensor_frame(
     `samples` actually covers (a session younger than the window shows
     a partly-empty strip rather than stretching what little data
     exists to fill it, so the trace's own timescale doesn't visibly
-    warp as the window fills up)."""
+    warp as the window fills up).
+
+    `baseline` (see TelemetryState.gsensor_baseline()) is subtracted
+    from every reading before it's plotted, so the zero line actually
+    means "same as it read at calibration time" rather than raw zero -
+    Christer, parked, watching the strip sit visibly offset from its
+    own zero line: "I think we need some type of ero[zero]
+    calibration". `None` means calibration hasn't finished yet (the
+    first GSENSOR_CALIBRATION_SECONDS of a session) - no trace is drawn
+    at all in that case, same as the existing "fewer than two samples"
+    fallback below, so nothing gets plotted against a baseline that
+    hasn't been decided yet.
+
+    `max_deviation` (see TelemetryState.gsensor_max_deviation()) sets
+    the scale, not the current window's own peak - Christer's own
+    proposed fix: "when data comes in we put it at maximum and then
+    when newer data comes in and are greater than the previous max
+    value, we scale down the lines to match the new max value". Using
+    the *session's* peak-so-far rather than recomputing it fresh from
+    `samples` each frame (the old behavior) means the scale only ever
+    grows, even once an old peak scrolls out of the visible window -
+    without this, the scale would shrink back down the moment a bump
+    ages out of `window_seconds`, undoing the whole point of tracking a
+    watermark at all.
+    """
 
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
@@ -136,17 +173,12 @@ def render_live_gsensor_frame(
 
     draw.line((plot_left, zero_y, plot_right, zero_y), fill=AXIS_COLOR, width=1)
 
-    if len(samples) >= 2:
+    if baseline is not None and len(samples) >= 2:
+        baseline_fr, baseline_lr, baseline_ul = baseline
         now = samples[-1].at
         window_start = now - window_seconds
 
-        peak = max(
-            max(abs(sample.front_rear) for sample in samples),
-            max(abs(sample.left_right) for sample in samples),
-            max(abs(sample.upper_lower) for sample in samples),
-            MINIMUM_SCALE,
-        )
-        scale = peak * SCALE_PADDING
+        scale = max(max_deviation * SCALE_PADDING, MINIMUM_SCALE)
 
         def to_points(values: list[float]) -> list[tuple[float, float]]:
             points = []
@@ -159,9 +191,9 @@ def render_live_gsensor_frame(
             return points
 
         for values, color in (
-            ([sample.front_rear for sample in samples], FRONT_REAR_COLOR),
-            ([sample.left_right for sample in samples], LEFT_RIGHT_COLOR),
-            ([sample.upper_lower for sample in samples], UPPER_LOWER_COLOR),
+            ([s.front_rear - baseline_fr for s in samples], FRONT_REAR_COLOR),
+            ([s.left_right - baseline_lr for s in samples], LEFT_RIGHT_COLOR),
+            ([s.upper_lower - baseline_ul for s in samples], UPPER_LOWER_COLOR),
         ):
             draw.line(to_points(values), fill=color, width=TRACE_LINE_WIDTH, joint="curve")
 
@@ -184,8 +216,12 @@ def live_gsensor_frames(
 
     def _render() -> Image.Image:
         samples = state.gsensor_history(window_seconds)
+        baseline = state.gsensor_baseline()
+        max_deviation = state.gsensor_max_deviation()
         return render_live_gsensor_frame(
-            samples, window_seconds, width=width, height=height
+            samples, window_seconds,
+            baseline=baseline, max_deviation=max_deviation,
+            width=width, height=height,
         )
 
     return _render
