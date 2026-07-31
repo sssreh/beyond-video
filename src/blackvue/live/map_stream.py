@@ -39,6 +39,7 @@ from ..export.map_render import render_frame
 from ..export.map_video import DEFAULT_MAP_ICON_PATH
 from ..export.map_video import MARKER_IMAGE_SCALE
 from ..export.osm_roads import Area
+from ..generate.media import MediaToolError
 from ..export.osm_roads import BoundingBox
 from ..export.osm_roads import Road
 from ..export.osm_roads import bounding_box_around_point
@@ -76,6 +77,18 @@ DEFAULT_ROUTE_SECONDS = 120.0
 # Overpass request every time the view scrolls a little - see its own
 # ensure_covers() docstring.
 REGION_PADDING_FACTOR = 8.0
+
+# How long LiveMapRegion waits after a failed Overpass fetch (a 504
+# Gateway Timeout, a network blip) before trying again - Christer,
+# after the live map stream went black on a real Overpass timeout: "it
+# shouldn't go totally black, it should wait a little and then try
+# again." Long enough not to hammer a public, rate-limited, possibly
+# already-overloaded API every single frame (bv-live's map panel
+# renders at multiple fps - see live/app.py's own frame rate); short
+# enough that a transient outage recovers within a session rather than
+# needing a restart. A first guess, not a measured value - easy to
+# widen if Overpass ever needs a gentler retry cadence in practice.
+RETRY_DELAY_SECONDS = 30.0
 
 # render_frame()'s own show_gps_badge only means anything meaningful
 # for a live view: whether the position on screen right now is a
@@ -193,6 +206,9 @@ class LiveMapRegion:
         self._bbox: BoundingBox | None = None
         self._indexed_roads: tuple[tuple[Road, BoundingBox], ...] = ()
         self._indexed_areas: tuple[tuple[Area, BoundingBox], ...] = ()
+        # See RETRY_DELAY_SECONDS's own comment - set whenever a fetch
+        # fails, cleared on the next successful one.
+        self._last_fetch_error_at: float | None = None
 
     def ensure_covers(self, lat: float, lon: float, zoom_meters: float) -> None:
         """Make sure the cached region covers a live frame centered on
@@ -207,6 +223,22 @@ class LiveMapRegion:
         osm_roads.load_or_fetch_roads()'s own on-disk cache already
         applies across separate runs, just also applied *within* one
         live session's own continuous scrolling.
+
+        A failed fetch (osm_roads.py raises MediaToolError for any
+        network/parse failure - a 504 Gateway Timeout, Overpass briefly
+        unreachable, a malformed response) does NOT raise out of this
+        method. Christer, after a real Overpass timeout took the whole
+        live map stream down: "it shouldn't go totally black, it
+        should wait a little and then try again." Instead: whatever
+        geometry was already cached stays in place untouched (a frame
+        keeps rendering with it, just not yet updated for how far the
+        view may have scrolled since), or - if this is the very first
+        fetch of the session - renders with no roads/areas at all
+        (render_frame() draws fine with empty geometry: a plain
+        background, route trail, and marker, not a crash). Either way,
+        the next RETRY_DELAY_SECONDS are skipped without even
+        attempting another request, so a real outage doesn't turn into
+        a fresh Overpass hit on every single rendered frame.
         """
 
         frame_bbox = bounding_box_around_point(lat, lon, zoom_meters)
@@ -214,15 +246,27 @@ class LiveMapRegion:
         if self._bbox is not None and _bbox_contains(self._bbox, frame_bbox):
             return
 
+        now = time.monotonic()
+        if (
+            self._last_fetch_error_at is not None
+            and now - self._last_fetch_error_at < RETRY_DELAY_SECONDS
+        ):
+            return
+
         fetch_bbox = bounding_box_around_point(
             lat, lon, zoom_meters * REGION_PADDING_FACTOR
         )
-        roads = load_or_fetch_roads(fetch_bbox, self._cache_dir)
-        areas = load_or_fetch_areas(fetch_bbox, self._cache_dir)
+        try:
+            roads = load_or_fetch_roads(fetch_bbox, self._cache_dir)
+            areas = load_or_fetch_areas(fetch_bbox, self._cache_dir)
+        except MediaToolError:
+            self._last_fetch_error_at = now
+            return
 
         self._bbox = fetch_bbox
         self._indexed_roads = index_roads(roads)
         self._indexed_areas = index_features(areas)
+        self._last_fetch_error_at = None
 
     def roads_near(self, frame_bbox: BoundingBox) -> tuple[Road, ...]:
         return roads_within_bbox(self._indexed_roads, frame_bbox)
@@ -272,7 +316,10 @@ def render_live_map_frame(
     latest reading is still fresh (see LIVE_FRESHNESS_SECONDS).
 
     Returns a plain "waiting for GPS fix" placeholder frame instead if
-    `state` has no GPS reading at all yet.
+    `state` has no GPS reading at all yet. A failed Overpass fetch
+    (see LiveMapRegion.ensure_covers()) does NOT propagate out of this
+    function either - the frame still renders, just with whatever road/
+    area geometry was already cached (possibly none yet).
     """
 
     latest = state.latest_gps()
