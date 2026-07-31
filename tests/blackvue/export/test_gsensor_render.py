@@ -1,4 +1,5 @@
 from blackvue.export.gsensor_render import BACKGROUND_COLOR
+from blackvue.export.gsensor_render import DEFAULT_SCALE_PADDING
 from blackvue.export.gsensor_render import RING_LINE_WIDTH
 from blackvue.export.gsensor_render import baseline_for_samples
 from blackvue.export.gsensor_render import render_frame
@@ -119,6 +120,21 @@ def test_baseline_and_scale_for_samples_ignore_the_raw_x_field():
     # (20, 40) - largest is 40 (from longitudinal=40), unaffected by
     # X's huge swing.
     assert scale_for_samples(samples, padding=1.0, minimum=1.0) == 40.0
+
+
+def test_default_scale_padding_puts_the_trips_own_peak_exactly_on_the_outer_ring():
+    # Christer: "the max size of gsensor overlay output should reach
+    # the third outer ring" - the trip's single busiest moment should
+    # land exactly at scale (i.e. _project()'s own radius fraction of
+    # 1.0), not padded inside it. DEFAULT_SCALE_PADDING == 1.0 is what
+    # makes that true: scale_for_samples() called with no explicit
+    # padding should return exactly the peak deviation, not the peak
+    # times some >1.0 padding factor.
+    assert DEFAULT_SCALE_PADDING == 1.0
+
+    samples = (_sample(0, 0, 0), _sample(100, 40, -25))
+
+    assert scale_for_samples(samples, minimum=1.0) == 40.0
 
 
 def test_scale_for_samples_floors_at_minimum_for_flat_data():

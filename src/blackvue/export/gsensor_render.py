@@ -56,7 +56,13 @@ DOT_OUTLINE = (255, 255, 255)
 DEFAULT_SIZE = 480
 DEFAULT_MARGIN_PX = 40
 DEFAULT_MINIMUM_SCALE = 1.0
-DEFAULT_SCALE_PADDING = 1.2
+# 1.0, not >1.0: Christer wants the trip's single busiest moment to
+# actually reach the gauge's outermost ring, not sit padded inside it
+# - "the max size of gsensor overlay output should reach the third
+# outer ring." A trip's peak dot now lands exactly on the rim; nothing
+# in a normal trip should overshoot it, since it's defined as that
+# trip's own observed peak.
+DEFAULT_SCALE_PADDING = 1.0
 
 # A single-pixel outline reads fine on this module's own 480x480
 # canvas, viewed on its own - but by the time gsensor.mp4 actually
@@ -115,8 +121,13 @@ def scale_for_samples(
     """Return the gauge scale (the (lateral, longitudinal) magnitude
     that should sit at the gauge's outer ring) for a set of g-sensor
     samples: the largest deviation from `baseline` seen in either axis
-    across all of them, times `padding` so the busiest moment doesn't
-    sit exactly on the rim.
+    across all of them, times `padding`.
+
+    `padding` defaults to 1.0 (see DEFAULT_SCALE_PADDING) - the trip's
+    single busiest moment lands exactly on the outer ring rather than
+    inside it, at Christer's own request. A caller passing a `padding`
+    > 1.0 would instead leave headroom above the trip's own observed
+    peak, e.g. for a scale meant to be reused across multiple trips.
 
     Floors at `minimum` so a trip with a near-flat sensor reading
     (parked, or a very gentle drive) still gets a sane, non-degenerate

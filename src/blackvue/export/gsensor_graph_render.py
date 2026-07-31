@@ -46,8 +46,11 @@ needs to stay green for the dot-gauge's own real chroma-key use.
 
 Each axis's own trace is labeled by a small color-key legend (Christer:
 "nothing explaining the colors"), spelling out what each axis
-physically means - "Y — Left/right", "Z — Forward/back",
-"X — Up/down". Unlike when this was first written, this is no longer
+physically means - "Y — Left/right", "Z — Acc/brake",
+"X — Up/down" (Z's wording was "Forward/back" until Christer asked for
+"acc/brake" specifically, since that's the actual physical event this
+axis was confirmed to respond to - see below - not motion direction in
+general). Unlike when this was first written, this is no longer
 just the standard accelerometer axis convention offered as a
 best-effort guess: Y and Z were confirmed against a real recording
 with known, timestamped maneuvers (two right turns and a left U-turn,
@@ -273,7 +276,7 @@ LEGEND_PADDING = 6
 LEGEND_LABELS = (
     ("X", "Up/down"),
     ("Y", "Left/right"),
-    ("Z", "Forward/back"),
+    ("Z", "Acc/brake"),
 )
 
 # The bundled copy is tried first (see assets/, and pyproject.toml's
@@ -577,7 +580,7 @@ def _legend_text_width(
     draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, show_z: bool = False
 ) -> float:
     """Return the widest of the legend's own rendered rows' text width
-    ("X — Up/down", "Y — Left/right", and "Z — Forward/back" when
+    ("X — Up/down", "Y — Left/right", and "Z — Acc/brake" when
     `show_z`) - shared by _legend_reserve_px() (how much space to set
     aside) and _draw_legend() (where exactly to center the block within
     it), so the two can never disagree with each other about the same
@@ -646,7 +649,7 @@ def _draw_legend(
     Vertical mode: horizontally centered as a block within
     `canvas_width` (the panel's own full image width) rather than
     left-anchored - Christer's own request, and also what keeps the
-    longest row ("Z — Forward/back", ~123px) comfortably inside the
+    longest row ("Z — Acc/brake", ~95px) comfortably inside the
     panel rather than running past an edge. All rows share one swatch
     x position (the widest row's own left edge) so the block reads as
     one clean centered unit rather than each row independently
