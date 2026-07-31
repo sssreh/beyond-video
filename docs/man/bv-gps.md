@@ -1,25 +1,25 @@
-# bv-live(1)
+# bv-gps(1)
 
 ## NAME
 
-`bv-live` - fetch a BlackVue camera's current GPS reading live
+`bv-gps` - fetch a BlackVue camera's current GPS reading live
 
 ## SYNOPSIS
 
 ```
-bv-live [--config-dir DIR] [--timeout SECONDS] [--no-address]
-        ID
+bv-gps [--config-dir DIR] [--timeout SECONDS] [--no-address]
+       ID
 ```
 
 ## DESCRIPTION
 
-`bv-live` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and reads one GPS fix live from `blackvue_livedata.cgi`, the camera's own real-time telemetry feed - the same endpoint the official BlackVue app polls for live GPS/g-sensor data, not anything read from a recording.
+`bv-gps` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and reads one GPS fix live from `blackvue_livedata.cgi`, the camera's own real-time telemetry feed - the same endpoint the official BlackVue app polls for live GPS/g-sensor data, not anything read from a recording.
 
 It prints the fix as a coordinate pair pasteable straight into Google Maps' own search box, a clickable Google Maps link, and (unless `--no-address` is given) a reverse-geocoded street address, looked up via the same Nominatim service `bv-export`'s `trip_info.txt` uses.
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used. This only works while the camera is actually reachable - typically while connected to its own WiFi AP - not after the fact and not remotely, since `blackvue_livedata.cgi` only reports the camera's *current* position, not a history.
 
-If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rather than anything meaningful - `bv-live` treats that reading as "no fix" and says so, rather than printing a false location out in the Atlantic.
+If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rather than anything meaningful - `bv-gps` treats that reading as "no fix" and says so, rather than printing a false location out in the Atlantic.
 
 ## ARGUMENTS
 
@@ -49,7 +49,7 @@ If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rat
 ## EXAMPLES
 
 ```
-bv-live Kirby
+bv-gps Kirby
 ```
 
 ```
@@ -61,7 +61,7 @@ Address: Drottninggatan 1, Stockholm, Sweden
 Skip the address lookup:
 
 ```
-bv-live Kirby --no-address
+bv-gps Kirby --no-address
 ```
 
 ## SEE ALSO

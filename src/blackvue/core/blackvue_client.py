@@ -21,7 +21,7 @@ from ..parser.livedata import parse_gps_fix
 # blackvue_livedata.cgi never closes its own connection - it's a
 # never-ending multipart/x-mixed-replace stream, the same shape as
 # blackvue_live.cgi's MJPEG feed but for GPS/g-sensor JSON instead of
-# JPEG frames (see WORKING_CONTEXT.md's bv-live entry). live_gps()
+# JPEG frames (see WORKING_CONTEXT.md's bv-gps entry). live_gps()
 # reads it in bounded chunks and returns as soon as one full GPS
 # object has been seen, rather than trying to read the response to
 # completion - a plain `.read()` here would hang forever. This caps

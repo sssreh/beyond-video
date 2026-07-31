@@ -1,5 +1,5 @@
 """
-bv-live.
+bv-gps.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -49,7 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command line arguments."""
 
     parser = argparse.ArgumentParser(
-        prog="bv-live",
+        prog="bv-gps",
         description=(
             "Fetch a BlackVue camera's current GPS reading live, over "
             "blackvue_livedata.cgi, while connected to one of its "
@@ -95,19 +95,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _run(args: argparse.Namespace) -> int:
-    """Run bv-live for already-parsed arguments."""
+    """Run bv-gps for already-parsed arguments."""
 
     path = config_path(args.config_dir, args.id)
 
     try:
         config = load_camera_config(path)
     except CameraConfigError as exc:
-        print(f"bv-live: {exc}", file=sys.stderr)
+        print(f"bv-gps: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
     if not config.endpoints:
         print(
-            f"bv-live: {path}: no [[endpoint]] entries found",
+            f"bv-gps: {path}: no [[endpoint]] entries found",
             file=sys.stderr,
         )
         return EXIT_CONFIG_ERROR
@@ -115,18 +115,18 @@ def _run(args: argparse.Namespace) -> int:
     try:
         endpoint, client = connect(config.endpoints, timeout=args.timeout)
     except CameraUnreachableError as exc:
-        print(f"bv-live: {exc}", file=sys.stderr)
+        print(f"bv-gps: {exc}", file=sys.stderr)
         return EXIT_UNREACHABLE
 
     try:
         fix = client.live_gps()
     except NoGpsDataError as exc:
-        print(f"bv-live: {exc}", file=sys.stderr)
+        print(f"bv-gps: {exc}", file=sys.stderr)
         return EXIT_PROTOCOL_ERROR
 
     if not fix.has_fix:
         print(
-            f"bv-live: {config.name}: no GPS fix currently available",
+            f"bv-gps: {config.name}: no GPS fix currently available",
             file=sys.stderr,
         )
         return EXIT_NO_FIX
@@ -146,10 +146,10 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run bv-live."""
+    """Run bv-gps."""
 
     args = parse_args(argv)
-    return run_cli("bv-live", lambda: _run(args))
+    return run_cli("bv-gps", lambda: _run(args))
 
 
 if __name__ == "__main__":
