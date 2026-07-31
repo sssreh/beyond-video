@@ -13,6 +13,7 @@ def test_parse_args_defaults():
     assert args.port == 8100
     assert args.map_zoom == bv_live_module.DEFAULT_ZOOM_METERS
     assert args.gsensor_window == bv_live_module.DEFAULT_WINDOW_SECONDS
+    assert args.browser == "default"
 
 
 def test_parse_args_overrides():
@@ -24,6 +25,7 @@ def test_parse_args_overrides():
             "--map-zoom", "250",
             "--gsensor-window", "30",
             "--no-browser",
+            "--browser", "chrome",
         ]
     )
 
@@ -32,12 +34,20 @@ def test_parse_args_overrides():
     assert args.map_zoom == 250.0
     assert args.gsensor_window == 30.0
     assert args.no_browser is True
+    assert args.browser == "chrome"
 
 
 def test_parse_args_no_browser_defaults_to_false():
     args = bv_live_module.parse_args(["mycar"])
 
     assert args.no_browser is False
+
+
+def test_parse_args_rejects_an_unknown_browser_choice():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        bv_live_module.parse_args(["mycar", "--browser", "safari"])
 
 
 class _FakeConfig:
@@ -160,7 +170,26 @@ def test_open_browser_soon_schedules_a_timer_that_opens_the_url(monkeypatch):
     delay, func, args = calls[0]
     assert delay == bv_live_module.BROWSER_OPEN_DELAY_SECONDS
     assert func is bv_live_module._open_new_window
-    assert args == ("http://127.0.0.1:8100/",)
+    assert args == ("http://127.0.0.1:8100/", "default")
+
+
+def test_open_browser_soon_passes_an_explicit_browser_choice_through(monkeypatch):
+    calls = []
+
+    class _FakeTimer:
+        def __init__(self, delay, func, args=()):
+            calls.append((delay, func, args))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(bv_live_module.threading, "Timer", _FakeTimer)
+
+    bv_live_module._open_browser_soon("http://127.0.0.1:8100/", "chrome")
+
+    assert len(calls) == 1
+    _, _, args = calls[0]
+    assert args == ("http://127.0.0.1:8100/", "chrome")
 
 
 def test_open_new_window_uses_the_detected_default_browser_when_available(
@@ -193,6 +222,78 @@ def test_open_new_window_uses_the_detected_default_browser_when_available(
             "http://127.0.0.1:8100/",
         ]
     ]
+
+
+def test_open_new_window_uses_an_explicit_browser_override_when_given(monkeypatch):
+    # Christer: Windows kept reporting Edge as his default even after
+    # changing it in Settings and rebooting - --browser lets him skip
+    # OS-default detection entirely and pick a specific browser.
+    def _fail_if_called():
+        raise AssertionError("should not consult OS-default detection")
+
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", _fail_if_called)
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            if paths is bv_live_module._CHROME_PATHS
+            else None
+        ),
+    )
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/", "chrome")
+
+    assert calls == [
+        [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "--new-window",
+            "http://127.0.0.1:8100/",
+        ]
+    ]
+
+
+def test_open_new_window_falls_back_when_explicit_browser_not_found(monkeypatch):
+    monkeypatch.setattr(bv_live_module, "_find_browser", lambda paths, commands: None)
+    monkeypatch.setattr(
+        bv_live_module, "_default_browser_launch",
+        lambda: ("default-browser-path", "--new-window"),
+    )
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/", "firefox")
+
+    assert calls == [["default-browser-path", "--new-window", "http://127.0.0.1:8100/"]]
+
+
+def test_open_new_window_falls_back_when_explicit_browser_popen_fails(monkeypatch):
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            "edge-path" if paths is bv_live_module._EDGE_PATHS else None
+        ),
+    )
+    monkeypatch.setattr(
+        bv_live_module, "_default_browser_launch",
+        lambda: ("default-browser-path", "--new-window"),
+    )
+
+    calls = []
+
+    def _fake_popen(cmd):
+        if cmd[0] == "edge-path":
+            raise OSError("could not launch")
+        calls.append(cmd)
+
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", _fake_popen)
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/", "edge")
+
+    assert calls == [["default-browser-path", "--new-window", "http://127.0.0.1:8100/"]]
 
 
 def test_open_new_window_falls_back_to_priority_list_when_default_browser_launch_finds_nothing(
@@ -517,13 +618,16 @@ def test_run_opens_the_browser_by_default(monkeypatch, capsys):
     _stub_successful_connection(monkeypatch, sys)
 
     opened = []
-    monkeypatch.setattr(bv_live_module, "_open_browser_soon", opened.append)
+    monkeypatch.setattr(
+        bv_live_module, "_open_browser_soon",
+        lambda url, browser="default": opened.append((url, browser)),
+    )
 
     args = bv_live_module.parse_args(["mycar", "--port", "8100"])
     code = bv_live_module._run(args)
 
     assert code == bv_live_module.EXIT_OK
-    assert opened == ["http://127.0.0.1:8100/"]
+    assert opened == [("http://127.0.0.1:8100/", "default")]
 
 
 def test_run_skips_opening_the_browser_with_no_browser_flag(monkeypatch, capsys):
@@ -547,10 +651,13 @@ def test_run_opens_localhost_instead_of_a_wildcard_bind_address(monkeypatch, cap
     _stub_successful_connection(monkeypatch, sys)
 
     opened = []
-    monkeypatch.setattr(bv_live_module, "_open_browser_soon", opened.append)
+    monkeypatch.setattr(
+        bv_live_module, "_open_browser_soon",
+        lambda url, browser="default": opened.append((url, browser)),
+    )
 
     args = bv_live_module.parse_args(["mycar", "--host", "0.0.0.0", "--port", "9000"])
     code = bv_live_module._run(args)
 
     assert code == bv_live_module.EXIT_OK
-    assert opened == ["http://127.0.0.1:9000/"]
+    assert opened == [("http://127.0.0.1:9000/", "default")]

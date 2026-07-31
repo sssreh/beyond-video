@@ -119,6 +119,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Don't automatically open a browser window once the server starts.",
     )
 
+    parser.add_argument(
+        "--browser",
+        choices=("default", "chrome", "edge", "firefox"),
+        default="default",
+        help=(
+            "Which browser to open (default: %(default)s - auto-detect "
+            "the OS-level default browser, falling back to a fixed "
+            "Edge/Chrome/Firefox search if that can't be determined). "
+            "Set this if the OS-level default keeps resolving to a "
+            "browser you don't actually want (Windows silently resets "
+            "it back to Edge from time to time)."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -142,21 +156,37 @@ BROWSER_OPEN_DELAY_SECONDS = 1.0
 # default on every Windows install, Christer's own platform, and is
 # Chromium-based like Chrome - not a judgment about which browser is
 # "better".
-_CHROMIUM_PATHS = (
+_EDGE_PATHS = (
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+)
+_EDGE_COMMANDS = ("microsoft-edge",)
+_CHROME_PATHS = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 )
-_CHROMIUM_COMMANDS = ("microsoft-edge", "google-chrome", "chromium-browser", "chromium")
+_CHROME_COMMANDS = ("google-chrome", "chromium-browser", "chromium")
+_CHROMIUM_PATHS = _EDGE_PATHS + _CHROME_PATHS
+_CHROMIUM_COMMANDS = _EDGE_COMMANDS + _CHROME_COMMANDS
 _FIREFOX_PATHS = (
     r"C:\Program Files\Mozilla Firefox\firefox.exe",
     r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
     "/Applications/Firefox.app/Contents/MacOS/firefox",
 )
 _FIREFOX_COMMANDS = ("firefox",)
+
+# --browser CHOICE -> (paths, commands, new-window flag), used by
+# _open_new_window() to bypass OS-default detection entirely when the
+# user has asked for a specific browser (added after Windows kept
+# resetting Christer's OS-level default back to Edge regardless of
+# what he'd picked in Settings - see WORKING_CONTEXT.md).
+_BROWSER_OVERRIDES = {
+    "chrome": (_CHROME_PATHS, _CHROME_COMMANDS, "--new-window"),
+    "edge": (_EDGE_PATHS, _EDGE_COMMANDS, "--new-window"),
+    "firefox": (_FIREFOX_PATHS, _FIREFOX_COMMANDS, "-new-window"),
+}
 
 
 def _find_browser(paths: tuple[str, ...], commands: tuple[str, ...]) -> str | None:
@@ -280,7 +310,7 @@ def _default_browser_launch() -> tuple[str, str] | None:
     return None
 
 
-def _open_new_window(url: str) -> None:
+def _open_new_window(url: str, browser: str = "default") -> None:
     """Open `url` in a genuinely new browser *window*, not just a new
     tab in whatever window is already open.
 
@@ -293,15 +323,34 @@ def _open_new_window(url: str) -> None:
     reliable way around that is launching a browser's own executable
     directly with a flag it actually respects for this.
 
-    Preference order: the user's own OS-level default browser first
-    (see _default_browser_launch() - Christer explicitly asked for
-    this over the fixed list below, once bv-live's own hardcoded
-    Edge-before-Chrome order surprised him), then the fixed Edge/
-    Chrome/Firefox priority list (_find_browser()) if the default
+    If `browser` is anything other than "default" (see --browser),
+    that specific browser is tried first, bypassing OS-default
+    detection entirely - added because Windows' own UserChoice
+    registry kept reporting Edge as Christer's default even after he
+    changed it in Settings and rebooted (see WORKING_CONTEXT.md). If
+    the requested browser isn't found on disk/PATH, or fails to
+    launch, this falls through to the normal chain below exactly as if
+    --browser hadn't been given, rather than giving up.
+
+    Preference order otherwise: the user's own OS-level default
+    browser first (see _default_browser_launch() - Christer explicitly
+    asked for this over the fixed list below, once bv-live's own
+    hardcoded Edge-before-Chrome order surprised him), then the fixed
+    Edge/Chrome/Firefox priority list (_find_browser()) if the default
     couldn't be determined/recognized or actually launching it failed,
     then plain webbrowser.open_new() (still opens *something*, just
     possibly a tab again) if nothing else worked at all.
     """
+
+    if browser != "default":
+        paths, commands, flag = _BROWSER_OVERRIDES[browser]
+        found = _find_browser(paths, commands)
+        if found is not None:
+            try:
+                subprocess.Popen([found, flag, url])
+                return
+            except OSError:
+                pass
 
     default = _default_browser_launch()
     if default is not None:
@@ -331,19 +380,21 @@ def _open_new_window(url: str) -> None:
     webbrowser.open_new(url)
 
 
-def _open_browser_soon(url: str) -> None:
-    """Schedule _open_new_window(url) to run shortly, on a background
-    timer thread rather than inline - called just before uvicorn.run()
-    below, which then blocks the main thread until the server stops,
-    so opening the browser has to happen out-of-line to not get stuck
-    waiting behind it.
+def _open_browser_soon(url: str, browser: str = "default") -> None:
+    """Schedule _open_new_window(url, browser) to run shortly, on a
+    background timer thread rather than inline - called just before
+    uvicorn.run() below, which then blocks the main thread until the
+    server stops, so opening the browser has to happen out-of-line to
+    not get stuck waiting behind it.
 
     A plain function (not inlined into _run()) so tests can swap out
     threading.Timer for something that fires immediately instead of
     actually waiting/spawning a thread.
     """
 
-    threading.Timer(BROWSER_OPEN_DELAY_SECONDS, _open_new_window, args=(url,)).start()
+    threading.Timer(
+        BROWSER_OPEN_DELAY_SECONDS, _open_new_window, args=(url, browser)
+    ).start()
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -405,7 +456,7 @@ def _run(args: argparse.Namespace) -> int:
         # it against localhost instead, even though uvicorn itself
         # still binds to whatever --host was actually given.
         browser_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
-        _open_browser_soon(f"http://{browser_host}:{args.port}/")
+        _open_browser_soon(f"http://{browser_host}:{args.port}/", args.browser)
 
     uvicorn.run(app, host=args.host, port=args.port)
 
