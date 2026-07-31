@@ -163,9 +163,94 @@ def test_open_browser_soon_schedules_a_timer_that_opens_the_url(monkeypatch):
     assert args == ("http://127.0.0.1:8100/",)
 
 
+def test_open_new_window_uses_the_detected_default_browser_when_available(
+    monkeypatch,
+):
+    # Christer: "I want it to detect my OS-level default browser and
+    # use that, unless there is something that breaks the function."
+    # When _default_browser_launch() finds one, _open_new_window()
+    # must use it directly rather than falling through to the fixed
+    # Edge/Chrome/Firefox priority list.
+    monkeypatch.setattr(
+        bv_live_module, "_default_browser_launch",
+        lambda: (r"C:\Program Files\Google\Chrome\Application\chrome.exe", "--new-window"),
+    )
+
+    def _fail_if_called(paths, commands):
+        raise AssertionError("should not fall back to the fixed priority list")
+
+    monkeypatch.setattr(bv_live_module, "_find_browser", _fail_if_called)
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert calls == [
+        [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "--new-window",
+            "http://127.0.0.1:8100/",
+        ]
+    ]
+
+
+def test_open_new_window_falls_back_to_priority_list_when_default_browser_launch_finds_nothing(
+    monkeypatch,
+):
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", lambda: None)
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            "chrome-path" if paths is bv_live_module._CHROMIUM_PATHS else None
+        ),
+    )
+
+    calls = []
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", lambda cmd: calls.append(cmd))
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert calls == [["chrome-path", "--new-window", "http://127.0.0.1:8100/"]]
+
+
+def test_open_new_window_falls_back_to_priority_list_when_default_browser_popen_fails(
+    monkeypatch,
+):
+    # The detected default browser was found, but actually launching
+    # it failed (a stale registry entry pointing at an uninstalled
+    # program, say) - "unless there is something that breaks the
+    # function": this must still fall through to the fixed priority
+    # list, not give up.
+    monkeypatch.setattr(
+        bv_live_module, "_default_browser_launch",
+        lambda: ("default-browser-path", "--new-window"),
+    )
+    monkeypatch.setattr(
+        bv_live_module, "_find_browser",
+        lambda paths, commands: (
+            "chrome-path" if paths is bv_live_module._CHROMIUM_PATHS else None
+        ),
+    )
+
+    calls = []
+
+    def _fake_popen(cmd):
+        if cmd[0] == "default-browser-path":
+            raise OSError("could not launch")
+        calls.append(cmd)
+
+    monkeypatch.setattr(bv_live_module.subprocess, "Popen", _fake_popen)
+
+    bv_live_module._open_new_window("http://127.0.0.1:8100/")
+
+    assert calls == [["chrome-path", "--new-window", "http://127.0.0.1:8100/"]]
+
+
 def test_open_new_window_launches_a_found_chromium_browser_with_new_window_flag(
     monkeypatch,
 ):
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", lambda: None)
     monkeypatch.setattr(
         bv_live_module, "_find_browser",
         lambda paths, commands: (
@@ -190,6 +275,8 @@ def test_open_new_window_launches_a_found_chromium_browser_with_new_window_flag(
 
 
 def test_open_new_window_falls_back_to_firefox_when_no_chromium_found(monkeypatch):
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", lambda: None)
+
     def fake_find(paths, commands):
         if paths is bv_live_module._FIREFOX_PATHS:
             return "/usr/bin/firefox"
@@ -206,6 +293,7 @@ def test_open_new_window_falls_back_to_firefox_when_no_chromium_found(monkeypatc
 
 
 def test_open_new_window_falls_back_to_webbrowser_when_nothing_found(monkeypatch):
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", lambda: None)
     monkeypatch.setattr(bv_live_module, "_find_browser", lambda paths, commands: None)
 
     opened = []
@@ -217,6 +305,7 @@ def test_open_new_window_falls_back_to_webbrowser_when_nothing_found(monkeypatch
 
 
 def test_open_new_window_falls_back_when_popen_raises(monkeypatch):
+    monkeypatch.setattr(bv_live_module, "_default_browser_launch", lambda: None)
     monkeypatch.setattr(
         bv_live_module, "_find_browser",
         lambda paths, commands: (
@@ -265,6 +354,128 @@ def test_find_browser_returns_none_when_nothing_matches(monkeypatch):
     found = bv_live_module._find_browser(("/no/such/path.exe",), ("no-such-command",))
 
     assert found is None
+
+
+def test_exe_from_command_parses_a_quoted_path():
+    command = r'"C:\Program Files\Google\Chrome\Application\chrome.exe" -- "%1"'
+
+    assert bv_live_module._exe_from_command(command) == (
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    )
+
+
+def test_exe_from_command_parses_an_unquoted_path():
+    command = r"C:\Browsers\browser.exe %1"
+
+    assert bv_live_module._exe_from_command(command) == r"C:\Browsers\browser.exe"
+
+
+def test_exe_from_command_returns_none_for_an_empty_command():
+    assert bv_live_module._exe_from_command("") is None
+    assert bv_live_module._exe_from_command("   ") is None
+
+
+def test_exe_from_command_returns_none_for_an_unterminated_quote():
+    assert bv_live_module._exe_from_command('"C:\\no\\closing\\quote.exe') is None
+
+
+def test_windows_default_browser_command_returns_none_without_winreg():
+    # This project's own test/CI environment is Linux, where winreg
+    # genuinely doesn't exist - a real, meaningful exercise of the
+    # ImportError branch, not a mocked-out stand-in for it.
+    assert bv_live_module._windows_default_browser_command() is None
+
+
+def test_default_browser_launch_returns_none_on_non_windows(monkeypatch):
+    monkeypatch.setattr(bv_live_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command",
+        lambda: (_ for _ in ()).throw(AssertionError("should not be reached")),
+    )
+
+    assert bv_live_module._default_browser_launch() is None
+
+
+def test_default_browser_launch_returns_none_when_registry_lookup_fails(monkeypatch):
+    monkeypatch.setattr(bv_live_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command", lambda: None
+    )
+
+    assert bv_live_module._default_browser_launch() is None
+
+
+def test_default_browser_launch_parses_a_quoted_chromium_command(monkeypatch, tmp_path):
+    # Christer: "I want it to detect my OS-level default browser and
+    # use that, unless there is something that breaks the function."
+    chrome = tmp_path / "chrome.exe"
+    chrome.write_text("")
+
+    monkeypatch.setattr(bv_live_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command",
+        lambda: f'"{chrome}" -- "%1"',
+    )
+
+    assert bv_live_module._default_browser_launch() == (str(chrome), "--new-window")
+
+
+def test_default_browser_launch_parses_an_unquoted_command(monkeypatch, tmp_path):
+    msedge = tmp_path / "msedge.exe"
+    msedge.write_text("")
+
+    monkeypatch.setattr(bv_live_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command", lambda: f"{msedge} %1"
+    )
+
+    assert bv_live_module._default_browser_launch() == (str(msedge), "--new-window")
+
+
+def test_default_browser_launch_recognizes_the_firefox_flag(monkeypatch, tmp_path):
+    firefox = tmp_path / "firefox.exe"
+    firefox.write_text("")
+
+    monkeypatch.setattr(bv_live_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command",
+        lambda: f'"{firefox}" -osint -url "%1"',
+    )
+
+    assert bv_live_module._default_browser_launch() == (str(firefox), "-new-window")
+
+
+def test_default_browser_launch_returns_none_for_an_unrecognized_browser(
+    monkeypatch, tmp_path
+):
+    # Internet Explorer, or anything else this module doesn't know a
+    # new-window flag for - falls back to the fixed priority list
+    # rather than guessing at a flag that might not exist.
+    iexplore = tmp_path / "iexplore.exe"
+    iexplore.write_text("")
+
+    monkeypatch.setattr(bv_live_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command",
+        lambda: f'"{iexplore}" -- "%1"',
+    )
+
+    assert bv_live_module._default_browser_launch() is None
+
+
+def test_default_browser_launch_returns_none_when_the_resolved_exe_does_not_exist(
+    monkeypatch,
+):
+    # A stale/dangling registry entry (an uninstalled browser) - "unless
+    # there is something that breaks the function" means this must not
+    # hand back a path that can't actually be launched.
+    monkeypatch.setattr(bv_live_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bv_live_module, "_windows_default_browser_command",
+        lambda: r'"C:\does\not\exist\chrome.exe" -- "%1"',
+    )
+
+    assert bv_live_module._default_browser_launch() is None
 
 
 def _stub_successful_connection(monkeypatch, sys_module):

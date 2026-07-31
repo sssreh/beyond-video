@@ -130,16 +130,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # refresh - not worth the complexity of polling the socket instead.
 BROWSER_OPEN_DELAY_SECONDS = 1.0
 
-# Direct-launch candidates for browsers that support an explicit "open
-# in a new window" command-line flag - see _open_new_window()'s own
-# docstring for why this exists at all instead of just calling
-# webbrowser.open_new(). Absolute paths are checked directly (typical
-# Windows/macOS install locations); bare names are looked up on PATH
-# (typical on Linux, and for anyone who's added a browser to PATH
-# themselves on any OS). Edge/Chrome are tried before Firefox simply
-# because Edge ships by default on every Windows install, Christer's
-# own platform, and is Chromium-based like Chrome - not a judgment
-# about which browser is "better".
+# Fixed fallback candidates for browsers that support an explicit
+# "open in a new window" command-line flag - used when the user's own
+# OS-level default browser can't be detected at all, or turns out to
+# be something this module doesn't know a new-window flag for (see
+# _default_browser_launch(), tried first in _open_new_window()).
+# Absolute paths are checked directly (typical Windows/macOS install
+# locations); bare names are looked up on PATH (typical on Linux, and
+# for anyone who's added a browser to PATH themselves on any OS).
+# Edge/Chrome are tried before Firefox simply because Edge ships by
+# default on every Windows install, Christer's own platform, and is
+# Chromium-based like Chrome - not a judgment about which browser is
+# "better".
 _CHROMIUM_PATHS = (
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -168,6 +170,116 @@ def _find_browser(paths: tuple[str, ...], commands: tuple[str, ...]) -> str | No
     return None
 
 
+# The same per-user registry key Windows itself reads to decide which
+# browser handles an http:// link - see _windows_default_browser_command().
+_DEFAULT_BROWSER_REGISTRY_KEY = (
+    r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+)
+
+# Executable stems (lowercase, no extension) _default_browser_launch()
+# recognizes a new-window flag for. All Chromium-family browsers here
+# accept the same --new-window flag Edge/Chrome do in _open_new_window()
+# below; Firefox uses a different one (-new-window, single dash).
+# Anything else (Internet Explorer, Safari-on-Windows, some obscure
+# browser) isn't recognized - _default_browser_launch() returns None
+# for it rather than guessing at a flag it might not actually support.
+_CHROMIUM_EXE_STEMS = {"chrome", "msedge", "brave", "opera", "vivaldi", "chromium"}
+_FIREFOX_EXE_STEMS = {"firefox"}
+
+
+def _windows_default_browser_command() -> str | None:
+    """The raw "open" command Windows would run for an http:// URL,
+    read straight from the registry's own per-user browser choice, or
+    None if it can't be read for any reason (not on Windows at all -
+    winreg doesn't exist elsewhere - or the expected keys are simply
+    missing).
+
+    A separate function from _default_browser_launch() below purely so
+    tests on this project's own Linux dev/CI environment can
+    monkeypatch this one function directly instead of needing a real
+    winreg module, which doesn't exist outside Windows at all and
+    can't be imported unconditionally at module level without breaking
+    bv-live everywhere else.
+    """
+
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _DEFAULT_BROWSER_REGISTRY_KEY
+        ) as key:
+            prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+
+        with winreg.OpenKey(
+            winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command"
+        ) as key:
+            command, _ = winreg.QueryValueEx(key, None)
+    except OSError:
+        return None
+
+    return command
+
+
+def _exe_from_command(command: str) -> str | None:
+    """Pull the executable path out of a registry "open" command
+    string - typically `"C:\\path\\to\\browser.exe" -- "%1"` (quoted,
+    the common case) or occasionally an unquoted
+    `C:\\path\\to\\browser.exe %1`. Returns None for an empty or
+    otherwise unparseable command rather than raising."""
+
+    command = command.strip()
+    if not command:
+        return None
+
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        if end == -1:
+            return None
+        return command[1:end]
+
+    return command.split(" ", 1)[0]
+
+
+def _default_browser_launch() -> tuple[str, str] | None:
+    """Return (exe_path, new_window_flag) for the user's own OS-level
+    default browser, or None if it can't be determined, or turns out
+    to be a browser this module doesn't know a new-window flag for.
+
+    Christer: "I want it to detect my OS-level default browser and use
+    that, unless there is something that breaks the function." "The
+    function" is _open_new_window()'s own job - getting a genuinely
+    new *window*, not a tab (see its own docstring) - so every failure
+    mode here (not on Windows, the registry key is missing, the
+    command string can't be parsed, the resolved browser isn't a
+    Chromium/Firefox exe this module recognizes a flag for, or the
+    resolved exe doesn't actually exist on disk) returns None rather
+    than raising or guessing. _open_new_window() falls back to the
+    fixed Edge/Chrome/Firefox priority list either way, exactly as it
+    did before this existed.
+    """
+
+    if sys.platform != "win32":
+        return None
+
+    command = _windows_default_browser_command()
+    if command is None:
+        return None
+
+    exe_path = _exe_from_command(command)
+    if exe_path is None or not Path(exe_path).exists():
+        return None
+
+    stem = Path(exe_path).stem.lower()
+    if stem in _CHROMIUM_EXE_STEMS:
+        return exe_path, "--new-window"
+    if stem in _FIREFOX_EXE_STEMS:
+        return exe_path, "-new-window"
+    return None
+
+
 def _open_new_window(url: str) -> None:
     """Open `url` in a genuinely new browser *window*, not just a new
     tab in whatever window is already open.
@@ -178,13 +290,27 @@ def _open_new_window(url: str) -> None:
     instance almost always reuses itself and opens a tab instead,
     regardless of what was actually asked for (confirmed by Christer:
     "It doesnt get its own window, it became a tab"). The only
-    reliable way around that is launching the browser's own executable
-    directly with a flag it actually respects for this
-    (`--new-window` for Chromium browsers, `-new-window` for Firefox -
-    see _find_browser()) - tried first here, falling back to plain
-    webbrowser.open_new() (still opens *something*, just possibly a
-    tab again) if no known browser executable can be found at all.
+    reliable way around that is launching a browser's own executable
+    directly with a flag it actually respects for this.
+
+    Preference order: the user's own OS-level default browser first
+    (see _default_browser_launch() - Christer explicitly asked for
+    this over the fixed list below, once bv-live's own hardcoded
+    Edge-before-Chrome order surprised him), then the fixed Edge/
+    Chrome/Firefox priority list (_find_browser()) if the default
+    couldn't be determined/recognized or actually launching it failed,
+    then plain webbrowser.open_new() (still opens *something*, just
+    possibly a tab again) if nothing else worked at all.
     """
+
+    default = _default_browser_launch()
+    if default is not None:
+        exe_path, flag = default
+        try:
+            subprocess.Popen([exe_path, flag, url])
+            return
+        except OSError:
+            pass
 
     chromium = _find_browser(_CHROMIUM_PATHS, _CHROMIUM_COMMANDS)
     if chromium is not None:

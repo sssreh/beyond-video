@@ -16,7 +16,7 @@ bv-live [--config-dir DIR] [--timeout SECONDS] [--host HOST] [--port PORT]
 
 `bv-live` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and serves a one-page live dashboard in your browser: the camera's own front/rear video feed (switchable with a button), a map that scrolls to follow its current position, and a strip chart of its live g-sensor readings - all fed live from the camera's own endpoints for as long as this command keeps running.
 
-A browser window opens automatically a moment after the server starts (pass `--no-browser` to skip this and just print the URL). The camera feed is the star of the dashboard: as the browser window is resized smaller, the map and g-sensor panels give up space (and eventually stack below it) before the camera feed does.
+A browser window opens automatically a moment after the server starts (pass `--no-browser` to skip this and just print the URL) - on Windows, in whichever browser is actually set as your OS-level default, detected from the same registry key Windows itself uses to decide which browser handles a link; a fixed Edge/Chrome/Firefox search is used as a fallback if that can't be determined (a non-Windows OS, or a default browser this doesn't recognize a "new window" flag for). The camera feed is the star of the dashboard: as the browser window is resized smaller, the map and g-sensor panels give up space (and eventually stack below it) before the camera feed does.
 
 The dashboard has three panels:
 
