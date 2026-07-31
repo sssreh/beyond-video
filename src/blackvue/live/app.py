@@ -56,6 +56,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -102,6 +103,19 @@ def create_live_app(
     pump = LiveTelemetryPump(client, state)
     region = LiveMapRegion(osm_cache_dir)
 
+    # Set once, in _lifespan's own shutdown phase below, and checked by
+    # every one of this app's three streaming routes (via mjpeg.py's
+    # own stop_event param) - see mjpeg.py's rendered_frame_stream()/
+    # relay_raw_stream() docstrings for why this exists at all: with no
+    # stop signal, those generators run forever regardless of server
+    # shutdown, which is what left `bv-live` hanging at uvicorn's own
+    # "Waiting for connections to close" on Ctrl-C (Christer: "The only
+    # way to take it down is to use task manager") - closing the
+    # browser tab alone doesn't reliably unblock them either, since the
+    # generator itself has no way to notice a closed connection while
+    # it's mid-render or mid-read.
+    shutdown_event = threading.Event()
+
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
         pump.start()
@@ -109,6 +123,7 @@ def create_live_app(
             yield
         finally:
             pump.stop()
+            shutdown_event.set()
 
     app = FastAPI(title=f"bv-live - {camera_name}", lifespan=_lifespan)
 
@@ -127,20 +142,25 @@ def create_live_app(
         # dangling open in the background.
         upstream = client.open_stream(f"/blackvue_live.cgi?direction={direction}")
         content_type = upstream.headers.get("Content-Type") or CONTENT_TYPE
-        return StreamingResponse(relay_raw_stream(upstream), media_type=content_type)
+        return StreamingResponse(
+            relay_raw_stream(upstream, stop_event=shutdown_event),
+            media_type=content_type,
+        )
 
     @app.get("/stream/map")
     def stream_map():
         render = live_map_frames(state, region, zoom_meters=map_zoom_meters)
         return StreamingResponse(
-            rendered_frame_stream(render, MAP_FPS), media_type=CONTENT_TYPE
+            rendered_frame_stream(render, MAP_FPS, stop_event=shutdown_event),
+            media_type=CONTENT_TYPE,
         )
 
     @app.get("/stream/gsensor")
     def stream_gsensor():
         render = live_gsensor_frames(state, window_seconds=gsensor_window_seconds)
         return StreamingResponse(
-            rendered_frame_stream(render, GSENSOR_FPS), media_type=CONTENT_TYPE
+            rendered_frame_stream(render, GSENSOR_FPS, stop_event=shutdown_event),
+            media_type=CONTENT_TYPE,
         )
 
     return app

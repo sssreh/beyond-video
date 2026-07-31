@@ -17,6 +17,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import io
+import threading
 import time
 from collections.abc import Callable
 from collections.abc import Iterator
@@ -55,7 +56,10 @@ def encode_jpeg_part(image: Image.Image, *, quality: int = JPEG_QUALITY) -> byte
 
 
 def rendered_frame_stream(
-    render: Callable[[], Image.Image], fps: float
+    render: Callable[[], Image.Image],
+    fps: float,
+    *,
+    stop_event: threading.Event | None = None,
 ) -> Iterator[bytes]:
     """Yield encode_jpeg_part(render()) forever, at roughly `fps` -
     shared frame-loop-to-multipart plumbing for both of bv-live's own
@@ -63,16 +67,20 @@ def rendered_frame_stream(
     live/gsensor_stream.py's live_gsensor_frames(), which each return
     the zero-argument `render` callable this expects).
 
-    Runs forever until the caller stops iterating (e.g. the browser
-    tab closes and Starlette stops pulling from the generator) -
-    there's no separate "stop" signal here, matching how
-    live/app.py's routes are wired (one generator per HTTP request/
-    connection, torn down when that connection ends).
+    Runs until the caller stops iterating (e.g. the browser tab closes
+    and Starlette stops pulling from the generator) *or* `stop_event`
+    gets set, whichever happens first. `stop_event` exists for the
+    latter case specifically - see live/app.py's own create_live_app()
+    docstring on why relying on the former alone left `bv-live` hanging
+    at uvicorn's "Waiting for connections to close" on Ctrl-C. Checked
+    once per loop iteration (bounded by `interval` either way), not
+    inside a blocking call, so it's always responsive within roughly
+    one frame period.
     """
 
     interval = 1.0 / fps if fps > 0 else 0.0
 
-    while True:
+    while stop_event is None or not stop_event.is_set():
         started = time.monotonic()
         yield encode_jpeg_part(render())
         elapsed = time.monotonic() - started
@@ -81,10 +89,13 @@ def rendered_frame_stream(
             time.sleep(remaining)
 
 
-def relay_raw_stream(response, *, chunk_size: int = 4096) -> Iterator[bytes]:
+def relay_raw_stream(
+    response, *, chunk_size: int = 4096, stop_event: threading.Event | None = None
+) -> Iterator[bytes]:
     """Relay `response` (an already-open BlackVueClient.open_stream()
-    result) chunk by chunk, unmodified, until it stops yielding data or
-    the caller stops iterating - closes `response` either way.
+    result) chunk by chunk, unmodified, until it stops yielding data,
+    the caller stops iterating, or `stop_event` gets set - closes
+    `response` in every case.
 
     Used for the camera's own front/rear MJPEG feed (see live/app.py's
     /stream/camera route): the camera's multipart framing/boundary is
@@ -92,10 +103,17 @@ def relay_raw_stream(response, *, chunk_size: int = 4096) -> Iterator[bytes]:
     re-encoded, since there's nothing to change about it - unlike
     rendered_frame_stream() above, which is building brand new frames
     from scratch every time, this is pure passthrough.
+
+    `stop_event` is checked once per chunk read, not while blocked
+    inside response.read() itself - under normal operation the camera
+    keeps sending frames continuously, so in practice this still
+    notices a shutdown within about one frame's worth of delay, same
+    as rendered_frame_stream() above, even though there's no hard
+    guarantee if the camera itself ever stops sending data mid-stream.
     """
 
     try:
-        while True:
+        while stop_event is None or not stop_event.is_set():
             chunk = response.read(chunk_size)
             if not chunk:
                 break

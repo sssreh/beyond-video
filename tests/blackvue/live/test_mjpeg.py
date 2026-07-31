@@ -1,3 +1,5 @@
+import threading
+
 from PIL import Image
 
 from blackvue.live.mjpeg import BOUNDARY
@@ -80,4 +82,75 @@ def test_relay_raw_stream_closes_upstream_even_if_iteration_stops_early():
     next(generator)
     generator.close()
 
+    assert upstream.closed is True
+
+
+def test_rendered_frame_stream_stops_once_stop_event_is_set():
+    # Regression test for the bv-live Ctrl-C hang Christer reported
+    # ("The only way to take it down is to use task manager") - with
+    # no stop_event at all, this generator ran forever regardless of
+    # server shutdown. Sets the event from inside `render()` itself
+    # (simulating the app's lifespan shutdown firing mid-stream) and
+    # confirms the generator ends on its own right after, rather than
+    # yielding one more frame or looping forever.
+    stop_event = threading.Event()
+    calls = {"count": 0}
+
+    def render():
+        calls["count"] += 1
+        if calls["count"] == 2:
+            stop_event.set()
+        return Image.new("RGB", (2, 2), (0, 0, 255))
+
+    frames = list(
+        rendered_frame_stream(render, fps=1000.0, stop_event=stop_event)
+    )
+
+    assert calls["count"] == 2
+    assert len(frames) == 2
+
+
+def test_rendered_frame_stream_stops_immediately_if_stop_event_already_set():
+    stop_event = threading.Event()
+    stop_event.set()
+    calls = {"count": 0}
+
+    def render():
+        calls["count"] += 1
+        return Image.new("RGB", (2, 2), (0, 0, 255))
+
+    frames = list(
+        rendered_frame_stream(render, fps=1000.0, stop_event=stop_event)
+    )
+
+    assert calls["count"] == 0
+    assert frames == []
+
+
+def test_relay_raw_stream_stops_once_stop_event_is_set():
+    upstream = _FakeUpstream([b"one", b"two", b"three", b""])
+    stop_event = threading.Event()
+
+    def stopping_iteration():
+        chunks = []
+        for chunk in relay_raw_stream(upstream, stop_event=stop_event):
+            chunks.append(chunk)
+            if chunk == b"one":
+                stop_event.set()
+        return chunks
+
+    chunks = stopping_iteration()
+
+    assert chunks == [b"one"]
+    assert upstream.closed is True
+
+
+def test_relay_raw_stream_stops_immediately_if_stop_event_already_set():
+    upstream = _FakeUpstream([b"one", b"two", b""])
+    stop_event = threading.Event()
+    stop_event.set()
+
+    chunks = list(relay_raw_stream(upstream, stop_event=stop_event))
+
+    assert chunks == []
     assert upstream.closed is True
