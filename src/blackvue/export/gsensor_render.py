@@ -5,22 +5,28 @@ Draws one frame of a racing-telemetry-style "dot gauge": a circular
 dial with a dot at the current sample's (lateral, longitudinal)
 position (relative to a per-trip baseline - see
 baseline_for_samples()) and a short fading trail behind it. The
-horizontal axis is the raw g-sensor's Y field, the vertical axis is
-its Z field - confirmed against a real recording with known,
-timestamped maneuvers (two right turns and a left U-turn, plus a
-braking event caught incidentally just before the U-turn): Y tracks
-turning (sustained positive during both right turns, sustained
-negative - roughly double the magnitude - during the sharper left
-U-turn) and Z tracks acceleration/braking (a sustained dip right
-before the U-turn, lining up with the driver braking into it). The
-raw X field showed no sustained response to any of those events and
-is not used here - it's presumed to be the vertical/mounting axis,
-picking up road vibration rather than a directional force. The
-g-sensor's raw units still aren't calibrated (see
-telemetry.gsensor_reader's module docstring - could be milli-g, raw
-ADC counts, or something else), so this still scales purely to the
-trip's own observed range rather than claiming any absolute g-force
-value.
+horizontal axis is the raw g-sensor's X field, the vertical axis is
+its Y field.
+
+This is Christer's own explicit call, not what a real test recording
+actually showed. A recording with known, timestamped maneuvers (two
+right turns and a left U-turn, plus a braking event caught
+incidentally just before the U-turn) found raw Y tracking turning
+(sustained positive during both right turns, sustained negative during
+the U-turn) and raw Z tracking braking (a sustained dip right before
+the U-turn) - with raw X showing no sustained response to any of the
+three events. Told this directly - that treating X as lateral runs
+against that same recording - Christer chose to override it anyway
+("Actually swap which raw channel means what"), so this module now
+plots raw X as lateral and raw Y as longitudinal/braking, raw Z as
+unused (assumed vertical/mounting axis, same role X was inferred to
+have before). Christer has a follow-up recording with hard
+acceleration, braking, and turns planned specifically to settle this
+with better data than the first pass had - the mapping here should be
+revisited once that comes in, in either direction. See
+gsensor_reader.py's own module docstring for the standing caveat that
+the physical *unit* of these readings (milli-g, raw ADC counts, or
+something else) remains unconfirmed regardless of which axis is which.
 
 The background is a flat chroma-key green rather than the cream tone
 map_render.py uses - gsensor.mp4 is meant to be composited over the
@@ -92,7 +98,9 @@ def _median(values: list[float]) -> float:
 def baseline_for_samples(samples) -> tuple[float, float]:
     """Return the (lateral, longitudinal) reading gsensor.mp4's gauge
     should treat as its center, for a set of g-sensor samples: the
-    trip's own median Y (lateral) and median Z (longitudinal).
+    trip's own median X (lateral) and median Y (longitudinal) - see
+    this module's own docstring for why X/Y rather than the Y/Z a real
+    test recording actually pointed to.
 
     A dashcam mounted at even a slight angle - or a plain sensor bias
     - means "level, driving straight" rarely reads exactly raw (0, 0),
@@ -106,8 +114,8 @@ def baseline_for_samples(samples) -> tuple[float, float]:
         return 0.0, 0.0
 
     return (
+        _median([float(sample.x) for sample in samples]),
         _median([float(sample.y) for sample in samples]),
-        _median([float(sample.z) for sample in samples]),
     )
 
 
@@ -139,8 +147,8 @@ def scale_for_samples(
     for sample in samples:
         peak = max(
             peak,
-            abs(sample.y - baseline_lateral),
-            abs(sample.z - baseline_longitudinal),
+            abs(sample.x - baseline_lateral),
+            abs(sample.y - baseline_longitudinal),
         )
 
     return max(peak * padding, minimum)

@@ -8,14 +8,15 @@ from blackvue.telemetry.gsensor_reader import GSensorSample
 from datetime import timedelta
 
 
-def _sample(offset_ms, lateral, longitudinal, x=900):
-    # baseline_for_samples()/scale_for_samples() read the raw Y field
-    # as lateral (left/right) and the raw Z field as longitudinal
-    # (forward/back) - see gsensor_render.py's module docstring for
-    # how that mapping was confirmed. Raw X isn't used by either
+def _sample(offset_ms, lateral, longitudinal, z=900):
+    # baseline_for_samples()/scale_for_samples() read the raw X field
+    # as lateral (left/right) and the raw Y field as longitudinal
+    # (forward/back) - Christer's own explicit call, not what the real
+    # test recording actually showed (see gsensor_render.py's module
+    # docstring for the full story). Raw Z isn't used by either
     # function, so it's an arbitrary filler value here.
     return GSensorSample(
-        offset=timedelta(milliseconds=offset_ms), x=x, y=lateral, z=longitudinal
+        offset=timedelta(milliseconds=offset_ms), x=lateral, y=longitudinal, z=z
     )
 
 
@@ -103,16 +104,14 @@ def test_render_frame_handles_a_single_trail_point_without_crashing():
     assert image.size == (480, 480)
 
 
-def test_baseline_and_scale_for_samples_ignore_the_raw_x_field():
-    # Regression guard for the axis remap: raw X showed no sustained
-    # response to any real turning or braking event in a real test
-    # recording (see gsensor_render.py's module docstring), so it
-    # isn't used by either function - only Y (lateral) and Z
-    # (longitudinal) are. Wildly varying X here should have zero
-    # effect on either result.
+def test_baseline_and_scale_for_samples_ignore_the_raw_z_field():
+    # Regression guard for Christer's own X/Y mapping override (see
+    # gsensor_render.py's module docstring) - raw Z isn't used by
+    # either function, only X (lateral) and Y (longitudinal) are.
+    # Wildly varying Z here should have zero effect on either result.
     samples = (
-        _sample(0, 10, 20, x=-99999),
-        _sample(100, 30, 40, x=99999),
+        _sample(0, 10, 20, z=-99999),
+        _sample(100, 30, 40, z=99999),
     )
 
     assert baseline_for_samples(samples) == (20.0, 30.0)

@@ -553,7 +553,7 @@ def test_render_base_frame_skips_the_legend_for_fewer_than_two_samples():
 
 def test_render_base_frame_vertical_centers_the_legend_block():
     # The narrow vertical side-panel doesn't have room to left-anchor
-    # the legend the way the wide horizontal panel does - "Z — Acc/
+    # the legend the way the wide horizontal panel does - "Y — Acc/
     # brake" alone runs past the plot area's own right edge from there.
     # Christer's own request: center it instead. Expected x computed
     # the same way _draw_legend() itself does, independently here
@@ -568,11 +568,12 @@ def test_render_base_frame_vertical_centers_the_legend_block():
     measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     # render_base_frame() above is called without show_z, so only the
     # X/Y rows are actually drawn (see _legend_rows()) - measure
-    # against those two, not all three LEGEND_LABELS, or this drifts
-    # out of sync with _draw_legend()'s own width whenever the widest
-    # label isn't among the first two (as it no longer is: Z's
-    # "Acc/brake" is now the longest of the three, but Z isn't
-    # drawn here).
+    # against those two, not all three LEGEND_LABELS. Currently the
+    # overall widest label ("Y — Acc/brake") happens to be among the
+    # first two anyway, but restricting to what's actually drawn keeps
+    # this correct even if a future wording change makes Z's own label
+    # the widest again (as it briefly was, before this session's swap
+    # from Y/Z back to X/Y meaning left/right and accel/brake).
     widest_text_width = max(
         measuring_draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
         for axis, meaning in LEGEND_LABELS[:2]
@@ -665,17 +666,17 @@ def test_legend_labels_spell_out_what_each_axis_physically_means():
     # Christer's own explicit wording, not just "X"/"Y"/"Z" - see
     # _draw_legend()/the module docstring for why this is kept
     # identical in both orientations even though it runs past the
-    # narrow vertical panel's own plot-area edge there. Y/Z (left-right/
-    # acc-brake) were confirmed against a real recording with known
-    # maneuvers; X (up/down) is labeled by elimination - see
-    # gsensor_render.py's own module docstring. Z is worded
-    # "Acc/brake" rather than "Forward/back" at Christer's own request,
-    # since that's the specific physical event it was confirmed to
-    # respond to.
+    # narrow vertical panel's own plot-area edge there. This X/Y/Z
+    # assignment (left-right/acc-brake/up-down) is Christer's own
+    # explicit override - a real test recording actually found Y
+    # tracking turning and Z tracking braking, with X showing nothing;
+    # told that directly, Christer chose to override it anyway. See
+    # gsensor_render.py's own module docstring for the full story and
+    # the follow-up recording planned to settle it either way.
     assert LEGEND_LABELS == (
-        ("X", "Up/down"),
-        ("Y", "Left/right"),
-        ("Z", "Acc/brake"),
+        ("X", "Left/right"),
+        ("Y", "Acc/brake"),
+        ("Z", "Up/down"),
     )
 
 
@@ -804,8 +805,10 @@ def test_render_base_frame_omits_the_divider_when_z_is_hidden():
 
 
 def test_legend_has_two_rows_when_z_is_hidden():
-    # Only X/Y's own rows - no "Z — Acc/brake" row for a trace that
-    # isn't actually drawn (see _draw_legend()'s own docstring).
+    # Only X/Y's own rows - no "Z — Up/down" row for a trace that
+    # isn't actually drawn (see _draw_legend()'s own docstring). (Y's
+    # own row reads "Acc/brake" under the current X/Y/Z assignment -
+    # see gsensor_render.py's module docstring for why.)
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 

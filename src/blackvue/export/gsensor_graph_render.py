@@ -46,23 +46,24 @@ needs to stay green for the dot-gauge's own real chroma-key use.
 
 Each axis's own trace is labeled by a small color-key legend (Christer:
 "nothing explaining the colors"), spelling out what each axis
-physically means - "Y — Left/right", "Z — Acc/brake",
-"X — Up/down" (Z's wording was "Forward/back" until Christer asked for
-"acc/brake" specifically, since that's the actual physical event this
-axis was confirmed to respond to - see below - not motion direction in
-general). Unlike when this was first written, this is no longer
-just the standard accelerometer axis convention offered as a
-best-effort guess: Y and Z were confirmed against a real recording
-with known, timestamped maneuvers (two right turns and a left U-turn,
-plus a braking event caught right before the U-turn) - see
-gsensor_render.py's own module docstring for the raw data and
-reasoning. X showed no sustained response to any of those events and
-is labeled "Up/down" by elimination rather than independent
-confirmation - still the best available explanation, just not on the
-same footing as Y and Z. See gsensor_reader.py's own module docstring
-for the standing caveat that the physical *unit* of these readings
-(milli-g, raw ADC counts, or something else) remains unconfirmed even
-now.
+physically means - "X — Left/right", "Y — Acc/brake", "Z — Up/down".
+
+This wording is Christer's own explicit call, not what a real test
+recording actually showed. A recording with known, timestamped
+maneuvers (two right turns and a left U-turn, plus a braking event
+caught right before the U-turn - see gsensor_render.py's own module
+docstring for the raw data) found raw Y tracking turning and raw Z
+tracking braking, with raw X showing no sustained response to either.
+Told directly that labeling X as "Left/right" runs against that same
+recording, Christer chose to override it anyway ("Actually swap which
+raw channel means what"), so the legend now reads X/Y/Z in that order
+regardless. Christer has a follow-up recording with hard acceleration,
+braking, and turns planned specifically to settle this with better
+data than the first pass had - this wording should be revisited once
+that comes in, in either direction. See gsensor_reader.py's own module
+docstring for the standing caveat that the physical *unit* of these
+readings (milli-g, raw ADC counts, or something else) remains
+unconfirmed regardless of which axis is which.
 
 The legend gets its own dedicated space rather than sitting on top of
 the traces: `_legend_reserve_px(orientation)` adds extra room to the
@@ -264,19 +265,19 @@ LEGEND_PADDING = 6
 # Full axis-meaning wording, not just "X"/"Y"/"Z" - Christer's own
 # request, kept identical in both orientations even though it runs
 # past the narrow vertical side-panel's own right edge (his explicit
-# call over abbreviating there - see the module docstring). Y and Z's
-# meanings were confirmed against a real recording with known,
-# timestamped maneuvers - see gsensor_render.py's own module
-# docstring. X showed no sustained response to any tested event and is
-# labeled "Up/down" by elimination, not independent confirmation - see
-# the module docstring above for the distinction. The tuple order
-# (X, Y, Z) must stay fixed regardless of wording changes - it's zipped
-# with the (X_COLOR, Y_COLOR, Z_COLOR) tuple by position in
-# _draw_legend(), not matched by the "axis" string.
+# call over abbreviating there - see the module docstring). This
+# specific X/Y/Z assignment is Christer's own explicit override, not
+# what the real test recording in gsensor_render.py's own module
+# docstring actually showed (there, Y tracked turning and Z tracked
+# braking, with X showing nothing) - see the module docstring above
+# for the full story. The tuple order (X, Y, Z) must stay fixed
+# regardless of wording changes - it's zipped with the (X_COLOR,
+# Y_COLOR, Z_COLOR) tuple by position in _draw_legend(), not matched
+# by the "axis" string.
 LEGEND_LABELS = (
-    ("X", "Up/down"),
-    ("Y", "Left/right"),
-    ("Z", "Acc/brake"),
+    ("X", "Left/right"),
+    ("Y", "Acc/brake"),
+    ("Z", "Up/down"),
 )
 
 # The bundled copy is tried first (see assets/, and pyproject.toml's
@@ -580,7 +581,7 @@ def _legend_text_width(
     draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, show_z: bool = False
 ) -> float:
     """Return the widest of the legend's own rendered rows' text width
-    ("X — Up/down", "Y — Left/right", and "Z — Acc/brake" when
+    ("X — Left/right", "Y — Acc/brake", and "Z — Up/down" when
     `show_z`) - shared by _legend_reserve_px() (how much space to set
     aside) and _draw_legend() (where exactly to center the block within
     it), so the two can never disagree with each other about the same
@@ -649,7 +650,7 @@ def _draw_legend(
     Vertical mode: horizontally centered as a block within
     `canvas_width` (the panel's own full image width) rather than
     left-anchored - Christer's own request, and also what keeps the
-    longest row ("Z — Acc/brake", ~95px) comfortably inside the
+    longest row ("Y — Acc/brake", ~95px) comfortably inside the
     panel rather than running past an edge. All rows share one swatch
     x position (the widest row's own left edge) so the block reads as
     one clean centered unit rather than each row independently
