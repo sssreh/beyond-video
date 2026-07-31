@@ -31,7 +31,6 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
-import statistics
 import threading
 import time
 from collections import deque
@@ -67,26 +66,6 @@ MAX_BUFFER_CHARS = 65536
 # quickly, long enough not to hammer a camera that's genuinely gone
 # for a while.
 RECONNECT_DELAY_SECONDS = 2.0
-
-# How long TelemetryState collects raw g-sensor readings for before
-# freezing them into a zero-offset baseline - Christer, parked, seeing
-# the live g-sensor strip sit visibly offset from its own zero line:
-# "I think we need some type of ero[zero] calibration". The camera's
-# own FrontRear/LeftRight/UpperLower readings aren't necessarily
-# centered on zero at rest (a dashcam mounted at even a slight angle,
-# or a plain sensor bias - the same reasoning export/gsensor_render.py
-# 's own baseline_for_samples() already documents for the *offline*
-# gauge, which centers on a finished trip's own median reading rather
-# than raw (0, 0) for exactly this). bv-live has no finished trip to
-# take a median of upfront, so it calibrates from the first
-# CALIBRATION_SECONDS of live readings instead, once, the first time
-# the pump starts producing g-sensor data - see _finish_calibration().
-# 3 seconds is a first guess (assumed roughly stationary right after
-# bv-live starts, matching how Christer's own test just now was run
-# with the car parked) - not measured against anything, easy to widen
-# if a quick startup jolt (a door closing, engine starting) ever ends
-# up baked into the baseline in practice.
-GSENSOR_CALIBRATION_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -131,20 +110,18 @@ class TelemetryState:
         self._gps: deque[GpsSample] = deque()
         self._gsensor: deque[GSensorSample] = deque()
 
-        # Zero-offset calibration + a monotonically-growing scale
-        # watermark (see GSENSOR_CALIBRATION_SECONDS's own comment) -
-        # kept here rather than in gsensor_stream.py's renderer because
-        # it has to persist for the whole live session, not just
-        # whatever's still inside the display's own rolling
-        # `window_seconds` (old peaks would otherwise "forget"
-        # themselves the moment they scroll out of view, letting the
-        # scale shrink back down - the opposite of what Christer asked
-        # for: "when newer data comes in and are greater than the
-        # previous max value, we scale down the lines to match the new
-        # max value" i.e. the scale should only ever grow).
-        self._gsensor_calibration_start: float | None = None
-        self._gsensor_calibration_buffer: list[GSensorSample] = []
-        self._gsensor_baseline: tuple[float, float, float] | None = None
+        # A monotonically-growing scale watermark - kept here rather
+        # than in gsensor_stream.py's renderer because it has to
+        # persist for the whole live session, not just whatever's
+        # still inside the display's own rolling `window_seconds` (old
+        # peaks would otherwise "forget" themselves the moment they
+        # scroll out of view, letting the scale shrink back down - the
+        # opposite of what Christer asked for: "when newer data comes
+        # in and are greater than the previous max value, we scale down
+        # the lines to match the new max value" i.e. the scale should
+        # only ever grow). Deviation here means raw |reading| - there's
+        # no zero-offset baseline anymore (see gsensor_max_deviation()'s
+        # own docstring for why that was removed).
         self._gsensor_max_deviation: float = 0.0
 
     def add_gps(self, latitude: float, longitude: float) -> None:
@@ -161,69 +138,38 @@ class TelemetryState:
         with self._lock:
             self._gsensor.append(sample)
             self._trim(self._gsensor, now)
-            self._update_gsensor_calibration(sample, now)
+            self._update_gsensor_scale(sample)
 
-    def _update_gsensor_calibration(self, sample: GSensorSample, now: float) -> None:
-        """Feed one just-arrived sample into calibration bookkeeping -
-        called under `self._lock` from add_gsensor(), not on its own.
+    def _update_gsensor_scale(self, sample: GSensorSample) -> None:
+        """Feed one just-arrived sample into the growing-only scale
+        watermark - called under `self._lock` from add_gsensor(), not
+        on its own. `_gsensor_max_deviation` only ever grows for the
+        rest of the session (see gsensor_max_deviation()'s docstring)."""
 
-        Before a baseline exists: buffer the sample, and once
-        GSENSOR_CALIBRATION_SECONDS have elapsed since the very first
-        g-sensor reading ever seen, freeze the *median* (not mean) of
-        the buffered readings per axis as the baseline - median rather
-        than mean for the same reason export/gsensor_render.py's own
-        baseline_for_samples() uses it: robust to a single jostle
-        (a door closing, someone bumping the car) during the
-        calibration window pulling an average off to one side.
-
-        After a baseline exists: this sample no longer affects the
-        baseline itself (a one-time calibration, not a continuously
-        drifting one - actual driving would otherwise slowly drag the
-        "zero" line to wherever the car has spent the most time), only
-        the scale watermark, which only ever grows.
-        """
-
-        if self._gsensor_baseline is None:
-            if self._gsensor_calibration_start is None:
-                self._gsensor_calibration_start = now
-            self._gsensor_calibration_buffer.append(sample)
-
-            elapsed = now - self._gsensor_calibration_start
-            if elapsed >= GSENSOR_CALIBRATION_SECONDS:
-                buffered = self._gsensor_calibration_buffer
-                self._gsensor_baseline = (
-                    statistics.median(s.front_rear for s in buffered),
-                    statistics.median(s.left_right for s in buffered),
-                    statistics.median(s.upper_lower for s in buffered),
-                )
-                self._gsensor_calibration_buffer = []
-            return
-
-        baseline_fr, baseline_lr, baseline_ul = self._gsensor_baseline
         self._gsensor_max_deviation = max(
             self._gsensor_max_deviation,
-            abs(sample.front_rear - baseline_fr),
-            abs(sample.left_right - baseline_lr),
-            abs(sample.upper_lower - baseline_ul),
+            abs(sample.front_rear),
+            abs(sample.left_right),
+            abs(sample.upper_lower),
         )
 
-    def gsensor_baseline(self) -> tuple[float, float, float] | None:
-        """The (front_rear, left_right, upper_lower) reading treated as
-        "zero" - None until GSENSOR_CALIBRATION_SECONDS of readings
-        have been collected. gsensor_stream.py's renderer holds off on
-        drawing a trace at all until this stops being None, the same
-        way it already does for "fewer than two samples yet"."""
-
-        with self._lock:
-            return self._gsensor_baseline
-
     def gsensor_max_deviation(self) -> float:
-        """The largest |reading - baseline| seen, on any axis, since
-        calibration finished - monotonically non-decreasing for the
-        rest of the session (see _update_gsensor_calibration()'s own
-        docstring), 0.0 before calibration finishes. gsensor_stream.py
+        """The largest |reading| seen, on any axis, since bv-live
+        started - monotonically non-decreasing for the rest of the
+        session (see _update_gsensor_scale()). gsensor_stream.py
         applies its own padding/minimum-scale floor on top of this -
-        this is the raw watermark only."""
+        this is the raw watermark only.
+
+        This session previously calibrated a per-axis zero-offset
+        baseline first (the first few seconds of readings, frozen into
+        a median "zero") and measured deviation from that instead of
+        from raw zero - Christer, parked, had asked for it after
+        seeing the strip sit visibly offset: "I think we need some
+        type of ero[zero] calibration". He later asked for that
+        calibration to be removed again, keeping only the growing-only
+        scale - see WORKING_CONTEXT.md for that follow-up. Deviation is
+        measured from raw zero now, same as the strip's own zero axis
+        line."""
 
         with self._lock:
             return self._gsensor_max_deviation

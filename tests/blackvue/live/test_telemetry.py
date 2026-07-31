@@ -4,14 +4,6 @@ from blackvue.live.telemetry import TelemetryState
 from blackvue.live.telemetry import _drain_livedata_buffer
 
 
-def _fake_clock(monkeypatch, start=0.0):
-    import blackvue.live.telemetry as telemetry_module
-
-    fake_time = [start]
-    monkeypatch.setattr(telemetry_module.time, "monotonic", lambda: fake_time[0])
-    return fake_time
-
-
 def test_telemetry_state_latest_gps_returns_the_most_recent_reading():
     state = TelemetryState()
 
@@ -150,58 +142,24 @@ def test_drain_livedata_buffer_drops_an_overlong_buffer_with_no_match(monkeypatc
     assert remainder == ""
 
 
-def test_gsensor_baseline_is_none_before_calibration_finishes(monkeypatch):
-    fake_time = _fake_clock(monkeypatch)
+def test_gsensor_max_deviation_starts_at_zero_with_no_readings():
     state = TelemetryState()
 
-    state.add_gsensor(1.0, 2.0, 3.0)
-    fake_time[0] = 1.0  # short of GSENSOR_CALIBRATION_SECONDS (3.0)
-    state.add_gsensor(1.0, 2.0, 3.0)
-
-    assert state.gsensor_baseline() is None
     assert state.gsensor_max_deviation() == 0.0
 
 
-def test_gsensor_baseline_becomes_the_median_of_the_calibration_window(monkeypatch):
-    # Regression test for Christer, parked: "the lines shows an offset
-    # from zero" - the fix is calibrating a per-axis "zero" from the
-    # first GSENSOR_CALIBRATION_SECONDS of readings, using the median
-    # (not the mean) the same way export/gsensor_render.py's own
-    # baseline_for_samples() already does for a finished trip - robust
-    # to one jostled reading (a door closing) skewing an average.
-    fake_time = _fake_clock(monkeypatch)
-    state = TelemetryState()
-
-    state.add_gsensor(10.0, -10.0, 1.0)
-    fake_time[0] = 1.0
-    state.add_gsensor(20.0, -20.0, 1.0)
-    fake_time[0] = 2.0
-    # An outlier jostle mid-calibration - the median (25.0) barely
-    # moves for it; a mean of the same four readings would have been
-    # dragged all the way to 265.0.
-    state.add_gsensor(1000.0, -1000.0, 1.0)
-    fake_time[0] = 3.0  # exactly GSENSOR_CALIBRATION_SECONDS - finishes here
-    state.add_gsensor(30.0, -30.0, 1.0)
-
-    baseline = state.gsensor_baseline()
-    assert baseline == (25.0, -25.0, 1.0)
-
-
-def test_gsensor_max_deviation_only_ever_grows(monkeypatch):
+def test_gsensor_max_deviation_only_ever_grows():
     # Christer's own proposed fix: "when data comes in we put it at
     # maximum and then when newer data comes in and are greater than
     # the previous max value, we scale down the lines to match the new
     # max value" - i.e. the scale watermark must never shrink back
-    # down once calibration has finished, even once a later reading is
-    # much smaller than an earlier peak.
-    fake_time = _fake_clock(monkeypatch)
+    # down, even once a later reading is much smaller than an earlier
+    # peak. No calibration/baseline step anymore (removed at Christer's
+    # own later request - see WORKING_CONTEXT.md) - deviation here is
+    # just raw |reading|, measured from the very first sample.
     state = TelemetryState()
 
     state.add_gsensor(0.0, 0.0, 0.0)
-    fake_time[0] = 3.0  # finishes calibration; baseline = (0.0, 0.0, 0.0)
-    state.add_gsensor(0.0, 0.0, 0.0)
-
-    assert state.gsensor_baseline() == (0.0, 0.0, 0.0)
     assert state.gsensor_max_deviation() == 0.0
 
     state.add_gsensor(5.0, 0.0, 0.0)
@@ -215,23 +173,6 @@ def test_gsensor_max_deviation_only_ever_grows(monkeypatch):
     state.add_gsensor(0.0, 0.0, 8.0)
     assert state.gsensor_max_deviation() == 8.0
 
-
-def test_gsensor_calibration_does_not_drift_once_frozen(monkeypatch):
-    # A one-time calibration, not a continuously updating one - actual
-    # driving after calibration finishes must never change the
-    # baseline, only feed the max_deviation watermark (see
-    # _update_gsensor_calibration()'s own docstring for why: a
-    # continuously drifting baseline would slowly drag "zero" towards
-    # wherever the car spent the most time driving).
-    fake_time = _fake_clock(monkeypatch)
-    state = TelemetryState()
-
-    state.add_gsensor(1.0, 1.0, 1.0)
-    fake_time[0] = 3.0
-    state.add_gsensor(1.0, 1.0, 1.0)
-    baseline_after_calibration = state.gsensor_baseline()
-
-    state.add_gsensor(50.0, 50.0, 50.0)
-    state.add_gsensor(-50.0, -50.0, -50.0)
-
-    assert state.gsensor_baseline() == baseline_after_calibration == (1.0, 1.0, 1.0)
+    # Negative readings count by magnitude, same as positive ones.
+    state.add_gsensor(-20.0, 0.0, 0.0)
+    assert state.gsensor_max_deviation() == 20.0
