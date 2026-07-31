@@ -5,9 +5,20 @@ from blackvue.live import map_stream as map_stream_module
 from blackvue.live.map_stream import LiveMapRegion
 from blackvue.live.map_stream import _bbox_contains
 from blackvue.live.map_stream import _heading_from_history
+from blackvue.live.map_stream import _live_marker_image
 from blackvue.live.map_stream import render_live_map_frame
 from blackvue.live.telemetry import GpsSample
 from blackvue.live.telemetry import TelemetryState
+
+
+def _reset_marker_image_cache(monkeypatch):
+    # _live_marker_image() caches its result in two module-level
+    # globals so the bundled asset is only ever loaded/scaled once per
+    # process (see its own docstring/comment) - tests that care about
+    # the loading path itself (success or failure) need a clean slate
+    # each time, not whatever an earlier test already cached.
+    monkeypatch.setattr(map_stream_module, "_marker_image", None)
+    monkeypatch.setattr(map_stream_module, "_marker_image_load_attempted", False)
 
 
 def test_bbox_contains_true_when_inner_fully_within_outer():
@@ -133,3 +144,77 @@ def test_render_live_map_frame_renders_a_real_frame_once_a_fix_exists(
     image = render_live_map_frame(state, region, width=200, height=200)
 
     assert image.size == (200, 200)
+
+
+def test_live_marker_image_loads_the_bundled_red_car_scaled_down(monkeypatch):
+    # Christer: "can i have my red car on the bv-live map" - reuses
+    # bv-export's own bundled DEFAULT_MAP_ICON_PATH/MARKER_IMAGE_SCALE
+    # (see map_video.py) rather than a separate live-only asset.
+    _reset_marker_image_cache(monkeypatch)
+
+    image = _live_marker_image()
+
+    assert image is not None
+    assert image.mode == "RGBA"
+
+    from PIL import Image as PILImage
+
+    from blackvue.export.map_video import DEFAULT_MAP_ICON_PATH
+    from blackvue.export.map_video import MARKER_IMAGE_SCALE
+
+    original = PILImage.open(DEFAULT_MAP_ICON_PATH)
+    assert image.width == max(1, round(original.width * MARKER_IMAGE_SCALE))
+    assert image.height == max(1, round(original.height * MARKER_IMAGE_SCALE))
+
+
+def test_live_marker_image_is_only_loaded_once(monkeypatch):
+    _reset_marker_image_cache(monkeypatch)
+
+    first = _live_marker_image()
+    second = _live_marker_image()
+
+    assert first is second
+
+
+def test_live_marker_image_falls_back_to_none_if_the_bundled_asset_cant_load(
+    monkeypatch, tmp_path
+):
+    # A bad/missing bundled asset should degrade the live map to the
+    # plain procedural arrow it already had, not crash bv-live outright
+    # - see _live_marker_image()'s own docstring.
+    _reset_marker_image_cache(monkeypatch)
+    monkeypatch.setattr(
+        map_stream_module, "DEFAULT_MAP_ICON_PATH", tmp_path / "does_not_exist.png"
+    )
+
+    assert _live_marker_image() is None
+
+
+def test_render_live_map_frame_passes_the_marker_image_through_to_render_frame(
+    monkeypatch, tmp_path
+):
+    _reset_marker_image_cache(monkeypatch)
+    monkeypatch.setattr(
+        map_stream_module, "load_or_fetch_roads", lambda *a, **k: ()
+    )
+    monkeypatch.setattr(
+        map_stream_module, "load_or_fetch_areas", lambda *a, **k: ()
+    )
+
+    captured = {}
+    real_render_frame = map_stream_module.render_frame
+
+    def _capturing_render_frame(*args, **kwargs):
+        captured["marker_image"] = kwargs.get("marker_image")
+        return real_render_frame(*args, **kwargs)
+
+    monkeypatch.setattr(map_stream_module, "render_frame", _capturing_render_frame)
+
+    state = TelemetryState()
+    state.add_gps(59.334591, 18.063240)
+    region = LiveMapRegion(tmp_path)
+
+    render_live_map_frame(state, region, width=200, height=200)
+
+    assert captured["marker_image"] is not None
+    assert captured["marker_image"] is _live_marker_image()

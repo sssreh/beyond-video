@@ -36,6 +36,8 @@ from PIL import ImageFont
 from ..export.map_render import BACKGROUND_COLOR
 from ..export.map_render import DEFAULT_MARGIN_PX
 from ..export.map_render import render_frame
+from ..export.map_video import DEFAULT_MAP_ICON_PATH
+from ..export.map_video import MARKER_IMAGE_SCALE
 from ..export.osm_roads import Area
 from ..export.osm_roads import BoundingBox
 from ..export.osm_roads import Road
@@ -84,6 +86,35 @@ REGION_PADDING_FACTOR = 8.0
 LIVE_FRESHNESS_SECONDS = 5.0
 
 PLACEHOLDER_TEXT_COLOR = (120, 120, 120)
+
+# Reuses bv-export's own bundled red-car marker (see export/map_video
+# .py's DEFAULT_MAP_ICON_PATH/MARKER_IMAGE_SCALE) so the live map's
+# position marker matches map.mp4's own default instead of falling
+# back to the plain procedural arrow - Christer: "can i have my red
+# car on the bv-live map". Loaded and scaled once, lazily, the first
+# time a frame actually needs it rather than at import time - a bad or
+# missing bundled asset should degrade the live map to the plain arrow
+# marker it already had, not prevent bv-live from starting at all.
+_marker_image: Image.Image | None = None
+_marker_image_load_attempted = False
+
+
+def _live_marker_image() -> Image.Image | None:
+    global _marker_image, _marker_image_load_attempted
+
+    if not _marker_image_load_attempted:
+        _marker_image_load_attempted = True
+        try:
+            loaded = Image.open(DEFAULT_MAP_ICON_PATH).convert("RGBA")
+            scaled_size = (
+                max(1, round(loaded.width * MARKER_IMAGE_SCALE)),
+                max(1, round(loaded.height * MARKER_IMAGE_SCALE)),
+            )
+            _marker_image = loaded.resize(scaled_size, resample=Image.LANCZOS)
+        except (FileNotFoundError, OSError):
+            _marker_image = None
+
+    return _marker_image
 
 
 def _bbox_contains(outer: BoundingBox, inner: BoundingBox) -> bool:
@@ -234,10 +265,11 @@ def render_live_map_frame(
 ) -> Image.Image:
     """Render one live map frame from `state`'s current buffer -
     background roads/areas, the recent route trail, the current
-    position marker (a heading-rotated arrow when a heading could be
-    computed, otherwise a plain dot - see _heading_from_history()), and
-    a live-GPS badge that's only lit while the latest reading is still
-    fresh (see LIVE_FRESHNESS_SECONDS).
+    position marker (the same bundled red-car icon map.mp4 defaults
+    to, rotated to heading when one could be computed - see
+    _heading_from_history()/_live_marker_image() - or pointing "up"
+    when it can't yet), and a live-GPS badge that's only lit while the
+    latest reading is still fresh (see LIVE_FRESHNESS_SECONDS).
 
     Returns a plain "waiting for GPS fix" placeholder frame instead if
     `state` has no GPS reading at all yet.
@@ -268,6 +300,7 @@ def render_live_map_frame(
         (latest.latitude, latest.longitude),
         areas=areas,
         heading=heading,
+        marker_image=_live_marker_image(),
         show_gps_badge=is_live,
         width=width,
         height=height,
