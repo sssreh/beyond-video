@@ -6592,3 +6592,13 @@ Wired in at the `main()` print loop: only for the `/Config/config.ini` path, the
 Extended the module's own docstring privacy note (which already covered `blackvue_vod.cgi`'s recording-timestamp privacy angle) to mention this.
 
 **Verification:** direct unit checks of `redact_config_ini()` against synthetic config.ini text (all four real field names, generic alternate naming like `WifiPassword`/`PASSWORD`/`SecretToken`, a value truncated mid-string to simulate the script's own `READ_BYTES` cutoff, and confirming SSIDs remain visible while only password-shaped values are redacted) - all passed. Then a full end-to-end run: spun up a local `http.server` on `127.0.0.1` serving synthetic (never real) config.ini content including fake Wi-Fi/cloud passwords, ran the actual `scan_blackvue_endpoints.py` script as a subprocess against it, and confirmed the real passwords never appear anywhere in stdout while `[secret]` and the SSIDs do. No real camera reachable from this sandbox to test against.
+
+## Idea: bv-export --stitch needs new layout thinking for a real 3rd (interior) camera (this session, no code change)
+
+Christer: "When we will get 3 cameras like F, R and I, we need new thinking for bv-export layout." Recorded for later - not acted on now (explicitly: "later").
+
+**Current state:** interior (`I`) is recognition-only - correctly grouped under its recording (`VodEntry.is_interior`, `Recording.interior`) and classified as its own asset (`Asset.INTERIOR`/`Asset.INTERIOR_THUMBNAIL`, shows up as its own `bv-ls` column) - but `bv-export`'s trip building, concatenation, and `--stitch` all still only ever look at `Asset.FRONT`/`Asset.REAR`. This was a deliberate scope boundary when interior recognition was added earlier this session, not an oversight.
+
+**Why it's a real design problem, not just a new flag:** every existing `--stitch-layout` (`side_by_side`, `top_down`, `rearview_mirror`) is a two-camera composition. A third real source doesn't slot into that shape - needs actual layout thinking (e.g. a three-way split, interior as a second inset alongside the existing rearview-mirror-style rear inset, or an opt-in toggle on top of one of the existing 2-cam layouts) before any code gets written, same as `rearview_mirror` itself and `--stitch-map`/`--stitch-graph` panel placement were each designed deliberately rather than bolted on.
+
+**Not scoped or designed yet** - revisit when interior footage actually needs to go through the export/stitch pipeline for real, not just recognition.
