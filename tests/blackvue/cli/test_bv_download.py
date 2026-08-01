@@ -2,17 +2,35 @@ import argparse
 
 import pytest
 
+from datetime import datetime
+from pathlib import PurePosixPath
+
 from blackvue.archive.configuration import RECORD_TIME_SUFFIX
 from blackvue.cli.bv_download import DotProgress
 from blackvue.cli.bv_download import _capture_record_time
+from blackvue.cli.bv_download import describe_recording_files
+from blackvue.cli.bv_download import parse_args
 from blackvue.cli.bv_download import parse_mode
 from blackvue.cli.bv_download import select_by_context
 from blackvue.cli.bv_download import select_by_mode
 from blackvue.domain.recording import Recording
+from blackvue.domain.vod_entry import VodEntry
 
 
 def recording(id_: str) -> Recording:
     return Recording(id=id_, entries=[])
+
+
+def vod_entry(name: str) -> VodEntry:
+    """A synthetic VodEntry with a real path - enough for
+    describe_recording_files(), which only reads .path.name and
+    .is_video, both derived from the filename suffix."""
+
+    return VodEntry(
+        timestamp=datetime(2026, 7, 15, 13, 32, 55),
+        path=PurePosixPath(name),
+        fields={},
+    )
 
 
 class _FakeConfigClient:
@@ -240,3 +258,73 @@ def test_dot_progress_finish_adds_newline_only_if_a_dot_was_printed(capsys):
     capsys.readouterr()  # discard the dot itself
     active.finish()
     assert capsys.readouterr().out == "\n"
+
+
+def test_parse_args_files_defaults_to_false():
+    args = parse_args(["mycar", "--dry-run"])
+
+    assert args.files is False
+
+
+def test_parse_args_files_requires_dry_run(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["mycar", "--files"])
+
+    assert "--files requires --dry-run" in capsys.readouterr().err
+
+
+def test_parse_args_files_with_dry_run_is_accepted():
+    args = parse_args(["mycar", "--dry-run", "--files"])
+
+    assert args.files is True
+
+
+def test_describe_recording_files_all_downloaded_when_video_wanted():
+    """want_video=True mirrors select=None at the real download call
+    site - every entry, video or not, is marked to download."""
+
+    rec = recording("20260101_000000_N")
+    rec.entries = [
+        vod_entry("20260101_000000_NF.mp4"),
+        vod_entry("20260101_000000_NR.mp4"),
+        vod_entry("20260101_000000_NF.thm"),
+        vod_entry("20260101_000000_N.gps"),
+    ]
+
+    result = list(describe_recording_files(rec, True))
+
+    assert result == [
+        ("20260101_000000_NF.mp4", True),
+        ("20260101_000000_NR.mp4", True),
+        ("20260101_000000_NF.thm", True),
+        ("20260101_000000_N.gps", True),
+    ]
+
+
+def test_describe_recording_files_video_skipped_when_metadata_only():
+    """want_video=False mirrors the metadata-only select= lambda at
+    the real download call site - only non-video entries download,
+    video entries are marked skip."""
+
+    rec = recording("20260101_000000_N")
+    rec.entries = [
+        vod_entry("20260101_000000_NF.mp4"),
+        vod_entry("20260101_000000_NR.mp4"),
+        vod_entry("20260101_000000_NF.thm"),
+        vod_entry("20260101_000000_N.gps"),
+    ]
+
+    result = list(describe_recording_files(rec, False))
+
+    assert result == [
+        ("20260101_000000_NF.mp4", False),
+        ("20260101_000000_NR.mp4", False),
+        ("20260101_000000_NF.thm", True),
+        ("20260101_000000_N.gps", True),
+    ]
+
+
+def test_describe_recording_files_empty_recording_yields_nothing():
+    rec = recording("20260101_000000_N")
+
+    assert list(describe_recording_files(rec, True)) == []

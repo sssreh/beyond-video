@@ -10,7 +10,7 @@
 bv-download [--config-dir DIR] [--timeout SECONDS]
             [--mode {A,E,M,N,P,all}[,...]]
             [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-            [--dry-run] [--yes] [-v] [--trace]
+            [--dry-run] [--files] [--yes] [-v] [--trace]
             ID
 ```
 
@@ -43,6 +43,7 @@ Each run also fetches the camera's current `/Config/config.ini` and, if the conf
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. |
 | `--dry-run` | List what would be downloaded without downloading it. |
+| `--files` | With `--dry-run`, list every individual file (video, thumbnail, GPS, gsensor, etc.) for each matching recording, and whether it would be downloaded, instead of one summary line per recording id. Requires `--dry-run`. |
 | `--yes` | Skip the interactive range confirmation. |
 | `-v`, `--verbose` | Print each file as it is downloaded. |
 | `--trace` | Print a `.` for every 10MB downloaded - a simple progress indicator across the whole run, independent of `-v`. |
@@ -79,6 +80,25 @@ Preview what a run would fetch without downloading anything:
 
 ```
 bv-download Kirby --dry-run
+```
+
+Preview the same run at the individual-file level, instead of one line per recording:
+
+```
+bv-download Kirby --dry-run --files
+```
+
+```
+20260715_140212_E:
+  20260715_140212_EF.mp4: download
+  20260715_140212_ER.mp4: download
+  20260715_140212_EF.thm: download
+  20260715_140212_E.gps: download
+20260715_140312_N:
+  20260715_140312_NF.mp4: skip
+  20260715_140312_NR.mp4: skip
+  20260715_140312_NF.thm: download
+  20260715_140312_N.gps: download
 ```
 
 Unattended run (e.g. from a scheduled task), skipping the confirmation prompt and showing progress:

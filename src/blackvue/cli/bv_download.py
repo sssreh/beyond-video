@@ -120,6 +120,26 @@ def select_by_mode(
         yield recording, recording.kind in mode
 
 
+def describe_recording_files(
+    recording: Recording,
+    want_video: bool,
+) -> Iterator[tuple[str, bool]]:
+    """Yield (filename, would_download) for every entry in a
+    recording, under --dry-run --files.
+
+    Mirrors the exact select= logic BlackVueCamera.download() is
+    actually given at the real download call site below (select=None
+    downloads everything when want_video is True; the metadata-only
+    branch keeps only non-video entries otherwise) - kept as its own
+    function so this listing can never silently drift from what a
+    real run would do, and so it's testable without a live camera.
+    """
+
+    for entry in recording.entries:
+        would_download = want_video or not entry.is_video
+        yield entry.path.name, would_download
+
+
 def select_by_context(
     recordings: Iterable[Recording],
 ) -> Iterator[tuple[Recording, bool]]:
@@ -227,6 +247,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--files",
+        action="store_true",
+        help=(
+            "With --dry-run, list every individual file (video, "
+            "thumbnail, GPS, gsensor, etc.) for each matching "
+            "recording, and whether it would be downloaded, instead "
+            "of one summary line per recording id."
+        ),
+    )
+
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Skip the interactive range confirmation.",
@@ -249,7 +280,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    if args.files and not args.dry_run:
+        parser.error("--files requires --dry-run")
+
+    return args
 
 
 def _capture_record_time(
@@ -423,8 +459,16 @@ def _run(args: argparse.Namespace) -> int:
     try:
         for recording, want_video in selection:
             if args.dry_run:
-                kind = "video+metadata" if want_video else "metadata only"
-                print(f"{recording.id}: {kind}")
+                if args.files:
+                    print(f"{recording.id}:")
+                    for filename, would_download in describe_recording_files(
+                        recording, want_video
+                    ):
+                        marker = "download" if would_download else "skip"
+                        print(f"  {filename}: {marker}")
+                else:
+                    kind = "video+metadata" if want_video else "metadata only"
+                    print(f"{recording.id}: {kind}")
                 continue
 
             select = None if want_video else (lambda entry: not entry.is_video)
