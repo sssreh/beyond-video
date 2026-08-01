@@ -288,15 +288,25 @@ def main():
 
     results = []
     ap_ssid = None
+    version_bin_preview = None
     for path, description in CANDIDATE_ENDPOINTS:
         status, headers, body, error = probe(args.host, args.port, path, args.timeout)
         results.append((path, description, status, headers, body, error))
 
         print(f"\n{path}  ({description})")
         if error:
+            # Explicit FOUND/NOT FOUND up front - Christer: "the http
+            # output doesnt tell me if the test was successful or if
+            # it failed", i.e. the raw status/error text alone made
+            # you read between the lines. This mirrors the summary
+            # table's own Found semantics exactly (any HTTP status,
+            # even 403/404, is FOUND - only a connection failure is
+            # NOT FOUND), so the two sections never disagree.
+            print("  -> Result: NOT FOUND")
             print(f"  -> no response: {error}")
             continue
 
+        print("  -> Result: FOUND")
         print(f"  -> HTTP {status}")
         content_type = headers.get("Content-Type", "(none)")
         print(f"  -> Content-Type: {content_type}")
@@ -313,6 +323,14 @@ def main():
             redacted_text = redact_config_ini(config_text)
             preview_source = redacted_text.encode("utf-8")
         body_preview = preview(preview_source)
+        if path == "/Config/version.bin":
+            # Captured for the model-hint section below, whatever it
+            # actually contains - it's confirmed unreliable for model
+            # ID on Christer's own camera (see its CANDIDATE_ENDPOINTS
+            # description above), but showing the raw content lets a
+            # contributor compare it against their camera's real model
+            # themselves rather than this script silently discarding it.
+            version_bin_preview = body_preview or "(empty response)"
         if body_preview.strip():
             print("  -> body preview:")
             for line in body_preview.splitlines()[:10]:
@@ -353,6 +371,17 @@ def main():
         "yourself (from its settings menu or the BlackVue app) when "
         "reporting this - see below - rather than relying on this hint alone."
     )
+
+    print()
+    if version_bin_preview is not None:
+        print(f"/Config/version.bin content: {version_bin_preview}")
+        print(
+            "Confirmed on Christer's own DR900S-2CH to not reliably "
+            "report the correct model - shown here for reference/"
+            "comparison only, not as a trustworthy model source on its own."
+        )
+    else:
+        print("/Config/version.bin: not reachable on this camera - no content to show.")
     print(
         "\nIf you're reporting this for a camera model beyond-video hasn't "
         "been tested against, please also note (from your camera's own "
