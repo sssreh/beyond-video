@@ -73,7 +73,15 @@ CANDIDATE_ENDPOINTS = [
     ("/blackvue_gps.cgi", "alternate GPS endpoint (seen on Elite 10)"),
     ("/blackvue_log.cgi", "event log listing (seen on Elite 10)"),
     ("/Config/config.ini", "camera configuration file"),
-    ("/Config/version.bin", "firmware version file (unverified - not seen in this project's DR900S-2CH/Elite 10 firmware analysis so far, worth probing as a possible model/firmware source)"),
+    (
+        "/Config/version.bin",
+        "firmware version file - confirmed on Christer's own DR900S-2CH "
+        "to not reliably report the correct model, so don't trust its "
+        "content for model ID without cross-checking (config.ini's "
+        "ap_ssid - see the summary below - or just asking the camera's "
+        "own settings menu). Still probed since other cameras/firmware "
+        "may behave differently.",
+    ),
 ]
 
 # Endpoints known to be continuous streams that never close on their
@@ -116,6 +124,30 @@ def redact_config_ini(text: str) -> str:
     """
 
     return _SECRET_KEY_LINE.sub(lambda m: f"{m.group('key')}=[secret]", text)
+
+
+# The camera's own default AP network name - not a credential (see
+# redact_config_ini() above, which deliberately leaves ap_ssid/sta_ssid
+# alone), and commonly embeds the model in BlackVue's own default
+# naming convention. Christer: "I only know 2 different ways to find
+# out camera model. version.bin and the ssid name (as default) in
+# config.ini" - and separately confirmed version.bin doesn't reliably
+# report the correct model on his own DR900S-2CH (see
+# CANDIDATE_ENDPOINTS's own entry for it above), leaving this as the
+# one method with any real signal behind it. Still just a hint, not
+# ground truth - see print_model_hint()'s own caveat below.
+_AP_SSID_LINE = re.compile(r"^ap_ssid=(?P<value>.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def extract_ap_ssid(config_ini_text: str) -> str | None:
+    """Pull the ap_ssid value out of config.ini's raw text, or None if
+    the key isn't present or its value is empty."""
+
+    match = _AP_SSID_LINE.search(config_ini_text)
+    if match is None:
+        return None
+    value = match.group("value").strip()
+    return value or None
 
 
 def probe(host: str, port: int, path: str, timeout: float):
@@ -255,6 +287,7 @@ def main():
     print("=" * 70)
 
     results = []
+    ap_ssid = None
     for path, description in CANDIDATE_ENDPOINTS:
         status, headers, body, error = probe(args.host, args.port, path, args.timeout)
         results.append((path, description, status, headers, body, error))
@@ -275,9 +308,9 @@ def main():
             # credential can't slip through via preview()'s own
             # truncation/binary-detection logic never being reached
             # this specific way.
-            redacted_text = redact_config_ini(
-                body.decode("utf-8", errors="replace")
-            )
+            config_text = body.decode("utf-8", errors="replace")
+            ap_ssid = extract_ap_ssid(config_text)
+            redacted_text = redact_config_ini(config_text)
             preview_source = redacted_text.encode("utf-8")
         body_preview = preview(preview_source)
         if body_preview.strip():
@@ -303,6 +336,22 @@ def main():
     print(
         f"\n{len(responded)}/{len(CANDIDATE_ENDPOINTS)} candidate endpoints got a response "
         f"(any status code counts - even a 403/404 confirms the path exists on this camera)."
+    )
+
+    print()
+    if ap_ssid:
+        print(f"Probable model hint (config.ini ap_ssid): {ap_ssid}")
+    else:
+        print("Probable model hint: none - config.ini wasn't reachable, or had no ap_ssid.")
+    print(
+        "This is just the camera's own default WiFi AP name, not a "
+        "verified model number - it commonly embeds the model in "
+        "BlackVue's own default naming, but that hasn't been confirmed "
+        "as reliable across models/firmware, and it's meaningless if "
+        "the AP name was ever changed from its factory default. Still "
+        "note your camera's exact model name and firmware version "
+        "yourself (from its settings menu or the BlackVue app) when "
+        "reporting this - see below - rather than relying on this hint alone."
     )
     print(
         "\nIf you're reporting this for a camera model beyond-video hasn't "
