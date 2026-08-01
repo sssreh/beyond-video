@@ -20,6 +20,7 @@ from ..core.camera_config import default_config_dir
 from ..core.camera_config import load_camera_config
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
+from ..core.endpoint import Endpoint
 from ..domain.live_gps_fix import LiveGpsFix
 from ..export.geocoding import reverse_geocode
 from ..generate.media import MediaToolError
@@ -53,9 +54,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Fetch a BlackVue camera's current GPS reading live, over "
             "blackvue_livedata.cgi, while connected to one of its "
-            "configured endpoints (see bv-config(1)). Prints the "
-            "coordinates as a pasteable pair and a Google Maps link, "
-            "plus a reverse-geocoded address."
+            "configured endpoints (see bv-config(1)), or a bare "
+            "--host for a camera that hasn't been set up with "
+            "bv-config yet. Prints the coordinates as a pasteable "
+            "pair and a Google Maps link, plus a reverse-geocoded "
+            "address."
         ),
         # See bv_export.py's own ArgumentParser for why: argparse's
         # default prefix-abbreviation matching silently breaks the
@@ -63,16 +66,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         allow_abbrev=False,
     )
 
-    parser.add_argument(
+    # Exactly one of these two ways to say "which camera" - id (looked
+    # up via bv-config's own .cfg file, tried endpoint by endpoint) or
+    # a bare --host (skips bv-config entirely, useful for probing a
+    # list of candidate IPs - e.g. from scan_blackvue_endpoints.py -
+    # one at a time, the same way that script already takes a raw
+    # host with no setup required). required=True here is what turns
+    # "neither given" and "both given" into the same clean argparse
+    # usage error, instead of a second manual check in _run().
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument(
         "id",
+        nargs="?",
+        default=None,
         help="Camera system id (see bv-config).",
+    )
+    target_group.add_argument(
+        "--host",
+        metavar="HOST[:PORT]",
+        default=None,
+        help=(
+            "Connect directly to this IP (or host:port) instead of a "
+            "bv-config'd camera id - no --config-dir lookup, no "
+            "[[endpoint]] fallback list, just this one address. "
+            "Mutually exclusive with id."
+        ),
     )
 
     parser.add_argument(
         "--config-dir",
         type=Path,
         default=default_config_dir(),
-        help="Directory camera configs live in (default: %(default)s).",
+        help=(
+            "Directory camera configs live in (default: %(default)s). "
+            "Ignored when --host is given."
+        ),
     )
 
     parser.add_argument(
@@ -97,23 +125,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _run(args: argparse.Namespace) -> int:
     """Run bv-gps for already-parsed arguments."""
 
-    path = config_path(args.config_dir, args.id)
+    if args.host is not None:
+        # Skip bv-config entirely - a single synthetic Endpoint whose
+        # name is just the host itself, so connect()'s own error
+        # message ("<name> (<address>): <error>") still reads sensibly
+        # with only one candidate instead of a configured list.
+        endpoints = [Endpoint(name=args.host, address=args.host)]
+    else:
+        path = config_path(args.config_dir, args.id)
+
+        try:
+            config = load_camera_config(path)
+        except CameraConfigError as exc:
+            print(f"bv-gps: {exc}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+
+        if not config.endpoints:
+            print(
+                f"bv-gps: {path}: no [[endpoint]] entries found",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
+
+        endpoints = config.endpoints
 
     try:
-        config = load_camera_config(path)
-    except CameraConfigError as exc:
-        print(f"bv-gps: {exc}", file=sys.stderr)
-        return EXIT_CONFIG_ERROR
-
-    if not config.endpoints:
-        print(
-            f"bv-gps: {path}: no [[endpoint]] entries found",
-            file=sys.stderr,
-        )
-        return EXIT_CONFIG_ERROR
-
-    try:
-        endpoint, client = connect(config.endpoints, timeout=args.timeout)
+        endpoint, client = connect(endpoints, timeout=args.timeout)
     except CameraUnreachableError as exc:
         print(f"bv-gps: {exc}", file=sys.stderr)
         return EXIT_UNREACHABLE
@@ -125,8 +162,14 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_PROTOCOL_ERROR
 
     if not fix.has_fix:
+        # endpoint.name (not config.name) - defined on both the id
+        # and --host paths, since config itself only exists on the id
+        # path. Resolves to the configured endpoint's own name (e.g.
+        # "home") on that path, or the bare host string when --host
+        # was given directly - either way, a sensible label for which
+        # camera this was.
         print(
-            f"bv-gps: {config.name}: no GPS fix currently available",
+            f"bv-gps: {endpoint.name}: no GPS fix currently available",
             file=sys.stderr,
         )
         return EXIT_NO_FIX

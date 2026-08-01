@@ -27,6 +27,7 @@ def test_parse_args_defaults():
     args = bv_gps_module.parse_args(["mycar"])
 
     assert args.id == "mycar"
+    assert args.host is None
     assert args.timeout == 5
     assert args.no_address is False
 
@@ -35,6 +36,33 @@ def test_parse_args_no_address_flag():
     args = bv_gps_module.parse_args(["mycar", "--no-address"])
 
     assert args.no_address is True
+
+
+def test_parse_args_host_alone():
+    args = bv_gps_module.parse_args(["--host", "192.168.1.42"])
+
+    assert args.id is None
+    assert args.host == "192.168.1.42"
+
+
+def test_parse_args_host_accepts_a_port():
+    args = bv_gps_module.parse_args(["--host", "192.168.1.42:8080"])
+
+    assert args.host == "192.168.1.42:8080"
+
+
+def test_parse_args_requires_id_or_host(capsys):
+    with pytest.raises(SystemExit):
+        bv_gps_module.parse_args([])
+
+    assert "required" in capsys.readouterr().err
+
+
+def test_parse_args_rejects_both_id_and_host(capsys):
+    with pytest.raises(SystemExit):
+        bv_gps_module.parse_args(["mycar", "--host", "192.168.1.42"])
+
+    assert "not allowed" in capsys.readouterr().err
 
 
 class _FakeConfig:
@@ -132,6 +160,101 @@ def test_run_exits_protocol_error_when_no_gps_data_found(monkeypatch, capsys):
     code = bv_gps_module._run(args)
 
     assert code == bv_gps_module.EXIT_PROTOCOL_ERROR
+
+
+def _forbid_camera_config_lookup(monkeypatch):
+    """Assert --host never touches bv-config's own file lookup - if it
+    did, this would fail loudly instead of silently reading (or
+    failing to read) some real path."""
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("--host must not touch camera_config lookups")
+
+    monkeypatch.setattr(bv_gps_module, "load_camera_config", _unexpected)
+    monkeypatch.setattr(bv_gps_module, "config_path", _unexpected)
+
+
+def test_run_with_host_skips_camera_config_entirely(monkeypatch, capsys):
+    _forbid_camera_config_lookup(monkeypatch)
+    monkeypatch.setattr(
+        bv_gps_module,
+        "connect",
+        lambda endpoints, timeout: (
+            endpoints[0],
+            _FakeClient(LiveGpsFix(59.334591, 18.063240)),
+        ),
+    )
+    monkeypatch.setattr(
+        bv_gps_module, "reverse_geocode", lambda lat, lon: "Some Street 1, Stockholm"
+    )
+
+    args = bv_gps_module.parse_args(["--host", "192.168.1.42"])
+    code = bv_gps_module._run(args)
+
+    out = capsys.readouterr().out
+    assert code == bv_gps_module.EXIT_OK
+    assert "Coordinates: 59.334591,18.06324" in out
+
+
+def test_run_with_host_builds_a_single_synthetic_endpoint(monkeypatch):
+    _forbid_camera_config_lookup(monkeypatch)
+    seen_endpoints = []
+
+    def _fake_connect(endpoints, timeout):
+        seen_endpoints.extend(endpoints)
+        return endpoints[0], _FakeClient(LiveGpsFix(59.334591, 18.063240))
+
+    monkeypatch.setattr(bv_gps_module, "connect", _fake_connect)
+    monkeypatch.setattr(bv_gps_module, "reverse_geocode", lambda lat, lon: "addr")
+
+    args = bv_gps_module.parse_args(["--host", "192.168.1.42:8080"])
+    bv_gps_module._run(args)
+
+    assert len(seen_endpoints) == 1
+    assert seen_endpoints[0].address == "192.168.1.42:8080"
+    assert seen_endpoints[0].name == "192.168.1.42:8080"
+
+
+def test_run_with_host_reports_unreachable_cleanly(monkeypatch, capsys):
+    _forbid_camera_config_lookup(monkeypatch)
+
+    def _fake_connect(endpoints, timeout):
+        from blackvue.core.connection import CameraUnreachableError
+
+        raise CameraUnreachableError(
+            f"no configured endpoint could be reached: "
+            f"{endpoints[0].name} ({endpoints[0].address}): timed out"
+        )
+
+    monkeypatch.setattr(bv_gps_module, "connect", _fake_connect)
+
+    args = bv_gps_module.parse_args(["--host", "192.168.1.99"])
+    code = bv_gps_module._run(args)
+
+    assert code == bv_gps_module.EXIT_UNREACHABLE
+    assert "192.168.1.99" in capsys.readouterr().err
+
+
+def test_run_with_host_no_fix_uses_the_host_as_the_label_not_config_name(
+    monkeypatch, capsys
+):
+    """Regression test: _run() used to reference config.name here,
+    which only exists on the id-based path - a --host run with a
+    zero-fix reading would have raised NameError instead of printing
+    a clean message. Caught and fixed before committing."""
+
+    _forbid_camera_config_lookup(monkeypatch)
+    monkeypatch.setattr(
+        bv_gps_module,
+        "connect",
+        lambda endpoints, timeout: (endpoints[0], _FakeClient(LiveGpsFix(0.0, 0.0))),
+    )
+
+    args = bv_gps_module.parse_args(["--host", "192.168.1.42"])
+    code = bv_gps_module._run(args)
+
+    assert code == bv_gps_module.EXIT_NO_FIX
+    assert "192.168.1.42" in capsys.readouterr().err
 
 
 def test_run_exits_config_error_when_no_endpoints_configured(monkeypatch, capsys):
