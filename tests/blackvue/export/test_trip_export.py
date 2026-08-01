@@ -13,6 +13,7 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
 from blackvue.export.trip_export import _align_front_rear_durations
+from blackvue.export.trip_export import _concatenate_asset
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.generate.media import MediaToolError
@@ -232,12 +233,18 @@ def test_export_trip_concatenates_front_rear_audio_independently(
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
 
+    # Real, valid media - not just placeholder bytes. _concatenate_asset()
+    # now probes every source with check_readable() before handing
+    # anything to concatenate_media() at all (see the corrupted-source
+    # skip fix in trip_export.py), so garbage bytes would get dropped
+    # right there and never even reach the monkeypatched
+    # _selective_concat() this test is actually about.
     front_a = source_dir / "front_a.mp4"
     rear_a = source_dir / "rear_a.mp4"
     audio_a = source_dir / "audio_a.aac"
-    front_a.write_bytes(b"x")
-    rear_a.write_bytes(b"x")
-    audio_a.write_bytes(b"x")
+    _make_video(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+    _make_audio(audio_a, 1.0)
 
     trip = Trip((
         Recording(
@@ -291,6 +298,79 @@ def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
     assert _video_duration(trimmed) < 3.0
     assert len(warnings) == 1
     assert "trimmed front to match rear" in warnings[0]
+
+
+def _truncate_moov_atom(path) -> None:
+    """Corrupt an already-written MP4 by cutting it off before its
+    trailing moov atom - reproduces the exact "moov atom not found"
+    failure Christer hit on a real export (camera power loss mid-write
+    is the usual real-world cause)."""
+
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 4])
+
+
+def test_concatenate_asset_skips_a_corrupted_source_and_keeps_the_rest(tmp_path):
+    # Christer, on a real export: "ffmpeg concat failed for rear.mp4
+    # ... moov atom not found ... 20260731_173318_NR.mp4" - one
+    # corrupted recording's rear file took the *entire* rear.mp4 down,
+    # discarding otherwise-good footage from every other recording in
+    # the trip along with it. _concatenate_asset() now probes each
+    # source first and leaves out only the one that's actually broken.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    good = source_dir / "good.mp4"
+    corrupted = source_dir / "corrupted.mp4"
+    _make_video(good, 1.0)
+    _make_video(corrupted, 1.0)
+    _truncate_moov_atom(corrupted)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, corrupted)},
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, good)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+    result = _concatenate_asset(trip, Asset.FRONT, "front.mp4", dest_dir, warnings)
+
+    assert result == dest_dir / "front.mp4"
+    assert result.exists()
+    assert round(_video_duration(result)) == 1
+    assert len(warnings) == 1
+    assert "corrupted.mp4" in warnings[0]
+    assert "left out" in warnings[0]
+
+
+def test_concatenate_asset_returns_none_when_every_source_is_corrupted(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    corrupted = source_dir / "corrupted.mp4"
+    _make_video(corrupted, 1.0)
+    _truncate_moov_atom(corrupted)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, corrupted)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+    result = _concatenate_asset(trip, Asset.FRONT, "front.mp4", dest_dir, warnings)
+
+    assert result is None
+    assert not (dest_dir / "front.mp4").exists()
+    assert len(warnings) == 1
 
 
 def test_align_front_rear_durations_trims_even_a_small_real_difference(tmp_path):

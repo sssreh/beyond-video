@@ -205,6 +205,46 @@ def encode_frame_sequence(frame_dir: Path, destination: Path, fps: int) -> None:
     )
 
 
+def check_readable(path: Path) -> None:
+    """Raise MediaToolError if `path` can't even be opened/demuxed by
+    ffprobe - a lightweight, container-level check meant to be run
+    against every source before handing them all to
+    concatenate_media(), which otherwise fails for *all* of them in
+    one shot the moment ffmpeg's concat demuxer hits a single
+    unreadable file (most often one whose moov atom never got
+    written, e.g. the camera lost power mid-recording).
+
+    Deliberately doesn't select a stream type the way
+    generate/media.py's probe() does (`-select_streams v:0`, since
+    that function only ever cares about a video stream's own duration/
+    frame rate) - concatenate_media() is used for audio-only sources
+    (audio.aac) too, which have no video stream at all and would
+    otherwise always fail this check. Just asking for the container's
+    own duration is enough to prove ffprobe can actually open and
+    parse the file.
+    """
+
+    try:
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffprobe not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffprobe failed for {path.name}: {exc.stderr.strip()}"
+        ) from exc
+
+
 def concatenate_media(sources: list[Path], destination: Path) -> None:
     """Concatenate video or audio files, in order, into `destination`
     via ffmpeg's concat demuxer, copying streams without re-encoding.

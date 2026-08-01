@@ -5,6 +5,7 @@ import pytest
 from PIL import Image
 
 from blackvue.export import media as media_module
+from blackvue.export.media import check_readable
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
@@ -86,6 +87,60 @@ def test_concatenate_media_handles_paths_with_single_quotes(tmp_path):
     concatenate_media([first], destination)
 
     assert destination.exists()
+
+
+def test_check_readable_accepts_a_valid_video_file(tmp_path):
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=black:s=32x32:d=1",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    check_readable(video)  # should not raise
+
+
+def test_check_readable_accepts_a_valid_audio_only_file(tmp_path):
+    # This is the exact case generate.media.probe() gets wrong for -
+    # it selects -select_streams v:0, which an audio-only file has
+    # none of. check_readable() has to work for audio.aac sources too
+    # (_concatenate_asset() uses it for all three of front/rear/audio).
+    audio = tmp_path / "clip.aac"
+    _make_silent_audio(audio, 1.0)
+
+    check_readable(audio)  # should not raise
+
+
+def test_check_readable_raises_for_a_truncated_moov_atom_file(tmp_path):
+    # A real MP4 with its trailing moov atom cut off, reproducing the
+    # "moov atom not found" failure Christer hit on a real export
+    # (camera power loss mid-recording is the usual real-world cause).
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=black:s=32x32:d=1",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    truncated = tmp_path / "truncated.mp4"
+    truncated.write_bytes(video.read_bytes()[:2000])
+
+    with pytest.raises(MediaToolError):
+        check_readable(truncated)
+
+
+def test_check_readable_raises_when_the_file_does_not_exist(tmp_path):
+    with pytest.raises(MediaToolError):
+        check_readable(tmp_path / "does_not_exist.mp4")
 
 
 def _make_frames(frame_dir, count=2):

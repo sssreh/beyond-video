@@ -33,6 +33,7 @@ from .gpx_writer import write_gpx
 from .gsensor_graph_video import render_gsensor_graph_video
 from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
+from .media import check_readable
 from .media import concatenate_media
 from .media import trim_media
 from .osm_roads import bounding_box_for_fixes
@@ -271,6 +272,21 @@ def _concatenate_asset(
     asset's total duration in step with its counterpart (FRONT with
     REAR) even when the two sides' own real files ran different
     lengths. See that function's own docstring for why.
+
+    Every source is probed before being handed to ffmpeg's concat
+    demuxer - a single unreadable file (most often one whose moov atom
+    never got written, because the camera lost power or was unplugged
+    mid-recording) otherwise makes the *entire* concat fail in one
+    shot via `concatenate_media()`, discarding every other recording's
+    otherwise-good footage for this asset along with it. Christer, hit
+    exactly this on a real export: "ffmpeg concat failed for rear.mp4
+    ... moov atom not found ... 20260731_173318_NR.mp4" - one corrupt
+    rear file took rear.mp4 down completely even though only one of
+    several recordings in the trip was actually bad. An unreadable
+    source is now left out, with a warning, the same "just leave it
+    out" treatment already used for excluded Parking recordings above
+    - the corrupted footage is genuinely gone either way; the fix here
+    is only to stop it from taking healthy footage down with it.
     """
 
     sources: list[Path] = []
@@ -294,9 +310,30 @@ def _concatenate_asset(
             log.step(f"no source recordings for {filename} - skipped")
         return None
 
+    readable_sources: list[Path] = []
+    for source in sources:
+        try:
+            check_readable(source)
+        except MediaToolError as exc:
+            message = (
+                f"{filename}: {source.name} could not be read and was "
+                f"left out ({exc}) - likely an incomplete recording "
+                f"(e.g. the camera lost power mid-write)"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+        readable_sources.append(source)
+
+    if not readable_sources:
+        if log is not None:
+            log.step(f"no readable source recordings for {filename} - skipped")
+        return None
+
     out = destination / filename
     try:
-        concatenate_media(sources, out)
+        concatenate_media(readable_sources, out)
     except MediaToolError as exc:
         warnings.append(str(exc))
         if log is not None:
@@ -304,7 +341,7 @@ def _concatenate_asset(
         return None
 
     if log is not None:
-        log.step(f"concatenated {filename} from {len(sources)} recording(s)")
+        log.step(f"concatenated {filename} from {len(readable_sources)} recording(s)")
 
     return out
 
