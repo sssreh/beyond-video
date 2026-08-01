@@ -55,7 +55,7 @@ See `docs/PIPELINE.md` for a fuller walkthrough, including transcription/transla
 
 **Tested:** a BlackVue DR900S-2CH, plus one Elite 10 firmware build analyzed offline.
 
-**Likely to work, untested:** BlackVue750, BlackVue750X3Plus, BlackVue750XLTEPlus, BlackVue770X, BlackVue770XBoxP, BlackVue900X, BlackVue900XPlus, BlackVue970XLTE, BlackVue970XLTEP. Nobody's confirmed these against real hardware yet - if you own one, see `CONTRIBUTING.md` for how to check and report back.
+**Likely to work, untested:** DR750X-2CH, DR750X-3CH Plus, DR750X-2CH LTE Plus, DR770X, DR770X-BOX-PRO, DR900X-2CH, DR900X-2CH PLUS, DR970X-2CH LTE, DR970X-2CH LTE Plus. Nobody's confirmed these against real hardware yet - if you own one, see `CONTRIBUTING.md` for how to check and report back.
 
 If you own a different BlackVue model entirely (not in either list above), the same applies - running the scan script against your own camera and reporting what it finds is a direct, concrete way to help extend support.
 

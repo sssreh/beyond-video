@@ -6626,3 +6626,24 @@ Christer gave a list of nine BlackVue models to add as likely-compatible-but-unv
 **Fixed:** `README.md`'s "Camera compatibility" section now splits **Tested** (DR900S-2CH, one Elite 10 firmware build) from **Likely to work, untested** (the nine models above), explicit that none of the second group have been confirmed against real hardware. `CONTRIBUTING.md`'s call for help now points at that untested list too, alongside the general "any other model" ask.
 
 No code change - documentation only.
+
+## README.md: resolve the nine shorthand model names to real BlackVue model numbers (this session, direct follow-up)
+
+Christer, after the entry above: "I think the DR prefix is probably correct, just search the list against known models." His nine strings were shorthand, not official model numbers - verified each via web search against BlackVue's own product/manual/support pages rather than guessing (see the self-caught mistake in the entry above for why this needed actual verification, not pattern-matching).
+
+**Confirmed mapping** (Christer's original string -> verified official name):
+- BlackVue750 -> DR750X-2CH
+- BlackVue750X3Plus -> DR750X-3CH Plus
+- BlackVue750XLTEPlus -> DR750X-2CH LTE Plus
+- BlackVue770X -> DR770X
+- BlackVue770XBoxP -> DR770X-BOX-PRO
+- BlackVue900X -> DR900X-2CH
+- BlackVue900XPlus -> DR900X-2CH PLUS
+- BlackVue970XLTE -> DR970X-2CH LTE (confirmed as a genuinely separate product from the LTE Plus, not a typo/duplicate)
+- BlackVue970XLTEP -> DR970X-2CH LTE Plus
+
+The one genuine ambiguity search couldn't resolve on its own - "BlackVue770XBoxP" had both "DR770X-BOX-PRO" (in linked page titles/URLs) and a passing "770X BOX PLUS" mention (prose only) in the results - was put to Christer directly rather than picked between; he confirmed: "The correct model is DR770X-BOX-PRO." He also noted (his own statement, not independently verified here) that this base unit can have 1 or 2 additional cameras added to it later.
+
+**Fixed:** `README.md`'s "Likely to work, untested" list now uses the nine verified `DR...` model names above instead of Christer's original shorthand strings. No other section changed - `CONTRIBUTING.md`'s pointer to that list still reads correctly since it references the section, not the literal names.
+
+No code change - documentation only.
