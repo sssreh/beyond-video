@@ -63,6 +63,7 @@ CANDIDATE_ENDPOINTS = [
     ("/blackvue_gps.cgi", "alternate GPS endpoint (seen on Elite 10)"),
     ("/blackvue_log.cgi", "event log listing (seen on Elite 10)"),
     ("/Config/config.ini", "camera configuration file"),
+    ("/Config/version.bin", "firmware version file (unverified - not seen in this project's DR900S-2CH/Elite 10 firmware analysis so far, worth probing as a possible model/firmware source)"),
 ]
 
 # Endpoints known to be continuous streams that never close on their
