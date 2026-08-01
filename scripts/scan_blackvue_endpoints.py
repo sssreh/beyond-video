@@ -186,6 +186,25 @@ def check_tcp_port(host: str, port: int, timeout: float) -> bool:
 
 SUMMARY_DETAIL_LIMIT = 60
 
+# Below this, a response is treated as a genuine answer from the
+# camera (2xx/3xx) rather than an error (4xx/5xx) - same threshold
+# this module already used for STREAMING_PATHS's own "looks like a
+# live stream" check below, just pulled out as its own named concept
+# now that Christer asked to see it directly: "want to see wich
+# endpoints give me a valid answer". Distinct from - and narrower
+# than - "Found" above: FOUND only means the camera's web server
+# responded at all (a 403/404/502 still confirms the path exists),
+# VALID means that response was actually a success/redirect, not an
+# error page.
+VALID_STATUS_CEILING = 400
+
+
+def is_valid_status(status: int | None) -> bool:
+    """True if `status` is a genuine answer (2xx/3xx) rather than a
+    client/server error (4xx/5xx) or no response at all (None)."""
+
+    return status is not None and status < VALID_STATUS_CEILING
+
 
 def _shorten(text: str, limit: int = SUMMARY_DETAIL_LIMIT) -> str:
     """Truncate a detail string for the summary table below - the
@@ -201,10 +220,17 @@ def _shorten(text: str, limit: int = SUMMARY_DETAIL_LIMIT) -> str:
 
 def print_summary_table(results: list[tuple], ftp_open: bool) -> None:
     """Print one row per test this script ran - every candidate
-    endpoint plus the FTP port check - with a bv-ls-style "Found" mark
-    (see bv-ls's own asset-columns table, which this deliberately
-    echoes: one row per thing being checked, an X mark for whether it
-    was there) and a short detail.
+    endpoint plus the FTP port check - with bv-ls-style "Found"/"Valid"
+    marks (see bv-ls's own asset-columns table, which this
+    deliberately echoes: one row per thing being checked, an X mark
+    for whether it was there) and a short detail.
+
+    Found and Valid are deliberately separate columns, not one: Found
+    means the camera's web server answered at all on this path (a
+    403/404/502 still confirms the path exists); Valid means that
+    answer was actually a success/redirect (see is_valid_status())
+    rather than an error page - a path can be Found without being
+    Valid.
 
     This complements, not replaces, the full per-endpoint dump above -
     that section still has the actual response bodies/content-types
@@ -213,33 +239,35 @@ def print_summary_table(results: list[tuple], ftp_open: bool) -> None:
     headline result for a camera model/firmware nobody's confirmed yet.
     """
 
-    rows: list[tuple[str, bool, str]] = []
+    rows: list[tuple[str, bool, bool, str]] = []
 
     for path, _description, status, headers, _body, error in results:
         if error:
-            rows.append((path, False, _shorten(f"no response: {error}")))
+            rows.append((path, False, False, _shorten(f"no response: {error}")))
         else:
             content_type = headers.get("Content-Type", "")
             detail = f"HTTP {status}"
             if content_type:
                 detail += f", {content_type}"
-            rows.append((path, True, _shorten(detail)))
+            rows.append((path, True, is_valid_status(status), _shorten(detail)))
 
     rows.append((
         "FTP (port 21)",
         ftp_open,
+        ftp_open,
         "open" if ftp_open else "closed/unreachable",
     ))
 
-    name_width = max(len("Endpoint"), max(len(name) for name, _, _ in rows))
+    name_width = max(len("Endpoint"), max(len(name) for name, _, _, _ in rows))
 
-    header = f'{"Endpoint":<{name_width}}  {"Found":^5}  Detail'
+    header = f'{"Endpoint":<{name_width}}  {"Found":^5}  {"Valid":^5}  Detail'
     print(header)
     print("-" * len(header))
 
-    for name, found, detail in rows:
-        mark = "X" if found else ""
-        print(f"{name:<{name_width}}  {mark:^5}  {detail}")
+    for name, found, valid, detail in rows:
+        found_mark = "X" if found else ""
+        valid_mark = "X" if valid else ""
+        print(f"{name:<{name_width}}  {found_mark:^5}  {valid_mark:^5}  {detail}")
 
 
 def preview(body: bytes) -> str:
@@ -308,9 +336,10 @@ def main():
 
         print("  -> Result: FOUND")
         print(f"  -> HTTP {status}")
+        print(f"  -> Valid: {'yes' if is_valid_status(status) else 'no (error response)'}")
         content_type = headers.get("Content-Type", "(none)")
         print(f"  -> Content-Type: {content_type}")
-        if path in STREAMING_PATHS and status and status < 400:
+        if path in STREAMING_PATHS and is_valid_status(status):
             print("  -> looks like a live stream - read a short prefix and closed the connection")
         preview_source = body
         if path == "/Config/config.ini":
@@ -354,6 +383,12 @@ def main():
     print(
         f"\n{len(responded)}/{len(CANDIDATE_ENDPOINTS)} candidate endpoints got a response "
         f"(any status code counts - even a 403/404 confirms the path exists on this camera)."
+    )
+
+    valid = [r for r in results if is_valid_status(r[2])]
+    print(
+        f"{len(valid)}/{len(CANDIDATE_ENDPOINTS)} candidate endpoints gave a valid answer "
+        f"(HTTP < {VALID_STATUS_CEILING} - an actual success/redirect, not an error page)."
     )
 
     print()
