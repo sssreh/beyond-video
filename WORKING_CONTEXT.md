@@ -6547,3 +6547,9 @@ Christer: "ok, in the future i think we will have to check recording length in c
 **The actual goal, restated by Christer:** "we need to know the recording length set in config.ini so we can adjust our max gap for trips" - i.e. `TripBuilder`'s `--max-gap` threshold should be informed by the camera's real configured segment length rather than assuming a fixed default, since a camera set to (say) 3-minute segments instead of 1-minute would have larger natural gaps between consecutive recording start-times, and the current gap heuristics don't know that.
 
 **Not scoped or investigated yet** - would need a real `config.ini` (see the "get the complete file" exchange earlier this session for how to pull one) to confirm the actual field name/format for segment length, and a design decision on exactly how it should adjust `--max-gap` (e.g. read-and-use directly vs. only override the default when the configured value differs from what's currently assumed) before touching `TripBuilder` at all.
+
+## Real config.ini field found: RecordTime (this session, direct follow-up, no code change yet)
+
+Christer, from his own camera's real config.ini: "The field RecordTime=1 in config.ini tells us the max recording length." This is the missing piece the previous two entries were waiting on before touching TripBuilder at all.
+
+Not yet confirmed whether `RecordTime=1` is a direct value (e.g. minutes) or a coded/enum index (BlackVue config fields sometimes are) - needs pinning down before writing any parsing logic.
