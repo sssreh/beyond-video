@@ -1,0 +1,46 @@
+name: Camera endpoint scan
+description: Report which CGI endpoints your BlackVue camera exposes, to help extend beyond-video's camera support.
+title: "Endpoint scan: <camera model>"
+labels: ["camera-compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping out. See `CONTRIBUTING.md` for the full instructions - this template just walks through what's useful to include.
+
+  - type: input
+    id: camera-model
+    attributes:
+      label: Camera model
+      description: The exact model name, from the camera's settings menu or the BlackVue app (e.g. "DR900X-2CH", "DR770X-2CH", "Elite 10").
+      placeholder: DR900X-2CH
+    validations:
+      required: true
+
+  - type: input
+    id: firmware-version
+    attributes:
+      label: Firmware version
+      description: Also from the camera's settings menu or the BlackVue app.
+      placeholder: v1.012
+    validations:
+      required: true
+
+  - type: textarea
+    id: scan-output
+    attributes:
+      label: scan_blackvue_endpoints.py output
+      description: |
+        Run `python scripts/scan_blackvue_endpoints.py <camera-ip>` and paste the full output below.
+        Before posting: the recording-listing section includes your own recording filenames, which encode the recording's date/time - skim it and redact anything you'd rather not share.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else worth knowing?
+      description: Optional - e.g. whether the camera needed a login/password for the web interface, anything that seemed off, or endpoints you tried manually that the script doesn't cover.
+    validations:
+      required: false
