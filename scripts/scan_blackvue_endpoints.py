@@ -152,6 +152,64 @@ def check_tcp_port(host: str, port: int, timeout: float) -> bool:
         return False
 
 
+SUMMARY_DETAIL_LIMIT = 60
+
+
+def _shorten(text: str, limit: int = SUMMARY_DETAIL_LIMIT) -> str:
+    """Truncate a detail string for the summary table below - the
+    full text (the real error message, etc.) is already printed in
+    the detailed per-endpoint section above this; the summary table
+    is meant to be skimmed as one line per test, not read for the
+    full message."""
+
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def print_summary_table(results: list[tuple], ftp_open: bool) -> None:
+    """Print one row per test this script ran - every candidate
+    endpoint plus the FTP port check - with a bv-ls-style "Found" mark
+    (see bv-ls's own asset-columns table, which this deliberately
+    echoes: one row per thing being checked, an X mark for whether it
+    was there) and a short detail.
+
+    This complements, not replaces, the full per-endpoint dump above -
+    that section still has the actual response bodies/content-types
+    needed for real diagnosis. This table is what's meant to be
+    skimmed at a glance, or pasted whole into a GitHub issue as the
+    headline result for a camera model/firmware nobody's confirmed yet.
+    """
+
+    rows: list[tuple[str, bool, str]] = []
+
+    for path, _description, status, headers, _body, error in results:
+        if error:
+            rows.append((path, False, _shorten(f"no response: {error}")))
+        else:
+            content_type = headers.get("Content-Type", "")
+            detail = f"HTTP {status}"
+            if content_type:
+                detail += f", {content_type}"
+            rows.append((path, True, _shorten(detail)))
+
+    rows.append((
+        "FTP (port 21)",
+        ftp_open,
+        "open" if ftp_open else "closed/unreachable",
+    ))
+
+    name_width = max(len("Endpoint"), max(len(name) for name, _, _ in rows))
+
+    header = f'{"Endpoint":<{name_width}}  {"Found":^5}  Detail'
+    print(header)
+    print("-" * len(header))
+
+    for name, found, detail in rows:
+        mark = "X" if found else ""
+        print(f"{name:<{name_width}}  {mark:^5}  {detail}")
+
+
 def preview(body: bytes) -> str:
     """A short, report-friendly preview of a response body - plain text
     is shown (truncated) as-is; anything that looks like binary data
@@ -236,6 +294,10 @@ def main():
         "TCP connect can't test it meaningfully. If you want to check it "
         "yourself: `nc -u -v <ip> 69` or similar."
     )
+
+    print("\n" + "=" * 70)
+    print("\nSummary (one row per test):\n")
+    print_summary_table(results, ftp_open)
 
     responded = [r for r in results if r[2] is not None]
     print(
