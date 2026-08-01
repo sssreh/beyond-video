@@ -6535,3 +6535,11 @@ Christer linked BlackVue Australia's support article on video file naming: https
 **A real bug this surfaces, not yet fixed:** the format's third, optional `[Other]` character - `S` (low-resolution file) or blank (original resolution) - isn't handled anywhere. `VodEntry.is_front`/`is_rear`/`is_interior`/`recording` (`domain/vod_entry.py`) all do a bare `stem.endswith("F"/"R"/"I")` check, so a low-res file like `20250722_110221_NFS.mp4` would currently fail every one of those checks (`is_front` returns `False`) and get grouped under a wrong recording ID (`recording` wouldn't strip the trailing `S`). This predates this session's A/I work - it's a pre-existing gap the format spec just made visible, not something introduced by the recent changes.
 
 **Deliberately not fixed yet** - Christer's explicit choice, to handle when any of this actually shows up in a real video listing rather than build ahead of what's been observed on real hardware.
+
+## Idea: read recording segment length from config.ini to inform trip gap resolution (this session, no code change)
+
+Christer: "ok, in the future i think we will have to check recording length in config.ini to adjust for trips gap resolution." Recorded for later - not acted on now.
+
+**The idea:** BlackVue cameras record in fixed-length segments (commonly 1 minute, but configurable per camera/firmware) rather than one continuous file - `config.ini` should have a field for this somewhere (exact key not yet confirmed; Christer hasn't shared a real `config.ini` dump with this project yet - see the "get the complete file" exchange earlier this session for how to pull one). Trip-detection's gap logic (`TripBuilder`, `--max-gap`, the "fuzzy gap tolerance" and "duration-aware trip gap calculation" work from earlier in this project's history) currently reasons about gaps between consecutive recordings without reading this value from the camera's actual configuration. If a camera is set to a non-default segment length, the trip-gap heuristics might currently be tuned around an assumption that doesn't hold for that camera.
+
+**Not scoped or investigated yet** - would need a real `config.ini` (or several, across different segment-length settings) to confirm the actual field name/format before touching `TripBuilder` at all.
