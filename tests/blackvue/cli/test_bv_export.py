@@ -3,11 +3,16 @@ import subprocess
 
 import pytest
 
+from blackvue.archive import Archive
+from blackvue.archive.configuration import write_record_time_snapshot
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli.bv_export import bv_export
 from blackvue.cli.bv_export import main
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
+from blackvue.lexicaltimeparser import LexicalTimeParser
+from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
+from blackvue.trip.trip_builder import recordings_with_front_video
 
 
 def _make_video(path, duration_seconds: float = 0.5) -> None:
@@ -219,6 +224,92 @@ def test_bv_export_respects_max_gap(tmp_path):
     assert not (
         target / "trip_20260720_100000_20260720_100500"
     ).exists()
+
+
+def test_default_max_gap_uses_configuration_active_for_the_range(tmp_path):
+    write_record_time_snapshot(tmp_path, "20260101_000000_N", 180)  # 3-min era
+    write_record_time_snapshot(tmp_path, "20260801_000000_N", 60)   # 1-min era
+
+    (tmp_path / "20260101_000000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260315_120000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260901_120000_NF.mp4").write_bytes(b"x")
+
+    archive = Archive(tmp_path)
+    front = recordings_with_front_video(archive.recordings)
+
+    era_one = LexicalTimeParser(timestamp="20260315_120000").parse()
+    era_two = LexicalTimeParser(timestamp="20260901_120000").parse()
+
+    assert bv_export_module._default_max_gap(archive, front, era_one).total_seconds() == 180
+    assert bv_export_module._default_max_gap(archive, front, era_two).total_seconds() == 60
+
+
+def test_default_max_gap_full_archive_export_uses_latest_configuration(tmp_path):
+    """A run with no --from/--until/--timestamp at all should use
+    whatever RecordTime the camera is set to *now* (the latest
+    snapshot), not whatever the archive's very first recording was
+    made under - see _default_max_gap()'s own docstring."""
+
+    write_record_time_snapshot(tmp_path, "20260101_000000_N", 180)
+    write_record_time_snapshot(tmp_path, "20260801_000000_N", 60)
+
+    (tmp_path / "20260101_000000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260901_120000_NF.mp4").write_bytes(b"x")
+
+    archive = Archive(tmp_path)
+    front = recordings_with_front_video(archive.recordings)
+
+    full_archive = LexicalTimeParser().parse()
+
+    assert bv_export_module._default_max_gap(
+        archive, front, full_archive
+    ).total_seconds() == 60
+
+
+def test_default_max_gap_falls_back_when_nothing_matches_the_interval(tmp_path):
+    write_record_time_snapshot(tmp_path, "20260101_000000_N", 180)
+    (tmp_path / "20260101_000000_NF.mp4").write_bytes(b"x")
+
+    archive = Archive(tmp_path)
+    front = recordings_with_front_video(archive.recordings)
+
+    nowhere_near = LexicalTimeParser(timestamp="20301231_000000").parse()
+
+    assert bv_export_module._default_max_gap(archive, front, nowhere_near) == DEFAULT_MAX_GAP
+
+
+def test_default_max_gap_falls_back_when_archive_has_no_snapshots(tmp_path):
+    (tmp_path / "20260101_000000_NF.mp4").write_bytes(b"x")
+
+    archive = Archive(tmp_path)
+    front = recordings_with_front_video(archive.recordings)
+
+    interval = LexicalTimeParser(timestamp="20260101_000000").parse()
+
+    assert bv_export_module._default_max_gap(archive, front, interval) == DEFAULT_MAX_GAP
+
+
+def test_bv_export_end_to_end_uses_record_time_derived_max_gap(tmp_path):
+    """A 90s real gap should split the trip when RecordTime=1 (a
+    1-minute segment's own dropped-segment tolerance is 70s), but stay
+    one trip when RecordTime=3 (tolerance 190s) - with no --max-gap
+    passed explicitly, confirming the derived default actually reaches
+    TripBuilder through bv_export(), not just _default_max_gap() in
+    isolation."""
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    write_record_time_snapshot(archive, "20260720_100000_N", 60)  # 1 minute
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260720_100130_NF.mp4")  # 90s later
+
+    bv_export(str(archive), target=str(target))
+
+    assert (target / "trip_20260720_100000_20260720_100000").is_dir()
+    assert (target / "trip_20260720_100130_20260720_100130").is_dir()
+    assert not (target / "trip_20260720_100000_20260720_100130").exists()
 
 
 def test_bv_export_does_not_bridge_a_gap_by_default(tmp_path):

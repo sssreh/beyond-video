@@ -14,10 +14,12 @@ import argparse
 import shlex
 import shutil
 import sys
+from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
 
 from blackvue.archive import Archive
+from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
@@ -295,6 +297,65 @@ def _ask_wipe_existing(folder: Path) -> bool:
     return answer in ("w", "wipe")
 
 
+def _default_max_gap(
+    archive: Archive,
+    recordings: Iterable[Recording],
+    interval: TimeInterval,
+) -> timedelta:
+    """Derive the default --max-gap from the camera's own configured
+    RecordTime (see archive/configuration.py) instead of the flat
+    DEFAULT_MAX_GAP constant - Christer's own reasoning: the gap a
+    single dropped/missing segment leaves behind is close to
+    RecordTime itself, so a camera set to 1-minute segments and one
+    set to 3-minute segments warrant different defaults, not the same
+    fixed number. Formula is `RecordTime + gap_tolerance` - not
+    RecordTime + Configuration.TOLERANCE, since TripBuilder already
+    adds its own gap_tolerance (default 10s, same value) on top of
+    max_gap; using Configuration.maximum_gap here instead of
+    record_time alone would double that margin.
+
+    A `--timestamp`/`--from`/`--until` range uses whichever
+    configuration was active for the *earliest* recording actually
+    touching `interval` - the same "most recent snapshot at or before"
+    lookup Archive.configuration() already does. A range spanning a
+    real RecordTime change mid-archive still only gets one max_gap for
+    the whole run (TripBuilder takes a single scalar, not a
+    per-recording one) - accepted as a real but rare simplification.
+
+    A full-archive export (no range at all - LexicalTimeParser's own
+    all-open sentinel) instead uses the *latest* known configuration,
+    not the earliest recording's - "what my camera is set to now" is
+    the more useful assumption than an export spanning the archive's
+    entire history defaulting to whatever the very first recording
+    was made under, months or years ago.
+
+    Falls back to DEFAULT_MAX_GAP if `recordings` has nothing touching
+    `interval` (nothing to key a lookup to) or the archive has no
+    RecordTime snapshots at all yet (an archive never downloaded with
+    this feature's bv-download build, or bv-download simply never
+    connected to the camera successfully) - Archive.configuration()'s
+    own fallback already returns exactly 300s (5 minutes, the same
+    value as DEFAULT_MAX_GAP) with its own one-time printed warning in
+    that second case, so this only needs to special-case the first.
+    """
+
+    if interval.first == "00000000_000000" and interval.last == "99999999_999999":
+        if not archive.configurations:
+            return DEFAULT_MAX_GAP
+
+        return timedelta(seconds=archive.configurations[-1].record_time)
+
+    reference = next(
+        (recording for recording in recordings if recording.id.value in interval),
+        None,
+    )
+
+    if reference is None:
+        return DEFAULT_MAX_GAP
+
+    return timedelta(seconds=archive.configuration(reference).record_time)
+
+
 def bv_export(
     path: str | Path = ".",
     *,
@@ -481,10 +542,21 @@ def bv_export(
     except ValueError as exc:
         raise SystemExit(str(exc))
 
+    # Trip detection only considers recordings with a Front asset -
+    # see recordings_with_front_video()'s own docstring for why
+    # (GPS/g-sensor/thumbnail-only recordings, common when Front/Rear
+    # video for a stretch was never downloaded, used to be able to
+    # chain-bridge a real gap between two actual video segments into
+    # one trip, and to pull a trip's merged GPS fixes across time the
+    # concatenated video doesn't actually cover - both confirmed on a
+    # real archive, both fixed by this filter). Computed early (before
+    # max_gap below) since _default_max_gap() also needs it.
+    front_recordings = recordings_with_front_video(archive.recordings)
+
     max_gap = (
         timedelta(minutes=max_gap_minutes)
         if max_gap_minutes is not None
-        else DEFAULT_MAX_GAP
+        else _default_max_gap(archive, front_recordings, interval)
     )
     gap_tolerance = (
         timedelta(seconds=gap_tolerance_seconds)
@@ -497,15 +569,6 @@ def bv_export(
         else DEFAULT_MAX_PARKING_DURATION
     )
     bridge = movement_bridges_gap if movement else None
-    # Trip detection only considers recordings with a Front asset -
-    # see recordings_with_front_video()'s own docstring for why
-    # (GPS/g-sensor/thumbnail-only recordings, common when Front/Rear
-    # video for a stretch was never downloaded, used to be able to
-    # chain-bridge a real gap between two actual video segments into
-    # one trip, and to pull a trip's merged GPS fixes across time the
-    # concatenated video doesn't actually cover - both confirmed on a
-    # real archive, both fixed by this filter).
-    front_recordings = recordings_with_front_video(archive.recordings)
 
     # Trip *detection* (below) is bounded to `interval` rather than
     # scanning the whole archive on every run - see TripBuilder.
@@ -780,8 +843,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "The largest gap (in minutes) between two recordings "
-            "that still counts as the same trip. "
-            f"Default: {int(DEFAULT_MAX_GAP.total_seconds() // 60)}."
+            "that still counts as the same trip. Default: derived "
+            "from the camera's own configured RecordTime, if the "
+            "archive has a RecordTime snapshot (see bv-download) - "
+            "the segment length itself, so a single dropped/missing "
+            "segment doesn't split a trip (--gap-tolerance is added "
+            "on top, same as always). Falls back to "
+            f"{int(DEFAULT_MAX_GAP.total_seconds() // 60)} if no "
+            "snapshot exists yet."
         ),
     )
 

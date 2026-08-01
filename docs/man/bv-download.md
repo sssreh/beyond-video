@@ -24,6 +24,8 @@ If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the d
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
+Each run also fetches the camera's current `/Config/config.ini` and, if the configured `RecordTime` (recording segment length) differs from the last value recorded for this archive, writes a small snapshot file (`<recording>.record_time.txt`, holding just that one number in seconds) - never a copy of `config.ini` itself, which also carries Wi-Fi/cloud credentials that must never leave the camera. `bv-export` uses these snapshots to derive its own `--max-gap` default from the camera's real segment length instead of a flat constant - see `bv-export(1)`. This is best-effort: any failure reading `config.ini` (older firmware, a transient network error) is silently ignored (or reported with `-v`) and never fails the download itself.
+
 ## ARGUMENTS
 
 | Argument | Description |

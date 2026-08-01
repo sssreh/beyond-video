@@ -72,7 +72,7 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 
 | Option | Description |
 |---|---|
-| `--max-gap MINUTES` | Largest gap between two recordings still counted as the same trip. Default: 5. |
+| `--max-gap MINUTES` | Largest gap between two recordings still counted as the same trip. Default: derived from the camera's own configured RecordTime (see `bv-download(1)`'s RecordTime snapshot) - the segment length itself, so a single dropped/missing segment doesn't split a trip. Falls back to 5 if the archive has no RecordTime snapshot yet. |
 | `--movement` | Bridge a gap over `--max-gap` using GPS/g-sensor movement evidence. **Off by default** - unbounded bridging risk, see `bv-ls(1)`. |
 | `--no-duration` | Measure gaps from start timestamps only, ignoring `.duration.txt` entirely - no reading, computing, or writing it. |
 | `--duration-heal-archive` | Self-heal a missing `.duration.txt` for real (ffprobe, not just cache reads) for every recording the bounded trip-detection search actually looks at - not the trip(s) being exported this run (the default - see below), but also not the whole archive; only whatever the search touches while proving both of its real boundaries. A possible one-time ffprobe cost before the first overwrite prompt can appear, in exchange for maximum accuracy at exactly the boundary the request cares about. Rejected together with `--no-duration`. |

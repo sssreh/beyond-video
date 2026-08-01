@@ -2,7 +2,9 @@ import argparse
 
 import pytest
 
+from blackvue.archive.configuration import RECORD_TIME_SUFFIX
 from blackvue.cli.bv_download import DotProgress
+from blackvue.cli.bv_download import _capture_record_time
 from blackvue.cli.bv_download import parse_mode
 from blackvue.cli.bv_download import select_by_context
 from blackvue.cli.bv_download import select_by_mode
@@ -11,6 +13,19 @@ from blackvue.domain.recording import Recording
 
 def recording(id_: str) -> Recording:
     return Recording(id=id_, entries=[])
+
+
+class _FakeConfigClient:
+    """A minimal stand-in for BlackVueClient - _capture_record_time()
+    only ever calls .config() on it."""
+
+    def __init__(self, config_text: str | Exception):
+        self._config_text = config_text
+
+    def config(self) -> str:
+        if isinstance(self._config_text, Exception):
+            raise self._config_text
+        return self._config_text
 
 
 def test_parse_mode_single():
@@ -138,6 +153,81 @@ def test_dot_progress_accumulates_across_many_small_calls(capsys):
         progress(150)  # 1500 total after 10 calls
 
     assert capsys.readouterr().out == "."
+
+
+def test_capture_record_time_writes_a_snapshot_on_first_run(tmp_path):
+    client = _FakeConfigClient("[Tab1]\nRecordTime=3\n")
+
+    _capture_record_time(client, tmp_path, "20260801_095509_N", verbose=False)
+
+    snapshots = sorted(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}"))
+    assert len(snapshots) == 1
+    assert snapshots[0].name == f"20260801_095509_N{RECORD_TIME_SUFFIX}"
+    assert snapshots[0].read_text(encoding="utf-8") == "180\n"
+
+
+def test_capture_record_time_is_a_noop_when_unchanged(tmp_path):
+    client = _FakeConfigClient("[Tab1]\nRecordTime=3\n")
+
+    _capture_record_time(client, tmp_path, "20260801_095509_N", verbose=False)
+    _capture_record_time(client, tmp_path, "20260801_120000_N", verbose=False)
+
+    snapshots = sorted(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}"))
+    assert len(snapshots) == 1
+
+
+def test_capture_record_time_writes_again_when_changed(tmp_path):
+    _capture_record_time(
+        _FakeConfigClient("[Tab1]\nRecordTime=3\n"),
+        tmp_path,
+        "20260801_095509_N",
+        verbose=False,
+    )
+    _capture_record_time(
+        _FakeConfigClient("[Tab1]\nRecordTime=1\n"),
+        tmp_path,
+        "20260901_000000_N",
+        verbose=False,
+    )
+
+    snapshots = sorted(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}"))
+    assert [s.name for s in snapshots] == [
+        f"20260801_095509_N{RECORD_TIME_SUFFIX}",
+        f"20260901_000000_N{RECORD_TIME_SUFFIX}",
+    ]
+    assert snapshots[1].read_text(encoding="utf-8") == "60\n"
+
+
+def test_capture_record_time_never_persists_the_raw_config_text(tmp_path):
+    """Only the derived integer may ever land on disk - never the raw
+    config.ini text, which also carries Wi-Fi/cloud credentials."""
+
+    client = _FakeConfigClient(
+        "[Tab1]\nRecordTime=3\n[Wifi]\nap_ssid=SyntheticCam\nap_pw=SECRET\n"
+    )
+
+    _capture_record_time(client, tmp_path, "20260801_095509_N", verbose=False)
+
+    for path in tmp_path.iterdir():
+        assert "SyntheticCam" not in path.read_text(encoding="utf-8")
+        assert "SECRET" not in path.read_text(encoding="utf-8")
+
+
+def test_capture_record_time_swallows_config_fetch_errors(tmp_path, capsys):
+    client = _FakeConfigClient(RuntimeError("Unable to fetch /Config/config.ini"))
+
+    _capture_record_time(client, tmp_path, "20260801_095509_N", verbose=True)
+
+    assert list(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}")) == []
+    assert "RecordTime" in capsys.readouterr().err
+
+
+def test_capture_record_time_swallows_unparseable_config(tmp_path):
+    client = _FakeConfigClient("[Tab1]\nNormalRecord=1\n")
+
+    _capture_record_time(client, tmp_path, "20260801_095509_N", verbose=False)
+
+    assert list(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}")) == []
 
 
 def test_dot_progress_finish_adds_newline_only_if_a_dot_was_printed(capsys):

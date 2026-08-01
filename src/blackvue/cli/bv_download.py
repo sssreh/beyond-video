@@ -15,7 +15,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from .errors import run_cli
+from ..archive.configuration import RECORD_TIME_SUFFIX
+from ..archive.configuration import parse_record_time_seconds
+from ..archive.configuration import read_record_time_snapshot
+from ..archive.configuration import write_record_time_snapshot
 from ..core.blackvue_camera import BlackVueCamera
+from ..core.blackvue_client import BlackVueClient
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
@@ -247,6 +252,65 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _capture_record_time(
+    client: BlackVueClient,
+    destination: Path,
+    recording_id: str,
+    *,
+    verbose: bool,
+) -> None:
+    """Fetch the camera's current config.ini, extract RecordTime, and
+    write a new snapshot (see archive/configuration.py) into
+    `destination` if it differs from the most recently recorded one -
+    a no-op when it hasn't changed, so a normal run doesn't grow the
+    archive with a new file every time.
+
+    `recording_id` anchors the snapshot to the earliest recording this
+    run is considering (see this function's own call site) - since
+    changing a setting on the camera reformats/wipes the SD card (see
+    WORKING_CONTEXT.md), every recording still on the card at the time
+    config.ini is fetched was necessarily made under this same
+    RecordTime, so anchoring to the earliest one is always correct
+    provenance, not just a guess.
+
+    Only the derived RecordTime integer is ever written - never the
+    raw config.ini text, which also carries Wi-Fi/cloud credentials
+    (see configuration.py's own module docstring).
+
+    Best-effort: any failure here (endpoint unavailable on this
+    firmware, unexpected config.ini shape, a transient network error)
+    is reported to stderr if --verbose and otherwise silently ignored -
+    this only ever informs bv-export's own --max-gap default, so it
+    must never be allowed to fail a download run.
+    """
+
+    try:
+        record_time_seconds = parse_record_time_seconds(client.config())
+    except Exception as exc:
+        if verbose:
+            print(
+                f"bv-download: couldn't read RecordTime from config.ini: {exc}",
+                file=sys.stderr,
+            )
+        return
+
+    destination.mkdir(parents=True, exist_ok=True)
+
+    existing = sorted(destination.glob(f"*{RECORD_TIME_SUFFIX}"))
+    last_value = read_record_time_snapshot(existing[-1]) if existing else None
+
+    if last_value == record_time_seconds:
+        return
+
+    write_record_time_snapshot(destination, recording_id, record_time_seconds)
+
+    if verbose:
+        print(
+            f"bv-download: recorded RecordTime={record_time_seconds}s "
+            f"as of {recording_id}"
+        )
+
+
 def confirm(
     recordings: list[Recording],
     interval: TimeInterval,
@@ -340,6 +404,14 @@ def _run(args: argparse.Namespace) -> int:
         if not confirm(recordings, interval):
             print("bv-download: aborted")
             return EXIT_ABORTED
+
+    if not args.dry_run and recordings:
+        _capture_record_time(
+            client,
+            destination,
+            recordings[0].id,
+            verbose=args.verbose,
+        )
 
     if mode is not None:
         selection = select_by_mode(recordings, mode)
