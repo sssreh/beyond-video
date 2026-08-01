@@ -42,10 +42,20 @@ Privacy note: blackvue_vod.cgi's response lists your own recording
 filenames, which BlackVue's own naming convention encodes with the
 recording's date and time. Skim the output before pasting it into a
 public GitHub issue if you'd rather not share exactly when you drive.
+
+Config.ini also carries your Wi-Fi/cloud network names and passwords
+(confirmed on a real camera - see WORKING_CONTEXT.md). Any field whose
+name looks like a password/secret (ap_pw, sta_pw, sta2_pw, sta3_pw, or
+anything else containing "pw", "pass", "secret", or "token") is
+replaced with "[secret]" in this script's own preview before it's ever
+printed - see redact_config_ini() below. Network *names* (ap_ssid,
+sta_ssid, etc.) are left as-is; only credential-looking values are
+redacted.
 """
 
 import argparse
 import http.client
+import re
 import socket
 import sys
 
@@ -79,6 +89,33 @@ STREAMING_PATHS = {
 
 READ_BYTES = 2048
 PREVIEW_BYTES = 300
+
+# Matches a "key=value" line in config.ini's INI-like text whose key
+# name suggests a credential - by key name, not value shape, so it
+# generalizes across camera models that might not use exactly the
+# ap_pw/sta_pw/sta2_pw/sta3_pw names seen on the one real camera this
+# was confirmed against. Deliberately broad (any key merely containing
+# "pw"/"pass"/"secret"/"token" anywhere in its name) - an occasional
+# false-positive redaction of a harmless field is a fine trade for
+# never missing a real one.
+_SECRET_KEY_LINE = re.compile(
+    r"^(?P<key>[^=\r\n]*?(?:pw|pass(?:word)?|secret|token)[^=\r\n]*)=.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def redact_config_ini(text: str) -> str:
+    """Replace any credential-looking value in config.ini's own text
+    with a fixed "[secret]" placeholder, keeping the key name visible.
+
+    This script's whole purpose is producing output a contributor
+    pastes into a public GitHub issue - config.ini carries Wi-Fi/cloud
+    passwords (confirmed on a real camera, see WORKING_CONTEXT.md), so
+    this must run before that text is ever previewed/printed, not
+    just skimmed for afterward.
+    """
+
+    return _SECRET_KEY_LINE.sub(lambda m: f"{m.group('key')}=[secret]", text)
 
 
 def probe(host: str, port: int, path: str, timeout: float):
@@ -174,7 +211,17 @@ def main():
         print(f"  -> Content-Type: {content_type}")
         if path in STREAMING_PATHS and status and status < 400:
             print("  -> looks like a live stream - read a short prefix and closed the connection")
-        body_preview = preview(body)
+        preview_source = body
+        if path == "/Config/config.ini":
+            # Redact before preview() ever sees it - not after - so a
+            # credential can't slip through via preview()'s own
+            # truncation/binary-detection logic never being reached
+            # this specific way.
+            redacted_text = redact_config_ini(
+                body.decode("utf-8", errors="replace")
+            )
+            preview_source = redacted_text.encode("utf-8")
+        body_preview = preview(preview_source)
         if body_preview.strip():
             print("  -> body preview:")
             for line in body_preview.splitlines()[:10]:
