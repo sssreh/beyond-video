@@ -62,16 +62,18 @@ import sys
 
 # (path, description) - GET only, no destructive query params. See this
 # module's own docstring for where each one came from and which camera
-# models/firmware it's confirmed on so far.
+# models/firmware it's confirmed on so far. Order here drives the
+# order everything downstream prints in (the detailed per-endpoint
+# section, the summary table, results itself) - the four Elite-10-only
+# entries are deliberately last, after the endpoints confirmed on
+# Christer's actual DR900S-2CH and the two /Config/ endpoints, since
+# they're the most speculative group (seen on a different model,
+# analyzed from firmware only - see WORKING_CONTEXT.md).
 CANDIDATE_ENDPOINTS = [
     ("/blackvue_vod.cgi", "recording listing"),
     ("/blackvue_live.cgi?direction=F", "live front video (MJPEG stream)"),
     ("/blackvue_live.cgi?direction=R", "live rear video (MJPEG stream)"),
     ("/blackvue_livedata.cgi", "live GPS/g-sensor telemetry (JSON stream)"),
-    ("/blackvue_snap.cgi", "single-frame snapshot (seen on Elite 10)"),
-    ("/blackvue_hss_live.cgi", "alternate live-view stream (seen on Elite 10, HTTP Smooth Streaming)"),
-    ("/blackvue_gps.cgi", "alternate GPS endpoint (seen on Elite 10)"),
-    ("/blackvue_log.cgi", "event log listing (seen on Elite 10)"),
     ("/Config/config.ini", "camera configuration file"),
     (
         "/Config/version.bin",
@@ -82,6 +84,10 @@ CANDIDATE_ENDPOINTS = [
         "own settings menu). Still probed since other cameras/firmware "
         "may behave differently.",
     ),
+    ("/blackvue_snap.cgi", "single-frame snapshot (seen on Elite 10)"),
+    ("/blackvue_hss_live.cgi", "alternate live-view stream (seen on Elite 10, HTTP Smooth Streaming)"),
+    ("/blackvue_gps.cgi", "alternate GPS endpoint (seen on Elite 10)"),
+    ("/blackvue_log.cgi", "event log listing (seen on Elite 10)"),
 ]
 
 # Endpoints known to be continuous streams that never close on their
