@@ -93,6 +93,22 @@ def test_archive_reader_diarized_translation_tracked_separately(tmp_path):
     assert recording.has(Asset.TRANSLATION_DIARIZED)
 
 
+def test_archive_reader_detects_interior_camera_video_and_thumbnail(tmp_path):
+    (tmp_path / "20260715_133255_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_133255_NI.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_133255_NI.thm").write_bytes(b"x")
+
+    recordings = ArchiveReader(tmp_path).read()
+
+    assert len(recordings) == 1
+
+    recording = recordings[0]
+
+    assert recording.has(Asset.FRONT)
+    assert recording.has(Asset.INTERIOR)
+    assert recording.has(Asset.INTERIOR_THUMBNAIL)
+
+
 def test_archive_reader_detects_srt_and_lrc(tmp_path):
     (tmp_path / "20260715_133255_N.srt").write_text(
         "1\n00:00:00,000 --> 00:00:01,000\nhello\n"

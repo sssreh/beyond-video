@@ -17,10 +17,15 @@ class ArchiveReader:
     ASSETS = (
         ("F.mp4", Asset.FRONT),
         ("R.mp4", Asset.REAR),
+        # Interior camera suffix/extension inferred from the F/R
+        # pattern, not yet confirmed against a real interior-equipped
+        # camera - see WORKING_CONTEXT.md.
+        ("I.mp4", Asset.INTERIOR),
         (".gps", Asset.GPS),
         (".3gf", Asset.GSENSOR),
         ("F.thm", Asset.FRONT_THUMBNAIL),
         ("R.thm", Asset.REAR_THUMBNAIL),
+        ("I.thm", Asset.INTERIOR_THUMBNAIL),
         (".aac", Asset.AUDIO),
         (".gpx", Asset.GPX),
         (".duration.txt", Asset.DURATION),

@@ -43,6 +43,15 @@ class Recording:
         return self.kind == "P"
 
     @property
+    def is_a(self) -> bool:
+        """Return True for the "A" recording kind - meaning unknown,
+        see RecordingId.kind's docstring in archive/recording_id.py
+        for the same note (this class and that one both parse the
+        kind letter independently)."""
+
+        return self.kind == "A"
+
+    @property
     def front(self) -> VodEntry | None:
         """Return the front entry."""
 
@@ -57,6 +66,15 @@ class Recording:
 
         for entry in self.entries:
             if entry.is_rear:
+                return entry
+        return None
+
+    @property
+    def interior(self) -> VodEntry | None:
+        """Return the interior (cabin-facing) camera entry, if any."""
+
+        for entry in self.entries:
+            if entry.is_interior:
                 return entry
         return None
     

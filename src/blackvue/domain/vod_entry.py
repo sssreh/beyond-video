@@ -27,7 +27,7 @@ class VodEntry:
 
         stem = self.path.stem
 
-        if stem.endswith(("F", "R")):
+        if stem.endswith(("F", "R", "I")):
             stem = stem[:-1]
 
         return stem
@@ -49,4 +49,13 @@ class VodEntry:
         """Return True if this is a rear camera file."""
 
         return self.path.stem.endswith("R")
+
+    @property
+    def is_interior(self) -> bool:
+        """Return True if this is an interior (cabin-facing) camera
+        file - seen on some BlackVue models alongside front/rear.
+        Recognition only; nothing downstream (bv-export/--stitch)
+        processes interior video yet."""
+
+        return self.path.stem.endswith("I")
     

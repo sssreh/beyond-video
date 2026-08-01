@@ -12,12 +12,17 @@ class Asset(Enum):
 
     FRONT = ("Front",)
     REAR = ("Rear",)
+    # Interior (cabin-facing) camera - seen on some BlackVue models
+    # alongside front/rear. Recognition/listing only for now; nothing
+    # in bv-export/--stitch processes interior video yet.
+    INTERIOR = ("Interior",)
 
     GPS = ("GPS",)
     GSENSOR = ("3G",)
 
     FRONT_THUMBNAIL = ("Front_Thm",)
     REAR_THUMBNAIL = ("Rear_Thm",)
+    INTERIOR_THUMBNAIL = ("Interior_Thm",)
 
     # Generated assets
 

@@ -22,8 +22,17 @@ def test_parse_mode_multiple_case_insensitive():
 
 
 def test_parse_mode_all():
-    assert parse_mode("all") == {"N", "E", "M", "P"}
-    assert parse_mode("All") == {"N", "E", "M", "P"}
+    assert parse_mode("all") == {"N", "E", "M", "P", "A"}
+    assert parse_mode("All") == {"N", "E", "M", "P", "A"}
+
+
+def test_parse_mode_accepts_a():
+    """"A" is a recording kind observed on real hardware alongside
+    N/E/M/P - meaning unknown, but --mode should accept it like any
+    other kind letter."""
+
+    assert parse_mode("A") == {"A"}
+    assert parse_mode("a,n") == {"A", "N"}
 
 
 def test_parse_mode_rejects_invalid():

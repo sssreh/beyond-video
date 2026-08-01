@@ -46,7 +46,14 @@ class RecordingId:
 
     @property
     def kind(self) -> str:
-        """Return the recording kind (N, E, M, or P)."""
+        """Return the recording kind (N, E, M, P, or A).
+
+        A has been observed on real hardware but its meaning isn't
+        confirmed yet (Christer noticed it alongside N/E/M/P but
+        doesn't know what it stands for) - treated the same as the
+        other kinds structurally (an is_a property below) without
+        assuming what it represents.
+        """
 
         return self.value[16]
 
@@ -65,6 +72,13 @@ class RecordingId:
     @property
     def is_parking(self) -> bool:
         return self.kind == "P"
+
+    @property
+    def is_a(self) -> bool:
+        """Return True for the "A" recording kind - meaning unknown,
+        see the kind property's docstring."""
+
+        return self.kind == "A"
 
     def __str__(self) -> str:
         return self.value

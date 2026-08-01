@@ -40,7 +40,7 @@ EXIT_CONFIG_ERROR = 1
 EXIT_UNREACHABLE = 2
 EXIT_ABORTED = 3
 
-ALL_KINDS = frozenset({"N", "E", "M", "P"})
+ALL_KINDS = frozenset({"N", "E", "M", "P", "A"})
 
 TRACE_INTERVAL_BYTES = 10 * 1024 * 1024
 
@@ -94,7 +94,7 @@ def parse_mode(value: str) -> frozenset[str]:
     if invalid or not kinds:
         raise argparse.ArgumentTypeError(
             f"invalid --mode value {value!r} "
-            f"(expected a comma-separated list of E, M, N, P, or 'all')"
+            f"(expected a comma-separated list of A, E, M, N, P, or 'all')"
         )
 
     return kinds
@@ -185,7 +185,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode",
         type=parse_mode,
         default=None,
-        metavar="{E,M,N,P,all}[,...]",
+        metavar="{A,E,M,N,P,all}[,...]",
         help=(
             "Recording kinds to download video for (comma-separated, "
             "case-insensitive), or 'all'. Default: event/manual "

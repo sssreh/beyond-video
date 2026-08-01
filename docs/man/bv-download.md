@@ -8,7 +8,7 @@
 
 ```
 bv-download [--config-dir DIR] [--timeout SECONDS]
-            [--mode {E,M,N,P,all}[,...]]
+            [--mode {A,E,M,N,P,all}[,...]]
             [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--dry-run] [--yes] [-v] [--trace]
             ID
@@ -36,7 +36,7 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 |---|---|
 | `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
-| `--mode {E,M,N,P,all}[,...]` | Recording kinds to download video for (comma-separated, case-insensitive), or `all`. `E`=event, `M`=manual, `N`=normal, `P`=parking. Default: event/manual recordings plus the recording before each. |
+| `--mode {A,E,M,N,P,all}[,...]` | Recording kinds to download video for (comma-separated, case-insensitive), or `all`. `E`=event, `M`=manual, `N`=normal, `P`=parking, `A`=unknown meaning (observed on real hardware but not yet identified - see `WORKING_CONTEXT.md`). Default: event/manual recordings plus the recording before each. |
 | `--from TIMESTAMP` | Only consider recordings from this timestamp onward. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. |
