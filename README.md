@@ -53,7 +53,11 @@ See `docs/PIPELINE.md` for a fuller walkthrough, including transcription/transla
 
 ## Camera compatibility
 
-This has only been tested against a BlackVue DR900S-2CH and one Elite 10 firmware build. If you own a different BlackVue model, see `CONTRIBUTING.md` - running a small scan script against your own camera and reporting what it finds is a direct, concrete way to help extend support.
+**Tested:** a BlackVue DR900S-2CH, plus one Elite 10 firmware build analyzed offline.
+
+**Likely to work, untested:** BlackVue750, BlackVue750X3Plus, BlackVue750XLTEPlus, BlackVue770X, BlackVue770XBoxP, BlackVue900X, BlackVue900XPlus, BlackVue970XLTE, BlackVue970XLTEP. Nobody's confirmed these against real hardware yet - if you own one, see `CONTRIBUTING.md` for how to check and report back.
+
+If you own a different BlackVue model entirely (not in either list above), the same applies - running the scan script against your own camera and reporting what it finds is a direct, concrete way to help extend support.
 
 ## Deployment
 

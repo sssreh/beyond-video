@@ -6616,3 +6616,13 @@ Christer, after asking how to loop `scan_blackvue_endpoints.py` over a list of I
 **Docs:** `docs/man/bv-gps.md` - synopsis, description, ARGUMENTS/OPTIONS tables, and two new EXAMPLES (`--host` alone, and looping it over a file of IPs) all updated.
 
 **Verification:** `ast.parse()` on both changed files. No pytest in this sandbox - ran `parse_args()` directly against all four `id`/`--host` combinations (confirmed the exact expected argparse error text and exit codes), and exercised `_run()` directly with a stubbed `connect()` for the success, unreachable, and no-fix-with-`--host` cases (the last one specifically to confirm the `NameError` bug was actually fixed, not just theoretically).
+
+## README.md: record models "likely to work, untested" (this session)
+
+Christer gave a list of nine BlackVue models to add as likely-compatible-but-unverified, on top of the DR900S-2CH/Elite 10 that are actually tested: BlackVue750, BlackVue750X3Plus, BlackVue750XLTEPlus, BlackVue770X, BlackVue770XBoxP, BlackVue900X, BlackVue900XPlus, BlackVue970XLTE, BlackVue970XLTEP.
+
+**Self-caught mistake:** first pass rewrote these into what I guessed were "official" BlackVue model names (inserting `DR`/`-2CH`/`-3CH` and spacing based on general familiarity with the naming pattern) instead of using Christer's own strings verbatim - exactly the kind of unverified guessing this project has repeatedly avoided elsewhere (e.g. not speculating on the "A" recording kind's meaning before the official spec was found). Caught immediately and corrected to use his literal list, only normalizing "Blackvue"/"BlackVue" capitalization consistently - no other renaming.
+
+**Fixed:** `README.md`'s "Camera compatibility" section now splits **Tested** (DR900S-2CH, one Elite 10 firmware build) from **Likely to work, untested** (the nine models above), explicit that none of the second group have been confirmed against real hardware. `CONTRIBUTING.md`'s call for help now points at that untested list too, alongside the general "any other model" ask.
+
+No code change - documentation only.
