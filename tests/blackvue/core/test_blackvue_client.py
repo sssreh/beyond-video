@@ -1,5 +1,7 @@
 from datetime import datetime
 from pathlib import PurePosixPath
+from urllib.error import HTTPError
+from urllib.error import URLError
 
 import pytest
 
@@ -219,3 +221,36 @@ def test_open_stream_url_includes_the_given_path(monkeypatch):
     client.open_stream("/blackvue_live.cgi?direction=R")
 
     assert seen_urls == ["http://camera/blackvue_live.cgi?direction=R"]
+
+
+def test_probe_returns_true_on_success(monkeypatch):
+    monkeypatch.setattr(
+        blackvue_client_module, "urlopen", _fake_urlopen(b"some content")
+    )
+
+    client = BlackVueClient("http://camera")
+
+    assert client.probe("/Record/20260101_000000_N.gps") is True
+
+
+def test_probe_returns_false_on_http_error(monkeypatch):
+    def urlopen(request_or_url, timeout=None):
+        raise HTTPError("http://camera/x", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+
+    assert client.probe("/Record/20260101_000000_N.gps") is False
+
+
+def test_probe_does_not_swallow_network_level_errors(monkeypatch):
+    def urlopen(request_or_url, timeout=None):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+
+    with pytest.raises(URLError):
+        client.probe("/Record/20260101_000000_N.gps")

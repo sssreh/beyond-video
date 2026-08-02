@@ -29,6 +29,8 @@ If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the d
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
+Most models list every file for a recording - video, thumbnail, GPS, g-sensor - in the camera's own recording listing, and `bv-download` downloads exactly what's listed. Some models (confirmed: the BlackVue Elite 10) omit the `.gps`/`.3gf` sidecar files from that listing even though the camera still serves them directly at the expected path. `bv-download` opportunistically checks for both whenever a recording's listing doesn't already include them, and adds them if the camera actually has them. This costs nothing extra on a camera that already lists everything (no additional requests at all) and just fills the gap on one that doesn't.
+
 Each `ID`-based run also fetches the camera's current `/Config/config.ini` and, if the configured `RecordTime` (recording segment length) differs from the last value recorded for this archive, writes a small snapshot file (`<recording>.record_time.txt`, holding just that one number in seconds) - never a copy of `config.ini` itself, which also carries Wi-Fi/cloud credentials that must never leave the camera. `bv-export` uses these snapshots to derive its own `--max-gap` default from the camera's real segment length instead of a flat constant - see `bv-export(1)`. This is best-effort: any failure reading `config.ini` (older firmware, a transient network error) is silently ignored (or reported with `-v`) and never fails the download itself. `--host` runs skip this step entirely (see above).
 
 ## ARGUMENTS

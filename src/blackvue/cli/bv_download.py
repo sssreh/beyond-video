@@ -485,6 +485,23 @@ def _run(args: argparse.Namespace) -> int:
         if recording.id in interval
     ]
 
+    #
+    # Some camera models (confirmed: Elite 10 - see WORKING_CONTEXT.md)
+    # don't list .gps/.3gf sidecar files in their own recording
+    # listing even though the files exist and download fine directly.
+    # A no-op - zero extra network calls - on every model that already
+    # lists them, so this costs nothing for the common case.
+    #
+    for recording in recordings:
+        found = camera.probe_missing_sidecars(recording)
+
+        if found and args.verbose:
+            names = ", ".join(entry.path.name for entry in found)
+            print(
+                f"bv-download: {recording.id}: found {names} "
+                "(not listed by the camera's own recording listing)"
+            )
+
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
 
     if interactive and not args.dry_run and not args.yes:

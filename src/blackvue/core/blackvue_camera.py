@@ -10,11 +10,24 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from pathlib import PurePosixPath
 
 from .blackvue_client import BlackVueClient
 from ..domain.recording import Recording
 from ..domain.vod_entry import VodEntry
+from ..parser.vod import parse_timestamp
 from ..parser.vod import parse_vod
+
+# Metadata sidecar suffixes some camera models don't list in their own
+# blackvue_vod.cgi response, even though the files exist and download
+# fine via a direct GET at the expected path - confirmed on a real
+# BlackVue Elite 10 (see WORKING_CONTEXT.md). blackvue_vod.cgi is
+# therefore treated as a hint for these two specific extensions, not
+# the sole source of truth - probe_missing_sidecars() fills the gap
+# when needed, and is a no-op (zero extra network calls) for every
+# camera confirmed so far except the Elite 10, where the listing
+# already includes them.
+_PROBEABLE_SIDECAR_SUFFIXES = (".gps", ".3gf")
 
 
 class BlackVueCamera:
@@ -29,6 +42,46 @@ class BlackVueCamera:
         """Return the camera recordings."""
 
         return parse_vod(self._client.vod())
+
+    def probe_missing_sidecars(self, recording: Recording) -> list[VodEntry]:
+        """Opportunistically add .gps/.3gf entries this recording's
+        camera-reported listing doesn't include, but which the camera
+        still serves directly at the expected `/Record/<id><suffix>`
+        path.
+
+        A no-op - zero extra network calls - for a recording that
+        already has these entries listed, which is the normal case on
+        every model confirmed so far except the Elite 10. Mutates
+        recording.entries in place (appending any entry found) and
+        also returns whatever new entries were found, for a caller
+        that wants to report on it (e.g. bv-download's --verbose
+        output).
+        """
+
+        existing_suffixes = {
+            entry.path.suffix.lower() for entry in recording.entries
+        }
+
+        found: list[VodEntry] = []
+
+        for suffix in _PROBEABLE_SIDECAR_SUFFIXES:
+            if suffix in existing_suffixes:
+                continue
+
+            path = f"/Record/{recording.id}{suffix}"
+
+            if not self._client.probe(path):
+                continue
+
+            entry = VodEntry(
+                timestamp=parse_timestamp(recording.id),
+                path=PurePosixPath(path),
+                fields={},
+            )
+            recording.entries.append(entry)
+            found.append(entry)
+
+        return found
 
     def download(
         self,

@@ -138,6 +138,35 @@ class BlackVueClient:
 
         return urlopen(url, timeout=self._timeout)
 
+    def probe(self, path: str) -> bool:
+        """Return True if a plain GET to `path` succeeds, False if the
+        camera responds with an HTTP error (typically 404 - meaning
+        the file doesn't exist there).
+
+        Used to opportunistically check for files a camera's own
+        blackvue_vod.cgi listing doesn't mention but still serves
+        directly at a predictable path - see
+        BlackVueCamera.probe_missing_sidecars()'s own docstring for
+        why that's needed at all (confirmed necessary on a real
+        BlackVue Elite 10 - see WORKING_CONTEXT.md). Deliberately a
+        real GET, not a HEAD: HEAD support hasn't been confirmed
+        against every camera's embedded web server, where a plain GET
+        already has. The files this is used for are small metadata,
+        not video, so reading (and discarding) the body here costs
+        nothing.
+
+        Network-level failures (unreachable, timeout) are not caught -
+        they propagate, since those mean something is actually wrong,
+        not just "this file doesn't exist here".
+        """
+
+        try:
+            self._get(path)
+        except RuntimeError:
+            return False
+
+        return True
+
     def size(self, entry: VodEntry) -> int:
         """Return the size of a remote file."""
 
