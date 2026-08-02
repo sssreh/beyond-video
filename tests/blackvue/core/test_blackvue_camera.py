@@ -111,13 +111,14 @@ def test_probe_missing_sidecars_skips_extensions_the_camera_does_not_serve():
     assert set(client.probe_calls) == {
         "/Record/20260101_000000_N.gps",
         "/Record/20260101_000000_N.3gf",
+        "/Record/20260101_000000_NF.thm",
     }
 
 
 def test_probe_missing_sidecars_is_a_no_op_when_already_listed():
-    """The common case (every model confirmed so far except the Elite
-    10): blackvue_vod.cgi already lists .gps/.3gf, so this should cost
-    zero extra network calls."""
+    """For a camera/firmware combination that does list everything
+    (video, .gps, .3gf, and thumbnails) in blackvue_vod.cgi's own
+    response, this should cost zero extra network calls."""
 
     client = _FakeClient()
     camera = BlackVueCamera(client)
@@ -128,6 +129,7 @@ def test_probe_missing_sidecars_is_a_no_op_when_already_listed():
             _entry("/Record/20260101_000000_NF.mp4"),
             _entry("/Record/20260101_000000_N.gps"),
             _entry("/Record/20260101_000000_N.3gf"),
+            _entry("/Record/20260101_000000_NF.thm"),
         ],
     )
 
@@ -135,7 +137,7 @@ def test_probe_missing_sidecars_is_a_no_op_when_already_listed():
 
     assert found == []
     assert client.probe_calls == []
-    assert len(recording.entries) == 3
+    assert len(recording.entries) == 4
 
 
 def test_probe_missing_sidecars_only_probes_extensions_actually_missing():
@@ -155,4 +157,123 @@ def test_probe_missing_sidecars_only_probes_extensions_actually_missing():
     assert [entry.path.as_posix() for entry in found] == [
         "/Record/20260101_000000_N.3gf"
     ]
-    assert client.probe_calls == ["/Record/20260101_000000_N.3gf"]
+    # The thumbnail probe still fires too (no thumbnail entry listed),
+    # it just isn't served (not in probe_results) so nothing's added.
+    assert client.probe_calls == [
+        "/Record/20260101_000000_N.3gf",
+        "/Record/20260101_000000_NF.thm",
+    ]
+
+
+def test_probe_missing_sidecars_adds_thumbnails_for_every_direction_with_video():
+    # blackvue_vod.cgi has, across every camera model confirmed so
+    # far, only ever listed video files - thumbnails need the same
+    # opportunistic probing .gps/.3gf already get, per-direction since
+    # thumbnails (unlike .gps/.3gf) are one-per-camera-direction.
+    client = _FakeClient(
+        probe_results={
+            "/Record/20260101_000000_NF.thm": True,
+            "/Record/20260101_000000_NR.thm": True,
+        }
+    )
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NF.mp4"),
+            _entry("/Record/20260101_000000_NR.mp4"),
+        ],
+    )
+
+    found = camera.probe_missing_sidecars(recording)
+
+    assert {entry.path.as_posix() for entry in found} == {
+        "/Record/20260101_000000_NF.thm",
+        "/Record/20260101_000000_NR.thm",
+    }
+    assert len(recording.entries) == 4
+
+
+def test_probe_missing_sidecars_only_probes_thumbnails_for_directions_with_video():
+    # No rear video here - a rear thumbnail wouldn't exist on the
+    # camera either, so it shouldn't even be probed for. .gps/.3gf
+    # already listed here so only the thumbnail probing is exercised.
+    client = _FakeClient(probe_results={"/Record/20260101_000000_NF.thm": True})
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NF.mp4"),
+            _entry("/Record/20260101_000000_N.gps"),
+            _entry("/Record/20260101_000000_N.3gf"),
+        ],
+    )
+
+    found = camera.probe_missing_sidecars(recording)
+
+    assert [entry.path.as_posix() for entry in found] == [
+        "/Record/20260101_000000_NF.thm"
+    ]
+    assert client.probe_calls == ["/Record/20260101_000000_NF.thm"]
+
+
+def test_probe_missing_sidecars_skips_a_thumbnail_already_listed():
+    client = _FakeClient()
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NF.mp4"),
+            _entry("/Record/20260101_000000_N.gps"),
+            _entry("/Record/20260101_000000_N.3gf"),
+            _entry("/Record/20260101_000000_NF.thm"),
+        ],
+    )
+
+    found = camera.probe_missing_sidecars(recording)
+
+    assert found == []
+    assert client.probe_calls == []
+    assert len(recording.entries) == 4
+
+
+def test_probe_missing_sidecars_skips_a_thumbnail_the_camera_does_not_serve():
+    client = _FakeClient(probe_results={})
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NF.mp4"),
+            _entry("/Record/20260101_000000_N.gps"),
+            _entry("/Record/20260101_000000_N.3gf"),
+        ],
+    )
+
+    found = camera.probe_missing_sidecars(recording)
+
+    assert found == []
+    assert client.probe_calls == ["/Record/20260101_000000_NF.thm"]
+
+
+def test_probe_missing_sidecars_probes_an_interior_thumbnail_too():
+    client = _FakeClient(probe_results={"/Record/20260101_000000_NI.thm": True})
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NI.mp4"),
+            _entry("/Record/20260101_000000_N.gps"),
+            _entry("/Record/20260101_000000_N.3gf"),
+        ],
+    )
+
+    found = camera.probe_missing_sidecars(recording)
+
+    assert [entry.path.as_posix() for entry in found] == [
+        "/Record/20260101_000000_NI.thm"
+    ]

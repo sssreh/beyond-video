@@ -18,16 +18,26 @@ from ..domain.vod_entry import VodEntry
 from ..parser.vod import parse_timestamp
 from ..parser.vod import parse_vod
 
-# Metadata sidecar suffixes some camera models don't list in their own
-# blackvue_vod.cgi response, even though the files exist and download
-# fine via a direct GET at the expected path - confirmed on a real
-# BlackVue Elite 10 (see WORKING_CONTEXT.md). blackvue_vod.cgi is
-# therefore treated as a hint for these two specific extensions, not
-# the sole source of truth - probe_missing_sidecars() fills the gap
-# when needed, and is a no-op (zero extra network calls) for every
-# camera confirmed so far except the Elite 10, where the listing
-# already includes them.
+# Metadata sidecar suffixes that blackvue_vod.cgi never lists, even
+# though the camera exists and serves them fine via a direct GET at
+# the expected path - confirmed across multiple of Christer's real
+# camera models, not just the Elite 10 (see WORKING_CONTEXT.md):
+# blackvue_vod.cgi's own listing has consistently only ever contained
+# video files. blackvue_vod.cgi is therefore treated as a hint for
+# these, not the sole source of truth - probe_missing_sidecars() fills
+# the gap, and is a no-op (zero extra network calls) for any suffix a
+# given camera/firmware combination *does* happen to list.
 _PROBEABLE_SIDECAR_SUFFIXES = (".gps", ".3gf")
+
+# Thumbnail files are one-per-camera-direction (e.g. "..._NF.thm" for
+# the front camera), unlike the suffixes above which are one-per-
+# recording with no direction letter - so they can't share that flat
+# suffix table and need their own direction-aware probe. Probed only
+# for directions the recording actually has a video for (there's no
+# way to know in advance whether a recording has a rear/interior
+# camera at all otherwise).
+_THUMBNAIL_SUFFIX = ".thm"
+_DIRECTION_LETTERS = ("F", "R", "I")
 
 
 class BlackVueCamera:
@@ -44,18 +54,17 @@ class BlackVueCamera:
         return parse_vod(self._client.vod())
 
     def probe_missing_sidecars(self, recording: Recording) -> list[VodEntry]:
-        """Opportunistically add .gps/.3gf entries this recording's
-        camera-reported listing doesn't include, but which the camera
-        still serves directly at the expected `/Record/<id><suffix>`
-        path.
+        """Opportunistically add .gps/.3gf/.thm entries this
+        recording's camera-reported listing doesn't include, but which
+        the camera still serves directly at the expected path.
 
         A no-op - zero extra network calls - for a recording that
-        already has these entries listed, which is the normal case on
-        every model confirmed so far except the Elite 10. Mutates
-        recording.entries in place (appending any entry found) and
-        also returns whatever new entries were found, for a caller
-        that wants to report on it (e.g. bv-download's --verbose
-        output).
+        already has these entries listed, which some camera/firmware
+        combinations do even though the ones confirmed so far never
+        have. Mutates recording.entries in place (appending any entry
+        found) and also returns whatever new entries were found, for a
+        caller that wants to report on it (e.g. bv-download's
+        --verbose output).
         """
 
         existing_suffixes = {
@@ -69,6 +78,46 @@ class BlackVueCamera:
                 continue
 
             path = f"/Record/{recording.id}{suffix}"
+
+            if not self._client.probe(path):
+                continue
+
+            entry = VodEntry(
+                timestamp=parse_timestamp(recording.id),
+                path=PurePosixPath(path),
+                fields={},
+            )
+            recording.entries.append(entry)
+            found.append(entry)
+
+        found.extend(self._probe_missing_thumbnails(recording))
+
+        return found
+
+    def _probe_missing_thumbnails(self, recording: Recording) -> list[VodEntry]:
+        """Opportunistically add a .thm entry for any camera direction
+        (front/rear/interior) this recording has a video for but no
+        thumbnail listed - see _THUMBNAIL_SUFFIX's own comment for why
+        this can't share the flat-suffix probe above."""
+
+        directions_with_video = {
+            letter
+            for letter in _DIRECTION_LETTERS
+            for entry in recording.entries
+            if entry.is_video and entry.path.stem.endswith(letter)
+        }
+        directions_with_thumbnail = {
+            letter
+            for letter in _DIRECTION_LETTERS
+            for entry in recording.entries
+            if entry.path.suffix.lower() == _THUMBNAIL_SUFFIX
+            and entry.path.stem.endswith(letter)
+        }
+
+        found: list[VodEntry] = []
+
+        for letter in sorted(directions_with_video - directions_with_thumbnail):
+            path = f"/Record/{recording.id}{letter}{_THUMBNAIL_SUFFIX}"
 
             if not self._client.probe(path):
                 continue

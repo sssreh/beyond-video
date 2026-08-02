@@ -516,11 +516,13 @@ def _run(args: argparse.Namespace) -> int:
     ]
 
     #
-    # Some camera models (confirmed: Elite 10 - see WORKING_CONTEXT.md)
-    # don't list .gps/.3gf sidecar files in their own recording
-    # listing even though the files exist and download fine directly.
-    # A no-op - zero extra network calls - on every model that already
-    # lists them, so this costs nothing for the common case.
+    # blackvue_vod.cgi's own recording listing has consistently only
+    # ever contained video files across the camera models confirmed so
+    # far (see WORKING_CONTEXT.md) - .gps/.3gf/.thm sidecars exist and
+    # download fine directly even though the listing never mentions
+    # them. A no-op - zero extra network calls - on any camera/
+    # firmware combination that does list them, so this costs nothing
+    # for that case.
     #
     for recording in recordings:
         found = camera.probe_missing_sidecars(recording)
