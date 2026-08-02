@@ -492,7 +492,14 @@ def _run(args: argparse.Namespace) -> int:
             print("bv-download: aborted")
             return EXIT_ABORTED
 
-    if not args.dry_run and recordings:
+    #
+    # RecordTime snapshot capture is a beyond-video-specific
+    # bookkeeping step (see _capture_record_time's own docstring) -
+    # skipped in --host mode, which is meant to be a bare download
+    # with no archive conventions imposed. If this same directory is
+    # later downloaded into via a real bv-config id, the snapshot
+    # just gets written on that first run instead.
+    if not args.dry_run and recordings and args.host is None:
         _capture_record_time(
             client,
             destination,

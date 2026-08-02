@@ -19,7 +19,7 @@ bv-download [--config-dir DIR] [--timeout SECONDS]
 `bv-download` connects to a BlackVue camera and downloads recordings into a local archive, building the archive that every other `bv-*` command operates on. Connect either of two ways:
 
 - `ID` - a camera set up with `bv-config(1)`, tried over its configured endpoints in order, downloading into that camera's own target directory.
-- `--host HOST --target DIR` - a direct one-off connection, no config needed: connects straight to `HOST` (e.g. the camera's WiFi IP) and downloads into `DIR`. Useful for a quick download without ever running `bv-config`. The only thing it gives up is the fallback-endpoint list (a config can list several endpoints tried in order, e.g. home WiFi then a cellular router; `--host` only ever tries the one address given) - every other flag on this page, including the RecordTime snapshot bookkeeping below, works the same either way.
+- `--host HOST --target DIR` - a direct one-off connection, no config needed: connects straight to `HOST` (e.g. the camera's WiFi IP) and downloads into `DIR`. Useful for a quick download without ever running `bv-config`. It gives up the fallback-endpoint list (a config can list several endpoints tried in order, e.g. home WiFi then a cellular router; `--host` only ever tries the one address given) and the RecordTime snapshot bookkeeping (see below) - both are conveniences tied to the rest of the toolkit's archive conventions, skipped here to keep this path a bare download with nothing extra written beyond the recordings themselves. Every other flag on this page works the same either way.
 
 One of the two is required; they can't be combined.
 
@@ -29,7 +29,7 @@ If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the d
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
-Each run also fetches the camera's current `/Config/config.ini` and, if the configured `RecordTime` (recording segment length) differs from the last value recorded for this archive, writes a small snapshot file (`<recording>.record_time.txt`, holding just that one number in seconds) - never a copy of `config.ini` itself, which also carries Wi-Fi/cloud credentials that must never leave the camera. `bv-export` uses these snapshots to derive its own `--max-gap` default from the camera's real segment length instead of a flat constant - see `bv-export(1)`. This is best-effort: any failure reading `config.ini` (older firmware, a transient network error) is silently ignored (or reported with `-v`) and never fails the download itself.
+Each `ID`-based run also fetches the camera's current `/Config/config.ini` and, if the configured `RecordTime` (recording segment length) differs from the last value recorded for this archive, writes a small snapshot file (`<recording>.record_time.txt`, holding just that one number in seconds) - never a copy of `config.ini` itself, which also carries Wi-Fi/cloud credentials that must never leave the camera. `bv-export` uses these snapshots to derive its own `--max-gap` default from the camera's real segment length instead of a flat constant - see `bv-export(1)`. This is best-effort: any failure reading `config.ini` (older firmware, a transient network error) is silently ignored (or reported with `-v`) and never fails the download itself. `--host` runs skip this step entirely (see above).
 
 ## ARGUMENTS
 
