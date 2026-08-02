@@ -230,13 +230,63 @@ def load_or_compute_duration(recording: Recording) -> int | None:
     return span
 
 
-def extract_audio(source: Path, destination: Path) -> None:
-    """Extract the audio track from source into destination via ffmpeg.
+def probe_audio_codec(path: Path) -> str | None:
+    """Return the source's first audio stream's codec name (e.g.
+    "aac", "mp3"), or None if it has no audio stream at all.
 
-    The audio stream is copied without re-encoding.
+    Raises MediaToolError if ffprobe itself is missing or fails
+    outright (as opposed to just finding no audio stream, which is a
+    normal outcome reported as None rather than an error).
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffprobe not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffprobe failed for {path.name}: {exc.stderr.strip()}"
+        ) from exc
+
+    codec_name = result.stdout.strip()
+    return codec_name or None
+
+
+def extract_audio(source: Path, destination: Path) -> None:
+    """Extract the audio track from source into destination (always
+    written as AAC/ADTS, per the archive's own `.aac` convention -
+    see archive_reader.py) via ffmpeg.
+
+    The audio stream is copied without re-encoding when it's already
+    AAC (the common case, and effectively free). Otherwise it's
+    transcoded to AAC: some camera models don't record AAC audio at
+    all (confirmed: the BlackVue Elite 10 records MP3), and ADTS -
+    the container implied by the `.aac` destination - can only hold
+    AAC, so copying a non-AAC stream into it fails outright ("adts
+    muxer supports only codec aac for type audio"). The extracted
+    audio is only ever consumed for speech-to-text (transcription/
+    diarization/translation), where the small quality cost of
+    transcoding is not a practical concern.
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    codec_name = probe_audio_codec(source)
+    audio_args = (
+        ["-acodec", "copy"] if codec_name == "aac" else ["-acodec", "aac"]
+    )
 
     try:
         subprocess.run(
@@ -245,7 +295,7 @@ def extract_audio(source: Path, destination: Path) -> None:
                 "-y",
                 "-i", str(source),
                 "-vn",
-                "-acodec", "copy",
+                *audio_args,
                 str(destination),
             ],
             capture_output=True,

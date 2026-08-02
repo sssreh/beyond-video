@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,10 @@ from blackvue.generate import media as media_module
 from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import compute_span
+from blackvue.generate.media import extract_audio
 from blackvue.generate.media import get_span
 from blackvue.generate.media import load_or_compute_duration
+from blackvue.generate.media import probe_audio_codec
 from blackvue.generate.media import read_duration_seconds
 from blackvue.generate.media import select_source
 from blackvue.generate.mp4_box_reader import Mp4Info
@@ -301,3 +304,154 @@ def test_get_span_end_to_end_on_a_genuinely_broken_file(tmp_path):
     assert get_span(RecordingId("20260715_133255_N"), path) == 2
     assert get_span(RecordingId("20260715_133255_E"), path) == 2
     assert get_span(RecordingId("20260715_133255_M"), path) == 2
+
+
+def test_probe_audio_codec_returns_the_codec_name(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, stdout="aac\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert probe_audio_codec(tmp_path / "x.mp4") == "aac"
+
+
+def test_probe_audio_codec_returns_none_without_an_audio_stream(
+    monkeypatch, tmp_path
+):
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert probe_audio_codec(tmp_path / "x.mp4") is None
+
+
+def test_probe_audio_codec_raises_when_ffprobe_is_missing(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        probe_audio_codec(tmp_path / "x.mp4")
+
+
+def test_probe_audio_codec_raises_when_ffprobe_fails(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["ffprobe"], stderr="broken file")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        probe_audio_codec(tmp_path / "x.mp4")
+
+
+def test_extract_audio_stream_copies_when_source_is_already_aac(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: "aac")
+
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    extract_audio(tmp_path / "source.mp4", tmp_path / "out.aac")
+
+    assert len(calls) == 1
+    assert "copy" in calls[0]
+    assert "aac" not in calls[0]
+
+
+def test_extract_audio_transcodes_when_source_is_not_aac(monkeypatch, tmp_path):
+    # This is the Elite 10 case: MP3 audio can't be stream-copied into
+    # the .aac destination's ADTS container, so it must be transcoded.
+    monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: "mp3")
+
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    extract_audio(tmp_path / "source.mp4", tmp_path / "out.aac")
+
+    assert len(calls) == 1
+    assert "copy" not in calls[0]
+    assert "aac" in calls[0]
+
+
+def test_extract_audio_transcodes_when_source_has_no_recognized_codec(
+    monkeypatch, tmp_path
+):
+    # None (no audio stream detected by ffprobe) isn't "aac" either -
+    # falls into the same transcode branch, and ffmpeg itself is the
+    # one that ultimately reports "no audio stream" if that's really
+    # the case.
+    monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: None)
+
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    extract_audio(tmp_path / "source.mp4", tmp_path / "out.aac")
+
+    assert "aac" in calls[0]
+    assert "copy" not in calls[0]
+
+
+def test_extract_audio_wraps_ffmpeg_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: "aac")
+
+    def fake_run(cmd, **_kwargs):
+        raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        extract_audio(tmp_path / "source.mp4", tmp_path / "out.aac")
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed",
+)
+def test_extract_audio_end_to_end_transcodes_mp3_source_to_playable_aac(
+    tmp_path,
+):
+    """Reproduces the real Elite 10 failure with no mocking at all: an
+    MP4 whose audio track is MP3 (not AAC) used to make ffmpeg's ADTS
+    muxer reject the stream-copy outright. Confirm the fix produces a
+    genuinely playable AAC file instead."""
+
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440",
+            "-t", "1",
+            "-c:v", "libx264",
+            "-c:a", "mp3",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert probe_audio_codec(source) == "mp3"
+
+    destination = tmp_path / "out.aac"
+    extract_audio(source, destination)
+
+    assert destination.exists()
+    assert probe_audio_codec(destination) == "aac"
