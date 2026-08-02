@@ -27,6 +27,7 @@ from ..core.camera_config import default_config_dir
 from ..core.camera_config import load_camera_config
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
+from ..core.endpoint import Endpoint
 from ..domain.recording import Recording
 from ..humantimeformatter import HumanTimeFormatter
 from ..lexicaltimeparser import LexicalTimeParser
@@ -179,7 +180,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "downloads video for event and manual recordings plus the "
             "recording immediately before each, for context. Metadata "
             "(thumbnails, GPS, gsensor) is always downloaded for every "
-            "recording, regardless of mode."
+            "recording, regardless of mode. Either ID (a camera set up "
+            "with bv-config) or --host/--target (a direct one-off "
+            "connection, no config needed) is required."
         ),
         # See bv_export.py's own ArgumentParser for why: argparse's
         # default prefix-abbreviation matching silently breaks the
@@ -189,7 +192,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "id",
-        help="Camera system id (see bv-config).",
+        nargs="?",
+        default=None,
+        help=(
+            "Camera system id (see bv-config). Omit this and use "
+            "--host/--target instead to download without setting up a "
+            "config first."
+        ),
+    )
+
+    parser.add_argument(
+        "--host",
+        metavar="HOST",
+        help=(
+            "Connect directly to this camera address instead of "
+            "looking up a configured id - e.g. its WiFi IP. Requires "
+            "--target; cannot be combined with ID."
+        ),
+    )
+
+    parser.add_argument(
+        "--target",
+        type=Path,
+        metavar="DIR",
+        help="Directory to download into. Requires --host.",
     )
 
     parser.add_argument(
@@ -285,6 +311,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.files and not args.dry_run:
         parser.error("--files requires --dry-run")
 
+    if args.id is None and args.host is None:
+        parser.error("either ID or --host is required")
+
+    if args.id is not None and args.host is not None:
+        parser.error("--host cannot be combined with ID")
+
+    if args.host is not None and args.target is None:
+        parser.error("--host requires --target")
+
+    if args.target is not None and args.host is None:
+        parser.error("--target requires --host")
+
     return args
 
 
@@ -373,20 +411,35 @@ def confirm(
 def _run(args: argparse.Namespace) -> int:
     """Run bv-download for already-parsed arguments."""
 
-    path = config_path(args.config_dir, args.id)
+    if args.host is not None:
+        #
+        # --host/--target: a one-off connection with no saved config,
+        # for people who just want to grab recordings and don't care
+        # about the rest of the toolkit's setup. Single endpoint,
+        # tried as-is - no bv-config wizard, no fallback endpoints.
+        #
+        endpoints = [Endpoint(name="host", address=args.host)]
+        destination = args.target
+        display_name = args.host
+    else:
+        path = config_path(args.config_dir, args.id)
 
-    try:
-        config = load_camera_config(path)
-    except CameraConfigError as exc:
-        print(f"bv-download: {exc}", file=sys.stderr)
-        return EXIT_CONFIG_ERROR
+        try:
+            config = load_camera_config(path)
+        except CameraConfigError as exc:
+            print(f"bv-download: {exc}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
 
-    if not config.endpoints:
-        print(
-            f"bv-download: {path}: no [[endpoint]] entries found",
-            file=sys.stderr,
-        )
-        return EXIT_CONFIG_ERROR
+        if not config.endpoints:
+            print(
+                f"bv-download: {path}: no [[endpoint]] entries found",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
+
+        endpoints = config.endpoints
+        destination = config.target
+        display_name = config.name
 
     try:
         interval = LexicalTimeParser(
@@ -413,18 +466,16 @@ def _run(args: argparse.Namespace) -> int:
         mode = ALL_KINDS
 
     try:
-        endpoint, client = connect(config.endpoints, timeout=args.timeout)
+        endpoint, client = connect(endpoints, timeout=args.timeout)
     except CameraUnreachableError as exc:
         print(f"bv-download: {exc}", file=sys.stderr)
         return EXIT_UNREACHABLE
 
     if args.verbose:
         print(
-            f"bv-download: connected to {config.name} "
+            f"bv-download: connected to {display_name} "
             f"via {endpoint.name} ({endpoint.address})"
         )
-
-    destination = config.target
 
     camera = BlackVueCamera(client)
 

@@ -11,12 +11,17 @@ bv-download [--config-dir DIR] [--timeout SECONDS]
             [--mode {A,E,M,N,P,all}[,...]]
             [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--dry-run] [--files] [--yes] [-v] [--trace]
-            ID
+            (ID | --host HOST --target DIR)
 ```
 
 ## DESCRIPTION
 
-`bv-download` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and downloads recordings into the camera's own target directory, building the local archive that every other `bv-*` command operates on.
+`bv-download` connects to a BlackVue camera and downloads recordings into a local archive, building the archive that every other `bv-*` command operates on. Connect either of two ways:
+
+- `ID` - a camera set up with `bv-config(1)`, tried over its configured endpoints in order, downloading into that camera's own target directory.
+- `--host HOST --target DIR` - a direct one-off connection, no config needed: connects straight to `HOST` (e.g. the camera's WiFi IP) and downloads into `DIR`. Useful for a quick download without ever running `bv-config`. The only thing it gives up is the fallback-endpoint list (a config can list several endpoints tried in order, e.g. home WiFi then a cellular router; `--host` only ever tries the one address given) - every other flag on this page, including the RecordTime snapshot bookkeeping below, works the same either way.
+
+One of the two is required; they can't be combined.
 
 By default it downloads video for **event** and **manual** recordings, plus the recording immediately before each one (for context leading up to the event). **Metadata** - thumbnails, GPS, g-sensor logs - is always downloaded for every recording regardless of mode, since it's small and useful even for recordings whose video isn't fetched. Use `--mode all` to download video for everything, including routine normal-driving and parking-mode footage.
 
@@ -30,12 +35,14 @@ Each run also fetches the camera's current `/Config/config.ini` and, if the conf
 
 | Argument | Description |
 |---|---|
-| `ID` | Camera system id (see `bv-config(1)`). |
+| `ID` | Camera system id (see `bv-config(1)`). Omit this and use `--host`/`--target` instead for a config-free connection. Required unless `--host` is given; can't be combined with it. |
 
 ## OPTIONS
 
 | Option | Description |
 |---|---|
+| `--host HOST` | Connect directly to this camera address (e.g. its WiFi IP) instead of looking up a configured id. Requires `--target`; can't be combined with `ID`. |
+| `--target DIR` | Directory to download into. Requires `--host`. |
 | `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--mode {A,E,M,N,P,all}[,...]` | Recording kinds to download video for (comma-separated, case-insensitive), or `all`. `E`=event, `M`=manual, `N`=normal, `P`=parking, `A`=unknown meaning (observed on real hardware but not yet identified - see `WORKING_CONTEXT.md`). Default: event/manual recordings plus the recording before each. |
@@ -107,6 +114,12 @@ Unattended run (e.g. from a scheduled task), skipping the confirmation prompt an
 bv-download Kirby --yes --trace
 ```
 
+Download straight from a camera's WiFi IP, no `bv-config` setup at all:
+
+```
+bv-download --host 10.99.88.1 --target ~/blackvue-archive
+```
+
 ## SEE ALSO
 
-`bv-config(1)` to set up the camera this downloads from, `bv-ls(1)` to inspect the resulting archive.
+`bv-config(1)` to set up a camera for repeat use (not needed for a one-off `--host`/`--target` download), `bv-ls(1)` to inspect the resulting archive.

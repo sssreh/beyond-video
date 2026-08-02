@@ -3,6 +3,7 @@ import argparse
 import pytest
 
 from datetime import datetime
+from pathlib import Path
 from pathlib import PurePosixPath
 
 from blackvue.archive.configuration import RECORD_TIME_SUFFIX
@@ -277,6 +278,53 @@ def test_parse_args_files_with_dry_run_is_accepted():
     args = parse_args(["mycar", "--dry-run", "--files"])
 
     assert args.files is True
+
+
+def test_parse_args_id_alone_still_works():
+    """The existing bv-config-based flow: id given, no --host/--target
+    involved at all."""
+
+    args = parse_args(["mycar"])
+
+    assert args.id == "mycar"
+    assert args.host is None
+    assert args.target is None
+
+
+def test_parse_args_requires_id_or_host(capsys):
+    with pytest.raises(SystemExit):
+        parse_args([])
+
+    assert "either ID or --host is required" in capsys.readouterr().err
+
+
+def test_parse_args_host_cannot_combine_with_id(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["mycar", "--host", "192.168.0.1", "--target", "/tmp/x"])
+
+    assert "--host cannot be combined with ID" in capsys.readouterr().err
+
+
+def test_parse_args_host_requires_target(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["--host", "192.168.0.1"])
+
+    assert "--host requires --target" in capsys.readouterr().err
+
+
+def test_parse_args_target_requires_host(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["mycar", "--target", "/tmp/x"])
+
+    assert "--target requires --host" in capsys.readouterr().err
+
+
+def test_parse_args_host_and_target_accepted():
+    args = parse_args(["--host", "192.168.0.1", "--target", "/tmp/x"])
+
+    assert args.id is None
+    assert args.host == "192.168.0.1"
+    assert args.target == Path("/tmp/x")
 
 
 def test_describe_recording_files_all_downloaded_when_video_wanted():
