@@ -5,28 +5,39 @@ Draws one frame of a racing-telemetry-style "dot gauge": a circular
 dial with a dot at the current sample's (lateral, longitudinal)
 position (relative to a per-trip baseline - see
 baseline_for_samples()) and a short fading trail behind it. The
-horizontal axis is the raw g-sensor's X field, the vertical axis is
-its Y field.
+gauge's horizontal axis is always lateral movement and its vertical
+axis is always longitudinal (acceleration/braking) movement - that
+screen-space convention hasn't changed - but which *raw* g-sensor
+field feeds each has flipped twice now; see below for the current
+answer.
 
-This is Christer's own explicit call, not what a real test recording
-actually showed. A recording with known, timestamped maneuvers (two
-right turns and a left U-turn, plus a braking event caught
-incidentally just before the U-turn) found raw Y tracking turning
-(sustained positive during both right turns, sustained negative during
-the U-turn) and raw Z tracking braking (a sustained dip right before
-the U-turn) - with raw X showing no sustained response to any of the
-three events. Told this directly - that treating X as lateral runs
-against that same recording - Christer chose to override it anyway
-("Actually swap which raw channel means what"), so this module now
-plots raw X as lateral and raw Y as longitudinal/braking, raw Z as
-unused (assumed vertical/mounting axis, same role X was inferred to
-have before). Christer has a follow-up recording with hard
-acceleration, braking, and turns planned specifically to settle this
-with better data than the first pass had - the mapping here should be
-revisited once that comes in, in either direction. See
-gsensor_reader.py's own module docstring for the standing caveat that
-the physical *unit* of these readings (milli-g, raw ADC counts, or
-something else) remains unconfirmed regardless of which axis is which.
+A recording with known, timestamped maneuvers (two right turns and a
+left U-turn, plus a braking event caught incidentally just before the
+U-turn) found raw Y tracking turning (sustained positive during both
+right turns, sustained negative during the U-turn) and raw Z tracking
+braking (a sustained dip right before the U-turn) - with raw X showing
+no sustained response to any of the three events. Told this directly -
+that treating X as lateral runs against that same recording - Christer
+chose to override it anyway ("Actually swap which raw channel means
+what"), swapping the module to plot raw X as lateral and raw Y as
+longitudinal/braking, with a note that a planned follow-up recording
+with hard acceleration, braking, and turns should settle the question
+either way once it landed.
+
+That follow-up recording arrived (`20260802_103545_M.3gf`, two labeled
+real-world events: heavy acceleration at 16s, a 540-degree left turn
+in a roundabout at 127s) and reconfirmed the original finding, not the
+override: raw Z moved 26.6x its own baseline stdev during the
+acceleration event (X and Y far smaller), and raw Y moved 41.6x its
+own baseline stdev during the turn (X and Z far smaller). Raw X showed
+no sustained response to either event, on either recording. Christer
+accepted this result, so the module is back to plotting raw Y as
+lateral and raw Z as longitudinal/braking, with raw X unused (assumed
+vertical/mounting axis) - see WORKING_CONTEXT.md for the full numbers.
+See gsensor_reader.py's own module docstring for the standing caveat
+that the physical *unit* of these readings (milli-g, raw ADC counts,
+or something else) remains unconfirmed regardless of which axis is
+which.
 
 The background is a flat chroma-key green rather than the cream tone
 map_render.py uses - gsensor.mp4 is meant to be composited over the
@@ -98,9 +109,9 @@ def _median(values: list[float]) -> float:
 def baseline_for_samples(samples) -> tuple[float, float]:
     """Return the (lateral, longitudinal) reading gsensor.mp4's gauge
     should treat as its center, for a set of g-sensor samples: the
-    trip's own median X (lateral) and median Y (longitudinal) - see
-    this module's own docstring for why X/Y rather than the Y/Z a real
-    test recording actually pointed to.
+    trip's own median Y (lateral) and median Z (longitudinal) - see
+    this module's own docstring for the two real test recordings that
+    settled this.
 
     A dashcam mounted at even a slight angle - or a plain sensor bias
     - means "level, driving straight" rarely reads exactly raw (0, 0),
@@ -114,8 +125,8 @@ def baseline_for_samples(samples) -> tuple[float, float]:
         return 0.0, 0.0
 
     return (
-        _median([float(sample.x) for sample in samples]),
         _median([float(sample.y) for sample in samples]),
+        _median([float(sample.z) for sample in samples]),
     )
 
 
@@ -147,8 +158,8 @@ def scale_for_samples(
     for sample in samples:
         peak = max(
             peak,
-            abs(sample.x - baseline_lateral),
-            abs(sample.y - baseline_longitudinal),
+            abs(sample.y - baseline_lateral),
+            abs(sample.z - baseline_longitudinal),
         )
 
     return max(peak * padding, minimum)

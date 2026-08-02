@@ -46,23 +46,20 @@ needs to stay green for the dot-gauge's own real chroma-key use.
 
 Each axis's own trace is labeled by a small color-key legend (Christer:
 "nothing explaining the colors"), spelling out what each axis
-physically means - "X — Left/right", "Y — Acc/brake", "Z — Up/down".
+physically means - "X — Up/down", "Y — Left/right", "Z — Acc/brake".
 
-This wording is Christer's own explicit call, not what a real test
-recording actually showed. A recording with known, timestamped
-maneuvers (two right turns and a left U-turn, plus a braking event
-caught right before the U-turn - see gsensor_render.py's own module
-docstring for the raw data) found raw Y tracking turning and raw Z
-tracking braking, with raw X showing no sustained response to either.
-Told directly that labeling X as "Left/right" runs against that same
-recording, Christer chose to override it anyway ("Actually swap which
-raw channel means what"), so the legend now reads X/Y/Z in that order
-regardless. Christer has a follow-up recording with hard acceleration,
-braking, and turns planned specifically to settle this with better
-data than the first pass had - this wording should be revisited once
-that comes in, in either direction. See gsensor_reader.py's own module
-docstring for the standing caveat that the physical *unit* of these
-readings (milli-g, raw ADC counts, or something else) remains
+This wording tracks gsensor_render.py's own axis-mapping story (see
+that module's docstring for the full history): an initial test
+recording found raw Y tracking turning and raw Z tracking braking,
+with raw X showing no sustained response to either; Christer then
+overrode that to X/Y for a time; a second test recording
+(`20260802_103545_M.3gf`, two labeled events - heavy acceleration and
+a 540-degree roundabout turn) reconfirmed the original Y/Z finding, so
+the legend wording is back to matching it. The legend's own tuple
+*order* stays fixed at X/Y/Z regardless of wording - see
+LEGEND_LABELS's own comment for why. See gsensor_reader.py's own
+module docstring for the standing caveat that the physical *unit* of
+these readings (milli-g, raw ADC counts, or something else) remains
 unconfirmed regardless of which axis is which.
 
 The legend gets its own dedicated space rather than sitting on top of
@@ -266,18 +263,17 @@ LEGEND_PADDING = 6
 # request, kept identical in both orientations even though it runs
 # past the narrow vertical side-panel's own right edge (his explicit
 # call over abbreviating there - see the module docstring). This
-# specific X/Y/Z assignment is Christer's own explicit override, not
-# what the real test recording in gsensor_render.py's own module
-# docstring actually showed (there, Y tracked turning and Z tracked
-# braking, with X showing nothing) - see the module docstring above
-# for the full story. The tuple order (X, Y, Z) must stay fixed
-# regardless of wording changes - it's zipped with the (X_COLOR,
-# Y_COLOR, Z_COLOR) tuple by position in _draw_legend(), not matched
-# by the "axis" string.
+# X/Y/Z assignment matches what two separate real test recordings have
+# now shown (Y tracks turning, Z tracks acceleration/braking, X shows
+# no sustained response to either) - see the module docstring above
+# for the full story, including the interim override this reverses.
+# The tuple order (X, Y, Z) must stay fixed regardless of wording
+# changes - it's zipped with the (X_COLOR, Y_COLOR, Z_COLOR) tuple by
+# position in _draw_legend(), not matched by the "axis" string.
 LEGEND_LABELS = (
-    ("X", "Left/right"),
-    ("Y", "Acc/brake"),
-    ("Z", "Up/down"),
+    ("X", "Up/down"),
+    ("Y", "Left/right"),
+    ("Z", "Acc/brake"),
 )
 
 # The bundled copy is tried first (see assets/, and pyproject.toml's
