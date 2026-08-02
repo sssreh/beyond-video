@@ -64,11 +64,21 @@ import sys
 # module's own docstring for where each one came from and which camera
 # models/firmware it's confirmed on so far. Order here drives the
 # order everything downstream prints in (the detailed per-endpoint
-# section, the summary table, results itself) - the four Elite-10-only
-# entries are deliberately last, after the endpoints confirmed on
-# Christer's actual DR900S-2CH and the two /Config/ endpoints, since
-# they're the most speculative group (seen on a different model,
-# analyzed from firmware only - see WORKING_CONTEXT.md).
+# section, the summary table, results itself) - endpoints confirmed on
+# Christer's actual DR900S-2CH come first, then the two /Config/
+# endpoints, then the four Elite-10-only entries (seen only in Elite
+# 10 firmware strings, never confirmed live - and two of them,
+# blackvue_snap.cgi/blackvue_hss_live.cgi, have since timed out and
+# blackvue_gps.cgi/blackvue_log.cgi 502'd on a real Elite 10 scan, and
+# none of the four appear anywhere in the official Android app's own
+# code either - see WORKING_CONTEXT.md), then finally the three
+# app-sourced entries below, last, since they're the newest and least
+# confirmed group of all - referenced in the real BlackVue app's own
+# compiled code (v4.27 APK, static `strings` analysis, not yet tried
+# against any real camera). blackvue_delete_file.cgi, format.cgi, and
+# upgrade2.cgi were also found in the same app but are deliberately
+# excluded here - destructive by name alone, exactly the category this
+# script's own docstring says never to probe, even as a bare GET.
 CANDIDATE_ENDPOINTS = [
     ("/blackvue_vod.cgi", "recording listing"),
     ("/blackvue_live.cgi?direction=F", "live front video (MJPEG stream)"),
@@ -88,6 +98,27 @@ CANDIDATE_ENDPOINTS = [
     ("/blackvue_hss_live.cgi", "alternate live-view stream (seen on Elite 10, HTTP Smooth Streaming)"),
     ("/blackvue_gps.cgi", "alternate GPS endpoint (seen on Elite 10)"),
     ("/blackvue_log.cgi", "event log listing (seen on Elite 10)"),
+    (
+        "/blackvue_status.cgi",
+        "camera status/telemetry - referenced in the official BlackVue "
+        "Android app's own code (v4.27 APK, static strings analysis), "
+        "never tried against a real camera. The app has no reference "
+        "to blackvue_livedata.cgi at all, so this is a plausible "
+        "candidate for where its live GPS/g-sensor data actually comes "
+        "from - unconfirmed.",
+    ),
+    (
+        "/blackvue_sim_info.cgi",
+        "LTE SIM card info - referenced in the official BlackVue Android "
+        "app's own code (v4.27 APK), never tried against a real camera. "
+        "Only relevant to LTE-module-equipped cameras.",
+    ),
+    (
+        "/blackvue_sos_info.cgi",
+        "SOS/emergency-call feature status - referenced in the official "
+        "BlackVue Android app's own code (v4.27 APK), never tried "
+        "against a real camera.",
+    ),
 ]
 
 # Endpoints known to be continuous streams that never close on their
