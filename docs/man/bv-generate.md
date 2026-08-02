@@ -50,8 +50,8 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 | `--get-duration` | Compute the real-world duration in seconds. Saved as `<recording>.duration.txt`. |
 | `--transcribe` | Transcribe the recording's audio to text. Saved as `<recording>.transcript.txt`. |
 | `--translate LANG` | Translate the transcript into `LANG` (e.g. `es`, `fr`). Saved as `<recording>.translation.txt`. |
-| `--srt` | Also write an SRT subtitle file (`<recording>.srt`) with per-segment timestamps. Requires `--transcribe` or `--translate`. |
-| `--lrc` | Also write an LRC timestamp file (`<recording>.lrc`), one `[mm:ss.xx]` line per segment. Requires `--transcribe` or `--translate`. |
+| `--srt` | Also write an SRT subtitle file (`<recording>.srt`) with per-segment timestamps. Requires `--transcribe` or `--translate`. If `--translate` is also given, the subtitles are in the translated language, not the original spoken one. |
+| `--lrc` | Also write an LRC timestamp file (`<recording>.lrc`), one `[mm:ss.xx]` line per segment. Requires `--transcribe` or `--translate`. If `--translate` is also given, the lines are in the translated language, not the original spoken one. |
 
 ### Transcription tuning
 

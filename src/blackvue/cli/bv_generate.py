@@ -18,6 +18,7 @@ from ..archive import Asset
 from ..archive.recording import Recording
 from .errors import run_cli
 from ..generate import MediaToolError
+from ..generate import SpeechSegment
 from ..generate import detect_language
 from ..generate import diarize
 from ..generate import extract_audio
@@ -530,6 +531,41 @@ def _translate_diarized(
     return "\n".join(lines)
 
 
+def _translate_segments(
+    segments: tuple[SpeechSegment, ...],
+    *,
+    source_language: str,
+    target_language: str,
+) -> tuple[SpeechSegment, ...]:
+    """Translate each segment's text individually, keeping its own
+    start/end timing intact - the per-segment analogue of translate()
+    (whole text) and _translate_diarized() (line-by-line "[SPEAKER_XX]
+    text") above.
+
+    Used so --srt/--lrc reflect --translate's target language instead
+    of always being in the transcript's original spoken language -
+    the whole point of asking for subtitles alongside a translation is
+    to get them in the target language. Diarization speaker labels
+    aren't part of segment.text (format_srt()/format_lrc() add them
+    separately via speaker_for(), matched by each segment's own
+    start/end, which this leaves untouched), so this works the same
+    whether or not --diarize was also given.
+    """
+
+    return tuple(
+        SpeechSegment(
+            start=segment.start,
+            end=segment.end,
+            text=translate(
+                segment.text,
+                source_language=source_language,
+                target_language=target_language,
+            ),
+        )
+        for segment in segments
+    )
+
+
 def _do_transcribe_and_translate(
     recording: Recording,
     archive_path: Path,
@@ -731,21 +767,43 @@ def _do_translate_only(
         # need_lrc_write were already computed up front, before it
         # was known whether this branch would even run - reused here
         # rather than re-checking _should_write a second time.
-        if need_srt_write:
-            srt_destination.write_text(
-                format_srt(segments, turns) + "\n", encoding="utf-8"
-            )
-            _report(
-                args.verbose, f"{recording.id}: wrote {srt_destination.name}"
-            )
+        #
+        # This whole function only ever runs with --translate given
+        # (see _do_transcribe_and_translate's dispatch above), so
+        # unlike _do_transcribe_with_optional_translate's own SRT/LRC
+        # block, there's no "no translation requested" case to weigh
+        # against - subtitles here always reflect args.translate's
+        # target language, never the original spoken one.
+        if need_srt_write or need_lrc_write:
+            try:
+                subtitle_segments = _translate_segments(
+                    segments,
+                    source_language=transcript_language,
+                    target_language=args.translate,
+                )
+            except MediaToolError as exc:
+                print(f"bv-generate: {recording.id}: {exc}", file=sys.stderr)
+                return True
 
-        if need_lrc_write:
-            lrc_destination.write_text(
-                format_lrc(segments, turns) + "\n", encoding="utf-8"
-            )
-            _report(
-                args.verbose, f"{recording.id}: wrote {lrc_destination.name}"
-            )
+            if need_srt_write:
+                srt_destination.write_text(
+                    format_srt(subtitle_segments, turns) + "\n",
+                    encoding="utf-8",
+                )
+                _report(
+                    args.verbose,
+                    f"{recording.id}: wrote {srt_destination.name}",
+                )
+
+            if need_lrc_write:
+                lrc_destination.write_text(
+                    format_lrc(subtitle_segments, turns) + "\n",
+                    encoding="utf-8",
+                )
+                _report(
+                    args.verbose,
+                    f"{recording.id}: wrote {lrc_destination.name}",
+                )
 
     # Gated on need_translation_write, not just "did we get this far":
     # this point is also reached when only --srt/--lrc needed
@@ -974,15 +1032,39 @@ def _do_transcribe_with_optional_translate(
             f"{recording.id}: wrote {transcript_destination.name}",
         )
 
-    if need_srt_write:
+    # SRT/LRC reflect --translate's target language when it was given,
+    # not the original spoken one - matching bv-generate.md's own
+    # "transcribe and translate, with subtitles" example. The whole
+    # point of asking for subtitles alongside a translation is to get
+    # them in the target language; translating each segment
+    # individually (rather than reusing transcript_text below) keeps
+    # each cue's own start/end timing intact. Computed once here so a
+    # failure is reported once, not duplicated by the whole-text
+    # translation further down.
+    subtitle_segments = transcript.segments
+    subtitle_translation_failed = False
+
+    if want_translation_file and (need_srt_write or need_lrc_write):
+        try:
+            subtitle_segments = _translate_segments(
+                transcript.segments,
+                source_language=transcript.language,
+                target_language=args.translate,
+            )
+        except MediaToolError as exc:
+            print(f"bv-generate: {recording.id}: {exc}", file=sys.stderr)
+            had_error = True
+            subtitle_translation_failed = True
+
+    if need_srt_write and not subtitle_translation_failed:
         srt_destination.write_text(
-            format_srt(transcript.segments, turns) + "\n", encoding="utf-8"
+            format_srt(subtitle_segments, turns) + "\n", encoding="utf-8"
         )
         _report(args.verbose, f"{recording.id}: wrote {srt_destination.name}")
 
-    if need_lrc_write:
+    if need_lrc_write and not subtitle_translation_failed:
         lrc_destination.write_text(
-            format_lrc(transcript.segments, turns) + "\n", encoding="utf-8"
+            format_lrc(subtitle_segments, turns) + "\n", encoding="utf-8"
         )
         _report(args.verbose, f"{recording.id}: wrote {lrc_destination.name}")
 

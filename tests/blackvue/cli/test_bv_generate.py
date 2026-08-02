@@ -12,7 +12,9 @@ from blackvue.cli.bv_generate import _language_from_generated_filename
 from blackvue.cli.bv_generate import _language_suffixed_name
 from blackvue.cli.bv_generate import _should_write
 from blackvue.cli.bv_generate import _translate_diarized
+from blackvue.cli.bv_generate import _translate_segments
 from blackvue.cli.bv_generate import parse_args
+from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeakerTurn
 from blackvue.generate.speech import SpeechSegment
 from blackvue.generate.speech import Transcript
@@ -119,6 +121,37 @@ def test_translate_diarized_passes_through_unlabeled_lines(monkeypatch):
     )
 
     assert result == "JUST PLAIN TEXT"
+
+
+def test_translate_segments_translates_each_text_and_keeps_timing(
+    monkeypatch,
+):
+    calls = []
+
+    def fake_translate(text, *, source_language, target_language):
+        calls.append(text)
+        return text.upper()
+
+    monkeypatch.setattr(bv_generate, "translate", fake_translate)
+
+    segments = (
+        SpeechSegment(0.0, 1.0, "hello"),
+        SpeechSegment(1.0, 2.5, "there"),
+    )
+
+    result = _translate_segments(
+        segments, source_language="en", target_language="es"
+    )
+
+    assert [s.text for s in result] == ["HELLO", "THERE"]
+    assert [(s.start, s.end) for s in result] == [(0.0, 1.0), (1.0, 2.5)]
+    assert calls == ["hello", "there"]
+
+
+def test_translate_segments_empty_input_returns_empty(monkeypatch):
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+
+    assert _translate_segments((), source_language="en", target_language="es") == ()
 
 
 def test_language_suffixed_name_default_language_stays_plain():
@@ -967,6 +1000,216 @@ def test_transcribe_writes_srt_and_lrc_when_requested(tmp_path, monkeypatch):
     assert "[00:00.00] hello world" in lrc_text
 
 
+def test_transcribe_srt_reflects_translate_language(tmp_path, monkeypatch):
+    """Reproduces Christer's report: 'bv-generate --transcribe --srt
+    --translate eng' produced an .srt still in the original spoken
+    language (Russian, in his case) instead of English. format_srt()
+    was always called with the untranslated transcript.segments, even
+    when --translate was given - the docs' own example ("Transcribe
+    and translate to Swedish, with subtitles") promises otherwise."""
+
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"audio"),
+    )
+    monkeypatch.setattr(
+        bv_generate, "detect_language", lambda source, *, model_size: "ru"
+    )
+    monkeypatch.setattr(
+        bv_generate,
+        "transcribe",
+        lambda source, *, language=None, model_size="small": Transcript(
+            text="Привет мир",
+            language="ru",
+            segments=(
+                SpeechSegment(0.0, 1.0, "Привет"),
+                SpeechSegment(1.0, 2.0, "мир"),
+            ),
+        ),
+    )
+
+    translated = {"Привет": "Hello", "мир": "world", "Привет мир": "Hello world"}
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: translated[text],
+    )
+
+    recording = Recording(id=RecordingId("20260802_161928_N"))
+    video_path = tmp_path / "20260802_161928_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True, srt=True, translate="es")
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    srt_text = (tmp_path / "20260802_161928_N.srt").read_text(
+        encoding="utf-8"
+    )
+    assert "Hello" in srt_text
+    assert "world" in srt_text
+    assert "Привет" not in srt_text
+    # The plain-text transcript is unaffected - still the original
+    # spoken language, only the subtitles change.
+    assert (
+        "Привет мир"
+        in (tmp_path / "20260802_161928_N_rus.transcript.txt").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def test_transcribe_srt_stays_original_language_without_translate(
+    tmp_path, monkeypatch
+):
+    """Regression check: no --translate means --srt keeps behaving
+    exactly as before - original spoken language, translate() never
+    even called."""
+
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"audio"),
+    )
+    monkeypatch.setattr(
+        bv_generate, "detect_language", lambda source, *, model_size: "ru"
+    )
+    monkeypatch.setattr(
+        bv_generate,
+        "transcribe",
+        lambda source, *, language=None, model_size="small": Transcript(
+            text="Привет мир",
+            language="ru",
+            segments=(SpeechSegment(0.0, 1.0, "Привет мир"),),
+        ),
+    )
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+
+    recording = Recording(id=RecordingId("20260802_161928_N"))
+    video_path = tmp_path / "20260802_161928_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True, srt=True)
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    srt_text = (tmp_path / "20260802_161928_N.srt").read_text(
+        encoding="utf-8"
+    )
+    assert "Привет мир" in srt_text
+
+
+def test_transcribe_srt_translation_failure_skips_srt_and_reports_error(
+    tmp_path, monkeypatch
+):
+    """A failed segment translation (e.g. missing argos-translate
+    language pack) must not silently fall back to writing an
+    untranslated .srt - that would look like a success while quietly
+    giving the user the wrong language again."""
+
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"audio"),
+    )
+    monkeypatch.setattr(
+        bv_generate, "detect_language", lambda source, *, model_size: "ru"
+    )
+    monkeypatch.setattr(
+        bv_generate,
+        "transcribe",
+        lambda source, *, language=None, model_size="small": Transcript(
+            text="Привет мир",
+            language="ru",
+            segments=(SpeechSegment(0.0, 1.0, "Привет мир"),),
+        ),
+    )
+
+    def failing_translate(text, *, source_language, target_language):
+        raise MediaToolError("no argos-translate language installed")
+
+    monkeypatch.setattr(bv_generate, "translate", failing_translate)
+
+    recording = Recording(id=RecordingId("20260802_161928_N"))
+    video_path = tmp_path / "20260802_161928_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True, srt=True, translate="es")
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is True
+    assert not (tmp_path / "20260802_161928_N.srt").exists()
+
+
+def test_translate_only_srt_reflects_translate_language(tmp_path, monkeypatch):
+    """Same fix, the _do_translate_only path (--translate without
+    --transcribe) - this function only ever runs with --translate
+    given, so its .srt/.lrc must always be in the target language."""
+
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"audio"),
+    )
+    monkeypatch.setattr(
+        bv_generate,
+        "transcribe",
+        lambda source, *, language=None, model_size="small": Transcript(
+            text="Привет мир",
+            language="ru",
+            segments=(
+                SpeechSegment(0.0, 1.0, "Привет"),
+                SpeechSegment(1.0, 2.0, "мир"),
+            ),
+        ),
+    )
+
+    translated = {"Привет": "Hello", "мир": "world", "Привет мир": "Hello world"}
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: translated[text],
+    )
+
+    recording = Recording(id=RecordingId("20260715_140000_N"))
+    video_path = tmp_path / "20260715_140000_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(translate="es", srt=True)
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    srt_text = (tmp_path / "20260715_140000_N.srt").read_text(
+        encoding="utf-8"
+    )
+    assert "Hello" in srt_text
+    assert "world" in srt_text
+    assert "Привет" not in srt_text
+
+
 def test_transcribe_srt_only_still_transcribes_when_transcript_up_to_date(
     tmp_path, monkeypatch
 ):
@@ -1122,12 +1365,23 @@ def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
     # returned before ever reaching the srt/lrc-writing code, so
     # nothing was generated even after the cache-bypass fix above.
     # need_srt_write/need_lrc_write must now be checked independently.
+    #
+    # Also covers a second, related fix: translate() *is* now called
+    # here (unlike before) - the SRT/LRC need their own translated
+    # segments regardless of whether translation.txt itself needs
+    # rewriting, since format_srt()/format_lrc() previously always
+    # used the *untranslated* segments even under --translate. Only
+    # translation.txt's own write is skipped (already up to date).
     calls = []
     monkeypatch.setattr(
         bv_generate, "transcribe", _fake_transcribe_factory(calls)
     )
     monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
-    monkeypatch.setattr(bv_generate, "translate", _refuse)
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: text.upper(),
+    )
 
     recording = Recording(id=RecordingId("20260715_233000_N"))
     transcript_path = tmp_path / "20260715_233000_N_tha.transcript.txt"
@@ -1150,11 +1404,16 @@ def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
 
     assert had_error is False
     assert calls == [audio_path], "should still re-transcribe for segment timing"
-    assert (tmp_path / "20260715_233000_N.srt").exists()
-    assert (tmp_path / "20260715_233000_N.lrc").exists()
-    # translation.txt was already up to date and --overwrite wasn't
-    # given, so it should be left untouched - translate() should never
-    # even be called (monkeypatched to _refuse above).
+    srt_text = (tmp_path / "20260715_233000_N.srt").read_text(
+        encoding="utf-8"
+    )
+    lrc_text = (tmp_path / "20260715_233000_N.lrc").read_text(
+        encoding="utf-8"
+    )
+    assert "HELLO WORLD" in srt_text
+    assert "HELLO WORLD" in lrc_text
+    # translation.txt itself was already up to date and --overwrite
+    # wasn't given, so it should be left untouched.
     assert (
         translation_path.read_text() == "already translated, from an earlier run"
     )
