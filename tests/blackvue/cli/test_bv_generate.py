@@ -407,6 +407,53 @@ def test_translate_only_reuses_existing_audio_and_persists_transcript(
     assert (tmp_path / "20260715_140000_N_swe.translation.txt").exists()
 
 
+def test_translate_only_re_extracts_when_cached_audio_is_empty(
+    tmp_path, monkeypatch
+):
+    """--translate's own cached-audio reuse (recording.file(Asset.AUDIO))
+    must apply the same self-healing check as --transcribe's - a
+    tracked but empty .aac (the real-world leftover from a failed
+    extraction) has to be treated as absent, not handed to
+    transcribe() as-is."""
+
+    extracted = []
+
+    def fake_extract_audio(source, destination):
+        extracted.append((source, destination))
+        destination.write_bytes(b"real-audio")
+
+    calls = []
+    monkeypatch.setattr(bv_generate, "extract_audio", fake_extract_audio)
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory(calls)
+    )
+    monkeypatch.setattr(
+        bv_generate,
+        "translate",
+        lambda text, *, source_language, target_language: text.upper(),
+    )
+
+    recording = Recording(id=RecordingId("20260715_140000_N"))
+    video_path = tmp_path / "20260715_140000_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+    empty_aac = tmp_path / "20260715_140000_N.aac"
+    empty_aac.write_bytes(b"")
+    recording.assets[Asset.AUDIO] = AssetFile(
+        asset=Asset.AUDIO, path=empty_aac
+    )
+
+    args = _base_args(translate="sv")
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    assert extracted == [(video_path, empty_aac)]
+    assert calls == [empty_aac]
+
+
 def test_translate_only_extracts_and_persists_from_scratch(
     tmp_path, monkeypatch
 ):
@@ -717,6 +764,109 @@ def test_transcribe_reuses_audio_already_written_this_run(
 
     assert had_error is False
     assert transcribed == [aac_path]
+
+
+def test_transcribe_treats_empty_cached_audio_as_absent_for_language_detection(
+    tmp_path, monkeypatch
+):
+    """Reproduces Christer's real report: a previous ffmpeg failure
+    (the ADTS/MP3 codec mismatch, since fixed) left a genuine 0-byte
+    .aac tracked as this recording's Asset.AUDIO. Before this fix,
+    that empty file was picked as the language-detection source
+    ahead of the real video, and detect_language()/soundfile choked
+    on it with a libsndfile "End of file" error - exactly what
+    Christer pasted. It must fall back to the video instead, the same
+    self-healing discipline load_or_compute_duration() already
+    applies to .duration.txt."""
+
+    # extract_audio() is legitimately called here too - the cached
+    # .aac is empty, so the second self-healing check further down
+    # (the actual transcription audio source, a separate reuse check
+    # from the language-detection one) re-extracts it as well. Not
+    # stubbed with _refuse, since this test is specifically about
+    # confirming detect_language() gets the video, not about whether
+    # extraction happens at all.
+    detected_from = []
+    extracted = []
+
+    def fake_extract_audio(source, destination):
+        extracted.append((source, destination))
+        destination.write_bytes(b"real-audio")
+
+    monkeypatch.setattr(bv_generate, "extract_audio", fake_extract_audio)
+    monkeypatch.setattr(
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size: detected_from.append(source) or "sv",
+    )
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory([], "sv")
+    )
+
+    recording = Recording(id=RecordingId("20260802_161928_N"))
+    video_path = tmp_path / "20260802_161928_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+    empty_aac = tmp_path / "20260802_161928_N.aac"
+    empty_aac.write_bytes(b"")  # the real-world leftover: 0 bytes
+    recording.assets[Asset.AUDIO] = AssetFile(
+        asset=Asset.AUDIO, path=empty_aac
+    )
+
+    args = _base_args(transcribe=True)
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert detected_from == [video_path]
+    assert extracted == [(video_path, empty_aac)]
+
+
+def test_transcribe_re_extracts_when_cached_audio_file_is_empty(
+    tmp_path, monkeypatch
+):
+    """Same real-world scenario as above, but for the actual
+    transcription audio source (a separate reuse check further down
+    from the language-detection one) - an empty .aac already on disk
+    must be overwritten by a fresh extraction, not handed to
+    transcribe() as-is."""
+
+    extracted = []
+
+    def fake_extract_audio(source, destination):
+        extracted.append((source, destination))
+        destination.write_bytes(b"real-audio")
+
+    monkeypatch.setattr(bv_generate, "extract_audio", fake_extract_audio)
+    transcribed = []
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcribe_factory(transcribed, "sv")
+    )
+
+    recording = Recording(id=RecordingId("20260802_162029_N"))
+    video_path = tmp_path / "20260802_162029_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+    empty_aac = tmp_path / "20260802_162029_N.aac"
+    empty_aac.write_bytes(b"")
+
+    args = _base_args(transcribe=True, language="sv")
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert len(extracted) == 1
+    assert extracted[0] == (video_path, empty_aac)
+    assert transcribed == [empty_aac]
+    assert empty_aac.read_bytes() == b"real-audio"
 
 
 def test_transcribe_and_translate_together_still_works(

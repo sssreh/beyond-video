@@ -333,6 +333,27 @@ def _should_write_for(path: Path, args: argparse.Namespace) -> bool:
     )
 
 
+def _has_usable_audio(path: Path) -> bool:
+    """Return True only if an already-extracted `.aac` at `path` is
+    actually worth reusing, not just present.
+
+    extract_audio() (generate/media.py) now cleans up after itself on
+    failure, but archives written before that fix - or a file deleted
+    or truncated by something outside bv-generate entirely - can still
+    have a 0-byte or otherwise empty `.aac` sitting on disk. Treating
+    that the same as "not extracted yet" lets a stuck recording
+    self-heal on the very next run instead of failing forever on a
+    corrupt cached file - the same self-healing discipline
+    load_or_compute_duration() already applies to `.duration.txt`
+    (generate/media.py).
+    """
+
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _report(verbose: bool, message: str) -> None:
     if verbose:
         print(message)
@@ -634,7 +655,7 @@ def _do_translate_only(
         #    leave it behind.
         audio_file = recording.file(Asset.AUDIO)
 
-        if audio_file is not None:
+        if audio_file is not None and _has_usable_audio(audio_file.path):
             audio_source = audio_file.path
         else:
             video_source = select_source(recording)
@@ -770,7 +791,12 @@ def _do_transcribe_with_optional_translate(
     want_transcript_file = args.transcribe
     want_translation_file = args.translate is not None
 
-    source_file = recording.file(Asset.AUDIO) or select_source(recording)
+    _existing_audio = recording.file(Asset.AUDIO)
+    source_file = (
+        _existing_audio
+        if _existing_audio is not None and _has_usable_audio(_existing_audio.path)
+        else select_source(recording)
+    )
 
     # The translation filename only depends on the (already known)
     # --translate target, so it can be checked without touching
@@ -900,7 +926,7 @@ def _do_transcribe_with_optional_translate(
     # directly every time.
     audio_destination = archive_path / f"{recording.id}.aac"
 
-    if audio_destination.exists():
+    if _has_usable_audio(audio_destination):
         audio_source = audio_destination
     else:
         try:

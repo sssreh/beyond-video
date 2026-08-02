@@ -421,6 +421,36 @@ def test_extract_audio_wraps_ffmpeg_failure(monkeypatch, tmp_path):
         extract_audio(tmp_path / "source.mp4", tmp_path / "out.aac")
 
 
+def test_extract_audio_removes_partial_output_on_ffmpeg_failure(
+    monkeypatch, tmp_path
+):
+    """ffmpeg opens (and truncates) its output file before it can
+    fail to write anything into it - confirmed for real against the
+    exact "adts muxer" failure this bug was found from, which left a
+    genuine 0-byte .aac on disk even though the whole command errored
+    out. A leftover empty file looks like a completed extraction to
+    every downstream caller that only checks "does the file exist" -
+    bv-generate's own cached-audio reuse got poisoned by exactly this
+    - so a failed extract_audio() must not leave anything behind."""
+
+    monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: "aac")
+
+    destination = tmp_path / "out.aac"
+
+    def fake_run(cmd, **_kwargs):
+        # Mimic ffmpeg's real behavior: the output file gets created/
+        # truncated before the command fails.
+        destination.write_bytes(b"")
+        raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        extract_audio(tmp_path / "source.mp4", destination)
+
+    assert not destination.exists()
+
+
 @pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe not installed",

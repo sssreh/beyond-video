@@ -279,6 +279,18 @@ def extract_audio(source: Path, destination: Path) -> None:
     audio is only ever consumed for speech-to-text (transcription/
     diarization/translation), where the small quality cost of
     transcoding is not a practical concern.
+
+    On failure, any partially-written destination file is removed
+    before raising. ffmpeg opens (and truncates) its output file
+    before it can fail to write anything into it - confirmed with the
+    exact "adts muxer" failure above, which left a genuine 0-byte
+    `.aac` on disk even though the whole command errored out. Left in
+    place, that empty file would look like a completed extraction to
+    every downstream caller that only checks "does the `.aac` already
+    exist" (bv-generate's cached-audio reuse, its own retry on a
+    later run) - failing loudly here and cleaning up after ourselves
+    is what makes a retry actually retry instead of quietly reusing
+    the broken leftover.
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -305,6 +317,7 @@ def extract_audio(source: Path, destination: Path) -> None:
     except FileNotFoundError as exc:
         raise MediaToolError("ffmpeg not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
+        destination.unlink(missing_ok=True)
         raise MediaToolError(
             f"ffmpeg failed for {source.name}: {exc.stderr.strip()}"
         ) from exc
