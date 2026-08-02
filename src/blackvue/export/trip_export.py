@@ -21,9 +21,13 @@ from datetime import timedelta
 from pathlib import Path
 
 from ..archive.asset import Asset
+from ..archive.asset_file import AssetFile
 from ..archive.recording_id import RecordingId
 from ..generate.media import MediaToolError
+from ..generate.media import extract_audio
 from ..generate.media import probe
+from ..generate.media import probe_audio_codec
+from ..generate.media import select_source
 from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
 from ..telemetry.gsensor_reader import read_gsensor
@@ -225,6 +229,105 @@ def _align_front_rear_durations(
             log.warning(message)
 
     return overrides
+
+
+def _ensure_recording_audio(
+    trip: Trip,
+    warnings: list[str],
+    log: TripLog | None,
+    *,
+    debug: bool = False,
+) -> None:
+    """Self-heal a missing `<recording>.aac` for any recording in this
+    trip that doesn't already have one, extracting it from that
+    recording's own video - the same thing `bv-generate
+    --extract-audio` would have produced, had it been run first.
+
+    Mirrors two existing self-healing conventions in this module/
+    package rather than introducing a third shape: `--stitch-gsensor`
+    already self-renders a missing gsensor.mp4 on demand (see
+    export_trip()'s own comment above its gsensor block), and
+    `load_or_compute_duration()` (generate/media.py) already self-
+    heals a missing `.duration.txt`. Christer, asked whether bv-export
+    should just always extract audio itself rather than requiring a
+    separate `bv-generate --extract-audio` pass first: "Or should it
+    be extracted by bv-export?" - yes, following the same "compose
+    only what's already there, but make sure it's there" shape those
+    two already established, rather than adding a new flag.
+
+    Mutates each healed recording's `assets[Asset.AUDIO]` in place, so
+    `_concatenate_asset(trip, Asset.AUDIO, ...)` right after this call
+    picks the new file up exactly like a pre-existing one - no
+    separate wiring needed there.
+
+    Deliberately scoped to just this trip's own recordings (not the
+    whole archive) - same scoping `load_or_compute_duration()`'s own
+    self-healing settled on for duration (see task #156's "Scope
+    duration self-healing to exported trip(s) only").
+
+    Parking recordings are always skipped, regardless of
+    `include_parking` - matching `bv-generate`'s own
+    `_do_extract_audio()`, which already refuses to extract audio for
+    them (parking footage is typically silent/uninteresting, and
+    Parking recordings never got this treatment before). This is
+    independent of (and stricter than) `_concatenate_asset()`'s own
+    `include_parking` gate, which only decides whether an *already-
+    extracted* Parking recording's audio is used in the trip - it
+    can't be asked to self-heal one that this function refuses to
+    create in the first place.
+
+    A recording missing both front and rear video has nothing to
+    extract from and is silently skipped (nothing downstream expects
+    audio from a recording with no video either). A recording whose
+    video genuinely has no audio stream at all is also silently
+    skipped, checked via `probe_audio_codec()` before attempting
+    anything - this is expected and common enough (not every
+    recording/camera mode has audio) that it isn't a failure worth
+    warning about; a warning is reserved for a real extraction failure
+    (a corrupted source, ffmpeg itself failing) on a recording that
+    *does* have an audio stream. Either way, the trip's `audio.aac`
+    just won't include this one recording - the same "leave it out"
+    behavior `_concatenate_asset()` already has for a recording
+    that's missing any other asset.
+    """
+
+    for recording in trip.recordings:
+        if recording.has(Asset.AUDIO) or recording.id.is_parking:
+            continue
+
+        source_file = select_source(recording)
+        if source_file is None:
+            continue
+
+        try:
+            has_audio_stream = probe_audio_codec(source_file.path) is not None
+        except MediaToolError:
+            # Can't even probe it - let extract_audio() below attempt
+            # the real thing and report on whatever it runs into,
+            # rather than silently giving up on a probe-only failure.
+            has_audio_stream = True
+
+        if not has_audio_stream:
+            continue
+
+        destination = source_file.path.parent / f"{recording.id}.aac"
+
+        try:
+            extract_audio(source_file.path, destination)
+        except MediaToolError as exc:
+            message = f"{recording.id}: could not self-heal missing audio - {exc}"
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        recording.assets[Asset.AUDIO] = AssetFile(Asset.AUDIO, destination)
+        if debug:
+            print(
+                f"bv-export: {recording.id}: extracted {destination.name} "
+                "(self-healed, missing from archive)",
+                file=sys.stderr,
+            )
 
 
 def _recording_video_offsets(
@@ -985,6 +1088,15 @@ def export_trip(
     # three for now - map/gsensor rendering do real CPU-bound Python
     # work (PIL frame drawing) that would contend for the GIL if also
     # threaded alongside each other, a separate change if wanted later.
+    # Self-heals any recording in this trip that's missing its own
+    # <recording>.aac before the audio concatenation below gathers
+    # sources - see _ensure_recording_audio()'s own docstring. Must
+    # finish before the ThreadPoolExecutor block starts (its audio
+    # worker reads recording.assets synchronously the moment it
+    # starts), so this runs here rather than as a fourth concurrent
+    # task alongside front/rear/audio.
+    _ensure_recording_audio(trip, warnings, log, debug=debug)
+
     log.step("starting concatenation (front/rear/audio)")
     concat_start = time.monotonic()
 

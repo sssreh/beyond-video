@@ -14,6 +14,7 @@ from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
 from blackvue.export.trip_export import _align_front_rear_durations
 from blackvue.export.trip_export import _concatenate_asset
+from blackvue.export.trip_export import _ensure_recording_audio
 from blackvue.export.trip_export import _merge_gsensor
 from blackvue.export.trip_export import _recording_video_offsets
 from blackvue.export.trip_export import _video_position_breakpoints
@@ -57,6 +58,25 @@ def _video_size(path) -> tuple[int, int]:
     )
     stream = json.loads(result.stdout)["streams"][0]
     return stream["width"], stream["height"]
+
+
+def _make_video_with_audio(path, duration_seconds: float = 1.0) -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"testsrc=size=64x64:rate=10:duration={duration_seconds}",
+            "-f", "lavfi",
+            "-i", f"sine=frequency=440:duration={duration_seconds}",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-shortest",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def _make_audio(path, duration_seconds: float = 1.0) -> None:
@@ -276,6 +296,198 @@ def test_export_trip_concatenates_front_rear_audio_independently(
     assert result.rear_video.exists()
     assert result.audio.exists()
     assert len(result.warnings) == 1
+
+
+def test_ensure_recording_audio_extracts_from_video_when_missing(tmp_path):
+    # Christer: "Or should it be extracted by bv-export?" - yes, the
+    # same recording video-only, no Asset.AUDIO entry should end up
+    # with a real <recording>.aac sitting next to its video, and the
+    # in-memory Recording should reflect it immediately.
+    front = tmp_path / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+
+    recording_id = RecordingId("20260101_000000_N")
+    recording = Recording(
+        id=recording_id,
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None)
+
+    expected = tmp_path / "20260101_000000_N.aac"
+    assert expected.exists()
+    assert recording.has(Asset.AUDIO)
+    assert recording.file(Asset.AUDIO).path == expected
+    assert warnings == []
+
+
+def test_ensure_recording_audio_skips_a_video_with_no_audio_stream(tmp_path):
+    # The common "not an error" case: a video with no audio track at
+    # all shouldn't be treated as a failure worth warning about - see
+    # _ensure_recording_audio()'s own docstring.
+    front = tmp_path / "front.mp4"
+    _make_video(front, 1.0)
+
+    recording_id = RecordingId("20260101_000000_N")
+    recording = Recording(
+        id=recording_id,
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None)
+
+    assert not (tmp_path / "20260101_000000_N.aac").exists()
+    assert not recording.has(Asset.AUDIO)
+    assert warnings == []
+
+
+def test_ensure_recording_audio_skips_parking_recordings(tmp_path):
+    # Matches bv-generate's own _do_extract_audio(), which already
+    # refuses to extract audio for Parking recordings - even though
+    # this video genuinely has an audio stream, it should never be
+    # touched.
+    front = tmp_path / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+
+    recording_id = RecordingId("20260101_000000_P")
+    recording = Recording(
+        id=recording_id,
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None)
+
+    assert not (tmp_path / "20260101_000000_P.aac").exists()
+    assert not recording.has(Asset.AUDIO)
+    assert warnings == []
+
+
+def test_ensure_recording_audio_skips_a_recording_that_already_has_one(
+    tmp_path, monkeypatch
+):
+    called = []
+    monkeypatch.setattr(
+        trip_export_module, "extract_audio", lambda *a, **k: called.append(a)
+    )
+
+    front = tmp_path / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+    existing_audio = tmp_path / "existing.aac"
+    existing_audio.write_bytes(b"already-here")
+
+    recording = Recording(
+        id=RecordingId("20260101_000000_N"),
+        assets={
+            Asset.FRONT: AssetFile(Asset.FRONT, front),
+            Asset.AUDIO: AssetFile(Asset.AUDIO, existing_audio),
+        },
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None)
+
+    assert called == []
+    assert recording.file(Asset.AUDIO).path == existing_audio
+
+
+def test_ensure_recording_audio_warns_on_a_real_extraction_failure(
+    tmp_path, monkeypatch
+):
+    # A recording that DOES have an audio stream (so it gets past the
+    # probe_audio_codec() short-circuit) but extract_audio() itself
+    # still fails for some other reason (corrupted source, ffmpeg
+    # error) - this is the one case that should actually warn.
+    from blackvue.generate.media import MediaToolError as MTE
+
+    def _fail(*_a, **_k):
+        raise MTE("simulated extraction failure")
+
+    monkeypatch.setattr(trip_export_module, "extract_audio", _fail)
+
+    front = tmp_path / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+
+    recording = Recording(
+        id=RecordingId("20260101_000000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None)
+
+    assert not recording.has(Asset.AUDIO)
+    assert len(warnings) == 1
+    assert "could not self-heal missing audio" in warnings[0]
+    assert "simulated extraction failure" in warnings[0]
+
+
+def test_ensure_recording_audio_debug_prints_when_healed(tmp_path, capsys):
+    front = tmp_path / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+
+    recording = Recording(
+        id=RecordingId("20260101_000000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None, debug=True)
+
+    err = capsys.readouterr().err
+    assert "20260101_000000_N" in err
+    assert "self-healed" in err
+
+
+def test_ensure_recording_audio_is_silent_by_default(tmp_path, capsys):
+    front = tmp_path / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+
+    recording = Recording(
+        id=RecordingId("20260101_000000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    warnings: list[str] = []
+
+    _ensure_recording_audio(trip, warnings, None)
+
+    assert capsys.readouterr().err == ""
+
+
+def test_export_trip_self_heals_a_recordings_missing_audio(tmp_path):
+    # End-to-end: export_trip() itself should produce a trip-level
+    # audio.aac from a recording whose video has audio but never had
+    # its own <recording>.aac extracted (no earlier `bv-generate
+    # --extract-audio` run) - no flag needed.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front = source_dir / "front.mp4"
+    _make_video_with_audio(front, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert result.audio == dest_dir / "audio.aac"
+    assert result.audio.exists()
+    assert (source_dir / "20260720_100000_N.aac").exists()
+    assert result.warnings == ()
 
 
 def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
