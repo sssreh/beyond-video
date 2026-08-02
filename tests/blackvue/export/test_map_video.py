@@ -11,6 +11,7 @@ from blackvue.export.map_video import MAX_LIVE_FIX_GAP_SECONDS
 from blackvue.export.map_video import _advance_fix_index
 from blackvue.export.map_video import _interpolate_position_from_index
 from blackvue.export.map_video import _is_live_fix
+from blackvue.export.map_video import _wallclock_for_elapsed
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
@@ -685,6 +686,88 @@ def test_render_map_video_uses_a_custom_marker_image_when_given(tmp_path):
     assert destination.exists()
 
 
+def test_wallclock_for_elapsed_falls_back_to_start_plus_elapsed_without_breakpoints():
+    # No video for this trip at all (GPS/g-sensor-only) - preserves the
+    # module's original single-anchor behavior exactly.
+    fallback_start = datetime(2026, 7, 15, 13, 0, 0)
+
+    result = _wallclock_for_elapsed(42.0, (), fallback_start)
+
+    assert result == fallback_start + timedelta(seconds=42.0)
+
+
+def test_wallclock_for_elapsed_contiguous_recordings_matches_old_single_anchor():
+    # Two recordings back-to-back with zero gap/overlap in both video
+    # position and wall-clock - the piecewise breakpoints should agree
+    # exactly with a plain single-anchor calculation in this case, the
+    # same as the module's behavior before recording_breakpoints
+    # existed.
+    rec_a_start = datetime(2026, 7, 15, 13, 0, 0)
+    rec_b_start = rec_a_start + timedelta(seconds=60)
+    breakpoints = ((0.0, rec_a_start), (60.0, rec_b_start))
+
+    # 30s into recording A.
+    assert _wallclock_for_elapsed(30.0, breakpoints, rec_a_start) == (
+        rec_a_start + timedelta(seconds=30)
+    )
+    # 10s into recording B (elapsed=70s overall).
+    assert _wallclock_for_elapsed(70.0, breakpoints, rec_a_start) == (
+        rec_b_start + timedelta(seconds=10)
+    )
+
+
+def test_wallclock_for_elapsed_uses_real_video_position_across_a_wallclock_gap():
+    # Recording A's own video is only 32s long, but its ID timestamp is
+    # 60s before recording B's - the old ID-timestamp-based rebase
+    # would have placed video-elapsed=32s at rec_a_start+32s (still
+    # inside the "gap"), but the real video has already moved on to
+    # recording B's content at that point. The breakpoint for B is
+    # keyed by B's own real video position (32.0), not the 60s wall-
+    # clock gap between the two recordings' filenames.
+    rec_a_start = datetime(2026, 7, 15, 13, 0, 0)
+    rec_b_start = rec_a_start + timedelta(seconds=60)
+    breakpoints = ((0.0, rec_a_start), (32.0, rec_b_start))
+
+    # 35s of video-elapsed is 3s into recording B's own video, even
+    # though only 35 wall-clock seconds have passed since rec_a_start -
+    # nowhere near rec_b_start yet by the old ID-gap logic.
+    result = _wallclock_for_elapsed(35.0, breakpoints, rec_a_start)
+
+    assert result == rec_b_start + timedelta(seconds=3)
+
+
+def test_wallclock_for_elapsed_handles_an_overlapping_manual_recording():
+    # Repro of the real trip that motivated this fix: a Manual-mode
+    # recording's prebuffer means its own video can start several
+    # seconds before its ID timestamp claims and even before the
+    # previous recording's ID-timestamp span nominally ends - the
+    # breakpoint itself is still keyed by real video position (36.73s,
+    # a confirmed real value from trip_export._recording_video_offsets
+    # ()'s own docstring), regardless of the negative/overlapping ID
+    # gap.
+    rec_n_start = datetime(2026, 8, 2, 10, 35, 13)
+    rec_m_start = datetime(2026, 8, 2, 10, 35, 45)  # 32s after rec_n's ID
+    breakpoints = ((0.0, rec_n_start), (36.73, rec_m_start))
+
+    result = _wallclock_for_elapsed(40.0, breakpoints, rec_n_start)
+
+    assert result == rec_m_start + timedelta(seconds=40.0 - 36.73)
+
+
+def test_wallclock_for_elapsed_before_the_first_breakpoint_extrapolates_from_it():
+    # elapsed_seconds before the first breakpoint's own position
+    # shouldn't normally happen (breakpoints[0] is always position 0.0
+    # in practice), but the loop's own "keep the first pair as the
+    # starting candidate" design means this still resolves sanely
+    # rather than raising.
+    start = datetime(2026, 7, 15, 13, 0, 0)
+    breakpoints = ((5.0, start),)
+
+    result = _wallclock_for_elapsed(2.0, breakpoints, start)
+
+    assert result == start + timedelta(seconds=2.0 - 5.0)
+
+
 def test_render_map_video_video_start_extends_render_to_cover_a_leading_gap(
     tmp_path
 ):
@@ -745,6 +828,51 @@ def test_render_map_video_video_start_clamps_position_during_the_leading_gap(
     # for a real leading gap instead of always being masked by `start`
     # itself being derived from the fixes.
     assert captured[0] == (59.300, 18.000)
+
+
+def test_render_map_video_uses_recording_breakpoints_over_a_single_anchor(
+    tmp_path, monkeypatch
+):
+    # Two recordings: A is only 2s of real video (gsensor-analogous
+    # "prebuffer" scenario), but its ID-gap to B is 10s. GPS fixes are
+    # spread out with one fix per recording's own real start. Without
+    # recording_breakpoints, frame timestamps would be computed as a
+    # single video_start + elapsed anchor and never "arrive" at
+    # recording B's fixes until 10s in; with recording_breakpoints,
+    # they arrive at 2s in - matching the real (short) video.
+    captured_timestamps = []
+
+    def fake_render_frame(_bbox, _roads, _route, _position, *, timestamp_text, **_kw):
+        captured_timestamps.append(timestamp_text)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    rec_a_start = datetime(2026, 7, 15, 13, 0, 0)
+    rec_b_start = rec_a_start + timedelta(seconds=10)
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(10, 59.310, 18.020),
+    )
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03)
+    breakpoints = ((0.0, rec_a_start), (2.0, rec_b_start))
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=1,
+        video_start=rec_a_start, video_duration_seconds=4.0,
+        recording_breakpoints=breakpoints,
+    )
+
+    # Frame at video-elapsed=2s should be timestamped rec_b_start (real
+    # video position), not rec_a_start+2s (what a single anchor would
+    # give) - both are captured via render_frame's timestamp_text, so
+    # confirm the frame at elapsed=2 (frame index 2 at fps=1) reflects
+    # rec_b_start rather than the un-rebased anchor.
+    assert captured_timestamps[2] == rec_b_start.strftime("%Y-%m-%d %H:%M:%S")
+    assert captured_timestamps[0] == rec_a_start.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def test_render_map_video_scales_the_marker_image_to_half_size(tmp_path, monkeypatch):

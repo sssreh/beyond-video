@@ -472,6 +472,50 @@ def test_stitch_cameras_scale_includes_the_map_panel(tmp_path):
     assert with_map_width > camera_only_width
 
 
+def test_stitch_cameras_forwards_map_recording_breakpoints_to_the_map_panel(
+    tmp_path, monkeypatch
+):
+    # The gsensor/map sync fix (see trip_export._recording_video_
+    # offsets()'s own docstring) rebases map.mp4's GPS positioning
+    # using each recording's real position in the concatenated video
+    # instead of a single global video_start anchor - --stitch-map's
+    # own panel needs the exact same rebasing, so
+    # map_recording_breakpoints has to thread all the way from
+    # stitch_cameras() through _stack() into _render_map_panel() (and
+    # from there into render_map_video() itself, already covered by
+    # test_map_video.py's own recording_breakpoints tests). This only
+    # confirms the plumbing carries the value through unchanged - the
+    # actual rebase math is _wallclock_for_elapsed()'s job, not
+    # stitch.py's.
+    captured = []
+    original_render_map_panel = stitch_module._render_map_panel
+
+    def _capture_render_map_panel(*args, **kwargs):
+        captured.append(kwargs.get("recording_breakpoints"))
+        return original_render_map_panel(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stitch_module, "_render_map_panel", _capture_render_map_panel
+    )
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(1, 59.31, 18.005))
+    breakpoints = ((0.0, datetime(2026, 7, 15, 13, 0, 0)),)
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+        map_recording_breakpoints=breakpoints,
+    )
+
+    assert captured == [breakpoints]
+
+
 def test_stitch_cameras_scale_shrinks_decode_time_scaling_not_just_the_final_pass(
     tmp_path, monkeypatch
 ):

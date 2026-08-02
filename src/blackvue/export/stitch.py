@@ -489,6 +489,7 @@ def stitch_cameras(
     map_icon: Path | None = None,
     map_video_start=None,
     map_video_duration_seconds: float | None = None,
+    map_recording_breakpoints=None,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -718,6 +719,17 @@ def stitch_cameras(
     window of time - out of sync with the camera footage right next to
     it, not just wrong on its own.
 
+    `map_recording_breakpoints`, if given, is forwarded straight to
+    render_map_video() alongside `map_video_start`/
+    `map_video_duration_seconds` - positions the map panel's own
+    per-frame GPS lookup by each recording's real position in the
+    concatenated video instead of one single wall-clock anchor,
+    matching the camera footage exactly even when recordings gap,
+    overlap, or get front/rear-trimmed relative to their own nominal
+    ID timestamps (confirmed as a real sync bug on an actual trip, not
+    just theoretical - see trip_export._recording_video_offsets()'s
+    own docstring and WORKING_CONTEXT.md).
+
     `gsensor_video`, if given, is an *already-rendered* gsensor.mp4
     (see gsensor_video.py's --gsensor-video) composited as a
     transparent chroma-keyed overlay on top of the camera footage -
@@ -833,6 +845,7 @@ def stitch_cameras(
             map_roads=map_roads, map_areas=map_areas, map_icon=map_icon,
             map_video_start=map_video_start,
             map_video_duration_seconds=map_video_duration_seconds,
+            map_recording_breakpoints=map_recording_breakpoints,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
             graph_samples=graph_samples, graph_side=graph_side,
@@ -1424,6 +1437,7 @@ def _render_map_panel(
     marker_image_path: Path | None,
     video_start=None,
     video_duration_seconds: float | None = None,
+    recording_breakpoints=None,
 ) -> Path | None:
     """Render --stitch-map's panel (mode 'map' or 'zoom') at exactly
     width x height, so combining it with the camera composite via a
@@ -1494,6 +1508,7 @@ def _render_map_panel(
             width=width, height=height,
             video_start=video_start,
             video_duration_seconds=video_duration_seconds,
+            recording_breakpoints=recording_breakpoints,
         )
 
     bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
@@ -1507,6 +1522,7 @@ def _render_map_panel(
         width=width, height=height,
         video_start=video_start,
         video_duration_seconds=video_duration_seconds,
+        recording_breakpoints=recording_breakpoints,
     )
 
 
@@ -1885,6 +1901,7 @@ def _stack(
     map_icon: Path | None = None,
     map_video_start=None,
     map_video_duration_seconds: float | None = None,
+    map_recording_breakpoints=None,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -2599,6 +2616,7 @@ def _stack(
                         marker_image_path=map_icon,
                         video_start=map_video_start,
                         video_duration_seconds=map_video_duration_seconds,
+                        recording_breakpoints=map_recording_breakpoints,
                     ) if panel_size is not None else None
                 except MediaToolError as exc:
                     if warnings is not None:

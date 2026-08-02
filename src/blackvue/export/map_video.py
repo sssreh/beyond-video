@@ -271,6 +271,49 @@ def _interpolate_position_from_index(
     return lat, lon, speed, course
 
 
+def _wallclock_for_elapsed(
+    elapsed_seconds: float,
+    breakpoints: tuple[tuple[float, datetime], ...],
+    fallback_start: datetime,
+) -> datetime:
+    """Convert a video-elapsed-seconds position into the real
+    wall-clock instant it corresponds to.
+
+    `breakpoints` (see trip_export._video_position_breakpoints()) is a
+    sequence of (video_position_seconds, wallclock_start) pairs, one
+    per recording actually included in the concatenated video, sorted
+    by video position. Within a recording's own span, wall-clock time
+    advances 1:1 with video-elapsed time - so this just finds which
+    recording's span `elapsed_seconds` falls in, then adds however far
+    past that recording's own start position we are. A plain single
+    `fallback_start + elapsed_seconds` (this function's own fallback,
+    and this module's entire behavior before `breakpoints` existed)
+    gets this wrong whenever recordings gap, overlap, or get front/
+    rear-trimmed relative to their own nominal ID timestamps - which
+    in practice is nearly always (see trip_export.
+    _recording_video_offsets()'s own docstring for a real confirmed
+    case: a ~4.7s position error from one single recording boundary).
+
+    Falls back to `fallback_start + elapsed_seconds` when `breakpoints`
+    is empty (e.g. no video at all for this trip - a GPS/g-sensor-only
+    "trip", where there's no concatenated video to align against
+    regardless) - preserves this module's original behavior exactly
+    for that case rather than requiring every caller to know it needs
+    breakpoints.
+    """
+
+    if not breakpoints:
+        return fallback_start + timedelta(seconds=elapsed_seconds)
+
+    position, wallclock_start = breakpoints[0]
+    for candidate_position, candidate_wallclock in breakpoints:
+        if candidate_position > elapsed_seconds:
+            break
+        position, wallclock_start = candidate_position, candidate_wallclock
+
+    return wallclock_start + timedelta(seconds=elapsed_seconds - position)
+
+
 def _is_live_fix(
     positioned: tuple[GpsFix, ...], timestamp: datetime, index: int
 ) -> bool:
@@ -320,6 +363,7 @@ def render_map_video(
     height: int = DEFAULT_HEIGHT,
     video_start: datetime | None = None,
     video_duration_seconds: float | None = None,
+    recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
@@ -378,6 +422,19 @@ def render_map_video(
     left as None - e.g. no video exists at all for this trip (a GPS/
     g-sensor-only "trip"), or the real video's own duration couldn't
     be probed.
+
+    `recording_breakpoints`, if given (see trip_export.
+    _video_position_breakpoints()), positions every frame's GPS lookup
+    using each recording's own real position in the concatenated video
+    instead of a single global `video_start` anchor - see
+    _wallclock_for_elapsed()'s own docstring for why a single anchor
+    drifts out of sync whenever recordings gap/overlap/trim relative
+    to their own nominal ID timestamps (nearly always, in practice).
+    `video_start` is still used as frame 0's own fallback reference
+    (and for the leading-gap/trailing-gap clamping this function's own
+    docstring above describes) whenever `recording_breakpoints` is
+    None/empty or a given frame's elapsed time falls outside every
+    breakpoint's own coverage.
 
     A small satellite badge (see render_frame()'s `show_gps_badge`)
     appears in the top-right corner of every frame whose timestamp
@@ -484,7 +541,9 @@ def render_map_video(
 
         for frame_number in range(frame_count):
             elapsed = min(frame_number / fps, total_seconds)
-            timestamp = start + timedelta(seconds=elapsed)
+            timestamp = _wallclock_for_elapsed(
+                elapsed, recording_breakpoints or (), start
+            )
 
             # Grow the drawn route with every real fix at or before
             # this frame's timestamp, so the line is built from real

@@ -14,6 +14,9 @@ from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
 from blackvue.export.trip_export import _align_front_rear_durations
 from blackvue.export.trip_export import _concatenate_asset
+from blackvue.export.trip_export import _merge_gsensor
+from blackvue.export.trip_export import _recording_video_offsets
+from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.generate.media import MediaToolError
@@ -183,12 +186,20 @@ def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
 
     assert result.gsensor == dest_dir / "trip.3gf"
     samples = read_gsensor(result.gsensor)
-    # First recording's samples keep their own offsets (0, 100ms);
-    # second recording started 60s after the trip start, so its one
-    # sample should be rebased to 60000ms.
+    # First recording's samples keep their own offsets (0, 100ms).
+    # The second recording's one sample is now rebased by its real
+    # position in the concatenated video (front_a's own real duration,
+    # ~1s) rather than the 60s gap between the two recordings' ID
+    # timestamps - see _recording_video_offsets()'s own docstring for
+    # why: front_a/front_b are both only 1s long, nowhere near the 60s
+    # apart their filenames claim, so positioning by ID timestamp would
+    # place this sample nearly a minute later than where it actually
+    # falls in front.mp4.
     assert samples[0].offset == timedelta(milliseconds=0)
     assert samples[1].offset == timedelta(milliseconds=100)
-    assert samples[2].offset == timedelta(milliseconds=60000)
+    expected_offset_seconds = _video_duration(front_a)
+    assert abs(samples[2].offset.total_seconds() - expected_offset_seconds) < 0.2
+    assert samples[2].offset < timedelta(seconds=2)
     assert (samples[2].x, samples[2].y, samples[2].z) == (7, 8, 9)
 
     assert result.text == (dest_dir / "transcript.txt",)
@@ -492,6 +503,188 @@ def test_align_front_rear_durations_skips_a_recording_missing_one_side(tmp_path)
 
     assert overrides == {}
     assert warnings == []
+
+
+def test_recording_video_offsets_uses_real_video_duration_not_id_gap(tmp_path):
+    # The bug this whole feature fixes: two recordings 60s apart by ID
+    # timestamp, but each only 1s of real video - _concatenate_asset()
+    # glues them back to back with no gap filler, so the second one's
+    # real position in the video is ~1s, not 60s.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front_a = source_dir / "front_a.mp4"
+    front_b = source_dir / "front_b.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(front_b, 1.0)
+
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)}),
+        Recording(id=second_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)}),
+    ))
+
+    offsets = _recording_video_offsets(trip, include_parking=True)
+
+    assert offsets[first_id] == 0.0
+    # Real front_a duration, not the 60s ID-timestamp gap.
+    assert abs(offsets[second_id] - _video_duration(front_a)) < 0.2
+    assert offsets[second_id] < 2.0
+
+
+def test_recording_video_offsets_uses_trimmed_duration_override(tmp_path):
+    # A recording present in duration_overrides (front/rear alignment
+    # trimmed its front down) should be positioned by the *trimmed*
+    # duration, not the original untrimmed file's own duration -
+    # otherwise the offset wouldn't match what actually landed in
+    # front.mp4.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front_a = source_dir / "front_a.mp4"
+    front_b = source_dir / "front_b.mp4"
+    trimmed_a = tmp_path / "trimmed_a.mp4"
+    _make_video(front_a, 5.0)
+    _make_video(front_b, 1.0)
+    _make_video(trimmed_a, 2.0)
+
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)}),
+        Recording(id=second_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)}),
+    ))
+
+    offsets = _recording_video_offsets(
+        trip, include_parking=True,
+        duration_overrides={(first_id, Asset.FRONT): trimmed_a},
+    )
+
+    assert abs(offsets[second_id] - 2.0) < 0.2
+
+
+def test_recording_video_offsets_skips_parking_when_not_included(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front_a = source_dir / "front_a.mp4"
+    front_p = source_dir / "front_p.mp4"
+    front_b = source_dir / "front_b.mp4"
+    _make_video(front_a, 1.0)
+    _make_video(front_p, 3.0)
+    _make_video(front_b, 1.0)
+
+    first_id = RecordingId("20260720_100000_N")
+    parking_id = RecordingId("20260720_100010_P")
+    second_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)}),
+        Recording(id=parking_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)}),
+        Recording(id=second_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)}),
+    ))
+
+    offsets = _recording_video_offsets(trip, include_parking=False)
+
+    assert parking_id not in offsets
+    # second_id's offset skips right over the parking recording's own
+    # 3s duration, since it never reaches front.mp4 at all.
+    assert abs(offsets[second_id] - _video_duration(front_a)) < 0.2
+
+
+def test_recording_video_offsets_skips_a_recording_with_no_video(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front_a = source_dir / "front_a.mp4"
+    _make_video(front_a, 1.0)
+
+    first_id = RecordingId("20260720_100000_N")
+    gps_only_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_a)}),
+        Recording(id=gps_only_id, assets={}),
+    ))
+
+    offsets = _recording_video_offsets(trip, include_parking=True)
+
+    assert first_id in offsets
+    assert gps_only_id not in offsets
+
+
+def test_video_position_breakpoints_sorted_by_position():
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id),
+        Recording(id=second_id),
+    ))
+
+    breakpoints = _video_position_breakpoints(
+        trip, {second_id: 5.0, first_id: 0.0}
+    )
+
+    assert breakpoints == (
+        (0.0, first_id.timestamp),
+        (5.0, second_id.timestamp),
+    )
+
+
+def test_video_position_breakpoints_omits_recordings_without_an_offset():
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id),
+        Recording(id=second_id),
+    ))
+
+    breakpoints = _video_position_breakpoints(trip, {first_id: 0.0})
+
+    assert breakpoints == ((0.0, first_id.timestamp),)
+
+
+def test_merge_gsensor_positions_by_video_offset_when_available(tmp_path):
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+
+    gsensor_a = tmp_path / "a.3gf"
+    gsensor_b = tmp_path / "b.3gf"
+    gsensor_a.write_bytes(_gsensor_bytes((0, 1, 2, 3)))
+    gsensor_b.write_bytes(_gsensor_bytes((0, 4, 5, 6)))
+
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a)}),
+        Recording(id=second_id, assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_b)}),
+    ))
+
+    # Real video position (2.5s), deliberately far from the 60s
+    # ID-timestamp gap - if this is used, samples[1].offset should
+    # reflect it, not the ID gap.
+    samples = _merge_gsensor(trip, {first_id: 0.0, second_id: 2.5})
+
+    assert samples[0].offset == timedelta(seconds=0)
+    assert samples[1].offset == timedelta(seconds=2.5)
+
+
+def test_merge_gsensor_falls_back_to_id_timestamp_gap_without_video_offsets(tmp_path):
+    # No video at all for this trip (e.g. a GPS/g-sensor-only export) -
+    # video_offsets is empty/None, so the old wall-clock-based rebase
+    # is still the right fallback.
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+
+    gsensor_a = tmp_path / "a.3gf"
+    gsensor_b = tmp_path / "b.3gf"
+    gsensor_a.write_bytes(_gsensor_bytes((0, 1, 2, 3)))
+    gsensor_b.write_bytes(_gsensor_bytes((0, 4, 5, 6)))
+
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_a)}),
+        Recording(id=second_id, assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_b)}),
+    ))
+
+    samples_no_arg = _merge_gsensor(trip)
+    samples_empty_dict = _merge_gsensor(trip, {})
+
+    for samples in (samples_no_arg, samples_empty_dict):
+        assert samples[0].offset == timedelta(seconds=0)
+        assert samples[1].offset == timedelta(seconds=60)
 
 
 def test_export_trip_aligns_a_mismatched_front_rear_recording(tmp_path):

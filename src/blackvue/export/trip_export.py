@@ -17,6 +17,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 
 from ..archive.asset import Asset
@@ -226,6 +227,110 @@ def _align_front_rear_durations(
     return overrides
 
 
+def _recording_video_offsets(
+    trip: Trip,
+    *,
+    include_parking: bool,
+    duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
+) -> dict[RecordingId, float]:
+    """Return each recording's own real start position, in seconds,
+    within the concatenated video `_concatenate_asset()` actually
+    produces - the sum of every earlier included recording's own
+    (possibly front/rear-trimmed) duration, NOT the gap between
+    recording ID timestamps.
+
+    This matters because `_concatenate_asset()` builds front.mp4/
+    rear.mp4 by gluing each included recording's own video file
+    straight onto the end of the previous one, with zero awareness of
+    wall-clock time - a recording's real position in the video is
+    "wherever the earlier recordings' own durations happen to add up
+    to," full stop. That only agrees with "however many seconds after
+    the trip's first recording its ID timestamp claims to be" when
+    every consecutive pair has exactly zero gap/overlap AND no front/
+    rear trim ever fires - which in practice is close to never: two
+    recordings from the same camera, "back to back" by ID, commonly
+    overlap or gap by several seconds (a Manual/Event recording's own
+    pre-record buffer is one concrete, confirmed cause - see
+    WORKING_CONTEXT.md), and `_align_front_rear_durations()` trims
+    real content off the end of nearly every recording's longer side.
+    Positioning g-sensor samples or GPS fixes by ID-timestamp gap
+    instead of this real video position is exactly what made
+    gsensor.mp4/map.mp4 drift out of sync with the actual footage on a
+    real trip - confirmed directly: recording gap-by-ID-timestamp said
+    32s, but the previous recording's own (rear-trimmed) video was
+    36.73s long, a ~4.7s position error before any prebuffer effect
+    even entered into it.
+
+    Recordings left out of the video entirely (Parking-mode, when
+    `include_parking` is False; or a recording whose FRONT/REAR can't
+    be probed at all) are left out of the returned map too, mirroring
+    `_concatenate_asset()`'s own inclusion rule as closely as
+    practical without duplicating its full readable-source handling -
+    a caller that finds a recording missing from this map has no real
+    video position to rebase against and should fall back to its own
+    best-effort behavior (see `_merge_gsensor()`).
+
+    Uses FRONT's own (overridden/trimmed, if `duration_overrides` has
+    an entry for it) duration as each recording's video-timeline
+    length, falling back to REAR if a recording has no FRONT - the two
+    should already match almost exactly post-
+    `_align_front_rear_durations()`, so which one is probed only
+    matters for a recording missing one side entirely.
+    """
+
+    offsets: dict[RecordingId, float] = {}
+    elapsed = 0.0
+
+    for recording in trip.recordings:
+        if recording.id.is_parking and not include_parking:
+            continue
+
+        if recording.has(Asset.FRONT):
+            asset = Asset.FRONT
+        elif recording.has(Asset.REAR):
+            asset = Asset.REAR
+        else:
+            continue
+
+        override_path = (
+            duration_overrides.get((recording.id, asset))
+            if duration_overrides is not None
+            else None
+        )
+        path = override_path or recording.file(asset).path
+
+        try:
+            duration = probe(path).duration_seconds
+        except MediaToolError:
+            continue
+
+        offsets[recording.id] = elapsed
+        elapsed += duration
+
+    return offsets
+
+
+def _video_position_breakpoints(
+    trip: Trip, video_offsets: dict[RecordingId, float]
+) -> tuple[tuple[float, datetime], ...]:
+    """Return `video_offsets` reshaped into a (video_position_seconds,
+    wallclock_start) sequence, sorted by video position - what
+    map_video.py's render_map_video() (`recording_breakpoints` param)
+    needs to convert a video-elapsed position back into the real
+    wall-clock instant it corresponds to, piecewise per recording
+    instead of one global "trip start" anchor. See
+    _recording_video_offsets()'s own docstring for why the two only
+    agree by coincidence.
+    """
+
+    breakpoints = [
+        (video_offsets[recording.id], recording.id.timestamp)
+        for recording in trip.recordings
+        if recording.id in video_offsets
+    ]
+    return tuple(sorted(breakpoints, key=lambda item: item[0]))
+
+
 def _concatenate_asset(
     trip: Trip,
     asset: Asset,
@@ -361,11 +466,23 @@ def _merge_gps(trip: Trip) -> tuple:
     return tuple(sorted(fixes, key=lambda fix: fix.timestamp))
 
 
-def _merge_gsensor(trip: Trip) -> tuple[GSensorSample, ...]:
+def _merge_gsensor(
+    trip: Trip, video_offsets: dict[RecordingId, float] | None = None
+) -> tuple[GSensorSample, ...]:
     """Merge every recording's g-sensor samples into one trip-relative
-    stream: each recording's own offsets (relative to its own start)
-    are rebased by how far that recording started after the trip's
-    first recording."""
+    stream, positioned to match the actual concatenated video wherever
+    possible: a recording present in `video_offsets` (see
+    _recording_video_offsets()) is rebased by its own real position in
+    the video; a recording without one (no video at all for this trip,
+    or its FRONT/REAR couldn't be probed) falls back to the old
+    "rebase by how far its ID timestamp is after the trip's first
+    recording" behavior - still useful for a GPS/g-sensor-only "trip"
+    with no video to align against at all, just not exact whenever a
+    real video does exist and recordings gap/overlap/trim relative to
+    their own nominal ID timestamps (the near-universal case - see
+    _recording_video_offsets()'s own docstring for why positioning by
+    ID timestamp alone drifted trip.3gf/gsensor.mp4 out of sync with
+    real footage)."""
 
     samples: list[GSensorSample] = []
     trip_start = trip.start_timestamp
@@ -379,7 +496,11 @@ def _merge_gsensor(trip: Trip) -> tuple[GSensorSample, ...]:
         except MediaToolError:
             continue
 
-        rebase = recording.id.timestamp - trip_start
+        if video_offsets is not None and recording.id in video_offsets:
+            rebase = timedelta(seconds=video_offsets[recording.id])
+        else:
+            rebase = recording.id.timestamp - trip_start
+
         samples.extend(
             GSensorSample(offset=rebase + sample.offset, x=sample.x, y=sample.y, z=sample.z)
             for sample in recording_samples
@@ -455,6 +576,7 @@ def _render_map_variant(
     zoom_meters: float | None = None,
     video_start: datetime | None = None,
     video_duration_seconds: float | None = None,
+    recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
     log: TripLog | None = None,
 ) -> Path | None:
     """Render one map video (either the static map.mp4 or a zoomed
@@ -469,6 +591,14 @@ def _render_map_variant(
     data: without them, the render's own timeline is derived purely
     from whichever fixes exist, which can start later (and run
     shorter) than the trip's real video, going out of sync with it.
+
+    `recording_breakpoints` (see _video_position_breakpoints()), if
+    given, is also forwarded straight through - positions every
+    frame's GPS lookup by each recording's own real position in the
+    concatenated video rather than one single wall-clock anchor. See
+    render_map_video()'s own docstring for why that distinction
+    matters (confirmed as a real sync bug, not just theoretical - see
+    WORKING_CONTEXT.md).
     """
 
     if log is not None:
@@ -482,6 +612,7 @@ def _render_map_variant(
             zoom_meters=zoom_meters,
             video_start=video_start,
             video_duration_seconds=video_duration_seconds,
+            recording_breakpoints=recording_breakpoints,
         )
     except MediaToolError as exc:
         warnings.append(f"{warning_label}: {exc}")
@@ -866,6 +997,22 @@ def export_trip(
             trip, Path(align_dir), warnings, log, include_parking=include_parking,
         )
 
+        # Computed here, still inside this tempdir's own lifetime -
+        # _recording_video_offsets() probes each recording's own
+        # (possibly trimmed) video file, and duration_overrides' own
+        # trimmed paths live in align_dir, which is gone the moment
+        # this `with` block exits. video_offsets/recording_breakpoints
+        # themselves are plain data (RecordingId -> float, and (float,
+        # datetime) pairs) with no dependency on any file still
+        # existing, so they're safe to keep using well past this
+        # block - see _merge_gsensor()/_render_map_variant()/
+        # stitch_cameras() below.
+        video_offsets = _recording_video_offsets(
+            trip, include_parking=include_parking,
+            duration_overrides=duration_overrides,
+        )
+        recording_breakpoints = _video_position_breakpoints(trip, video_offsets)
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             front_future = executor.submit(
                 _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
@@ -1025,6 +1172,7 @@ def export_trip(
                     warning_label="map", areas=areas, map_icon=map_icon,
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
+                    recording_breakpoints=recording_breakpoints,
                     log=log,
                 )
 
@@ -1036,6 +1184,7 @@ def export_trip(
                     zoom_meters=map_zoom_meters,
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
+                    recording_breakpoints=recording_breakpoints,
                     log=log,
                 )
         if debug:
@@ -1047,7 +1196,7 @@ def export_trip(
         log.step("no map/map-zoom/stitch-map requested or no GPS data - map phase skipped")
 
     gsensor_path = None
-    samples = _merge_gsensor(trip)
+    samples = _merge_gsensor(trip, video_offsets)
     if samples:
         gsensor_path = destination / "trip.3gf"
         write_gsensor(samples, gsensor_path)
@@ -1275,6 +1424,7 @@ def export_trip(
                 map_icon=map_icon,
                 map_video_start=trip.start_timestamp,
                 map_video_duration_seconds=video_duration_seconds,
+                map_recording_breakpoints=recording_breakpoints,
                 gsensor_video=stitch_gsensor_source,
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,
