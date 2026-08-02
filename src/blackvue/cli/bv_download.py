@@ -335,9 +335,11 @@ def _capture_record_time(
 ) -> None:
     """Fetch the camera's current config.ini, extract RecordTime, and
     write a new snapshot (see archive/configuration.py) into
-    `destination` if it differs from the most recently recorded one -
-    a no-op when it hasn't changed, so a normal run doesn't grow the
-    archive with a new file every time.
+    `destination` if either the value has changed since the most
+    recently recorded one, or this run's earliest recording isn't
+    already covered by an existing snapshot - a no-op only when
+    neither is true, so a normal run doesn't grow the archive with a
+    new file every time.
 
     `recording_id` anchors the snapshot to the earliest recording this
     run is considering (see this function's own call site) - since
@@ -346,6 +348,18 @@ def _capture_record_time(
     config.ini is fetched was necessarily made under this same
     RecordTime, so anchoring to the earliest one is always correct
     provenance, not just a guess.
+
+    The "already covered" check matters because Archive.configuration()
+    only ever applies a snapshot to recordings at or after its own
+    anchor - never retroactively. Downloading a later batch first and
+    an earlier batch afterwards (backfilling) means this run's anchor
+    can predate every existing snapshot; without this check, an
+    unchanged RecordTime value would skip the write entirely (the
+    plain "did the value change" comparison this used to be), leaving
+    that earlier recording - and its own configuration() lookups -
+    uncovered even though nothing was actually lost, just never
+    recorded from that far back. See WORKING_CONTEXT.md for the real
+    case this was found from.
 
     Only the derived RecordTime integer is ever written - never the
     raw config.ini text, which also carries Wi-Fi/cloud credentials
@@ -371,18 +385,34 @@ def _capture_record_time(
     destination.mkdir(parents=True, exist_ok=True)
 
     existing = sorted(destination.glob(f"*{RECORD_TIME_SUFFIX}"))
-    last_value = read_record_time_snapshot(existing[-1]) if existing else None
 
-    if last_value == record_time_seconds:
+    if existing:
+        earliest_id = existing[0].name.removesuffix(RECORD_TIME_SUFFIX)
+        last_value = read_record_time_snapshot(existing[-1])
+    else:
+        earliest_id = None
+        last_value = None
+
+    already_covered = earliest_id is not None and recording_id >= earliest_id
+    value_changed = last_value != record_time_seconds
+
+    if already_covered and not value_changed:
         return
 
     write_record_time_snapshot(destination, recording_id, record_time_seconds)
 
     if verbose:
-        print(
-            f"bv-download: recorded RecordTime={record_time_seconds}s "
-            f"as of {recording_id}"
-        )
+        if value_changed:
+            print(
+                f"bv-download: recorded RecordTime={record_time_seconds}s "
+                f"as of {recording_id}"
+            )
+        else:
+            print(
+                f"bv-download: extended RecordTime={record_time_seconds}s "
+                f"coverage back to {recording_id} (this run's earliest "
+                "recording predates the archive's existing snapshot)"
+            )
 
 
 def confirm(

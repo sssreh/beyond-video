@@ -217,6 +217,84 @@ def test_capture_record_time_writes_again_when_changed(tmp_path):
     assert snapshots[1].read_text(encoding="utf-8") == "60\n"
 
 
+def test_capture_record_time_backfills_an_earlier_anchor_when_unchanged(
+    tmp_path,
+):
+    """Christer's real-world case: he downloaded a later batch first
+    (anchored at 20260802_162130_N), then went back and downloaded an
+    earlier recording (20260802_161928_N) whose RecordTime hadn't
+    changed on the camera. The old "only write when the value
+    changes" logic skipped the second write entirely, leaving
+    20260802_161928_N uncovered by any snapshot - Archive.configuration()
+    never applies a snapshot retroactively to recordings before its
+    own anchor, so lookups for it fell through to the 300s fallback
+    even though the real value was known and unchanged. A second,
+    earlier-anchored snapshot must be written even though the value
+    didn't change."""
+
+    same_config = "[Tab1]\nRecordTime=3\n"
+
+    _capture_record_time(
+        _FakeConfigClient(same_config),
+        tmp_path,
+        "20260802_162130_N",
+        verbose=False,
+    )
+    _capture_record_time(
+        _FakeConfigClient(same_config),
+        tmp_path,
+        "20260802_161928_N",
+        verbose=False,
+    )
+
+    snapshots = sorted(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}"))
+    assert [s.name for s in snapshots] == [
+        f"20260802_161928_N{RECORD_TIME_SUFFIX}",
+        f"20260802_162130_N{RECORD_TIME_SUFFIX}",
+    ]
+    assert snapshots[0].read_text(encoding="utf-8") == "180\n"
+
+
+def test_capture_record_time_still_noop_when_covered_and_unchanged(tmp_path):
+    """The ordinary case this dedup exists for must still hold: a run
+    whose earliest recording is already covered by an existing
+    snapshot, with an unchanged value, writes nothing new - this is
+    just test_capture_record_time_is_a_noop_when_unchanged's scenario
+    restated to make the "covered" condition explicit alongside the
+    new backfill test above."""
+
+    client = _FakeConfigClient("[Tab1]\nRecordTime=3\n")
+
+    _capture_record_time(client, tmp_path, "20260801_095509_N", verbose=False)
+    _capture_record_time(client, tmp_path, "20260801_120000_N", verbose=False)
+
+    snapshots = sorted(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}"))
+    assert len(snapshots) == 1
+
+
+def test_capture_record_time_backfill_message_is_verbose_only(tmp_path, capsys):
+    same_config = "[Tab1]\nRecordTime=3\n"
+
+    _capture_record_time(
+        _FakeConfigClient(same_config),
+        tmp_path,
+        "20260802_162130_N",
+        verbose=True,
+    )
+    capsys.readouterr()  # discard the first run's own message
+
+    _capture_record_time(
+        _FakeConfigClient(same_config),
+        tmp_path,
+        "20260802_161928_N",
+        verbose=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "extended" in out
+    assert "20260802_161928_N" in out
+
+
 def test_capture_record_time_never_persists_the_raw_config_text(tmp_path):
     """Only the derived integer may ever land on disk - never the raw
     config.ini text, which also carries Wi-Fi/cloud credentials."""
