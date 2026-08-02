@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from blackvue.archive.configuration import RECORD_TIME_SUFFIX
 from blackvue.cli.bv_download import DotProgress
 from blackvue.cli.bv_download import _capture_record_time
+from blackvue.cli.bv_download import _destination_message
 from blackvue.cli.bv_download import describe_recording_files
 from blackvue.cli.bv_download import parse_args
 from blackvue.cli.bv_download import parse_mode
@@ -454,3 +455,31 @@ def test_describe_recording_files_empty_recording_yields_nothing():
     rec = recording("20260101_000000_N")
 
     assert list(describe_recording_files(rec, True)) == []
+
+
+def test_destination_message_names_the_camera_and_folder():
+    message = _destination_message(
+        "Kirby", Path("/archive/kirby"), dry_run=False
+    )
+
+    assert message == "bv-download: Kirby: downloading into /archive/kirby"
+
+
+def test_destination_message_dry_run_uses_would_wording():
+    # Matches bv-export's own dry-run wording convention ("would ...")
+    # rather than claiming a download that isn't actually happening.
+    message = _destination_message(
+        "Kirby", Path("/archive/kirby"), dry_run=True
+    )
+
+    assert message == "bv-download: Kirby: would download into /archive/kirby"
+
+
+def test_destination_message_works_for_a_host_target_run_too():
+    # --host/--target runs use the host address itself as display_name
+    # (no configured camera name) - same message shape either way.
+    message = _destination_message(
+        "10.99.88.1", Path("/tmp/dashcam"), dry_run=False
+    )
+
+    assert message == "bv-download: 10.99.88.1: downloading into /tmp/dashcam"

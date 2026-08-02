@@ -27,6 +27,8 @@ By default it downloads video for **event** and **manual** recordings, plus the 
 
 If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the default mode becomes `all` - requesting a specific time range already signals you want everything in it, not just the usual events-plus-context subset.
 
+Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`) - not gated behind `--verbose`, since it's basic context for what's about to happen rather than extra diagnostic detail.
+
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
 `blackvue_vod.cgi`'s own recording listing has, across every camera model confirmed so far, only ever contained video files - the `.gps`/`.3gf`/`.thm` (thumbnail) sidecar files exist and download fine directly at the expected path even though the listing never mentions them. `bv-download` opportunistically checks for all three whenever a recording's listing doesn't already include them, and adds them if the camera actually has them. This costs nothing extra on a camera/firmware combination that already lists everything (no additional requests at all) and just fills the gap on one that doesn't.

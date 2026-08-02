@@ -415,6 +415,22 @@ def _capture_record_time(
             )
 
 
+def _destination_message(
+    display_name: str, destination: Path, *, dry_run: bool
+) -> str:
+    """The one-line "here's where this run is downloading into" message
+    printed unconditionally near the start of every run - not gated
+    behind --verbose, since the target folder is basic context for
+    what's about to happen, not extra diagnostic detail. Matches
+    bv-export's own "always state the destination folder" convention
+    (its dry-run preview and its real per-trip write-confirmation both
+    print the folder path unconditionally too - see bv_export.py).
+    """
+
+    verb = "would download into" if dry_run else "downloading into"
+    return f"bv-download: {display_name}: {verb} {destination}"
+
+
 def confirm(
     recordings: list[Recording],
     interval: TimeInterval,
@@ -470,6 +486,8 @@ def _run(args: argparse.Namespace) -> int:
         endpoints = config.endpoints
         destination = config.target
         display_name = config.name
+
+    print(_destination_message(display_name, destination, dry_run=args.dry_run))
 
     try:
         interval = LexicalTimeParser(
