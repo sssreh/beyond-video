@@ -248,6 +248,40 @@ def _extract_boundary(content_type: str) -> bytes | None:
     return token.encode() if token else None
 
 
+def _count_part_delimiters(data: bytes, boundary: bytes) -> int:
+    """Count genuine "start of a new part" delimiter lines for
+    `boundary` in `data` - i.e. occurrences of the boundary token NOT
+    immediately followed by another `-`.
+
+    This distinction matters and was missed in the first version of
+    this check: a properly-terminated multipart response - even one
+    carrying just a single frame - ends with a *closing* delimiter,
+    `boundary + "--"`, which also contains the plain boundary token as
+    a substring. A naive `data.count(boundary)` therefore counts 2 for
+    a single real frame (one opening delimiter, one closing one) and
+    wrongly calls it confirmed-live. Real-world proof: Christer's own
+    scan against his actual camera reported all four of F/R/I/O as
+    "stream confirmed" even though he separately confirmed "I never
+    get a stream to watch for I and O" - the naive count was fooled by
+    exactly this closing-delimiter pattern. Requiring the boundary NOT
+    be followed by `-` only matches genuine per-part opening
+    delimiters, so a single terminated frame now correctly counts as
+    1, not 2.
+    """
+
+    count = 0
+    start = 0
+    while True:
+        idx = data.find(boundary, start)
+        if idx == -1:
+            break
+        after = idx + len(boundary)
+        if data[after:after + 1] != b"-":
+            count += 1
+        start = after
+    return count
+
+
 def _confirm_live_stream(
     resp, content_type: str, initial_body: bytes, *, timeout: float
 ) -> bool:
@@ -265,7 +299,10 @@ def _confirm_live_stream(
     status/Content-Type alone can't tell those apart; a single
     boundary line proves nothing (a dead/placeholder response can
     carry one too), but a *second* one appearing only happens if the
-    server is actually still sending.
+    server is actually still sending - see _count_part_delimiters()
+    for why raw substring counting isn't quite enough on its own
+    (closing delimiters need to be excluded, not just opening ones
+    counted).
 
     Bounded to STREAM_VERIFY_MAX_BYTES total (`initial_body` included)
     and this probe's own `timeout` - same "never wait forever on a
@@ -280,7 +317,7 @@ def _confirm_live_stream(
         return False
 
     data = initial_body
-    if data.count(boundary) >= 2:
+    if _count_part_delimiters(data, boundary) >= 2:
         return True
 
     remaining = STREAM_VERIFY_MAX_BYTES - len(data)
@@ -293,7 +330,7 @@ def _confirm_live_stream(
             return False
         data += chunk
         remaining -= len(chunk)
-        if data.count(boundary) >= 2:
+        if _count_part_delimiters(data, boundary) >= 2:
             return True
 
     return False
