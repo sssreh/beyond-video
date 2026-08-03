@@ -130,11 +130,12 @@ CANDIDATE_ENDPOINTS = [
     ),
     (
         "/blackvue_live.cgi?direction=O",
-        "live video, direction 'O' (MJPEG stream) - Christer: also test "
-        "this direction. Unconfirmed candidate for how a camera might "
-        "address a channel beyond F/R/I. Even a Valid/'stream confirmed' "
-        "result here doesn't by itself confirm a real channel - see "
-        "this list's own caveat above.",
+        "live video, direction 'O' - 'Optional' camera (an extra "
+        "external or internal camera some models support, per "
+        "BlackVue's own direction-letter naming: F=Front, R=Rear, "
+        "I=Interior, O=Optional - Christer). Not every camera has one. "
+        "Even a Valid/'stream confirmed' result here doesn't by itself "
+        "confirm a real channel - see this list's own caveat above.",
     ),
     ("/blackvue_livedata.cgi", "live GPS/g-sensor telemetry (JSON stream)"),
     ("/Config/config.ini", "camera configuration file"),
