@@ -228,45 +228,82 @@ def extract_ap_ssid(config_ini_text: str) -> str | None:
     return value or None
 
 
-STREAM_VERIFY_MAX_BYTES = 262144
-STREAM_VERIFY_POLL_TIMEOUT = 0.25
+STREAM_VERIFY_CONFIRM_BYTES = 64
+STREAM_VERIFY_DRAIN_BYTES = 8192
+STREAM_VERIFY_DRAIN_POLL_TIMEOUT = 0.2
 
 
-def _confirm_live_stream(sock, resp, *, window_seconds: float) -> bool:
-    """True only if new bytes keep arriving in the *second half* of a
-    `window_seconds`-long observation window - proof the server is
-    still actively pushing data well after any single initial
-    response has had time to fully arrive, not just answering once
-    and going quiet while holding the connection open.
+def _confirm_live_stream(sock, resp, *, window_seconds: float):
+    """True if new bytes keep arriving well after the initial response,
+    proof the server is still actively pushing data rather than just
+    answering once and going quiet while holding the connection open.
 
-    History: this went through two wrong approaches before landing
-    here, both based on parsing the multipart boundary out of
-    Content-Type and counting how many times it recurred in the body -
-    first a naive `data.count(boundary) >= 2` (fooled by a single
-    frame's own proper MIME closing delimiter, `boundary + "--"`,
-    which contains the plain boundary token as a substring - counted
-    as 2 for what was really just 1 frame), then a fix that excluded
-    the closing delimiter specifically (`boundary` not immediately
-    followed by `-`) - which then wrongly reported *zero* confirmed
-    streams at all, including the genuinely-live F/R directions
-    Christer can actually watch. That strongly suggests this camera's
-    firmware doesn't follow the assumed "-- only means closing" MIME
-    convention at all (e.g. every per-frame delimiter might carry a
-    trailing `--`, not just the final one) - i.e. the whole approach
-    was trying to reverse-engineer an unknown, possibly nonstandard
-    wire format from a webpage's worth of assumptions, and kept
-    breaking on real hardware because of it.
+    History - four approaches, each broken by the next real-camera
+    test:
 
-    This version doesn't parse the stream's framing at all. It only
-    asks the one thing that's actually true regardless of framing
-    convention: does new data keep showing up over time, or did it
-    all arrive in one initial burst and then stop forever? A real
-    MJPEG stream keeps pushing frames periodically for as long as
-    it's open; a dead direction answers with whatever its one static
-    response is and then never sends another byte. Temporarily lowers
-    `sock`'s own timeout to STREAM_VERIFY_POLL_TIMEOUT so a single
-    `resp.read()` call can't block past the observation window -
-    restored via `finally` either way.
+    1. Naive `data.count(boundary) >= 2` on the multipart body -
+       fooled by a single frame's own proper MIME closing delimiter
+       (`boundary + "--"`, which contains the plain boundary token as
+       a substring - counted as 2 for what was really just 1 frame).
+    2. Excluding the closing delimiter specifically (`boundary` not
+       immediately followed by `-`) - wrongly reported *zero*
+       confirmed streams at all, including the genuinely-live F/R
+       directions Christer can actually watch. Suspected (never
+       confirmed) cause: this camera's firmware trailing every
+       delimiter with `--`, not just the closing one.
+    3. A time-based redesign that dropped MIME parsing entirely - poll
+       `resp.read()` in a loop with a short per-poll socket timeout,
+       looking for new data arriving in the second half of an
+       observation window. This *also* came back negative for every
+       direction on the real camera. Reproduced locally with a fake
+       server trickling small chunks slower than one read's worth per
+       poll interval, which turned up the actual root cause: CPython's
+       `socket.SocketIO.readinto()` sets a `self._timeout_occurred`
+       flag the first time a read times out, and every read after
+       that - forever, on that same socket object - immediately raises
+       `OSError("cannot read from timed out object")` regardless of
+       whether data is now available. A poll-and-retry loop over a
+       short per-read timeout is fundamentally incompatible with this:
+       the very first poll that doesn't catch data in time permanently
+       kills the ability to read anything else from that connection.
+       That's why *every* direction reported dead, including
+       genuinely-live ones: real frame arrival essentially never lines
+       up perfectly inside a single 0.25s poll window, so the very
+       first poll timed out and poisoned the socket before a second
+       real frame had any chance to be observed.
+    4. A "sleep half the window, then one single read" version meant to
+       touch the socket at most once (sidestepping the poisoning
+       above). This passed a fake-server test where the whole response
+       fit in one read - but failed a version of that same test where
+       the fake camera's initial burst was bigger than READ_BYTES
+       (2048): probe() only consumes the first 2048 bytes of it, and
+       the rest sits already delivered and waiting to be read, so the
+       "one more read after sleeping" call returned instantly with
+       genuinely stale leftover bytes from the *original* burst - a
+       false positive for what would actually be a dead endpoint. A
+       real camera's first MJPEG frame is easily bigger than 2048
+       bytes, so this would have misfired on real hardware too.
+
+    This version fixes that by explicitly separating "drain whatever's
+    already sitting there from the first response" from "wait, then
+    check for genuinely new data":
+
+    Phase 1 - drain: keep reading (discarding) with a short per-read
+    timeout until the first timeout or EOF. This intentionally uses up
+    the one retry-after-timeout the socket gets before `resp`'s reader
+    is poisoned (see point 3) - that's fine, `resp` isn't touched again
+    after this. If draining itself takes a meaningful slice of the
+    observation window (data kept arriving continuously rather than
+    being handed over in one instant), that alone is proof of a live
+    stream and phase 2 is skipped.
+
+    Phase 2 - wait and check: sleep out the rest of the window, then
+    attempt exactly one more read - directly on the raw socket
+    (`sock.recv()`), not through `resp`, since `resp`'s reader is
+    already poisoned from phase 1 and the poisoning lives on that
+    particular file-object wrapper, not on the underlying OS socket.
+    One successful read here is proof of new data; a timeout or a
+    closed-socket error is not.
 
     Takes `sock` explicitly rather than reading it off the
     HTTPConnection - probe() sends `Connection: close`, and
@@ -276,37 +313,90 @@ def _confirm_live_stream(sock, resp, *, window_seconds: float) -> bool:
     of the socket to `resp.fp` instead. Grabbing the reference right
     after conn.request() - before that happens - is what actually
     keeps working here.
+
+    Returns `(confirmed, trace)` - `trace` is a short list of strings
+    describing what happened, printed by main() for every streaming
+    path regardless of the yes/no result (this check has been wrong
+    three times in a row against real hardware despite passing every
+    local fake-server test, so the actual timeline is worth more than
+    one more unverifiable yes/no).
     """
 
     original_timeout = sock.gettimeout()
-    start = time.monotonic()
     half = window_seconds / 2
-    deadline = start + window_seconds
-    saw_data_in_second_half = False
-    total = 0
+    trace: list[str] = []
 
+    # Phase 1: drain. Capped at `half` even while reads keep succeeding -
+    # a genuinely live stream (the real target case!) can keep handing
+    # over data faster than STREAM_VERIFY_DRAIN_POLL_TIMEOUT forever, so
+    # "loop until a timeout/EOF happens" would never actually exit for
+    # exactly the endpoints this check most needs to confirm. Once
+    # elapsed reaches `half`, that continuous drain is itself already
+    # the proof (see the check right after this loop) - no need to see
+    # a timeout at all.
+    sock.settimeout(STREAM_VERIFY_DRAIN_POLL_TIMEOUT)
+    start = time.monotonic()
+    drained = 0
+    ended = "unknown"
     try:
-        sock.settimeout(STREAM_VERIFY_POLL_TIMEOUT)
-        while time.monotonic() < deadline and total < STREAM_VERIFY_MAX_BYTES:
-            try:
-                chunk = resp.read(READ_BYTES)
-            except (TimeoutError, socket.timeout):
-                continue
-            except OSError:
-                break
+        while True:
+            chunk = resp.read(STREAM_VERIFY_DRAIN_BYTES)
             if not chunk:
+                ended = "EOF"
                 break
-            total += len(chunk)
+            drained += len(chunk)
             if time.monotonic() - start >= half:
-                saw_data_in_second_half = True
+                ended = "reached half the window while still draining"
                 break
+    except (TimeoutError, socket.timeout):
+        ended = "timeout"
+    except OSError as exc:
+        ended = f"OSError: {exc}"
+    phase1_elapsed = time.monotonic() - start
+    trace.append(
+        f"phase 1 (drain leftover from initial burst): {drained}B over "
+        f"{phase1_elapsed:.2f}s, stopped on {ended}"
+    )
+
+    if phase1_elapsed >= half:
+        trace.append(
+            "confirmed: draining itself spanned past half the window, so "
+            "data kept arriving rather than sitting fully-buffered from "
+            "one initial burst"
+        )
+        try:
+            sock.settimeout(original_timeout)
+        except OSError:
+            pass
+        return True, trace
+
+    # Phase 2: wait out the rest of the window, then one raw read.
+    remaining_sleep = half - phase1_elapsed
+    trace.append(f"phase 2: sleeping {remaining_sleep:.2f}s more, then one raw read")
+    if remaining_sleep > 0:
+        time.sleep(remaining_sleep)
+
+    remaining_budget = window_seconds - half
+    confirmed = False
+    try:
+        sock.settimeout(remaining_budget)
+        chunk = sock.recv(STREAM_VERIFY_CONFIRM_BYTES)
+        if chunk:
+            confirmed = True
+            trace.append(f"phase 2: raw recv got {len(chunk)}B - confirmed live")
+        else:
+            trace.append("phase 2: raw recv got EOF - connection closed, not live")
+    except (TimeoutError, socket.timeout):
+        trace.append("phase 2: raw recv timed out - looks dead")
+    except OSError as exc:
+        trace.append(f"phase 2: raw recv OSError: {exc} (connection likely already closed)")
     finally:
         try:
             sock.settimeout(original_timeout)
         except OSError:
             pass
 
-    return saw_data_in_second_half
+    return confirmed, trace
 
 
 def probe(host: str, port: int, path: str, timeout: float):
@@ -314,12 +404,12 @@ def probe(host: str, port: int, path: str, timeout: float):
     what the server claims its length is - this is what keeps a
     never-closing MJPEG/telemetry stream from hanging the script.
 
-    Returns `(status, headers, body, error, stream_confirmed)`.
-    `stream_confirmed` is only ever meaningful for a `path` in
-    STREAMING_PATHS with a valid (2xx/3xx) status - see
-    _confirm_live_stream() for what it actually checks and why. It's
-    None for every other path/outcome (not applicable), never a
-    silent False standing in for "didn't check"."""
+    Returns `(status, headers, body, error, stream_confirmed, stream_trace)`.
+    `stream_confirmed`/`stream_trace` are only ever meaningful for a
+    `path` in STREAMING_PATHS with a valid (2xx/3xx) status - see
+    _confirm_live_stream() for what it actually checks and why.
+    They're None for every other path/outcome (not applicable), never
+    a silent False/[] standing in for "didn't check"."""
 
     conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
@@ -334,6 +424,7 @@ def probe(host: str, port: int, path: str, timeout: float):
         body = resp.read(READ_BYTES)
 
         stream_confirmed = None
+        stream_trace = None
         if path in STREAMING_PATHS and is_valid_status(status):
             # window_seconds ties to this probe's own --timeout rather
             # than a separate hardcoded constant - a user who already
@@ -341,13 +432,15 @@ def probe(host: str, port: int, path: str, timeout: float):
             # longer observation window here too, and the default (5s)
             # is comfortably longer than any real frame interval an
             # MJPEG stream would use.
-            stream_confirmed = _confirm_live_stream(sock, resp, window_seconds=timeout)
+            stream_confirmed, stream_trace = _confirm_live_stream(
+                sock, resp, window_seconds=timeout
+            )
 
-        return status, headers, body, None, stream_confirmed
+        return status, headers, body, None, stream_confirmed, stream_trace
     except (TimeoutError, socket.timeout) as exc:
-        return None, {}, b"", f"timed out after {timeout}s ({exc})", None
+        return None, {}, b"", f"timed out after {timeout}s ({exc})", None, None
     except (ConnectionRefusedError, ConnectionResetError, OSError) as exc:
-        return None, {}, b"", str(exc), None
+        return None, {}, b"", str(exc), None, None
     finally:
         conn.close()
 
@@ -448,7 +541,9 @@ def print_summary_table(results: list[tuple], ftp_open: bool) -> None:
 
     rows: list[tuple[str, bool, bool, str]] = []
 
-    for path, _description, status, headers, _body, error, stream_confirmed in results:
+    for (
+        path, _description, status, headers, _body, error, stream_confirmed, _stream_trace
+    ) in results:
         if error:
             rows.append((path, False, False, _shorten(f"no response: {error}")))
         else:
@@ -539,10 +634,12 @@ def main():
     ap_ssid = None
     version_bin_preview = None
     for path, description in CANDIDATE_ENDPOINTS:
-        status, headers, body, error, stream_confirmed = probe(
+        status, headers, body, error, stream_confirmed, stream_trace = probe(
             args.host, args.port, path, args.timeout
         )
-        results.append((path, description, status, headers, body, error, stream_confirmed))
+        results.append(
+            (path, description, status, headers, body, error, stream_confirmed, stream_trace)
+        )
 
         print(f"\n{path}  ({description})")
         if error:
@@ -577,6 +674,19 @@ def main():
                     "looks like a dead/placeholder response wearing a live "
                     "stream's Content-Type, not an actual stream)"
                 )
+            # Printed unconditionally (not just on a "no" result) - this
+            # check has now been wrong three separate times against real
+            # hardware despite passing every local fake-server test, so
+            # the actual byte-level timeline is worth more than another
+            # unverifiable yes/no. See _confirm_live_stream()'s own
+            # docstring for what each line means.
+            if stream_trace:
+                print("  -> stream read trace (window "
+                      f"{args.timeout:.2f}s, confirm-after {args.timeout / 2:.2f}s):")
+                for line in stream_trace:
+                    print(f"       {line}")
+            else:
+                print("  -> stream read trace: (no read attempts recorded)")
         else:
             print(f"  -> Valid: {'yes' if valid else 'no (error response)'}")
         content_type = headers.get("Content-Type", "(none)")
