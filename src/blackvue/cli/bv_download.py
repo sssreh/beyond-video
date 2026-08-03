@@ -45,6 +45,7 @@ EXIT_OK = 0
 EXIT_CONFIG_ERROR = 1
 EXIT_UNREACHABLE = 2
 EXIT_ABORTED = 3
+EXIT_PARTIAL_FAILURE = 4
 
 ALL_KINDS = frozenset({"N", "E", "M", "P", "A"})
 
@@ -576,6 +577,22 @@ def _run(args: argparse.Namespace) -> int:
 
     progress = DotProgress() if args.trace else None
 
+    #
+    # Each recording's network calls (sidecar probing, then the
+    # actual download) are wrapped individually below so that one
+    # recording's network hiccup - a dropped WiFi frame, a timeout
+    # mid-download - doesn't abort the rest of an otherwise-healthy
+    # batch. Before this, any OSError/TimeoutError from inside this
+    # loop propagated straight up to run_cli()'s generic catch-all
+    # (see errors.py), which prints a single bare "bv-download: timed
+    # out" with no indication of which recording or which step failed,
+    # and gives up on every recording still left in the batch - even
+    # ones a retry moments later would have fetched fine. Christer hit
+    # exactly this after confirming a 10-recording range: one bare
+    # timeout, nothing downloaded, no clue which of the 10 it was.
+    #
+    failed_ids: list[str] = []
+
     try:
         for recording, want_video in selection:
             #
@@ -594,7 +611,16 @@ def _run(args: argparse.Namespace) -> int:
             # loop's own recordings/selection setup for why that used
             # to be a problem).
             #
-            found = camera.probe_missing_sidecars(recording)
+            try:
+                found = camera.probe_missing_sidecars(recording)
+            except OSError as exc:
+                failed_ids.append(recording.id)
+                print(
+                    f"bv-download: {recording.id}: couldn't check for "
+                    f"sidecar files ({exc}) - skipping this recording",
+                    file=sys.stderr,
+                )
+                continue
 
             if found and args.verbose:
                 names = ", ".join(entry.path.name for entry in found)
@@ -618,18 +644,36 @@ def _run(args: argparse.Namespace) -> int:
 
             select = None if want_video else (lambda entry: not entry.is_video)
 
-            changed = camera.download(
-                recording,
-                destination,
-                select=select,
-                on_bytes=progress,
-            )
+            try:
+                changed = camera.download(
+                    recording,
+                    destination,
+                    select=select,
+                    on_bytes=progress,
+                )
+            except OSError as exc:
+                failed_ids.append(recording.id)
+                print(
+                    f"bv-download: {recording.id}: download failed "
+                    f"({exc}) - skipping to the next recording",
+                    file=sys.stderr,
+                )
+                continue
 
             if args.verbose and changed:
                 print(f"{recording.id}: downloaded")
     finally:
         if progress is not None:
             progress.finish()
+
+    if failed_ids:
+        print(
+            f"bv-download: {len(failed_ids)} of "
+            f"{len(recordings)} recording(s) failed and were skipped: "
+            f"{', '.join(failed_ids)}",
+            file=sys.stderr,
+        )
+        return EXIT_PARTIAL_FAILURE
 
     return EXIT_OK
 

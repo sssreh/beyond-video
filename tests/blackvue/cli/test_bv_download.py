@@ -7,14 +7,19 @@ from pathlib import Path
 from pathlib import PurePosixPath
 
 from blackvue.archive.configuration import RECORD_TIME_SUFFIX
+from blackvue.cli import bv_download
+from blackvue.cli.bv_download import EXIT_OK
+from blackvue.cli.bv_download import EXIT_PARTIAL_FAILURE
 from blackvue.cli.bv_download import DotProgress
 from blackvue.cli.bv_download import _capture_record_time
 from blackvue.cli.bv_download import _destination_message
+from blackvue.cli.bv_download import _run
 from blackvue.cli.bv_download import describe_recording_files
 from blackvue.cli.bv_download import parse_args
 from blackvue.cli.bv_download import parse_mode
 from blackvue.cli.bv_download import select_by_context
 from blackvue.cli.bv_download import select_by_mode
+from blackvue.core.endpoint import Endpoint
 from blackvue.domain.recording import Recording
 from blackvue.domain.vod_entry import VodEntry
 
@@ -483,3 +488,154 @@ def test_destination_message_works_for_a_host_target_run_too():
     )
 
     assert message == "bv-download: 10.99.88.1: downloading into /tmp/dashcam"
+
+
+class _FakeDownloadClient:
+    """A minimal stand-in for BlackVueClient, only ever asked for its
+    .config() by _capture_record_time() - but --host/--target runs
+    (used by the tests below) skip that step entirely, so nothing on
+    this needs to actually work."""
+
+
+class _FakeDownloadCamera:
+    """A stand-in for BlackVueCamera whose probe_missing_sidecars()/
+    download() raise OSError for one chosen recording id, so the
+    skip-and-continue behaviour in _run()'s per-recording loop can be
+    exercised without a real camera. `fail_on` names the step
+    ("probe" or "download") that should raise for `failing_id`."""
+
+    def __init__(
+        self,
+        recordings: list[Recording],
+        *,
+        failing_id: str | None = None,
+        fail_on: str = "download",
+    ):
+        self._recordings = recordings
+        self._failing_id = failing_id
+        self._fail_on = fail_on
+        self.downloaded_ids: list[str] = []
+
+    def recordings(self) -> list[Recording]:
+        return self._recordings
+
+    def probe_missing_sidecars(self, recording: Recording) -> list[VodEntry]:
+        if self._fail_on == "probe" and recording.id == self._failing_id:
+            raise OSError("timed out")
+        return []
+
+    def download(self, recording, destination, *, select=None, on_bytes=None) -> bool:
+        if self._fail_on == "download" and recording.id == self._failing_id:
+            raise OSError("timed out")
+        self.downloaded_ids.append(recording.id)
+        return True
+
+
+def _host_args(tmp_path: Path, **overrides) -> argparse.Namespace:
+    args = parse_args(
+        [
+            "--host",
+            "10.99.88.1",
+            "--target",
+            str(tmp_path),
+            "--yes",
+            "--mode",
+            "all",
+        ]
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def test_run_skips_a_recording_whose_download_fails_and_continues(
+    tmp_path, monkeypatch, capsys
+):
+    recordings = [
+        recording("20260803_161020_N"),
+        recording("20260803_161120_N"),
+        recording("20260803_161221_N"),
+    ]
+    camera = _FakeDownloadCamera(
+        recordings, failing_id="20260803_161120_N", fail_on="download"
+    )
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    # The failing recording is skipped, but its neighbours on either
+    # side are still downloaded - one bad recording no longer aborts
+    # the whole batch (see EXIT_PARTIAL_FAILURE's own docstring/entry
+    # in the exit-code table).
+    assert camera.downloaded_ids == [
+        "20260803_161020_N",
+        "20260803_161221_N",
+    ]
+    assert exit_code == EXIT_PARTIAL_FAILURE
+
+    err = capsys.readouterr().err
+    assert "20260803_161120_N" in err
+    assert "download failed" in err
+    assert "timed out" in err
+
+
+def test_run_skips_a_recording_whose_sidecar_probe_fails(
+    tmp_path, monkeypatch, capsys
+):
+    recordings = [
+        recording("20260803_161020_N"),
+        recording("20260803_161120_N"),
+    ]
+    camera = _FakeDownloadCamera(
+        recordings, failing_id="20260803_161020_N", fail_on="probe"
+    )
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    assert camera.downloaded_ids == ["20260803_161120_N"]
+    assert exit_code == EXIT_PARTIAL_FAILURE
+
+    err = capsys.readouterr().err
+    assert "20260803_161020_N" in err
+    assert "couldn't check for sidecar files" in err
+
+
+def test_run_returns_ok_when_every_recording_succeeds(
+    tmp_path, monkeypatch, capsys
+):
+    recordings = [recording("20260803_161020_N")]
+    camera = _FakeDownloadCamera(recordings)
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    assert exit_code == EXIT_OK
+    assert "failed and were skipped" not in capsys.readouterr().err
