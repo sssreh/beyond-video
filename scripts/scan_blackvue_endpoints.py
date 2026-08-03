@@ -101,6 +101,19 @@ import time
 # channels. Telling real channels apart needs actually watching each
 # stream's content (this script only reads/discards a short prefix -
 # see its own docstring), not just the HTTP status.
+#
+# This caveat SURVIVES the later addition of _confirm_live_stream()
+# (see is_valid_result()/STREAMING_PATHS below) - confirmed again on a
+# 3-channel camera where F/R/I/O *all* reported "stream confirmed",
+# yet Christer found no actual video on direction=O. The liveness
+# check only proves bytes keep arriving continuously; it says nothing
+# about whether that's a genuinely distinct feed versus the camera
+# aliasing/echoing one of its real channels for a direction value it
+# doesn't actually recognize. So "stream confirmed" on I/O still isn't
+# proof of a real fourth/third channel - only proof the endpoint
+# didn't just answer once and go quiet. The only fully reliable check
+# remains actually watching (or diffing) each direction's real video
+# content, which this script deliberately doesn't do.
 CANDIDATE_ENDPOINTS = [
     ("/blackvue_vod.cgi", "recording listing"),
     ("/blackvue_live.cgi?direction=F", "live front video (MJPEG stream)"),
@@ -110,17 +123,18 @@ CANDIDATE_ENDPOINTS = [
         "live interior video (MJPEG stream) - Christer: also test this "
         "direction. 'I' is the existing interior-camera letter this "
         "project already recognizes elsewhere (recording filenames, "
-        "thumbnails - see RecordingId/Recording). A 200/Valid result "
-        "here doesn't by itself confirm a real interior channel - see "
-        "this list's own caveat above about direction validation.",
+        "thumbnails - see RecordingId/Recording). Even a Valid/'stream "
+        "confirmed' result here doesn't by itself confirm a real "
+        "interior channel - see this list's own caveat above about "
+        "direction validation.",
     ),
     (
         "/blackvue_live.cgi?direction=O",
         "live video, direction 'O' (MJPEG stream) - Christer: also test "
         "this direction. Unconfirmed candidate for how a camera might "
-        "address a channel beyond F/R/I. A 200/Valid result here "
-        "doesn't by itself confirm a real channel either - see this "
-        "list's own caveat above.",
+        "address a channel beyond F/R/I. Even a Valid/'stream confirmed' "
+        "result here doesn't by itself confirm a real channel - see "
+        "this list's own caveat above.",
     ),
     ("/blackvue_livedata.cgi", "live GPS/g-sensor telemetry (JSON stream)"),
     ("/Config/config.ini", "camera configuration file"),
@@ -494,6 +508,19 @@ def is_valid_result(
     "I never get a stream to watch for I and O" - only two of the four
     actually deliver a second frame. So a streaming path additionally
     requires `stream_confirmed` to be True.
+
+    Caveat: `stream_confirmed` isn't proof of a genuinely distinct
+    channel either. On a different (3-channel) camera, Christer got
+    `stream_confirmed` for all four of F/R/I/O, then found no actual
+    video on direction=O - the camera evidently keeps pushing live
+    bytes for a direction value it doesn't really support, most likely
+    by aliasing one of its real feeds rather than answering with a
+    dead/static response. So `is_valid_result()` here means "this
+    endpoint is genuinely alive, not a placeholder" - not "this is a
+    real, distinct camera channel." Telling those apart would need
+    comparing actual frame content across directions, which this
+    script deliberately doesn't do (see CANDIDATE_ENDPOINTS's own
+    caveat comment above it).
     """
 
     if not is_valid_status(status):
@@ -667,7 +694,11 @@ def main():
             # response)" would be actively misleading for a case that
             # answered 200 just fine but never actually streamed.
             if stream_confirmed:
-                print("  -> Valid: yes (confirmed live - a second frame arrived)")
+                print(
+                    "  -> Valid: yes (confirmed live - a second frame arrived. "
+                    "Note: this proves the endpoint is genuinely active, not "
+                    "that it's a distinct real channel - see is_valid_result())"
+                )
             else:
                 print(
                     "  -> Valid: no (HTTP 200, but no second frame arrived - "
