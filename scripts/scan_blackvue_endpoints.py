@@ -58,6 +58,7 @@ import http.client
 import re
 import socket
 import sys
+import time
 
 
 # (path, description) - GET only, no destructive query params. See this
@@ -227,113 +228,85 @@ def extract_ap_ssid(config_ini_text: str) -> str | None:
     return value or None
 
 
-STREAM_VERIFY_MAX_BYTES = 65536
-
-_BOUNDARY_RE = re.compile(r'boundary=("?)([^;"]+)\1')
-
-
-def _extract_boundary(content_type: str) -> bytes | None:
-    """Pull the multipart boundary token out of a Content-Type header
-    value, or None if there isn't one. Some BlackVue firmware embeds
-    the boundary directly (`boundary=--ptaboundary`, already carrying
-    the leading `--` a standards-compliant client would normally add
-    itself) - taken as a literal token either way, since all this is
-    used for is counting how many times it recurs in the body (see
-    _confirm_live_stream() below), not full MIME parsing."""
-
-    match = _BOUNDARY_RE.search(content_type)
-    if match is None:
-        return None
-    token = match.group(2).strip()
-    return token.encode() if token else None
+STREAM_VERIFY_MAX_BYTES = 262144
+STREAM_VERIFY_POLL_TIMEOUT = 0.25
 
 
-def _count_part_delimiters(data: bytes, boundary: bytes) -> int:
-    """Count genuine "start of a new part" delimiter lines for
-    `boundary` in `data` - i.e. occurrences of the boundary token NOT
-    immediately followed by another `-`.
+def _confirm_live_stream(sock, resp, *, window_seconds: float) -> bool:
+    """True only if new bytes keep arriving in the *second half* of a
+    `window_seconds`-long observation window - proof the server is
+    still actively pushing data well after any single initial
+    response has had time to fully arrive, not just answering once
+    and going quiet while holding the connection open.
 
-    This distinction matters and was missed in the first version of
-    this check: a properly-terminated multipart response - even one
-    carrying just a single frame - ends with a *closing* delimiter,
-    `boundary + "--"`, which also contains the plain boundary token as
-    a substring. A naive `data.count(boundary)` therefore counts 2 for
-    a single real frame (one opening delimiter, one closing one) and
-    wrongly calls it confirmed-live. Real-world proof: Christer's own
-    scan against his actual camera reported all four of F/R/I/O as
-    "stream confirmed" even though he separately confirmed "I never
-    get a stream to watch for I and O" - the naive count was fooled by
-    exactly this closing-delimiter pattern. Requiring the boundary NOT
-    be followed by `-` only matches genuine per-part opening
-    delimiters, so a single terminated frame now correctly counts as
-    1, not 2.
+    History: this went through two wrong approaches before landing
+    here, both based on parsing the multipart boundary out of
+    Content-Type and counting how many times it recurred in the body -
+    first a naive `data.count(boundary) >= 2` (fooled by a single
+    frame's own proper MIME closing delimiter, `boundary + "--"`,
+    which contains the plain boundary token as a substring - counted
+    as 2 for what was really just 1 frame), then a fix that excluded
+    the closing delimiter specifically (`boundary` not immediately
+    followed by `-`) - which then wrongly reported *zero* confirmed
+    streams at all, including the genuinely-live F/R directions
+    Christer can actually watch. That strongly suggests this camera's
+    firmware doesn't follow the assumed "-- only means closing" MIME
+    convention at all (e.g. every per-frame delimiter might carry a
+    trailing `--`, not just the final one) - i.e. the whole approach
+    was trying to reverse-engineer an unknown, possibly nonstandard
+    wire format from a webpage's worth of assumptions, and kept
+    breaking on real hardware because of it.
+
+    This version doesn't parse the stream's framing at all. It only
+    asks the one thing that's actually true regardless of framing
+    convention: does new data keep showing up over time, or did it
+    all arrive in one initial burst and then stop forever? A real
+    MJPEG stream keeps pushing frames periodically for as long as
+    it's open; a dead direction answers with whatever its one static
+    response is and then never sends another byte. Temporarily lowers
+    `sock`'s own timeout to STREAM_VERIFY_POLL_TIMEOUT so a single
+    `resp.read()` call can't block past the observation window -
+    restored via `finally` either way.
+
+    Takes `sock` explicitly rather than reading it off the
+    HTTPConnection - probe() sends `Connection: close`, and
+    HTTPConnection.getresponse() reacts to that by calling its own
+    self.close() (nulling connection.sock) the moment it sees the
+    response will close the connection, transferring real ownership
+    of the socket to `resp.fp` instead. Grabbing the reference right
+    after conn.request() - before that happens - is what actually
+    keeps working here.
     """
 
-    count = 0
-    start = 0
-    while True:
-        idx = data.find(boundary, start)
-        if idx == -1:
-            break
-        after = idx + len(boundary)
-        if data[after:after + 1] != b"-":
-            count += 1
-        start = after
-    return count
+    original_timeout = sock.gettimeout()
+    start = time.monotonic()
+    half = window_seconds / 2
+    deadline = start + window_seconds
+    saw_data_in_second_half = False
+    total = 0
 
-
-def _confirm_live_stream(
-    resp, content_type: str, initial_body: bytes, *, timeout: float
-) -> bool:
-    """True only if a *second* multipart frame boundary is actually
-    seen in the body - proof the server is pushing new frames one
-    after another, not just answering once with the right
-    Content-Type and then going quiet.
-
-    Christer, after this script reported blackvue_live.cgi?direction=I
-    and ?direction=O as both Found and Valid (HTTP 200, the exact same
-    multipart/x-mixed-replace Content-Type as the confirmed F/R
-    directions): "I never get a stream to watch for I and O" - i.e.
-    the camera answers the request the same way for every direction
-    value, but only genuinely streams video on two of them. HTTP
-    status/Content-Type alone can't tell those apart; a single
-    boundary line proves nothing (a dead/placeholder response can
-    carry one too), but a *second* one appearing only happens if the
-    server is actually still sending - see _count_part_delimiters()
-    for why raw substring counting isn't quite enough on its own
-    (closing delimiters need to be excluded, not just opening ones
-    counted).
-
-    Bounded to STREAM_VERIFY_MAX_BYTES total (`initial_body` included)
-    and this probe's own `timeout` - same "never wait forever on a
-    stream" guarantee every other part of this script already gives.
-    A stream that stalls before a second boundary shows up - the I/O
-    case above - is reported as unconfirmed, not left hanging until
-    the byte cap or timeout anyway makes that the practical outcome.
-    """
-
-    boundary = _extract_boundary(content_type)
-    if boundary is None:
-        return False
-
-    data = initial_body
-    if _count_part_delimiters(data, boundary) >= 2:
-        return True
-
-    remaining = STREAM_VERIFY_MAX_BYTES - len(data)
-    while remaining > 0:
+    try:
+        sock.settimeout(STREAM_VERIFY_POLL_TIMEOUT)
+        while time.monotonic() < deadline and total < STREAM_VERIFY_MAX_BYTES:
+            try:
+                chunk = resp.read(READ_BYTES)
+            except (TimeoutError, socket.timeout):
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            total += len(chunk)
+            if time.monotonic() - start >= half:
+                saw_data_in_second_half = True
+                break
+    finally:
         try:
-            chunk = resp.read(min(READ_BYTES, remaining))
-        except (TimeoutError, socket.timeout, OSError):
-            return False
-        if not chunk:
-            return False
-        data += chunk
-        remaining -= len(chunk)
-        if _count_part_delimiters(data, boundary) >= 2:
-            return True
+            sock.settimeout(original_timeout)
+        except OSError:
+            pass
 
-    return False
+    return saw_data_in_second_half
 
 
 def probe(host: str, port: int, path: str, timeout: float):
@@ -351,6 +324,10 @@ def probe(host: str, port: int, path: str, timeout: float):
     conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         conn.request("GET", path, headers={"Connection": "close"})
+        # Grabbed here, before getresponse() - see _confirm_live_stream()'s
+        # own docstring for why conn.sock itself can't be trusted after
+        # that call for a Connection: close request.
+        sock = conn.sock
         resp = conn.getresponse()
         status = resp.status
         headers = dict(resp.getheaders())
@@ -358,9 +335,13 @@ def probe(host: str, port: int, path: str, timeout: float):
 
         stream_confirmed = None
         if path in STREAMING_PATHS and is_valid_status(status):
-            stream_confirmed = _confirm_live_stream(
-                resp, headers.get("Content-Type", ""), body, timeout=timeout
-            )
+            # window_seconds ties to this probe's own --timeout rather
+            # than a separate hardcoded constant - a user who already
+            # widened --timeout for a slow camera gets a proportionally
+            # longer observation window here too, and the default (5s)
+            # is comfortably longer than any real frame interval an
+            # MJPEG stream would use.
+            stream_confirmed = _confirm_live_stream(sock, resp, window_seconds=timeout)
 
         return status, headers, body, None, stream_confirmed
     except (TimeoutError, socket.timeout) as exc:
