@@ -227,10 +227,89 @@ def extract_ap_ssid(config_ini_text: str) -> str | None:
     return value or None
 
 
+STREAM_VERIFY_MAX_BYTES = 65536
+
+_BOUNDARY_RE = re.compile(r'boundary=("?)([^;"]+)\1')
+
+
+def _extract_boundary(content_type: str) -> bytes | None:
+    """Pull the multipart boundary token out of a Content-Type header
+    value, or None if there isn't one. Some BlackVue firmware embeds
+    the boundary directly (`boundary=--ptaboundary`, already carrying
+    the leading `--` a standards-compliant client would normally add
+    itself) - taken as a literal token either way, since all this is
+    used for is counting how many times it recurs in the body (see
+    _confirm_live_stream() below), not full MIME parsing."""
+
+    match = _BOUNDARY_RE.search(content_type)
+    if match is None:
+        return None
+    token = match.group(2).strip()
+    return token.encode() if token else None
+
+
+def _confirm_live_stream(
+    resp, content_type: str, initial_body: bytes, *, timeout: float
+) -> bool:
+    """True only if a *second* multipart frame boundary is actually
+    seen in the body - proof the server is pushing new frames one
+    after another, not just answering once with the right
+    Content-Type and then going quiet.
+
+    Christer, after this script reported blackvue_live.cgi?direction=I
+    and ?direction=O as both Found and Valid (HTTP 200, the exact same
+    multipart/x-mixed-replace Content-Type as the confirmed F/R
+    directions): "I never get a stream to watch for I and O" - i.e.
+    the camera answers the request the same way for every direction
+    value, but only genuinely streams video on two of them. HTTP
+    status/Content-Type alone can't tell those apart; a single
+    boundary line proves nothing (a dead/placeholder response can
+    carry one too), but a *second* one appearing only happens if the
+    server is actually still sending.
+
+    Bounded to STREAM_VERIFY_MAX_BYTES total (`initial_body` included)
+    and this probe's own `timeout` - same "never wait forever on a
+    stream" guarantee every other part of this script already gives.
+    A stream that stalls before a second boundary shows up - the I/O
+    case above - is reported as unconfirmed, not left hanging until
+    the byte cap or timeout anyway makes that the practical outcome.
+    """
+
+    boundary = _extract_boundary(content_type)
+    if boundary is None:
+        return False
+
+    data = initial_body
+    if data.count(boundary) >= 2:
+        return True
+
+    remaining = STREAM_VERIFY_MAX_BYTES - len(data)
+    while remaining > 0:
+        try:
+            chunk = resp.read(min(READ_BYTES, remaining))
+        except (TimeoutError, socket.timeout, OSError):
+            return False
+        if not chunk:
+            return False
+        data += chunk
+        remaining -= len(chunk)
+        if data.count(boundary) >= 2:
+            return True
+
+    return False
+
+
 def probe(host: str, port: int, path: str, timeout: float):
     """GET `path`, reading at most READ_BYTES of the body regardless of
     what the server claims its length is - this is what keeps a
-    never-closing MJPEG/telemetry stream from hanging the script."""
+    never-closing MJPEG/telemetry stream from hanging the script.
+
+    Returns `(status, headers, body, error, stream_confirmed)`.
+    `stream_confirmed` is only ever meaningful for a `path` in
+    STREAMING_PATHS with a valid (2xx/3xx) status - see
+    _confirm_live_stream() for what it actually checks and why. It's
+    None for every other path/outcome (not applicable), never a
+    silent False standing in for "didn't check"."""
 
     conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
@@ -239,11 +318,18 @@ def probe(host: str, port: int, path: str, timeout: float):
         status = resp.status
         headers = dict(resp.getheaders())
         body = resp.read(READ_BYTES)
-        return status, headers, body, None
+
+        stream_confirmed = None
+        if path in STREAMING_PATHS and is_valid_status(status):
+            stream_confirmed = _confirm_live_stream(
+                resp, headers.get("Content-Type", ""), body, timeout=timeout
+            )
+
+        return status, headers, body, None, stream_confirmed
     except (TimeoutError, socket.timeout) as exc:
-        return None, {}, b"", f"timed out after {timeout}s ({exc})"
+        return None, {}, b"", f"timed out after {timeout}s ({exc})", None
     except (ConnectionRefusedError, ConnectionResetError, OSError) as exc:
-        return None, {}, b"", str(exc)
+        return None, {}, b"", str(exc), None
     finally:
         conn.close()
 
@@ -283,6 +369,29 @@ def is_valid_status(status: int | None) -> bool:
     return status is not None and status < VALID_STATUS_CEILING
 
 
+def is_valid_result(
+    path: str, status: int | None, stream_confirmed: bool | None
+) -> bool:
+    """True if this result means "you can actually use this", not just
+    "the server answered".
+
+    For an ordinary endpoint this is exactly is_valid_status(). For a
+    `path` in STREAMING_PATHS, HTTP status alone isn't enough - see
+    _confirm_live_stream()'s own docstring for why: Christer confirmed
+    on a real camera that blackvue_live.cgi answers 200 with an
+    identical multipart Content-Type for direction=F/R/I/O alike, but
+    "I never get a stream to watch for I and O" - only two of the four
+    actually deliver a second frame. So a streaming path additionally
+    requires `stream_confirmed` to be True.
+    """
+
+    if not is_valid_status(status):
+        return False
+    if path in STREAMING_PATHS:
+        return bool(stream_confirmed)
+    return True
+
+
 def _shorten(text: str, limit: int = SUMMARY_DETAIL_LIMIT) -> str:
     """Truncate a detail string for the summary table below - the
     full text (the real error message, etc.) is already printed in
@@ -305,12 +414,15 @@ def print_summary_table(results: list[tuple], ftp_open: bool) -> None:
     Found and Valid are deliberately separate columns, not one: Found
     means the camera's web server answered at all on this path (a
     403/404/502 still confirms the path exists); Valid means that
-    answer was actually a success/redirect (see is_valid_status())
-    rather than an error page - a path can be Found without being
-    Valid.
+    answer was actually usable (see is_valid_result()) - for most
+    paths that's just a success/redirect status, but for a streaming
+    path (see STREAMING_PATHS) it also requires a second frame/chunk
+    to have actually arrived, not just a 200 wearing the right
+    Content-Type. A path can be Found without being Valid.
 
     This complements, not replaces, the full per-endpoint dump above -
     that section still has the actual response bodies/content-types
+    (and, for streaming paths, whether a live stream was confirmed)
     needed for real diagnosis. This table is what's meant to be
     skimmed at a glance, or pasted whole into a GitHub issue as the
     headline result for a camera model/firmware nobody's confirmed yet.
@@ -318,15 +430,29 @@ def print_summary_table(results: list[tuple], ftp_open: bool) -> None:
 
     rows: list[tuple[str, bool, bool, str]] = []
 
-    for path, _description, status, headers, _body, error in results:
+    for path, _description, status, headers, _body, error, stream_confirmed in results:
         if error:
             rows.append((path, False, False, _shorten(f"no response: {error}")))
         else:
             content_type = headers.get("Content-Type", "")
             detail = f"HTTP {status}"
+            if path in STREAMING_PATHS and is_valid_status(status):
+                # Placed right after the status, before Content-Type -
+                # this is the important new signal for a streaming
+                # path (see is_valid_result()'s own docstring), and
+                # Content-Type is long enough on its own
+                # (multipart/x-mixed-replace; boundary=...) that
+                # _shorten() below would otherwise cut this off before
+                # it ever became visible.
+                detail += (
+                    ", stream confirmed" if stream_confirmed
+                    else ", no second frame seen"
+                )
             if content_type:
                 detail += f", {content_type}"
-            rows.append((path, True, is_valid_status(status), _shorten(detail)))
+            rows.append(
+                (path, True, is_valid_result(path, status, stream_confirmed), _shorten(detail))
+            )
 
     rows.append((
         "FTP (port 21)",
@@ -395,8 +521,10 @@ def main():
     ap_ssid = None
     version_bin_preview = None
     for path, description in CANDIDATE_ENDPOINTS:
-        status, headers, body, error = probe(args.host, args.port, path, args.timeout)
-        results.append((path, description, status, headers, body, error))
+        status, headers, body, error, stream_confirmed = probe(
+            args.host, args.port, path, args.timeout
+        )
+        results.append((path, description, status, headers, body, error, stream_confirmed))
 
         print(f"\n{path}  ({description})")
         if error:
@@ -413,7 +541,26 @@ def main():
 
         print("  -> Result: FOUND")
         print(f"  -> HTTP {status}")
-        print(f"  -> Valid: {'yes' if is_valid_status(status) else 'no (error response)'}")
+        valid = is_valid_result(path, status, stream_confirmed)
+        if path in STREAMING_PATHS and is_valid_status(status):
+            # A streaming path's Valid depends on stream_confirmed, not
+            # just the HTTP status - see is_valid_result()'s own
+            # docstring for why (Christer: "I never get a stream to
+            # watch for I and O", despite both answering 200 same as
+            # F/R). Spelled out explicitly here rather than folded into
+            # the one-line Valid message below, since "no (error
+            # response)" would be actively misleading for a case that
+            # answered 200 just fine but never actually streamed.
+            if stream_confirmed:
+                print("  -> Valid: yes (confirmed live - a second frame arrived)")
+            else:
+                print(
+                    "  -> Valid: no (HTTP 200, but no second frame arrived - "
+                    "looks like a dead/placeholder response wearing a live "
+                    "stream's Content-Type, not an actual stream)"
+                )
+        else:
+            print(f"  -> Valid: {'yes' if valid else 'no (error response)'}")
         content_type = headers.get("Content-Type", "(none)")
         print(f"  -> Content-Type: {content_type}")
         if path in STREAMING_PATHS and is_valid_status(status):
@@ -462,10 +609,12 @@ def main():
         f"(any status code counts - even a 403/404 confirms the path exists on this camera)."
     )
 
-    valid = [r for r in results if is_valid_status(r[2])]
+    valid = [r for r in results if is_valid_result(r[0], r[2], r[6])]
     print(
         f"{len(valid)}/{len(CANDIDATE_ENDPOINTS)} candidate endpoints gave a valid answer "
-        f"(HTTP < {VALID_STATUS_CEILING} - an actual success/redirect, not an error page)."
+        f"(HTTP < {VALID_STATUS_CEILING} - an actual success/redirect, not an error page - "
+        "and, for a streaming path, an actual confirmed live stream, not just a 200 "
+        "wearing the right Content-Type - see is_valid_result())."
     )
 
     print()
