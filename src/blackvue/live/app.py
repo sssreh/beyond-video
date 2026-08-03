@@ -1,12 +1,13 @@
 """
 FastAPI app for bv-live: a one-page live dashboard combining the
-camera's own front/rear MJPEG feed (switchable via a button) with two
+camera's own front/rear/interior MJPEG feed (switchable via a button)
+with two
 synthetic MJPEG streams this project renders itself - a scrolling map
 (map_stream.py) and a scrolling g-sensor strip (gsensor_stream.py) -
 fed by a background telemetry pump (telemetry.py) reading
 blackvue_livedata.cgi continuously for as long as the server runs.
 
-Layout: map on the left, camera feed (with a Front/Rear toggle button
+Layout: map on the left, camera feed (with a Front/Rear/Interior toggle button
 under it) to its right, g-sensor strip spanning the full width along
 the bottom - "front camera stream ... with gsensor line at the bottom
 and a scrolling map to the left", per Christer, both the map and
@@ -132,14 +133,24 @@ def create_live_app(
         return _PAGE_HTML.format(camera_name=camera_name)
 
     @app.get("/stream/camera")
-    def stream_camera(direction: str = Query("F", pattern="^[FR]$")):
+    def stream_camera(direction: str = Query("F", pattern="^[FRI]$")):
         # Opened fresh per request rather than kept alive
         # continuously like the telemetry pump - only relayed while a
         # browser is actually displaying it, and closed the moment the
         # viewer switches direction or the tab closes (relay_raw_stream()'s
-        # own finally: response.close()), so switching Front/Rear
+        # own finally: response.close()), so switching Front/Rear/Interior
         # doesn't leave the previous direction's own camera connection
-        # dangling open in the background.
+        # dangling open in the background. 'I' matches this project's
+        # own interior-camera letter elsewhere (Recording.interior,
+        # is_interior - see domain/recording.py) rather than "Internal"
+        # or "Inside" - no independent term introduced for the same
+        # thing. Note: on a camera that doesn't actually have a third
+        # channel, blackvue_live.cgi may still answer with *something*
+        # for direction=I rather than a clean error (see
+        # scripts/scan_blackvue_endpoints.py's own caveat on this) -
+        # the button doesn't hide itself for that case, since there's
+        # no reliable way from here to tell "no interior channel" apart
+        # from "interior channel, just nothing to see right now."
         upstream = client.open_stream(f"/blackvue_live.cgi?direction={direction}")
         content_type = upstream.headers.get("Content-Type") or CONTENT_TYPE
         return StreamingResponse(
@@ -260,6 +271,7 @@ _PAGE_HTML = """<!DOCTYPE html>
     <div id="camera-controls">
       <button id="btn-front" class="active" onclick="setDirection('F')">Front</button>
       <button id="btn-rear" onclick="setDirection('R')">Rear</button>
+      <button id="btn-interior" onclick="setDirection('I')">Interior</button>
     </div>
   </div>
 </div>
@@ -272,6 +284,7 @@ function setDirection(direction) {{
   img.src = '/stream/camera?direction=' + direction + '&t=' + Date.now();
   document.getElementById('btn-front').classList.toggle('active', direction === 'F');
   document.getElementById('btn-rear').classList.toggle('active', direction === 'R');
+  document.getElementById('btn-interior').classList.toggle('active', direction === 'I');
 }}
 </script>
 </body>
