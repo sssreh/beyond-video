@@ -79,10 +79,34 @@ import sys
 # upgrade2.cgi were also found in the same app but are deliberately
 # excluded here - destructive by name alone, exactly the category this
 # script's own docstring says never to probe, even as a bare GET.
+#
+# One deliberate exception to the "confirmed first" ordering above:
+# blackvue_live.cgi's direction=I and direction=0 variants sit right
+# next to its confirmed direction=F/direction=R entries rather than
+# further down with the rest of the unconfirmed group - Christer asked
+# for both tested too, and keeping every direction of the same
+# endpoint together makes the four easy to compare at a glance, which
+# matters more here than strict confirmed/unconfirmed grouping.
 CANDIDATE_ENDPOINTS = [
     ("/blackvue_vod.cgi", "recording listing"),
     ("/blackvue_live.cgi?direction=F", "live front video (MJPEG stream)"),
     ("/blackvue_live.cgi?direction=R", "live rear video (MJPEG stream)"),
+    (
+        "/blackvue_live.cgi?direction=I",
+        "live interior video (MJPEG stream) - Christer: also test this "
+        "direction. 'I' is the existing interior-camera letter this "
+        "project already recognizes elsewhere (recording filenames, "
+        "thumbnails - see RecordingId/Recording), unconfirmed here "
+        "specifically for blackvue_live.cgi until tried against a real "
+        "3-channel camera.",
+    ),
+    (
+        "/blackvue_live.cgi?direction=0",
+        "live video, direction '0' (MJPEG stream) - Christer: also test "
+        "this direction. Unconfirmed candidate for how a single-lens "
+        "camera (no F/R/I channels to distinguish) might address its "
+        "own live view instead of a direction letter.",
+    ),
     ("/blackvue_livedata.cgi", "live GPS/g-sensor telemetry (JSON stream)"),
     ("/Config/config.ini", "camera configuration file"),
     (
@@ -127,6 +151,8 @@ CANDIDATE_ENDPOINTS = [
 STREAMING_PATHS = {
     "/blackvue_live.cgi?direction=F",
     "/blackvue_live.cgi?direction=R",
+    "/blackvue_live.cgi?direction=I",
+    "/blackvue_live.cgi?direction=0",
     "/blackvue_livedata.cgi",
     "/blackvue_hss_live.cgi",
     "/blackvue_gps.cgi",
