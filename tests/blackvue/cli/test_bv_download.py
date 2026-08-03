@@ -14,6 +14,7 @@ from blackvue.cli.bv_download import DotProgress
 from blackvue.cli.bv_download import _capture_record_time
 from blackvue.cli.bv_download import _destination_message
 from blackvue.cli.bv_download import _run
+from blackvue.cli.bv_download import _summarize_found_kinds
 from blackvue.cli.bv_download import describe_recording_files
 from blackvue.cli.bv_download import parse_args
 from blackvue.cli.bv_download import parse_mode
@@ -639,3 +640,78 @@ def test_run_returns_ok_when_every_recording_succeeds(
 
     assert exit_code == EXIT_OK
     assert "failed and were skipped" not in capsys.readouterr().err
+
+
+def test_summarize_found_kinds_all_three():
+    found = [
+        vod_entry("20260803_143738_N.gps"),
+        vod_entry("20260803_143738_N.3gf"),
+        vod_entry("20260803_143738_NF.thm"),
+        vod_entry("20260803_143738_NI.thm"),
+        vod_entry("20260803_143738_NR.thm"),
+    ]
+
+    # Multiple thumbnail files (one per direction) collapse to a
+    # single "thumbnails" label - the point is fewer words on one
+    # line, not naming every direction that got one.
+    assert _summarize_found_kinds(found) == "gps, 3gf and thumbnails"
+
+
+def test_summarize_found_kinds_single_kind():
+    found = [vod_entry("20260803_143738_N.gps")]
+
+    assert _summarize_found_kinds(found) == "gps"
+
+
+def test_summarize_found_kinds_two_kinds():
+    found = [
+        vod_entry("20260803_143738_N.gps"),
+        vod_entry("20260803_143738_NF.thm"),
+    ]
+
+    assert _summarize_found_kinds(found) == "gps and thumbnails"
+
+
+def test_summarize_found_kinds_empty():
+    assert _summarize_found_kinds([]) == ""
+
+
+def test_run_verbose_prints_short_kind_summary_not_every_filename(
+    tmp_path, monkeypatch, capsys
+):
+    rec = recording("20260803_143738_N")
+    camera = _FakeDownloadCamera([rec])
+
+    def fake_probe(recording_):
+        found = [
+            vod_entry("20260803_143738_N.gps"),
+            vod_entry("20260803_143738_N.3gf"),
+            vod_entry("20260803_143738_NF.thm"),
+            vod_entry("20260803_143738_NI.thm"),
+            vod_entry("20260803_143738_NR.thm"),
+        ]
+        recording_.entries.extend(found)
+        return found
+
+    monkeypatch.setattr(camera, "probe_missing_sidecars", fake_probe)
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    _run(_host_args(tmp_path, verbose=True))
+
+    out = capsys.readouterr().out
+    assert (
+        "20260803_143738_N: found gps, 3gf and thumbnails for downloading"
+        in out
+    )
+    # The old message named every individual filename - confirm none
+    # of the per-direction thumbnail filenames leak back in.
+    assert "20260803_143738_NF.thm" not in out
+    assert "not listed by the camera's own recording listing" not in out

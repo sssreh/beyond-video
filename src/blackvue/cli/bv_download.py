@@ -29,6 +29,7 @@ from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
 from ..core.endpoint import Endpoint
 from ..domain.recording import Recording
+from ..domain.vod_entry import VodEntry
 from ..humantimeformatter import HumanTimeFormatter
 from ..lexicaltimeparser import LexicalTimeParser
 from ..lexicaltimeparser import TimeInterval
@@ -120,6 +121,32 @@ def select_by_mode(
 
     for recording in recordings:
         yield recording, recording.kind in mode
+
+
+def _summarize_found_kinds(found: list[VodEntry]) -> str:
+    """Summarize probe_missing_sidecars()'s found entries into short,
+    kind-level labels ("gps", "3gf", "thumbnails") for --verbose,
+    instead of listing every individual filename. A recording with
+    all three sidecar suffixes plus F/R/I thumbnails used to print
+    five full filenames on one line; this collapses that down to
+    three words. Order is fixed (gps, 3gf, thumbnails), not whatever
+    order probe_missing_sidecars() happened to find them in.
+    """
+
+    suffixes = {entry.path.suffix.lower() for entry in found}
+    kinds = []
+
+    if ".gps" in suffixes:
+        kinds.append("gps")
+    if ".3gf" in suffixes:
+        kinds.append("3gf")
+    if ".thm" in suffixes:
+        kinds.append("thumbnails")
+
+    if len(kinds) <= 1:
+        return "".join(kinds)
+
+    return ", ".join(kinds[:-1]) + " and " + kinds[-1]
 
 
 def describe_recording_files(
@@ -623,10 +650,10 @@ def _run(args: argparse.Namespace) -> int:
                 continue
 
             if found and args.verbose:
-                names = ", ".join(entry.path.name for entry in found)
+                summary = _summarize_found_kinds(found)
                 print(
-                    f"bv-download: {recording.id}: found {names} "
-                    "(not listed by the camera's own recording listing)"
+                    f"bv-download: {recording.id}: found {summary} "
+                    "for downloading"
                 )
 
             if args.dry_run:
