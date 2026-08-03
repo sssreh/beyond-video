@@ -533,24 +533,19 @@ def _run(args: argparse.Namespace) -> int:
         if recording.id in interval
     ]
 
-    #
-    # blackvue_vod.cgi's own recording listing has consistently only
-    # ever contained video files across the camera models confirmed so
-    # far (see WORKING_CONTEXT.md) - .gps/.3gf/.thm sidecars exist and
-    # download fine directly even though the listing never mentions
-    # them. A no-op - zero extra network calls - on any camera/
-    # firmware combination that does list them, so this costs nothing
-    # for that case.
-    #
-    for recording in recordings:
-        found = camera.probe_missing_sidecars(recording)
-
-        if found and args.verbose:
-            names = ", ".join(entry.path.name for entry in found)
-            print(
-                f"bv-download: {recording.id}: found {names} "
-                "(not listed by the camera's own recording listing)"
-            )
+    # Sidecar probing (see the loop below, right before each recording
+    # is actually listed/downloaded) is deliberately NOT done here, up
+    # front for every matching recording - it used to be, but that ran
+    # before the confirmation prompt even appeared, for every recording
+    # in the whole range regardless of whether the user went on to
+    # download any of it. On a camera/firmware combination whose
+    # listing doesn't already include sidecars (see
+    # probe_missing_sidecars()'s own docstring), that's several extra
+    # HTTP round-trips per recording - Christer: "it takes a long time
+    # and nothing is happening" - and it was also printing "found
+    # ..." lines under --verbose before he'd been asked "Proceed with
+    # download?" at all, misleadingly suggesting a download was already
+    # underway.
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -583,6 +578,31 @@ def _run(args: argparse.Namespace) -> int:
 
     try:
         for recording, want_video in selection:
+            #
+            # blackvue_vod.cgi's own recording listing has consistently
+            # only ever contained video files across the camera models
+            # confirmed so far (see WORKING_CONTEXT.md) - .gps/.3gf/.thm
+            # sidecars exist and download fine directly even though the
+            # listing never mentions them. A no-op - zero extra network
+            # calls - on any camera/firmware combination that does list
+            # them, so this costs nothing for that case. Probed here,
+            # one recording at a time right before it's actually listed
+            # (--dry-run --files, which needs entries populated to
+            # describe them) or downloaded - not eagerly for the whole
+            # matching range before the user has even been asked
+            # "Proceed with download?" (see the comment above this
+            # loop's own recordings/selection setup for why that used
+            # to be a problem).
+            #
+            found = camera.probe_missing_sidecars(recording)
+
+            if found and args.verbose:
+                names = ", ".join(entry.path.name for entry in found)
+                print(
+                    f"bv-download: {recording.id}: found {names} "
+                    "(not listed by the camera's own recording listing)"
+                )
+
             if args.dry_run:
                 if args.files:
                     print(f"{recording.id}:")
