@@ -81,12 +81,25 @@ import sys
 # script's own docstring says never to probe, even as a bare GET.
 #
 # One deliberate exception to the "confirmed first" ordering above:
-# blackvue_live.cgi's direction=I and direction=0 variants sit right
+# blackvue_live.cgi's direction=I and direction=O variants sit right
 # next to its confirmed direction=F/direction=R entries rather than
 # further down with the rest of the unconfirmed group - Christer asked
 # for both tested too, and keeping every direction of the same
 # endpoint together makes the four easy to compare at a glance, which
 # matters more here than strict confirmed/unconfirmed grouping.
+#
+# Caveat confirmed on a real scan of Christer's own camera: F, R, I,
+# and O all came back HTTP 200 with the exact same Content-Type
+# (multipart/x-mixed-replace) - despite Christer confirming that
+# camera only actually has front and rear channels. blackvue_live.cgi
+# on that firmware evidently doesn't validate the direction value at
+# all; it just streams something regardless of what's passed. So a
+# "Valid" mark here only means the path answered, not that the
+# direction was honored - four identical-looking 200s is itself a
+# signal the endpoint ignores the parameter, not four confirmed
+# channels. Telling real channels apart needs actually watching each
+# stream's content (this script only reads/discards a short prefix -
+# see its own docstring), not just the HTTP status.
 CANDIDATE_ENDPOINTS = [
     ("/blackvue_vod.cgi", "recording listing"),
     ("/blackvue_live.cgi?direction=F", "live front video (MJPEG stream)"),
@@ -96,16 +109,17 @@ CANDIDATE_ENDPOINTS = [
         "live interior video (MJPEG stream) - Christer: also test this "
         "direction. 'I' is the existing interior-camera letter this "
         "project already recognizes elsewhere (recording filenames, "
-        "thumbnails - see RecordingId/Recording), unconfirmed here "
-        "specifically for blackvue_live.cgi until tried against a real "
-        "3-channel camera.",
+        "thumbnails - see RecordingId/Recording). A 200/Valid result "
+        "here doesn't by itself confirm a real interior channel - see "
+        "this list's own caveat above about direction validation.",
     ),
     (
-        "/blackvue_live.cgi?direction=0",
-        "live video, direction '0' (MJPEG stream) - Christer: also test "
-        "this direction. Unconfirmed candidate for how a single-lens "
-        "camera (no F/R/I channels to distinguish) might address its "
-        "own live view instead of a direction letter.",
+        "/blackvue_live.cgi?direction=O",
+        "live video, direction 'O' (MJPEG stream) - Christer: also test "
+        "this direction. Unconfirmed candidate for how a camera might "
+        "address a channel beyond F/R/I. A 200/Valid result here "
+        "doesn't by itself confirm a real channel either - see this "
+        "list's own caveat above.",
     ),
     ("/blackvue_livedata.cgi", "live GPS/g-sensor telemetry (JSON stream)"),
     ("/Config/config.ini", "camera configuration file"),
@@ -152,7 +166,7 @@ STREAMING_PATHS = {
     "/blackvue_live.cgi?direction=F",
     "/blackvue_live.cgi?direction=R",
     "/blackvue_live.cgi?direction=I",
-    "/blackvue_live.cgi?direction=0",
+    "/blackvue_live.cgi?direction=O",
     "/blackvue_livedata.cgi",
     "/blackvue_hss_live.cgi",
     "/blackvue_gps.cgi",
