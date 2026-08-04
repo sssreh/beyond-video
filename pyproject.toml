@@ -110,3 +110,18 @@ bv-live = "blackvue.cli.bv_live:main"
 # -clip default pool used - dropped along with that whole feature
 # (see WORKING_CONTEXT.md); no .mp4 assets remain in this folder.
 "blackvue.export" = ["assets/*.png", "assets/*.ttf", "assets/*.txt"]
+
+# tests/ has no __init__.py anywhere, so more than one test file across
+# different directories can end up sharing a basename (e.g.
+# tests/blackvue/generate/test_subtitles.py and
+# tests/blackvue/export/test_subtitles.py both legitimately exist,
+# testing two different modules). Pytest's default import mode
+# ("prepend") derives each test module's import name from just its
+# basename and errors with "import file mismatch" the moment two
+# same-named files are collected in the same run. --import-mode
+# =importlib imports each file by its actual path instead, so same-
+# basename files never collide - pytest's own recommended fix for
+# this, and avoids sprinkling __init__.py across every tests/
+# subdirectory just to route around it.
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"

@@ -8,7 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from pathlib import PurePosixPath
 
-from src.parser.vod import (
+from blackvue.parser.vod import (
     parse_vod,
     parse_vod_entries,
     parse_vod_entry,
@@ -69,9 +69,8 @@ def test_parse_vod() -> None:
 
     assert len(recordings) == 2
 
-    assert recordings[0].recording == "20260711_121334_E"
+    assert recordings[0].id == "20260711_121334_E"
     assert len(recordings[0].entries) == 2
 
-    assert recordings[1].recording == "20260711_121635_N"
+    assert recordings[1].id == "20260711_121635_N"
     assert len(recordings[1].entries) == 1
-    
