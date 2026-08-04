@@ -46,18 +46,29 @@ YYYYMMDD_HHMM
 YYYYMMDD_HHMMSS
 ```
 
-Because there's no calendar validation, an odd-length or out-of-range prefix (`20250`, `2025061412`, `20250614_25` for a 25th hour) is *accepted* rather than rejected - it just expands lexically like anything else, which usually still produces a sensible-enough range but isn't guaranteed to mean what you'd expect. Stick to the six shapes above unless you have a specific reason not to.
+The parser never computes an actual calendar date - it just pads the digit string on the right (`0` for `--from`, `9` for `--until`) out to 14 digits and splits it. For a round prefix that padding lands exactly on a field boundary, so the raw result reads like a real timestamp even though it's still just string padding underneath:
 
-The precision given determines the implied range - a short prefix like `--from 202607` means "anything in July 2026 onward," not "exactly July 2026 00:00:00 onward down to the second." Concretely:
+| Option | Value | Raw expansion | Effectively means |
+|---|---|---|---|
+| `--from` | `202607` | `20260700_000000` | 2026-07-01 00:00:00 |
+| `--until` | `202607` | `20260799_999999` | anything through 2026-07-31 23:59:59 |
+| `--from` | `20260715` | `20260715_000000` | 2026-07-15 00:00:00 |
+| `--until` | `20260715` | `20260715_999999` | anything through 2026-07-15 23:59:59 |
+| `--from` | `20260715_14` | `20260715_140000` | 2026-07-15 14:00:00 |
+| `--until` | `20260715_14` | `20260715_149999` | anything through 2026-07-15 14:59:59 |
 
-| Option | Value | Expands to |
-|---|---|---|
-| `--from` | `202607` | `2026-07-01 00:00:00` |
-| `--until` | `202607` | `2026-07-31 23:59:59` |
-| `--from` | `20260715` | `2026-07-15 00:00:00` |
-| `--until` | `20260715` | `2026-07-15 23:59:59` |
-| `--from` | `20260715_14` | `2026-07-15 14:00:00` |
-| `--until` | `20260715_14` | `2026-07-15 14:59:59` |
+An odd-length ("half") prefix is accepted exactly the same way, but the padding now lands in the *middle* of a field instead of at its edge - so the raw expansion stops looking like a real timestamp at all, and what it effectively selects gets harder to predict at a glance:
+
+| Option | Value | Raw expansion | Effectively means |
+|---|---|---|---|
+| `--from` | `2026071` (7 digits) | `20260710_000000` | day `1` becomes day `10` (the `0`-pad lands in the day's *ones* digit) - not "any day starting with 1" |
+| `--until` | `2026071` (7 digits) | `20260719_999999` | same field, `9`-padded - day becomes `19` |
+| `--from` | `20260` (5 digits) | `20260000_000000` | padding spills into both month and day - month `00`, day `00` |
+| `--until` | `20260` (5 digits) | `20260999_999999` | month `09`, day `99` - not a real calendar value, but still a correct lexical upper bound for "anything in 2026" |
+
+None of the raw expansions above need to be valid calendar dates for the parser to work correctly - `TimeInterval` only ever compares these strings lexically against other zero-padded timestamps, never interprets them as real dates. But because a half-length prefix's raw expansion is unpredictable without doing this digit-by-digit math yourself, stick to the six round shapes listed above unless you have a specific reason not to.
+
+The precision given determines the implied range - a short prefix like `--from 202607` means "anything in July 2026 onward," not "exactly July 2026 00:00:00 onward down to the second."
 
 Examples:
 
