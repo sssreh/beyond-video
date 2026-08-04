@@ -191,12 +191,20 @@ def test_load_whisper_model_uses_cuda_when_available(monkeypatch):
     assert _FakeCudaAwareWhisperModel.calls == [("small", "cuda", "float16")]
 
 
-def test_get_whisper_model_reports_missing_faster_whisper_cleanly():
-    # Genuine, unmocked condition in this sandbox: faster-whisper isn't
-    # installed (matches the pattern _load_waveform_via_ffmpeg's own
-    # missing-torch test uses below). A cache key unique to this test
-    # avoids colliding with any other test's cached model under the
-    # same _WHISPER_MODEL_CACHE.
+def test_get_whisper_model_reports_missing_faster_whisper_cleanly(monkeypatch):
+    # This used to rely on faster-whisper genuinely not being installed
+    # in the test environment - true in this project's dev sandbox
+    # (no network access to install it), but false in real CI, which
+    # installs the full [speech] extra. With faster-whisper actually
+    # present, `WhisperModel(model_size, ...)` ran for real against this
+    # test's clearly-fake model name and raised its own ValueError
+    # instead of the clean MediaToolError this test checks for.
+    # Forcing the import to fail via sys.modules makes the test verify
+    # the same thing regardless of what's actually installed. A cache
+    # key unique to this test avoids colliding with any other test's
+    # cached model under the same _WHISPER_MODEL_CACHE.
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
+
     import blackvue.generate.speech as speech_module
 
     try:
@@ -519,11 +527,20 @@ def test_load_waveform_via_ffmpeg_decodes_real_audio(monkeypatch, tmp_path):
     assert len(result["waveform"].array) == 8000
 
 
-def test_load_waveform_via_ffmpeg_reports_missing_torch_cleanly(tmp_path):
-    # Genuine, unmocked condition in this sandbox: torch isn't
-    # installed. Confirms the missing-dependency path gives a clean
-    # MediaToolError (matching the project's pattern everywhere else)
-    # instead of a raw ImportError/traceback.
+def test_load_waveform_via_ffmpeg_reports_missing_torch_cleanly(
+    tmp_path, monkeypatch
+):
+    # This used to rely on torch genuinely not being installed in the
+    # test environment - true in this project's dev sandbox, but false
+    # in real CI, where pyannote.audio (part of the [speech] extra)
+    # pulls torch in transitively. With torch actually present, the
+    # function ran all the way to a real ffmpeg decode attempt against
+    # this nonexistent file, instead of hitting the clean
+    # MediaToolError this test checks for. Forcing the import to fail
+    # via sys.modules makes the test verify the same thing regardless
+    # of what's actually installed.
+    monkeypatch.setitem(sys.modules, "torch", None)
+
     import blackvue.generate.speech as speech_module
 
     source = tmp_path / "does-not-need-to-exist.aac"
