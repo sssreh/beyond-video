@@ -8,7 +8,7 @@ That said, there's one specific way outside help is genuinely useful right now: 
 
 Every `bv-*` command that talks to a camera live (`bv-gps`, `bv-live`, and the download step in `bv-download`) works by calling a handful of CGI endpoints the camera's own web server exposes on your local network - things like `blackvue_vod.cgi` for the recording list, `blackvue_live.cgi` for the live video feed, `blackvue_livedata.cgi` for live GPS/g-sensor data. Different BlackVue models and firmware versions expose different subsets of these, sometimes under different paths entirely (the Elite 10, for example, has a few endpoints the DR900S-2CH doesn't, and vice versa - see `WORKING_CONTEXT.md`'s firmware-analysis entries for what's been found so far).
 
-If you own a BlackVue camera model that isn't a DR900S-2CH - including any of the models listed as "likely to work, untested" in `README.md`'s Camera compatibility section - running a quick scan against your own camera and reporting back what you find is one of the most useful things you could do for this project - no firmware access, reverse engineering, or coding required.
+If you own a BlackVue camera model that isn't a DR900S-2CH - including any of the models already listed as "confirmed via scan" in `README.md`'s Camera compatibility section, since none of those have had the full `bv-download`/`bv-export`/`bv-live` pipeline run against them yet either - running a quick scan against your own camera and reporting back what you find is one of the most useful things you could do for this project - no firmware access, reverse engineering, or coding required.
 
 **How:**
 

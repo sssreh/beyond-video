@@ -53,11 +53,11 @@ See `docs/PIPELINE.md` for a fuller walkthrough, including transcription/transla
 
 ## Camera compatibility
 
-**Tested:** a BlackVue DR900S-2CH (full pipeline - download, live view, export). An Elite 10's core CGI endpoints (recording listing, live front/rear view, live GPS/g-sensor data, config) have also been confirmed live and working via `scan_blackvue_endpoints.py`, though the full `bv-download`/`bv-live` pipeline hasn't been run against one yet.
+**Tested (full pipeline):** a BlackVue DR900S-2CH - download, live view, and export all run for real against actual hardware.
 
-**Likely to work, untested:** DR750X-2CH, DR750X-3CH Plus, DR750X-2CH LTE Plus, DR770X, DR770X-BOX-PRO, DR900X-2CH, DR900X-2CH PLUS, DR970X-2CH LTE, DR970X-2CH LTE Plus. Nobody's confirmed these against real hardware yet - if you own one, see `CONTRIBUTING.md` for how to check and report back.
+**Confirmed via scan (endpoints verified live, not the full pipeline):** an Elite 10, plus DR750X-2CH, DR750X-3CH Plus, DR750X-2CH LTE Plus, DR770X, DR770X-BOX-PRO, DR900X-2CH, DR900X-2CH PLUS, DR970X-2CH LTE, and DR970X-2CH LTE Plus. Each model's core CGI endpoints (recording listing, live front/rear view, live GPS/g-sensor data, config) have been confirmed live and working via `scan_blackvue_endpoints.py`, but `bv-download`/`bv-export`/`bv-live` haven't been run against real hardware for any of them yet - see `CONTRIBUTING.md` for what that distinction means in practice.
 
-If you own a different BlackVue model entirely (not in either list above), the same applies - running the scan script against your own camera and reporting what it finds is a direct, concrete way to help extend support.
+If you own a BlackVue model not listed above, running the scan script against your own camera and reporting what it finds is a direct, concrete way to help extend support.
 
 ## Deployment
 
