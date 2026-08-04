@@ -35,7 +35,7 @@ The ID identifies the camera's configuration and, through it, the local archive 
 
 `--timestamp` matches a single timestamp or prefix and can't be combined with `--from`/`--until`. `--from`/`--until` can be used together or independently to bound a range; `--until` is inclusive.
 
-Accepted timestamp formats, from least to most precise:
+The parser is purely lexical, not a calendar parser: a timestamp is any run of 1-14 digits, optionally with a single `_` right after the 8th digit (`YYYYMMDD_HHMMSS`, with `HHMMSS` itself allowed to be any length from 1 to 6 digits). The six shapes below are the natural/expected ones - matching the real `YYYY`/`YYYYMM`/.../`YYYYMMDD_HHMMSS` boundaries of the underlying timestamp - and the ones worth actually using:
 
 ```text
 YYYY
@@ -45,6 +45,8 @@ YYYYMMDD_HH
 YYYYMMDD_HHMM
 YYYYMMDD_HHMMSS
 ```
+
+Because there's no calendar validation, an odd-length or out-of-range prefix (`20250`, `2025061412`, `20250614_25` for a 25th hour) is *accepted* rather than rejected - it just expands lexically like anything else, which usually still produces a sensible-enough range but isn't guaranteed to mean what you'd expect. Stick to the six shapes above unless you have a specific reason not to.
 
 The precision given determines the implied range - a short prefix like `--from 202607` means "anything in July 2026 onward," not "exactly July 2026 00:00:00 onward down to the second." Concretely:
 
