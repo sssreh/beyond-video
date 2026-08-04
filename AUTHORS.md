@@ -1,34 +1,15 @@
-\# AUTHORS
+# AUTHORS
 
-
-
-\## Founder
-
-
+## Founder
 
 Christer R (sssreh).
 
-
-
-\## Project
-
-
+## Project
 
 Beyond Video
 
+Started 2026
 
-
-Started
-
-
-
-2026
-
-
-
-\## Contributors
-
-
+## Contributors
 
 This section will grow as the project grows.
-

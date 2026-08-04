@@ -1,36 +1,17 @@
-\# Changelog
+# Changelog
 
+## Unreleased
 
+### Added
 
-\## Unreleased
+- Initial project architecture.
+- GPLv3 license.
+- Project documentation.
 
+### Changed
 
+- Repository structure.
 
-\### Added
+### Fixed
 
-
-
-\- Initial project architecture.
-
-\- GPLv3 license.
-
-\- Project documentation.
-
-
-
-\### Changed
-
-
-
-\- Repository structure.
-
-
-
-\### Fixed
-
-
-
-\- Nothing yet.
-
-
-
+- Nothing yet.

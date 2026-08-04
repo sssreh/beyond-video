@@ -233,3 +233,12 @@ set_env.txt
 # (that only touches tracked files), so it doesn't need reapplying
 # after every update.
 docker-compose.override.yml
+
+# Loose scratch files that have sat untracked at the repo root during
+# real development/debugging against Christer's own camera - never
+# meant to be committed (camera_gps.txt in particular can carry real
+# personal location data). Explicit entries rather than relying on
+# nobody ever running `git add -A`/`git add .` by accident.
+/camera_gps.txt
+/check_mp4_recoverability.py
+/inspect_mp4_boxes.py
