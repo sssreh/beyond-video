@@ -19,10 +19,10 @@ from blackvue.generate.media import probe_audio_codec
 from blackvue.generate.media import read_duration_seconds
 from blackvue.generate.media import select_source
 from blackvue.generate.mp4_box_reader import Mp4Info
-from test_mp4_box_reader import _audio_trak_with_garbage
-from test_mp4_box_reader import _build_mp4
-from test_mp4_box_reader import _mvhd_v0
-from test_mp4_box_reader import _video_trak
+from .test_mp4_box_reader import _audio_trak_with_garbage
+from .test_mp4_box_reader import _build_mp4
+from .test_mp4_box_reader import _mvhd_v0
+from .test_mp4_box_reader import _video_trak
 
 
 def make_recording(id_value: str, *assets: Asset) -> Recording:
