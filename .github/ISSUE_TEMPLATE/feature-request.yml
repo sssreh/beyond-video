@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose something new, or a change to how an existing command works.
+title: "Feature: <short description>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. This is a single-maintainer project built
+        around one person's own camera and workflow (see
+        `CONTRIBUTING.md`), so not every request fits - but a clear
+        description of the actual problem you're hitting makes it much
+        easier to judge than a jump straight to a proposed solution.
+
+        Planning to send a PR yourself? Please open this issue first
+        and describe the approach - it saves both of us time if it
+        turns out not to be the direction this project would take.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: What are you trying to do that beyond-video doesn't support today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional - a new flag, a new command, a change to existing behavior, etc.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you've already tried or considered?
+      description: Optional - existing flags/workarounds that don't quite fit, or other approaches you considered.
+    validations:
+      required: false

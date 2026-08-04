@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in beyond-video isn't working the way it should.
+title: "Bug: <short description>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. This is a single-maintainer project run
+        alongside a day job, so response time varies - but a clear report
+        makes it much faster to actually fix once I get to it.
+
+        If this is about a camera model exposing different/missing
+        endpoints rather than a bug in beyond-video itself, use the
+        "Camera endpoint scan" template instead.
+
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact bv-* command (and flags) you ran.
+      placeholder: bv-export ~/archive --target ~/trips --stitch --stitch-map
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include the full error message/traceback if there was one.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: camera-model
+    attributes:
+      label: Camera model
+      description: e.g. DR900S-2CH, Elite 10.
+    validations:
+      required: false
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: Windows 11, Python 3.13.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else worth knowing?
+      description: Optional - things you already tried, whether it's reproducible every time, etc.
+    validations:
+      required: false

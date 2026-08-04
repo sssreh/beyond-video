@@ -24,11 +24,17 @@ That's it. I'll take it from there to figure out what beyond-video needs to supp
 
 One privacy note before you post: the recording-listing endpoint's response includes your own recording filenames, which BlackVue's own naming convention encodes with the recording's date and time. Skim the output before pasting it into a public issue if that's not something you want to share.
 
+**What happens after your report lands:** I only own a DR900S-2CH myself (plus one Elite 10 firmware build analyzed offline, no physical unit), so for any other model I can't run the full download/export pipeline against real hardware before merging anything. What I *can* do, and have already done once for real (the Elite 10 - see `WORKING_CONTEXT.md`'s firmware-analysis entries): compare your scan output against the endpoints beyond-video already knows about, and if your model exposes the same ones (even under different paths), add the necessary endpoint handling from the scan alone. That gets your model marked "confirmed via scan, not full pipeline" in `README.md`'s compatibility table - real, working support for the parts a scan can verify (recording listing, live view, live GPS/g-sensor), without me having to trust it blind or make you iterate on test patches for something I can't personally validate either way. If your camera turns out to need something a scan alone can't answer (a genuinely different response format, say), I'll ask follow-up questions on the issue rather than guess.
+
 ## Code contributions
 
-If you want to go further than that - fixing a bug, adding support for an endpoint you found - a small, focused pull request is welcome, but please open an issue describing what you're planning first. This is a personal project I actively use for my own camera, so I'm cautious about changes that could affect my own working setup; discussing the approach before you write the code saves both of us time if it turns out not to be the direction I'd want to take it.
+If you want to go further than that - fixing a bug, adding support for an endpoint you found - a small, focused pull request is welcome, but please open an issue describing what you're planning first (use the "Feature request" template, or "Bug report" if you're fixing something broken). This is a personal project I actively use for my own camera, so I'm cautious about changes that could affect my own working setup; discussing the approach before you write the code saves both of us time if it turns out not to be the direction I'd want to take it.
 
-If you do send a PR: the project has a real test suite under `tests/` (`pytest`), and `ruff`/`mypy` are listed in `requirements-dev.txt` - matching the existing code's style and adding tests for new behavior makes a PR much easier to review and merge.
+If you do send a PR: the project has a real test suite under `tests/` (`pytest`), and `ruff`/`mypy` are listed in `requirements-dev.txt` - matching the existing code's style and adding tests for new behavior makes a PR much easier to review and merge. CI runs `pytest` on every PR (must pass) plus `ruff`/`mypy` (informational for now - the codebase hasn't been fully brought in line with either yet, so their output doesn't block a merge on its own).
+
+## Response time
+
+This is a hobby project maintained alongside a day job by one person - I'll get to issues and PRs when I can, but there's no SLA. A well-described report (see the templates above) is the single biggest thing that speeds that up, since I usually can't reproduce a camera-specific issue on my own hardware.
 
 ## License
 
