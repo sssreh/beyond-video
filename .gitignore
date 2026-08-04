@@ -242,3 +242,8 @@ docker-compose.override.yml
 /camera_gps.txt
 /check_mp4_recoverability.py
 /inspect_mp4_boxes.py
+
+# Scratch note containing the real static public IP being reported to
+# GitHub Support for purging from an old orphaned commit - never meant
+# to be committed (that's the whole point of the request).
+/github_support_request.md
