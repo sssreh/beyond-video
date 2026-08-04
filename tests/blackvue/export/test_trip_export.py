@@ -807,7 +807,7 @@ def test_trim_prebuffers_trims_front_rear_audio_and_gsensor(tmp_path):
     trip, n_id, m_id = _n_to_m_prebuffer_trip(source_dir)
 
     warnings: list[str] = []
-    media_overrides, gsensor_overrides = _trim_prebuffers(
+    media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
         trip, tmp_path / "work", warnings, log=None
     )
 
@@ -841,6 +841,12 @@ def test_trim_prebuffers_trims_front_rear_audio_and_gsensor(tmp_path):
     assert "front" in warnings[0] and "rear" in warnings[0]
     assert "audio" in warnings[0] and "gsensor" in warnings[0]
 
+    # The same ~5.1s the fixture pair is known to detect (see
+    # test_prebuffer.py) - _video_position_breakpoints() needs this to
+    # keep map.mp4/subtitle timing lined up with the trimmed video.
+    assert set(prebuffer_offsets.keys()) == {m_id}
+    assert 5.0 <= prebuffer_offsets[m_id] <= 5.2
+
 
 def test_trim_prebuffers_leaves_the_preceding_recording_untouched(tmp_path):
     source_dir = tmp_path / "archive"
@@ -848,7 +854,7 @@ def test_trim_prebuffers_leaves_the_preceding_recording_untouched(tmp_path):
     trip, n_id, m_id = _n_to_m_prebuffer_trip(source_dir)
 
     warnings: list[str] = []
-    media_overrides, gsensor_overrides = _trim_prebuffers(
+    media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
         trip, tmp_path / "work", warnings, log=None
     )
 
@@ -884,7 +890,7 @@ def test_trim_prebuffers_skips_an_event_recording_that_starts_the_trip(tmp_path)
     ))
 
     warnings: list[str] = []
-    media_overrides, gsensor_overrides = _trim_prebuffers(
+    media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
         trip, tmp_path / "work", warnings, log=None
     )
 
@@ -928,7 +934,7 @@ def test_trim_prebuffers_never_touches_a_normal_recording(tmp_path):
     ))
 
     warnings: list[str] = []
-    media_overrides, gsensor_overrides = _trim_prebuffers(
+    media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
         trip, tmp_path / "work", warnings, log=None
     )
 
@@ -963,7 +969,7 @@ def test_trim_prebuffers_skips_when_gsensor_data_is_missing(tmp_path):
     ))
 
     warnings: list[str] = []
-    media_overrides, gsensor_overrides = _trim_prebuffers(
+    media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
         trip, tmp_path / "work", warnings, log=None
     )
 
@@ -1017,7 +1023,7 @@ def test_trim_prebuffers_skips_when_no_confident_overlap_is_detected(tmp_path):
     ))
 
     warnings: list[str] = []
-    media_overrides, gsensor_overrides = _trim_prebuffers(
+    media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
         trip, tmp_path / "work", warnings, log=None
     )
 
@@ -1220,6 +1226,52 @@ def test_video_position_breakpoints_omits_recordings_without_an_offset():
     breakpoints = _video_position_breakpoints(trip, {first_id: 0.0})
 
     assert breakpoints == ((0.0, first_id.timestamp),)
+
+
+def test_video_position_breakpoints_shifts_a_trimmed_recordings_wallclock_start():
+    # A trimmed Manual/Event recording's video frame 0 no longer lines
+    # up with its own ID timestamp - it's been moved forward in
+    # wall-clock terms by however much prebuffer got cut off the
+    # front. Caught on a real export: without this, map.mp4's
+    # displayed position for the trimmed recording lagged its own
+    # burned-in camera timestamp by close to the trimmed amount.
+    first_id = RecordingId("20260802_103513_N")
+    second_id = RecordingId("20260802_103545_M")
+    trip = Trip((
+        Recording(id=first_id),
+        Recording(id=second_id),
+    ))
+
+    breakpoints = _video_position_breakpoints(
+        trip, {first_id: 0.0, second_id: 8.0}, {second_id: 5.1}
+    )
+
+    assert breakpoints == (
+        (0.0, first_id.timestamp),
+        (8.0, second_id.timestamp + timedelta(seconds=5.1)),
+    )
+
+
+def test_video_position_breakpoints_leaves_an_untrimmed_recording_alone():
+    # A recording missing from prebuffer_offsets (the overwhelming
+    # majority - only a trimmed Event/Manual recording is ever in it)
+    # keeps its plain ID timestamp, same as when prebuffer_offsets
+    # isn't given at all.
+    first_id = RecordingId("20260720_100000_N")
+    second_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(id=first_id),
+        Recording(id=second_id),
+    ))
+
+    breakpoints = _video_position_breakpoints(
+        trip, {second_id: 5.0, first_id: 0.0}, {}
+    )
+
+    assert breakpoints == (
+        (0.0, first_id.timestamp),
+        (5.0, second_id.timestamp),
+    )
 
 
 def test_merge_gsensor_positions_by_video_offset_when_available(tmp_path):

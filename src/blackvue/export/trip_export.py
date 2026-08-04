@@ -130,6 +130,7 @@ def _trim_prebuffers(
 ) -> tuple[
     dict[tuple[RecordingId, Asset], Path],
     dict[RecordingId, tuple[GSensorSample, ...]],
+    dict[RecordingId, float],
 ]:
     """Detect and trim a pre-record-buffer overlap off the front of
     every Event/Manual recording in the trip that isn't the trip's own
@@ -185,20 +186,32 @@ def _trim_prebuffers(
     in practice this rarely changes what alignment finds - but the
     ordering matters in principle regardless).
 
-    Returns `(media_overrides, gsensor_overrides)`: `media_overrides`
-    is shaped exactly like _align_front_rear_durations()'s own return
-    value (`{(recording id, asset): trimmed path}`, for FRONT/REAR/
-    AUDIO), meant to be merged with that function's own result and fed
-    into _concatenate_asset()/_recording_video_offsets(); the caller
-    should also pass this same dict to _align_front_rear_durations()
-    as `source_overrides` so it trims from the already-prebuffer-
-    trimmed files, not the camera's original ones. `gsensor_overrides`
+    Returns `(media_overrides, gsensor_overrides, prebuffer_offsets)`:
+    `media_overrides` is shaped exactly like
+    _align_front_rear_durations()'s own return value (`{(recording id,
+    asset): trimmed path}`, for FRONT/REAR/AUDIO), meant to be merged
+    with that function's own result and fed into
+    _concatenate_asset()/_recording_video_offsets(); the caller should
+    also pass this same dict to _align_front_rear_durations() as
+    `source_overrides` so it trims from the already-prebuffer-trimmed
+    files, not the camera's original ones. `gsensor_overrides`
     (`{recording id: trimmed samples}`) is meant for _merge_gsensor()'s
     own `gsensor_overrides` parameter.
+
+    `prebuffer_offsets` (`{recording id: detected offset_seconds}`) is
+    meant for _video_position_breakpoints()'s own `prebuffer_offsets`
+    parameter: a trimmed recording's video frame 0 no longer lines up
+    with its own ID timestamp - it's been moved forward in wall-clock
+    terms by however much got cut off the front - and
+    _video_position_breakpoints() needs to know that offset to keep
+    map.mp4/subtitle timing lined up with the trimmed video rather than
+    the untrimmed original. Only present for a recording that was
+    actually trimmed - see that function's own docstring.
     """
 
     media_overrides: dict[tuple[RecordingId, Asset], Path] = {}
     gsensor_overrides: dict[RecordingId, tuple[GSensorSample, ...]] = {}
+    prebuffer_offsets: dict[RecordingId, float] = {}
 
     recordings = trip.recordings
 
@@ -254,6 +267,7 @@ def _trim_prebuffers(
             current_samples, offset_seconds
         )
         trimmed_assets.append("gsensor")
+        prebuffer_offsets[current.id] = offset_seconds
 
         message = (
             f"{current.id}: detected a {offset_seconds:.2f}s pre-record "
@@ -264,7 +278,7 @@ def _trim_prebuffers(
         if log is not None:
             log.warning(message)
 
-    return media_overrides, gsensor_overrides
+    return media_overrides, gsensor_overrides, prebuffer_offsets
 
 
 def _align_front_rear_durations(
@@ -580,7 +594,9 @@ def _recording_video_offsets(
 
 
 def _video_position_breakpoints(
-    trip: Trip, video_offsets: dict[RecordingId, float]
+    trip: Trip,
+    video_offsets: dict[RecordingId, float],
+    prebuffer_offsets: dict[RecordingId, float] | None = None,
 ) -> tuple[tuple[float, datetime], ...]:
     """Return `video_offsets` reshaped into a (video_position_seconds,
     wallclock_start) sequence, sorted by video position - what
@@ -590,10 +606,36 @@ def _video_position_breakpoints(
     instead of one global "trip start" anchor. See
     _recording_video_offsets()'s own docstring for why the two only
     agree by coincidence.
+
+    `prebuffer_offsets`, if given, is _trim_prebuffers()'s own
+    `{recording id: detected offset_seconds}` return value. A
+    recording's own ID timestamp normally *is* the wall-clock instant
+    its video's frame 0 was recorded at - but not anymore for a
+    recording whose head got prebuffer-trimmed: frame 0 has been moved
+    forward by however many seconds of duplicate content got cut, so
+    the real wall-clock instant it now starts at is `id.timestamp +
+    offset_seconds`, not `id.timestamp` on its own. Confirmed on a real
+    export: without this adjustment, map.mp4's displayed position/
+    timestamp for a trimmed recording visibly lagged the video's own
+    burned-in camera timestamp by close to the trimmed amount - Christer
+    caught this by comparing the two on-screen. Recordings absent from
+    `prebuffer_offsets` (the overwhelming majority - only a trimmed
+    Event/Manual recording is ever in it) are unaffected, same as
+    before this parameter existed.
     """
 
     breakpoints = [
-        (video_offsets[recording.id], recording.id.timestamp)
+        (
+            video_offsets[recording.id],
+            recording.id.timestamp
+            + timedelta(
+                seconds=(
+                    prebuffer_offsets.get(recording.id, 0.0)
+                    if prebuffer_offsets is not None
+                    else 0.0
+                )
+            ),
+        )
         for recording in trip.recordings
         if recording.id in video_offsets
     ]
@@ -1300,7 +1342,7 @@ def export_trip(
         # that still have this duplicate content sitting at their
         # head. See _trim_prebuffers()'s own docstring for the full
         # reasoning and what gets trimmed.
-        prebuffer_overrides, gsensor_overrides = _trim_prebuffers(
+        prebuffer_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
             trip, Path(align_dir), warnings, log,
         )
         alignment_overrides = _align_front_rear_durations(
@@ -1332,7 +1374,9 @@ def export_trip(
             trip, include_parking=include_parking,
             duration_overrides=duration_overrides,
         )
-        recording_breakpoints = _video_position_breakpoints(trip, video_offsets)
+        recording_breakpoints = _video_position_breakpoints(
+            trip, video_offsets, prebuffer_offsets,
+        )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             front_future = executor.submit(
