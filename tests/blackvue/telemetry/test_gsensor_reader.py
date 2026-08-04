@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from blackvue.generate.media import MediaToolError
 from blackvue.telemetry.gsensor_reader import read_gsensor
+from blackvue.telemetry.gsensor_reader import trim_gsensor_head
 from blackvue.telemetry.gsensor_reader import write_gsensor
 
 
@@ -90,3 +91,45 @@ def test_read_gsensor_rejects_a_truncated_file(tmp_path):
         assert "truncated" in str(exc) or "multiple" in str(exc)
 
     assert raised is True
+
+
+def test_trim_gsensor_head_drops_earlier_samples_and_rebases_the_rest():
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+
+    samples = (
+        GSensorSample(offset=timedelta(seconds=0), x=1, y=1, z=1),
+        GSensorSample(offset=timedelta(seconds=1), x=2, y=2, z=2),
+        GSensorSample(offset=timedelta(seconds=2), x=3, y=3, z=3),
+        GSensorSample(offset=timedelta(seconds=3), x=4, y=4, z=4),
+    )
+
+    trimmed = trim_gsensor_head(samples, 1.5)
+
+    # The samples at 0s and 1s are strictly before the 1.5s cutoff -
+    # dropped. The ones at 2s/3s survive, rebased so the first
+    # remaining sample is measured from the new start.
+    assert trimmed == (
+        GSensorSample(offset=timedelta(seconds=0.5), x=3, y=3, z=3),
+        GSensorSample(offset=timedelta(seconds=1.5), x=4, y=4, z=4),
+    )
+
+
+def test_trim_gsensor_head_keeps_a_sample_exactly_at_the_cutoff():
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+
+    samples = (
+        GSensorSample(offset=timedelta(seconds=0), x=1, y=1, z=1),
+        GSensorSample(offset=timedelta(seconds=2), x=2, y=2, z=2),
+    )
+
+    trimmed = trim_gsensor_head(samples, 2.0)
+
+    assert trimmed == (GSensorSample(offset=timedelta(seconds=0), x=2, y=2, z=2),)
+
+
+def test_trim_gsensor_head_can_drop_everything():
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+
+    samples = (GSensorSample(offset=timedelta(seconds=0), x=1, y=1, z=1),)
+
+    assert trim_gsensor_head(samples, 5.0) == ()

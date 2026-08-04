@@ -83,6 +83,40 @@ def read_gsensor(path: Path) -> tuple[GSensorSample, ...]:
     return tuple(samples)
 
 
+def trim_gsensor_head(
+    samples: tuple[GSensorSample, ...], drop_seconds: float
+) -> tuple[GSensorSample, ...]:
+    """Drop every sample within the first `drop_seconds` of a
+    recording's own g-sensor track, and rebase what's left so the
+    first remaining sample is measured from the new (trimmed) start -
+    the g-sensor counterpart to export/media.py's trim_media_head(),
+    used together by trip_export.py's _trim_prebuffers() so a
+    recording's g-sensor samples stay positioned correctly against its
+    own video once a detected pre-record-buffer overlap is trimmed off
+    the front of both.
+
+    Without this, _merge_gsensor()'s video-offset rebase (see
+    trip_export.py) would place this recording's *raw* offset-zero
+    sample - g-sensor data from the real moment the untrimmed video
+    used to start, i.e. squarely inside the now-removed duplicate
+    content - as if it coincided with the trimmed video's new first
+    frame, reintroducing the same class of position error the video-
+    offset rebase itself was built to fix in the first place (see that
+    function's own docstring).
+
+    A sample exactly at `drop_seconds` is kept, not dropped - only
+    samples strictly before the new start are removed.
+    """
+
+    cutoff = timedelta(seconds=drop_seconds)
+
+    return tuple(
+        GSensorSample(offset=sample.offset - cutoff, x=sample.x, y=sample.y, z=sample.z)
+        for sample in samples
+        if sample.offset >= cutoff
+    )
+
+
 def write_gsensor(samples: tuple[GSensorSample, ...], path: Path) -> None:
     """Write samples back out in the same raw .3gf binary format.
 

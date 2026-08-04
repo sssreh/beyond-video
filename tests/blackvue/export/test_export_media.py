@@ -10,6 +10,7 @@ from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
 from blackvue.export.media import trim_media
+from blackvue.export.media import trim_media_head
 from blackvue.generate.media import MediaToolError
 
 
@@ -402,3 +403,51 @@ def test_trim_media_shortens_a_real_video_via_stream_copy(tmp_path):
 def test_trim_media_raises_when_the_source_does_not_exist(tmp_path):
     with pytest.raises(MediaToolError):
         trim_media(tmp_path / "missing.mp4", tmp_path / "out.mp4", 2.0)
+
+
+def _make_video_with_frequent_keyframes(path, duration_seconds: float) -> None:
+    """Like _make_silent_video(), but with a keyframe forced every
+    real second instead of libx264's own default GOP (large enough
+    that a short lavfi testsrc clip this length only ever gets one
+    keyframe, at the very start - confirmed empirically). A stream-
+    copy input-side seek (trim_media_head()'s own -ss before -i) can
+    only land on a real keyframe, so a source with just one at t=0
+    can never demonstrate an actual head trim - any -ss short of the
+    clip's own end still seeks right back to frame 0."""
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", str(duration_seconds),
+            "-g", "10",
+            "-force_key_frames", "expr:gte(t,n_forced*1)",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_trim_media_head_shortens_a_real_video_via_stream_copy(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_video_with_frequent_keyframes(source, 5.0)
+
+    destination = tmp_path / "trimmed.mp4"
+    trim_media_head(source, destination, 2.0)
+
+    assert destination.exists()
+    # A stream-copy input-side seek snaps to the nearest keyframe at
+    # or before the requested offset, so with a keyframe roughly every
+    # 1s this won't be exactly 3.0s (5.0s source minus a 2.0s head
+    # trim) - just noticeably shorter than the source and not longer
+    # than the requested cut point would allow.
+    trimmed_duration = _audio_duration_seconds(destination)
+    assert trimmed_duration < 5.0
+    assert trimmed_duration <= 3.5
+
+
+def test_trim_media_head_raises_when_the_source_does_not_exist(tmp_path):
+    with pytest.raises(MediaToolError):
+        trim_media_head(tmp_path / "missing.mp4", tmp_path / "out.mp4", 2.0)

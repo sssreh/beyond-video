@@ -31,6 +31,7 @@ from ..generate.media import select_source
 from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
 from ..telemetry.gsensor_reader import read_gsensor
+from ..telemetry.gsensor_reader import trim_gsensor_head
 from ..telemetry.gsensor_reader import write_gsensor
 from ..trip.trip import Trip
 from .geocoding import load_or_reverse_geocode
@@ -41,9 +42,11 @@ from .map_video import render_map_video
 from .media import check_readable
 from .media import concatenate_media
 from .media import trim_media
+from .media import trim_media_head
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
+from .prebuffer import detect_prebuffer_seconds
 from .trip_info import write_trip_info
 from .trip_stats import compute_trip_stats
 from .stitch import AUTO_LAYOUT
@@ -119,6 +122,151 @@ def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
 FRONT_REAR_DURATION_EPSILON_SECONDS = 0.01
 
 
+def _trim_prebuffers(
+    trip: Trip,
+    work_dir: Path,
+    warnings: list[str],
+    log: TripLog | None,
+) -> tuple[
+    dict[tuple[RecordingId, Asset], Path],
+    dict[RecordingId, tuple[GSensorSample, ...]],
+]:
+    """Detect and trim a pre-record-buffer overlap off the front of
+    every Event/Manual recording in the trip that isn't the trip's own
+    first recording - see export/prebuffer.py's module docstring for
+    what this overlap is and why it exists at all.
+
+    Christer: "A trip that starts with an E or M mode should not be
+    trimmed" - a trip's first recording has nothing before it *in this
+    trip* to compare against, so there's no real reference to detect
+    an overlap from; trimming without one would be guessing rather
+    than measuring. (The recording immediately preceding it in the
+    full archive, if any, is deliberately not reached for either -
+    scoped to the trip's own recordings, the same boundary
+    TripBuilder's own gap-based grouping already draws.)
+
+    For every other Event/Manual recording, compares it against
+    whichever recording immediately precedes it *in trip order* -
+    any kind, not just Normal, and regardless of whether that
+    recording will itself end up in the final concatenated video
+    (e.g. a leading Parking recording being left out via
+    `include_parking=False` - detection only ever reads its g-sensor
+    data, never its video, so that exclusion doesn't matter here).
+    Both recordings need a readable GSENSOR asset or the pair is
+    skipped outright - detect_prebuffer_seconds() itself already
+    refuses to guess without real data to compare (see its own
+    docstring), this is just the "the data isn't even there" case one
+    level up.
+
+    detect_prebuffer_seconds() returning a confident offset (not None)
+    is applied identically to every asset this recording actually has
+    - FRONT, REAR, AUDIO (a plain stream-copy head trim via
+    trim_media_head() for all three - see WORKING_CONTEXT.md for why
+    AUDIO needs the same trim, not just video: it's concatenated
+    independently of FRONT/REAR with no duration compensation of its
+    own, so leaving it untouched would push audio.aac out of sync with
+    the video from this recording onward) and GSENSOR (its own sample-
+    level trim via trim_gsensor_head(), returned separately as
+    `gsensor_overrides` since _merge_gsensor() works from in-memory
+    samples, never a file on disk - no reason to round-trip through a
+    temp .3gf file just to read it straight back). GPS is deliberately
+    left untouched: gps_reader.py's fixes already carry real wall-
+    clock timestamps rather than being positioned relative to the
+    recording's own video (see _merge_gps()), so they're unaffected by
+    wherever the video itself gets cut.
+
+    Runs *before* _align_front_rear_durations() in export_trip()'s own
+    pipeline (see that call site) - trimming the duplicate content off
+    the front first means the alignment trim, which cuts whichever of
+    FRONT/REAR's tail is longer, is comparing two already-de-
+    duplicated files instead of fighting a mismatch this step itself
+    would otherwise have introduced (trimming the same P seconds off
+    both FRONT and REAR here keeps their own difference unchanged, so
+    in practice this rarely changes what alignment finds - but the
+    ordering matters in principle regardless).
+
+    Returns `(media_overrides, gsensor_overrides)`: `media_overrides`
+    is shaped exactly like _align_front_rear_durations()'s own return
+    value (`{(recording id, asset): trimmed path}`, for FRONT/REAR/
+    AUDIO), meant to be merged with that function's own result and fed
+    into _concatenate_asset()/_recording_video_offsets(); the caller
+    should also pass this same dict to _align_front_rear_durations()
+    as `source_overrides` so it trims from the already-prebuffer-
+    trimmed files, not the camera's original ones. `gsensor_overrides`
+    (`{recording id: trimmed samples}`) is meant for _merge_gsensor()'s
+    own `gsensor_overrides` parameter.
+    """
+
+    media_overrides: dict[tuple[RecordingId, Asset], Path] = {}
+    gsensor_overrides: dict[RecordingId, tuple[GSensorSample, ...]] = {}
+
+    recordings = trip.recordings
+
+    for index in range(1, len(recordings)):
+        current = recordings[index]
+        if not (current.id.is_event or current.id.is_manual):
+            continue
+
+        preceding = recordings[index - 1]
+
+        preceding_gsensor = preceding.file(Asset.GSENSOR)
+        current_gsensor = current.file(Asset.GSENSOR)
+        if preceding_gsensor is None or current_gsensor is None:
+            continue
+
+        try:
+            preceding_samples = read_gsensor(preceding_gsensor.path)
+            current_samples = read_gsensor(current_gsensor.path)
+        except MediaToolError:
+            continue
+
+        offset_seconds = detect_prebuffer_seconds(preceding_samples, current_samples)
+        if offset_seconds is None:
+            continue
+
+        trimmed_assets: list[str] = []
+        for asset in (Asset.FRONT, Asset.REAR, Asset.AUDIO):
+            asset_file = current.file(asset)
+            if asset_file is None:
+                continue
+
+            trimmed_path = (
+                work_dir
+                / f"{current.id}_{asset.name.lower()}_prebuffer{asset_file.path.suffix}"
+            )
+            try:
+                trim_media_head(asset_file.path, trimmed_path, offset_seconds)
+            except MediaToolError as exc:
+                message = (
+                    f"{current.id}: detected a {offset_seconds:.2f}s "
+                    f"pre-record buffer overlap with {preceding.id} but "
+                    f"could not trim {asset.name.lower()}: {exc}"
+                )
+                warnings.append(message)
+                if log is not None:
+                    log.warning(message)
+                continue
+
+            media_overrides[(current.id, asset)] = trimmed_path
+            trimmed_assets.append(asset.name.lower())
+
+        gsensor_overrides[current.id] = trim_gsensor_head(
+            current_samples, offset_seconds
+        )
+        trimmed_assets.append("gsensor")
+
+        message = (
+            f"{current.id}: detected a {offset_seconds:.2f}s pre-record "
+            f"buffer overlap with the preceding recording {preceding.id} "
+            f"- trimmed {', '.join(trimmed_assets)}"
+        )
+        warnings.append(message)
+        if log is not None:
+            log.warning(message)
+
+    return media_overrides, gsensor_overrides
+
+
 def _align_front_rear_durations(
     trip: Trip,
     work_dir: Path,
@@ -127,6 +275,7 @@ def _align_front_rear_durations(
     *,
     include_parking: bool,
     epsilon_seconds: float = FRONT_REAR_DURATION_EPSILON_SECONDS,
+    source_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
 ) -> dict[tuple[RecordingId, Asset], Path]:
     """Trim every recording's own front/rear video pair to exactly
     match each other, whenever they differ at all (beyond
@@ -168,6 +317,15 @@ def _align_front_rear_durations(
     probe; anything else surfaces through `_concatenate_asset()`'s
     own existing per-file error handling instead, same as before this
     existed.
+
+    `source_overrides`, if given, is `_trim_prebuffers()`'s own
+    `{(recording id, asset): trimmed path}` return value - whenever a
+    (recording, FRONT/REAR) pair appears there, this function probes
+    and (if needed) trims from that already-prebuffer-trimmed file
+    instead of the recording's own real one, so a further trim here
+    compounds onto the earlier one rather than starting over from the
+    untrimmed original. See export_trip()'s own call site for why
+    _trim_prebuffers() runs first.
     """
 
     overrides: dict[tuple[RecordingId, Asset], Path] = {}
@@ -178,8 +336,16 @@ def _align_front_rear_durations(
         if not recording.has(Asset.FRONT) or not recording.has(Asset.REAR):
             continue
 
-        front_path = recording.file(Asset.FRONT).path
-        rear_path = recording.file(Asset.REAR).path
+        front_path = (
+            source_overrides.get((recording.id, Asset.FRONT))
+            if source_overrides is not None
+            else None
+        ) or recording.file(Asset.FRONT).path
+        rear_path = (
+            source_overrides.get((recording.id, Asset.REAR))
+            if source_overrides is not None
+            else None
+        ) or recording.file(Asset.REAR).path
 
         try:
             front_duration = probe(front_path).duration_seconds
@@ -570,7 +736,9 @@ def _merge_gps(trip: Trip) -> tuple:
 
 
 def _merge_gsensor(
-    trip: Trip, video_offsets: dict[RecordingId, float] | None = None
+    trip: Trip,
+    video_offsets: dict[RecordingId, float] | None = None,
+    gsensor_overrides: dict[RecordingId, tuple[GSensorSample, ...]] | None = None,
 ) -> tuple[GSensorSample, ...]:
     """Merge every recording's g-sensor samples into one trip-relative
     stream, positioned to match the actual concatenated video wherever
@@ -585,19 +753,38 @@ def _merge_gsensor(
     their own nominal ID timestamps (the near-universal case - see
     _recording_video_offsets()'s own docstring for why positioning by
     ID timestamp alone drifted trip.3gf/gsensor.mp4 out of sync with
-    real footage)."""
+    real footage).
+
+    `gsensor_overrides`, if given, is _trim_prebuffers()'s own
+    `{recording id: trimmed samples}` return value - a recording
+    present there gets those already-prebuffer-trimmed samples used
+    directly, in place of a fresh read_gsensor() off its own real
+    file, so its g-sensor data stays in step with whatever FRONT/REAR
+    trim the same recording got there. Unlike `duration_overrides`
+    elsewhere in this module, this is plain in-memory data, not a
+    path - _trim_prebuffers() never writes a trimmed .3gf back out to
+    disk, since nothing here needs it as a real file the way ffmpeg
+    needs FRONT/REAR/AUDIO to be."""
 
     samples: list[GSensorSample] = []
     trip_start = trip.start_timestamp
 
     for recording in trip:
-        gsensor_file = recording.file(Asset.GSENSOR)
-        if gsensor_file is None:
-            continue
-        try:
-            recording_samples = read_gsensor(gsensor_file.path)
-        except MediaToolError:
-            continue
+        override_samples = (
+            gsensor_overrides.get(recording.id)
+            if gsensor_overrides is not None
+            else None
+        )
+        if override_samples is not None:
+            recording_samples = override_samples
+        else:
+            gsensor_file = recording.file(Asset.GSENSOR)
+            if gsensor_file is None:
+                continue
+            try:
+                recording_samples = read_gsensor(gsensor_file.path)
+            except MediaToolError:
+                continue
 
         if video_offsets is not None and recording.id in video_offsets:
             rebase = timedelta(seconds=video_offsets[recording.id])
@@ -1105,9 +1292,29 @@ def export_trip(
     # directly, they all work from front.mp4/rear.mp4 once
     # concatenation is done.
     with tempfile.TemporaryDirectory(prefix="bv_export_align_") as align_dir:
-        duration_overrides = _align_front_rear_durations(
-            trip, Path(align_dir), warnings, log, include_parking=include_parking,
+        # Prebuffer trimming runs first: a detected pre-record-buffer
+        # overlap is real duplicate content at the very front of an
+        # Event/Manual recording, so it needs to come off before
+        # _align_front_rear_durations() compares FRONT against REAR -
+        # otherwise alignment would be trimming (from the tail) files
+        # that still have this duplicate content sitting at their
+        # head. See _trim_prebuffers()'s own docstring for the full
+        # reasoning and what gets trimmed.
+        prebuffer_overrides, gsensor_overrides = _trim_prebuffers(
+            trip, Path(align_dir), warnings, log,
         )
+        alignment_overrides = _align_front_rear_durations(
+            trip, Path(align_dir), warnings, log, include_parking=include_parking,
+            source_overrides=prebuffer_overrides,
+        )
+        # alignment_overrides wins per-(recording, asset) pair where it
+        # touched one (its own trimmed file was itself built from
+        # whatever prebuffer_overrides supplied, so it already carries
+        # that trim forward); prebuffer_overrides' own entries are kept
+        # as-is for anything alignment didn't need to touch further -
+        # e.g. AUDIO, which alignment never looks at at all, or a
+        # FRONT/REAR pair that already matched post-prebuffer-trim.
+        duration_overrides = {**prebuffer_overrides, **alignment_overrides}
 
         # Computed here, still inside this tempdir's own lifetime -
         # _recording_video_offsets() probes each recording's own
@@ -1118,7 +1325,9 @@ def export_trip(
         # datetime) pairs) with no dependency on any file still
         # existing, so they're safe to keep using well past this
         # block - see _merge_gsensor()/_render_map_variant()/
-        # stitch_cameras() below.
+        # stitch_cameras() below. gsensor_overrides is likewise plain
+        # in-memory data (see _merge_gsensor()'s own docstring), safe
+        # to keep past this block too.
         video_offsets = _recording_video_offsets(
             trip, include_parking=include_parking,
             duration_overrides=duration_overrides,
@@ -1136,7 +1345,7 @@ def export_trip(
             )
             audio_future = executor.submit(
                 _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,
-                include_parking=include_parking,
+                include_parking=include_parking, duration_overrides=duration_overrides,
             )
             front_video = front_future.result()
             rear_video = rear_future.result()
@@ -1308,7 +1517,7 @@ def export_trip(
         log.step("no map/map-zoom/stitch-map requested or no GPS data - map phase skipped")
 
     gsensor_path = None
-    samples = _merge_gsensor(trip, video_offsets)
+    samples = _merge_gsensor(trip, video_offsets, gsensor_overrides)
     if samples:
         gsensor_path = destination / "trip.3gf"
         write_gsensor(samples, gsensor_path)

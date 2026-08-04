@@ -332,3 +332,51 @@ def trim_media(source: Path, destination: Path, duration_seconds: float) -> None
         raise MediaToolError(
             f"ffmpeg trim failed for {source.name}: {exc.stderr.strip()}"
         ) from exc
+
+
+def trim_media_head(
+    source: Path, destination: Path, offset_seconds: float
+) -> None:
+    """Cut the first `offset_seconds` off the *start* of `source`, via
+    a plain ffmpeg stream copy (`-ss` before `-i`, the fast input-side
+    seek) - the head-trimming counterpart to trim_media()'s own tail
+    cut, used by trip_export.py's _trim_prebuffers() to remove a
+    detected pre-record-buffer overlap from the front of an Event/
+    Manual recording.
+
+    Stream copy can't cut at an arbitrary byte-exact position - only a
+    re-encode could guarantee that, at real time cost for what's
+    normally a handful of seconds - so like every other trim in this
+    module, this snaps to the nearest keyframe. Deliberately the
+    *preceding* keyframe (ffmpeg's own default for an input-side seek
+    with `-c copy`): worst case, this leaves a small residual sliver
+    of the original duplicate content still in place, rather than
+    ever risking a seek that overshoots into genuinely new, no-longer-
+    duplicate footage. Christer, on the resulting jump/glitch this can
+    still leave at the cut point: "It would be nice to [not] have a
+    visible jump/glitch, but if it can't be avoided its ok" - so this
+    trades a small amount of trim precision for a fast, lossless cut,
+    the same trade-off trim_media() itself already makes.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(offset_seconds),
+                "-i", str(source),
+                "-c", "copy",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg head trim failed for {source.name}: {exc.stderr.strip()}"
+        ) from exc

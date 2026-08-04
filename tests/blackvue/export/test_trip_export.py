@@ -5,6 +5,7 @@ import struct
 import subprocess
 from datetime import datetime
 from datetime import timedelta
+from pathlib import Path
 
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
@@ -17,6 +18,7 @@ from blackvue.export.trip_export import _concatenate_asset
 from blackvue.export.trip_export import _ensure_recording_audio
 from blackvue.export.trip_export import _merge_gsensor
 from blackvue.export.trip_export import _recording_video_offsets
+from blackvue.export.trip_export import _trim_prebuffers
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
@@ -26,6 +28,8 @@ from blackvue.generate.subtitles import format_lrc
 from blackvue.generate.subtitles import format_srt
 from blackvue.telemetry.gsensor_reader import read_gsensor
 from blackvue.trip.trip import Trip
+
+GSENSOR_FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "gsensor"
 
 
 def _make_video(path, duration_seconds: float) -> None:
@@ -715,6 +719,373 @@ def test_align_front_rear_durations_skips_a_recording_missing_one_side(tmp_path)
 
     assert overrides == {}
     assert warnings == []
+
+
+def _make_video_with_frequent_keyframes(path, duration_seconds: float) -> None:
+    """Like _make_video(), but with a keyframe forced every real
+    second instead of libx264's own default GOP - a plain lavfi
+    testsrc clip this short only ever gets one keyframe, at the very
+    start, and trim_media_head()'s stream-copy input-side seek can
+    only land on a real keyframe. Without this, a head trim on a
+    clip this short would just seek right back to frame 0 and produce
+    the untrimmed video."""
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", str(duration_seconds),
+            "-g", "10",
+            "-force_key_frames", "expr:gte(t,n_forced*1)",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _n_to_m_prebuffer_trip(source_dir):
+    """A 2-recording (N -> M) trip built from the real, confirmed
+    prebuffer pair in tests/fixtures/gsensor/ (20260802_103513_N /
+    20260802_103545_M - see WORKING_CONTEXT.md) - detect_prebuffer_
+    seconds() finds a ~5.1s overlap between these two tracks (see
+    test_prebuffer.py's own test against this exact pair). FRONT/REAR/
+    AUDIO are synthetic (real content doesn't matter for
+    _trim_prebuffers(), only the g-sensor tracks do), long enough that
+    a ~5.1s head trim leaves a clearly-shorter, still-nonzero result,
+    with frequent keyframes so trim_media_head()'s stream-copy seek
+    has something to actually land on.
+    """
+
+    n_front = source_dir / "n_front.mp4"
+    n_rear = source_dir / "n_rear.mp4"
+    n_audio = source_dir / "n_audio.aac"
+    m_front = source_dir / "m_front.mp4"
+    m_rear = source_dir / "m_rear.mp4"
+    m_audio = source_dir / "m_audio.aac"
+
+    _make_video_with_frequent_keyframes(n_front, 8.0)
+    _make_video_with_frequent_keyframes(n_rear, 8.0)
+    _make_audio(n_audio, 8.0)
+    _make_video_with_frequent_keyframes(m_front, 20.0)
+    _make_video_with_frequent_keyframes(m_rear, 20.0)
+    _make_audio(m_audio, 20.0)
+
+    n_id = RecordingId("20260802_103513_N")
+    m_id = RecordingId("20260802_103545_M")
+
+    n_recording = Recording(
+        id=n_id,
+        assets={
+            Asset.FRONT: AssetFile(Asset.FRONT, n_front),
+            Asset.REAR: AssetFile(Asset.REAR, n_rear),
+            Asset.AUDIO: AssetFile(Asset.AUDIO, n_audio),
+            Asset.GSENSOR: AssetFile(
+                Asset.GSENSOR, GSENSOR_FIXTURES / "20260802_103513_N.3gf"
+            ),
+        },
+    )
+    m_recording = Recording(
+        id=m_id,
+        assets={
+            Asset.FRONT: AssetFile(Asset.FRONT, m_front),
+            Asset.REAR: AssetFile(Asset.REAR, m_rear),
+            Asset.AUDIO: AssetFile(Asset.AUDIO, m_audio),
+            Asset.GSENSOR: AssetFile(
+                Asset.GSENSOR, GSENSOR_FIXTURES / "20260802_103545_M.3gf"
+            ),
+        },
+    )
+
+    return Trip((n_recording, m_recording)), n_id, m_id
+
+
+def test_trim_prebuffers_trims_front_rear_audio_and_gsensor(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    trip, n_id, m_id = _n_to_m_prebuffer_trip(source_dir)
+
+    warnings: list[str] = []
+    media_overrides, gsensor_overrides = _trim_prebuffers(
+        trip, tmp_path / "work", warnings, log=None
+    )
+
+    # Only the M recording gets trimmed - N is the reference, not the
+    # thing being cut.
+    assert {key[0] for key in media_overrides} == {m_id}
+    assert set(media_overrides.keys()) == {
+        (m_id, Asset.FRONT), (m_id, Asset.REAR), (m_id, Asset.AUDIO),
+    }
+
+    for (_, asset), trimmed_path in media_overrides.items():
+        assert trimmed_path.exists()
+
+    m_front_trimmed_duration = _video_duration(media_overrides[(m_id, Asset.FRONT)])
+    assert m_front_trimmed_duration < 20.0
+    # A ~5.1s detected offset trimmed (snapped to the nearest earlier
+    # keyframe, ~1s apart) from a 20s source should land noticeably
+    # below 20s but nowhere near fully consumed.
+    assert 12.0 < m_front_trimmed_duration < 19.0
+
+    assert set(gsensor_overrides.keys()) == {m_id}
+    trimmed_samples = gsensor_overrides[m_id]
+    original_samples = read_gsensor(GSENSOR_FIXTURES / "20260802_103545_M.3gf")
+    assert len(trimmed_samples) < len(original_samples)
+    assert trimmed_samples[0].offset < timedelta(seconds=0.5)
+
+    assert len(warnings) == 1
+    assert str(m_id) in warnings[0]
+    assert str(n_id) in warnings[0]
+    assert "pre-record buffer" in warnings[0]
+    assert "front" in warnings[0] and "rear" in warnings[0]
+    assert "audio" in warnings[0] and "gsensor" in warnings[0]
+
+
+def test_trim_prebuffers_leaves_the_preceding_recording_untouched(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    trip, n_id, m_id = _n_to_m_prebuffer_trip(source_dir)
+
+    warnings: list[str] = []
+    media_overrides, gsensor_overrides = _trim_prebuffers(
+        trip, tmp_path / "work", warnings, log=None
+    )
+
+    assert (n_id, Asset.FRONT) not in media_overrides
+    assert (n_id, Asset.REAR) not in media_overrides
+    assert (n_id, Asset.AUDIO) not in media_overrides
+    assert n_id not in gsensor_overrides
+
+
+def test_trim_prebuffers_skips_an_event_recording_that_starts_the_trip(tmp_path):
+    # Christer: "A trip that starts with an E or M mode should not be
+    # trimmed" - there's nothing earlier in the trip to compare
+    # against, so a trip whose own first recording is Manual/Event
+    # should never be touched, even if a real prebuffer overlap
+    # technically exists against some other recording outside this
+    # trip.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+
+    m_front = source_dir / "m_front.mp4"
+    _make_video_with_frequent_keyframes(m_front, 10.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260802_103545_M"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, m_front),
+                Asset.GSENSOR: AssetFile(
+                    Asset.GSENSOR, GSENSOR_FIXTURES / "20260802_103545_M.3gf"
+                ),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    media_overrides, gsensor_overrides = _trim_prebuffers(
+        trip, tmp_path / "work", warnings, log=None
+    )
+
+    assert media_overrides == {}
+    assert gsensor_overrides == {}
+    assert warnings == []
+
+
+def test_trim_prebuffers_never_touches_a_normal_recording(tmp_path):
+    # Even if two consecutive Normal recordings' g-sensor tracks
+    # happened to correlate strongly (e.g. genuinely identical driving
+    # conditions), only an Event/Manual recording is ever a candidate
+    # for trimming - kind is checked before detection ever runs.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+
+    first_front = source_dir / "first_front.mp4"
+    second_front = source_dir / "second_front.mp4"
+    _make_video_with_frequent_keyframes(first_front, 8.0)
+    _make_video_with_frequent_keyframes(second_front, 8.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260802_103513_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, first_front),
+                Asset.GSENSOR: AssetFile(
+                    Asset.GSENSOR, GSENSOR_FIXTURES / "20260802_103513_N.3gf"
+                ),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260802_103545_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, second_front),
+                Asset.GSENSOR: AssetFile(
+                    Asset.GSENSOR, GSENSOR_FIXTURES / "20260802_103545_M.3gf"
+                ),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    media_overrides, gsensor_overrides = _trim_prebuffers(
+        trip, tmp_path / "work", warnings, log=None
+    )
+
+    assert media_overrides == {}
+    assert gsensor_overrides == {}
+    assert warnings == []
+
+
+def test_trim_prebuffers_skips_when_gsensor_data_is_missing(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+
+    n_front = source_dir / "n_front.mp4"
+    m_front = source_dir / "m_front.mp4"
+    _make_video_with_frequent_keyframes(n_front, 8.0)
+    _make_video_with_frequent_keyframes(m_front, 20.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260802_103513_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, n_front)},
+        ),
+        Recording(
+            id=RecordingId("20260802_103545_M"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, m_front),
+                Asset.GSENSOR: AssetFile(
+                    Asset.GSENSOR, GSENSOR_FIXTURES / "20260802_103545_M.3gf"
+                ),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    media_overrides, gsensor_overrides = _trim_prebuffers(
+        trip, tmp_path / "work", warnings, log=None
+    )
+
+    assert media_overrides == {}
+    assert gsensor_overrides == {}
+    assert warnings == []
+
+
+def test_trim_prebuffers_skips_when_no_confident_overlap_is_detected(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+
+    n_front = source_dir / "n_front.mp4"
+    m_front = source_dir / "m_front.mp4"
+    _make_video_with_frequent_keyframes(n_front, 8.0)
+    _make_video_with_frequent_keyframes(m_front, 8.0)
+
+    # Two unrelated synthetic g-sensor tracks (see test_prebuffer.py's
+    # own "unrelated tracks" test) - no real overlap, so
+    # detect_prebuffer_seconds() should refuse to guess.
+    n_gsensor = source_dir / "n.3gf"
+    m_gsensor = source_dir / "m.3gf"
+    n_gsensor.write_bytes(
+        b"".join(
+            struct.pack(">Ihhh", i * 100, (i * 37) % 200, (i * 11) % 200, (i * 53) % 200)
+            for i in range(80)
+        )
+    )
+    m_gsensor.write_bytes(
+        b"".join(
+            struct.pack(">Ihhh", i * 100, (i * 91) % 200, (i * 29) % 200, (i * 7) % 200)
+            for i in range(80)
+        )
+    )
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260802_103513_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, n_front),
+                Asset.GSENSOR: AssetFile(Asset.GSENSOR, n_gsensor),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260802_103545_M"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, m_front),
+                Asset.GSENSOR: AssetFile(Asset.GSENSOR, m_gsensor),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    media_overrides, gsensor_overrides = _trim_prebuffers(
+        trip, tmp_path / "work", warnings, log=None
+    )
+
+    assert media_overrides == {}
+    assert gsensor_overrides == {}
+    assert warnings == []
+
+
+def test_align_front_rear_durations_uses_source_overrides(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    # The recording's own "real" files already match - no alignment
+    # would fire against these directly.
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 5.0)
+    _make_video(rear, 5.0)
+
+    # But an earlier prebuffer trim (source_overrides) left FRONT
+    # shorter than REAR - alignment should trim from *these* files,
+    # not notice the untouched originals already matched.
+    front_override = tmp_path / "front_prebuffer.mp4"
+    _make_video(front_override, 2.0)
+
+    recording_id = RecordingId("20260802_103545_M")
+    trip = Trip((
+        Recording(
+            id=recording_id,
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _align_front_rear_durations(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True,
+        source_overrides={(recording_id, Asset.FRONT): front_override},
+    )
+
+    assert list(overrides.keys()) == [(recording_id, Asset.REAR)]
+    assert "trimmed rear to match front" in warnings[0]
+    trimmed_rear_duration = _video_duration(overrides[(recording_id, Asset.REAR)])
+    assert trimmed_rear_duration < 3.0
+
+
+def test_merge_gsensor_uses_gsensor_overrides_when_present(tmp_path):
+    first_id = RecordingId("20260720_100000_N")
+
+    # The recording's own real .3gf file would give offset(0)=0 - the
+    # override should be used instead, not this file.
+    real_gsensor = tmp_path / "real.3gf"
+    real_gsensor.write_bytes(_gsensor_bytes((0, 1, 2, 3)))
+
+    trip = Trip((
+        Recording(id=first_id, assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, real_gsensor)}),
+    ))
+
+    from blackvue.telemetry.gsensor_reader import GSensorSample
+
+    override_samples = (GSensorSample(offset=timedelta(seconds=0), x=9, y=9, z=9),)
+
+    samples = _merge_gsensor(
+        trip, {first_id: 0.0}, {first_id: override_samples},
+    )
+
+    assert samples == override_samples
 
 
 def test_recording_video_offsets_uses_real_video_duration_not_id_gap(tmp_path):
