@@ -31,6 +31,7 @@ from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import Form
 from fastapi import HTTPException
+from fastapi import Query
 from fastapi import Request
 from fastapi import status
 from fastapi.exception_handlers import http_exception_handler
@@ -40,8 +41,10 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .archive_browser import ArchiveRecording
+from .archive_browser import filter_recordings
 from .archive_browser import find_recording
 from .archive_browser import group_by_day
+from .archive_browser import kind_options
 from .archive_browser import scan_archive
 from .auth import SESSION_COOKIE_NAME
 from .auth import SessionStore
@@ -59,6 +62,7 @@ from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
+from ..lexicaltimeparser import LexicalTimeParser
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -195,14 +199,60 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
     @app.get("/archive/{camera_id}", response_class=HTMLResponse)
     async def archive_recording_list(
-        request: Request, camera_id: str, user: User = Depends(require_login)
+        request: Request,
+        camera_id: str,
+        user: User = Depends(require_login),
+        mode: list[str] = Query(default=[]),
+        timestamp: str | None = Query(default=None),
+        from_: str | None = Query(default=None, alias="from"),
+        until: str | None = Query(default=None, alias="until"),
     ):
         archive_path = _find_camera_archive(camera_id)
-        days = group_by_day(scan_archive(archive_path, camera_id))
+        recordings = scan_archive(archive_path, camera_id)
+
+        # An empty `mode` (nothing checked) means "don't filter by
+        # mode at all", not "show nothing" - see
+        # archive_browser.filter_recordings()'s own docstring on why.
+        selected_modes = set(mode)
+
+        error = None
+        time_interval = None
+        if timestamp or from_ or until:
+            try:
+                time_interval = LexicalTimeParser(
+                    timestamp=timestamp, from_=from_, until=until
+                ).parse()
+            except ValueError as exc:
+                # A bad/conflicting filter (e.g. --timestamp combined
+                # with --from) shouldn't 500 the page or silently show
+                # an unfiltered list - show every recording alongside
+                # the error so the owner can see what to fix, the same
+                # way a bad CLI flag combination would just print an
+                # error rather than doing something unexpected.
+                error = str(exc)
+
+        if error is None:
+            recordings = filter_recordings(
+                recordings,
+                modes=selected_modes or None,
+                time_interval=time_interval,
+            )
+
+        days = group_by_day(recordings)
         return templates.TemplateResponse(
             request,
             "archive_recording_list.html",
-            {"user": user, "camera_id": camera_id, "days": days},
+            {
+                "user": user,
+                "camera_id": camera_id,
+                "days": days,
+                "kind_options": kind_options(),
+                "selected_modes": selected_modes,
+                "timestamp_value": timestamp or "",
+                "from_value": from_ or "",
+                "until_value": until or "",
+                "error": error,
+            },
         )
 
     @app.get("/archive/{camera_id}/{recording_id}", response_class=HTMLResponse)

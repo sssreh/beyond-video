@@ -28,6 +28,8 @@ The camera list (`/archive`) reuses `_camera_options()` - the same pick-list `bv
 
 Two file-serving routes (`/archive/{camera_id}/{recording_id}/thumbnail/{direction}`, `/archive/{camera_id}/{recording_id}/files/{filename}`) follow the same allow-list pattern `trips.py`'s `trip_file` route already established: `ArchiveRecording.known_filenames` is the frozenset of real filenames a recording actually owns, checked before ever touching the filesystem, and `camera_id`/`recording_id` path segments are rejected outright if they contain `/`, `\`, or a `.`/`..` segment - the same guard `_find_trip()` applies to `trip_id`.
 
+**Filtering** (mode + lexical time range): a long archive can have thousands of recordings, so `/archive/{camera_id}` also accepts filter query params - `mode` (repeatable, N/E/M/P/A), plus `timestamp`/`from`/`until`. The time filter reuses `LexicalTimeParser`/`TimeInterval` from `lexicaltimeparser.py` - the same lexical-prefix matcher `bv-ls`/`bv-export`/`bv-download`/`bv-generate` already filter recordings with on the CLI side (a prefix like `2026`, `20260715`, or `20260715_14` expands to an inclusive range; `--timestamp` can't be combined with `--from`/`--until`). `archive_browser.filter_recordings()` applies both filters together over an already-scanned list; `kind_options()` is the canonical N/E/M/P/A list the filter bar's checkboxes are built from. No mode checked means no mode filter (show every kind) - `app.py`'s route turns an empty checkbox selection into `modes=None` rather than `modes=set()`, since the latter would mean "match nothing." A bad/conflicting time filter shows the unfiltered list plus an error message rather than a 500 or a silently-ignored filter. The filter bar is a plain `GET` form (bookmarkable/shareable URL, no JS) rendered above the thumbnail grid on `archive_recording_list.html`.
+
 Access is `require_login` (any logged-in user), the same as trip browsing - not `require_owner` like the job-trigger routes. Like `trips.py`, there's no caching: every request rescans the archive directory fresh.
 
 ## Job runner
@@ -73,10 +75,12 @@ src/blackvue/web/
                    output.
     archive_browser.py
                    ArchiveRecording wrapper + scan_archive()/
-                   find_recording()/group_by_day() - browses a camera's
-                   raw bv-download archive (CameraConfig.target), reusing
+                   find_recording()/group_by_day()/filter_recordings()/
+                   kind_options() - browses a camera's raw bv-download
+                   archive (CameraConfig.target), reusing
                    blackvue.archive.Archive rather than scanning the
-                   filesystem itself. See "Archive browser" above.
+                   filesystem itself, and lexicaltimeparser.py for the
+                   time-range filter. See "Archive browser" above.
     jobs.py         JobRunner/Job/JobStatus - runs bv-config/bv-gps as
                    background threads (in-process, not subprocesses) and
                    tracks each one's output/status/pending-prompt. See

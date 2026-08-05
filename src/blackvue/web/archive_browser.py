@@ -19,6 +19,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import itertools
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
@@ -27,6 +28,7 @@ from pathlib import Path
 from ..archive import Archive
 from ..archive import Asset
 from ..archive import Recording
+from ..lexicaltimeparser import TimeInterval
 
 # (display label, video asset, thumbnail asset), in the order the
 # detail page's video tabs and the list page's per-direction badges
@@ -185,6 +187,44 @@ class ArchiveRecording:
             return None
         asset_file = self.recording.file(asset)
         return asset_file.path if asset_file else None
+
+
+def kind_options() -> list[tuple[str, str]]:
+    """(kind letter, display label) pairs in canonical N/E/M/P/A order
+    - what the archive browser's mode-filter checkboxes are built
+    from."""
+
+    return [(letter, _KIND_LABELS[letter]) for letter in ("N", "E", "M", "P", "A")]
+
+
+def filter_recordings(
+    recordings: list[ArchiveRecording],
+    *,
+    modes: Collection[str] | None = None,
+    time_interval: TimeInterval | None = None,
+) -> list[ArchiveRecording]:
+    """Filter an already-scanned recording list by kind letter(s)
+    and/or a lexical timestamp range - the same TimeInterval bv-ls/
+    bv-export/bv-download/bv-generate already filter recordings with
+    (see lexicaltimeparser.py's LexicalTimeParser), applied here for
+    the archive browser's own filter bar instead of a CLI flag.
+
+    `modes=None` means "no mode filter" (every kind shows), not "show
+    nothing" - the same convention an unchecked-by-default checkbox
+    row implies. `time_interval=None` likewise means no time filter.
+    Order is preserved from the input list (already newest-first from
+    scan_archive()), so this can run before or after group_by_day()
+    depending on what a caller needs.
+    """
+
+    def matches(recording: ArchiveRecording) -> bool:
+        if modes is not None and recording.recording.id.kind not in modes:
+            return False
+        if time_interval is not None and recording.id not in time_interval:
+            return False
+        return True
+
+    return [recording for recording in recordings if matches(recording)]
 
 
 def scan_archive(archive_path: Path, camera_id: str) -> list[ArchiveRecording]:
