@@ -31,6 +31,16 @@ services:
       # same host path (left of the colon) so newly exported trips
       # show up here too.
       - ./data/trips:/data/trips:ro
+      # The raw camera archive - bv-download's target, i.e. every
+      # camera .cfg's `target` field (see core/camera_config.py). The
+      # archive-browser feature (app.py's /archive routes,
+      # _find_camera_archive()/scan_archive()) reads straight from
+      # this path, NOT from ./data/trips - a camera id names a
+      # *source* archive, a trip id names *processed* output. The SAME
+      # host folder bv-cli's own ./data/archive mount below points at,
+      # so a recording bv-cli downloads is visible here too.
+      # Read-only: the archive browser only ever reads, never writes.
+      - ./data/archive:/data/archive:ro
       # bv-web's accounts file (web-users.cfg) - read-write, and kept
       # outside the image so it survives `docker-compose build`/
       # container recreation. Created empty on first run; populate it
@@ -64,9 +74,11 @@ services:
     volumes:
       # bv-download's target / bv-config's "Target (download path)" -
       # the raw camera archive. This is the SAME host folder Christer's
-      # PC also reaches over SMB - see docs/DEPLOY.md. Not shared with
-      # bv-web at all; bv-web only ever reads finished trip folders,
-      # never raw recordings.
+      # PC also reaches over SMB - see docs/DEPLOY.md. Also the SAME
+      # host folder bv-web's own ./data/archive mount above points at
+      # (read-only there) for its archive-browser feature - this
+      # comment used to say bv-web never touches raw recordings, which
+      # was true before that feature existed.
       - ./data/archive:/data/archive
       # bv-export's --target - the SAME host folder bv-web's own
       # `./data/trips` mount above points at (and that Christer's PC

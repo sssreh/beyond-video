@@ -17,7 +17,7 @@ Everything lives under one folder, `/volume1/beyond-video`:
     data/
         trips/                  <- bv-export --target output - bv-web browses it (read-only); written by bv-cli and/or Christer's PC over SMB
         config/                 <- bv-web's web-users.cfg (accounts file)
-        archive/                <- bv-download's target - the raw camera archive; also reachable from Christer's PC over SMB
+        archive/                <- bv-download's target - the raw camera archive; also reachable from Christer's PC over SMB. bv-web reads this too, for its archive-browser feature (see below), read-only
         camera-config/          <- bv-config's camera .cfg files (e.g. Kirby.cfg) - bv-web reads this too (see below), not just bv-cli
 ```
 
@@ -67,6 +67,8 @@ mkdir -p /volume1/beyond-video/data/camera-config
 ```
 
 All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` writes into, whether run on the NAS or from Christer's PC over SMB (see step 7) - leaving it empty for now is fine, `bv-web` just shows "No trips found yet." `data/camera-config` is mounted into `bv-web`'s own container too (`docker-compose.yml`'s `BEYOND_VIDEO_CONFIG_DIR=/data/camera-config` environment variable, read by `core/camera_config.py`'s `default_config_dir()`) - without it, `bv-web` has no persistent `$HOME` inside its container and can't see any camera `.cfg` file `bv-config` wrote, whether from `bv-cli` or from bv-web's own job-trigger form: the camera pick-list on the job forms shows empty, and the archive browser 404s every camera id. Same host folder either way, no extra setup needed - this is just why it's mounted into both containers rather than only `bv-cli`'s.
+
+`data/archive` is *also* mounted into `bv-web`'s container (read-only), separately from `data/camera-config` above - a camera's `.cfg` `target` field points into `data/archive` (see step 6's "Target (download path)" answer), and `bv-web`'s archive-browser feature (`/archive` routes) reads recordings straight from that path, not from `data/trips`. Without this mount, the camera picker and camera-config work fine but every camera's archive page says "No recordings found in this camera's archive yet." even once `bv-download` has actually written files there.
 
 ## 4. Build and start bv-web
 
@@ -129,16 +131,19 @@ services:
       - /volume1/Dashcam/files:/data/archive
       - ./data/trips:/data/trips
       - ./data/camera-config:/data/config
+  bv-web:
+    volumes:
+      - /volume1/Dashcam/files:/data/archive:ro
 EOF
 ```
 
-All three of `bv-cli`'s volumes are repeated here (not just the archive one) since compose merges a service's `volumes:` list as a whole, not entry-by-entry - leaving the other two out would drop them, not keep them. Verify the merge did what's expected before running anything for real:
+All three of `bv-cli`'s volumes are repeated here (not just the archive one) since compose merges a service's `volumes:` list as a whole, not entry-by-entry - leaving the other two out would drop them, not keep them. `bv-web`'s override only needs the one line since it only has this single volume to redirect - its other two (`data/trips`, `data/camera-config`) already point at the right place by default. Skipping the `bv-web` block here is an easy mistake: `bv-web`'s own `./data/archive:/data/archive:ro` mount (see `docker-compose.yml`) points at `/volume1/beyond-video/data/archive` unless overridden too, which is a different, empty folder from `bv-cli`'s real archive - the archive browser would still say "No recordings found" even though `bv-cli` can see everything fine. Verify the merge did what's expected before running anything for real:
 
 ```
 sudo docker-compose config
 ```
 
-Check the printed `bv-cli` service's `volumes:` block shows `/volume1/Dashcam/files:/data/archive` and nothing pointing at `./data/archive` (or `/volume1/beyond-video/data/archive`) - if an old mount is still there too, or `/data/archive` isn't there at all, adjust the override file and re-check before moving on. With `/volume1/Dashcam/files` as the archive, `bv-config`'s **Target (download path)** answer below still stays `/data/archive` - that's the *container path* every `bv-*` command reads/writes, regardless of which host folder it's mapped to.
+Check the printed `bv-cli` *and* `bv-web` services' `volumes:` blocks both show `/volume1/Dashcam/files:/data/archive` and nothing pointing at `./data/archive` (or `/volume1/beyond-video/data/archive`) - if an old mount is still there too, or `/data/archive` isn't there at all on either service, adjust the override file and re-check before moving on. With `/volume1/Dashcam/files` as the archive, `bv-config`'s **Target (download path)** answer below still stays `/data/archive` - that's the *container path* every `bv-*` command reads/writes, regardless of which host folder it's mapped to.
 
 **Set up the camera** (one-time; re-run later to edit):
 
