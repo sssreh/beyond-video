@@ -1,5 +1,6 @@
 from blackvue.archive.archive_reader import ArchiveReader
 from blackvue.archive.asset import Asset
+from blackvue.archive.recording_id import RecordingId
 
 
 def test_archive_reader_detects_generated_assets(tmp_path):
@@ -121,3 +122,84 @@ def test_archive_reader_detects_srt_and_lrc(tmp_path):
 
     assert recording.has(Asset.SUBTITLES)
     assert recording.has(Asset.LYRICS)
+
+
+# ---------------------------------------------------------------------------
+# read_recording() - targeted single-recording lookup, added for bv-web's
+# archive browser (web/archive_browser.py's find_recording()), which needs
+# to resolve one recording per thumbnail image request and per video-player
+# range request without paying read()'s full-archive scan cost every time.
+# ---------------------------------------------------------------------------
+
+
+def test_read_recording_finds_a_matching_recording(tmp_path):
+    (tmp_path / "20260715_140212_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_140212_NR.mp4").write_bytes(b"x")
+
+    recording_id = RecordingId.parse("20260715_140212_N")
+    recording = ArchiveReader(tmp_path).read_recording(recording_id)
+
+    assert recording is not None
+    assert recording.id == recording_id
+    assert recording.has(Asset.FRONT)
+    assert recording.has(Asset.REAR)
+
+
+def test_read_recording_returns_none_for_unknown_id(tmp_path):
+    (tmp_path / "20260715_140212_NF.mp4").write_bytes(b"x")
+
+    recording_id = RecordingId.parse("20260101_000000_N")
+    assert ArchiveReader(tmp_path).read_recording(recording_id) is None
+
+
+def test_read_recording_returns_none_for_missing_directory(tmp_path):
+    recording_id = RecordingId.parse("20260715_140212_N")
+    reader = ArchiveReader(tmp_path / "does_not_exist")
+
+    assert reader.read_recording(recording_id) is None
+
+
+def test_read_recording_ignores_other_recordings(tmp_path):
+    (tmp_path / "20260715_140212_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260716_090000_EF.mp4").write_bytes(b"x")
+    (tmp_path / "20260716_090000_ER.mp4").write_bytes(b"x")
+
+    recording_id = RecordingId.parse("20260715_140212_N")
+    recording = ArchiveReader(tmp_path).read_recording(recording_id)
+
+    assert recording is not None
+    assert len(recording.assets) == 1
+    assert recording.has(Asset.FRONT)
+
+
+def test_read_recording_matches_read_for_the_same_recording(tmp_path):
+    (tmp_path / "20260715_140212_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_140212_NR.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_140212_N.gps").write_bytes(b"x")
+    (tmp_path / "20260716_090000_EF.mp4").write_bytes(b"x")
+
+    reader = ArchiveReader(tmp_path)
+    all_recordings = {r.id: r for r in reader.read()}
+
+    target_id = RecordingId.parse("20260715_140212_N")
+    targeted = reader.read_recording(target_id)
+
+    full = all_recordings[target_id]
+    assert targeted is not None
+    assert targeted.size == full.size
+    assert set(targeted.assets) == set(full.assets)
+    assert {f.name for f in targeted.assets.values()} == {
+        f.name for f in full.assets.values()
+    }
+
+
+def test_read_recording_computes_correct_total_size(tmp_path):
+    (tmp_path / "20260715_140212_NF.mp4").write_bytes(b"x" * 100)
+    (tmp_path / "20260715_140212_NR.mp4").write_bytes(b"x" * 50)
+    (tmp_path / "20260716_090000_EF.mp4").write_bytes(b"x" * 999)
+
+    recording_id = RecordingId.parse("20260715_140212_N")
+    recording = ArchiveReader(tmp_path).read_recording(recording_id)
+
+    assert recording is not None
+    assert recording.size == 150

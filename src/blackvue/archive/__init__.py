@@ -3,6 +3,7 @@ BlackVue archive package.
 """
 
 from .archive import Archive
+from .archive_reader import ArchiveReader
 from .asset import Asset
 from .asset_file import AssetFile
 from .configuration import Configuration
@@ -11,6 +12,7 @@ from .recording_id import RecordingId
 
 __all__ = [
     "Archive",
+    "ArchiveReader",
     "Asset",
     "AssetFile",
     "Configuration",

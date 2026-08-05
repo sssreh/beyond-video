@@ -6,10 +6,16 @@ so a long archive is easier to scan visually, without needing
 bv-export to have run first.
 
 Deliberately thin, the same way trips.py is thin relative to what it
-wraps: this reuses blackvue.archive.Archive (the exact same reader
-bv-ls/bv-export already use to enumerate recordings) rather than
-adding any new disk-scanning logic - just a browsing-friendly wrapper
-around Recording plus the day-grouping this page's UI needs.
+wraps: this reuses blackvue.archive.Archive/ArchiveReader (the exact
+same reader bv-ls/bv-export already use to enumerate recordings)
+rather than adding any new disk-scanning logic - just a
+browsing-friendly wrapper around Recording plus the day-grouping this
+page's UI needs. The one exception is find_recording(), which calls
+ArchiveReader.read_recording() - a targeted single-recording lookup
+added to the reader itself (not duplicated here) specifically because
+the thumbnail grid and the video player's range requests each resolve
+one recording per HTTP request, and a full archive scan on every one
+of those would be far too slow on a large archive.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -26,8 +32,10 @@ from datetime import datetime
 from pathlib import Path
 
 from ..archive import Archive
+from ..archive import ArchiveReader
 from ..archive import Asset
 from ..archive import Recording
+from ..archive import RecordingId
 from ..lexicaltimeparser import TimeInterval
 
 # (display label, video asset, thumbnail asset), in the order the
@@ -256,15 +264,35 @@ def find_recording(
     archive_path: Path, camera_id: str, recording_id: str
 ) -> ArchiveRecording | None:
     """Resolve a single recording id within a camera's archive, or
-    None if it doesn't exist. There's no cheaper way to read a single
-    recording than scanning the whole archive (ArchiveReader.read()
-    always reads the full directory) - same one-scan-per-request
-    trade-off scan_archive() itself already accepts."""
+    None if it doesn't exist.
 
-    for recording in scan_archive(archive_path, camera_id):
-        if recording.id == recording_id:
-            return recording
-    return None
+    Uses ArchiveReader.read_recording() - a targeted lookup for just
+    this one recording's own files - rather than scan_archive()'s
+    full-archive read. This matters a lot here specifically: the
+    thumbnail grid calls this once per recording shown on the page,
+    and the video player's file-serving route calls it again for
+    every HTTP range request while a browser seeks/buffers. Doing
+    either of those via a full scan_archive() (which stat()s every
+    file across the whole archive on every single call) would make an
+    N-recording page load O(N^2), and would make video playback feel
+    like it hangs - dozens of range requests, each re-scanning a
+    potentially large archive from scratch. See
+    ArchiveReader.read_recording()'s own docstring for the same
+    reasoning from the reader's side.
+    """
+
+    parsed_id = RecordingId.parse(recording_id)
+    if parsed_id is None or parsed_id.value != recording_id:
+        return None
+
+    if not archive_path.is_dir():
+        return None
+
+    recording = ArchiveReader(archive_path).read_recording(parsed_id)
+    if recording is None:
+        return None
+
+    return ArchiveRecording(camera_id=camera_id, recording=recording)
 
 
 def group_by_day(

@@ -77,6 +77,60 @@ class ArchiveReader:
 
         return sorted(recordings.values(), key=lambda r: r.id)
 
+    def read_recording(self, recording_id: RecordingId) -> Recording | None:
+        """Read a single recording by id, or None if it doesn't exist
+        in this archive.
+
+        Unlike read(), this doesn't scandir()/stat() every file in the
+        archive - only a targeted glob for filenames that could
+        possibly belong to this one recording_id (its 17-character
+        prefix). This exists for callers that already know exactly
+        which recording they want and would otherwise pay read()'s
+        full-archive cost on every single lookup - e.g. bv-web's
+        archive browser, which resolves one recording per thumbnail
+        image request and per video-player range request. On a large
+        archive, doing that via read() would make an N-thumbnail page
+        load O(N^2), and a video player making dozens of range
+        requests while seeking would re-scan the whole archive on
+        every one of them.
+        """
+
+        recording: Recording | None = None
+
+        try:
+            candidates = self._path.glob(f"{recording_id.value}*")
+        except OSError:
+            return None
+
+        for path in candidates:
+            if not path.is_file():
+                continue
+
+            # The glob pattern is already an exact prefix match, but
+            # confirm the full parsed id too - a filename that merely
+            # starts with this prefix (rather than being exactly it,
+            # e.g. a differently-shaped name that happens to share the
+            # digits) shouldn't be silently folded into this
+            # recording.
+            if RecordingId.parse(path.name) != recording_id:
+                continue
+
+            asset = self._detect_asset(path.name)
+            if asset is None:
+                continue
+
+            if recording is None:
+                recording = Recording(recording_id)
+
+            try:
+                recording.size += path.stat().st_size
+            except OSError:
+                pass
+
+            recording.assets[asset] = AssetFile(asset=asset, path=path)
+
+        return recording
+
     @classmethod
     def _detect_asset(cls, filename: str) -> Asset | None:
         """Return the asset represented by the filename."""
