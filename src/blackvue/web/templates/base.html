@@ -54,6 +54,20 @@
       border-radius: 4px; font: inherit; cursor: pointer;
     }
     .login-box { max-width: 320px; margin: 3rem auto; }
+    pre.job-output {
+      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 4px;
+      padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word;
+      max-height: 60vh; overflow-y: auto; font-size: 0.9rem;
+    }
+    .job-output .echo { color: #7cb7ff; }
+    .status-badge.running, .status-badge.waiting_for_input { background: #4a3f00; color: #ffd166; }
+    .status-badge.succeeded { background: #1e3a24; color: #7de08a; }
+    .status-badge.failed { background: #3a1e1e; color: #ff8080; }
+    .prompt-box {
+      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 4px;
+      padding: 1rem; margin-top: 1rem;
+    }
+    .prompt-box label { font-weight: 600; }
   </style>
 </head>
 <body>
@@ -61,6 +75,12 @@
     <h1><a href="/">Beyond Video</a></h1>
     {% if user %}
     <div class="user-bar">
+      {% if user.role == "owner" %}
+      <a href="/jobs/bv-config">Set up camera</a>
+      &middot;
+      <a href="/jobs/bv-gps">Get GPS fix</a>
+      &middot;
+      {% endif %}
       {{ user.username }} <span class="badge">{{ user.role }}</span>
       &middot;
       <form method="post" action="/logout"><button type="submit">Log out</button></form>

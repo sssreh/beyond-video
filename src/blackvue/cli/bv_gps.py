@@ -122,8 +122,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _run(args: argparse.Namespace) -> int:
-    """Run bv-gps for already-parsed arguments."""
+def _default_warn(message: str) -> None:
+    """`_run()`'s default `warn` - real stderr, the CLI's normal
+    error-output contract. See bv_config.py's own `_default_warn` for
+    why this is a named function rather than a lambda."""
+
+    print(message, file=sys.stderr)
+
+
+def _run(
+    args: argparse.Namespace, *, say=print, warn=_default_warn
+) -> int:
+    """Run bv-gps for already-parsed arguments.
+
+    `say`/`warn` are injectable (default: real stdout/stderr via
+    print) so bv-web's job runner (see web/jobs.py) can capture this
+    command's output into a job's transcript instead of the real
+    terminal - bv-gps has no interactive prompts, so unlike
+    bv_config.py's `_run()` there's no `ask` to thread through here.
+    """
 
     if args.host is not None:
         # Skip bv-config entirely - a single synthetic Endpoint whose
@@ -137,14 +154,11 @@ def _run(args: argparse.Namespace) -> int:
         try:
             config = load_camera_config(path)
         except CameraConfigError as exc:
-            print(f"bv-gps: {exc}", file=sys.stderr)
+            warn(f"bv-gps: {exc}")
             return EXIT_CONFIG_ERROR
 
         if not config.endpoints:
-            print(
-                f"bv-gps: {path}: no [[endpoint]] entries found",
-                file=sys.stderr,
-            )
+            warn(f"bv-gps: {path}: no [[endpoint]] entries found")
             return EXIT_CONFIG_ERROR
 
         endpoints = config.endpoints
@@ -152,13 +166,13 @@ def _run(args: argparse.Namespace) -> int:
     try:
         endpoint, client = connect(endpoints, timeout=args.timeout)
     except CameraUnreachableError as exc:
-        print(f"bv-gps: {exc}", file=sys.stderr)
+        warn(f"bv-gps: {exc}")
         return EXIT_UNREACHABLE
 
     try:
         fix = client.live_gps()
     except NoGpsDataError as exc:
-        print(f"bv-gps: {exc}", file=sys.stderr)
+        warn(f"bv-gps: {exc}")
         return EXIT_PROTOCOL_ERROR
 
     if not fix.has_fix:
@@ -168,22 +182,19 @@ def _run(args: argparse.Namespace) -> int:
         # "home") on that path, or the bare host string when --host
         # was given directly - either way, a sensible label for which
         # camera this was.
-        print(
-            f"bv-gps: {endpoint.name}: no GPS fix currently available",
-            file=sys.stderr,
-        )
+        warn(f"bv-gps: {endpoint.name}: no GPS fix currently available")
         return EXIT_NO_FIX
 
-    print(f"Coordinates: {coordinate_pair(fix)}")
-    print(f"Google Maps: {google_maps_url(fix)}")
+    say(f"Coordinates: {coordinate_pair(fix)}")
+    say(f"Google Maps: {google_maps_url(fix)}")
 
     if not args.no_address:
         try:
             address = reverse_geocode(fix.latitude, fix.longitude)
         except MediaToolError as exc:
-            print(f"Address: unavailable ({exc})")
+            say(f"Address: unavailable ({exc})")
         else:
-            print(f"Address: {address or 'no address found for this location'}")
+            say(f"Address: {address or 'no address found for this location'}")
 
     return EXIT_OK
 

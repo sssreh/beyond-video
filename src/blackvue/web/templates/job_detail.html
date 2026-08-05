@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ job.command }} - Beyond Video{% endblock %}
+{% block content %}
+{% if not is_finished %}
+<meta http-equiv="refresh" content="2">
+{% endif %}
+<h2>
+  {{ job.command }}
+  <span class="badge status-badge {{ status }}">{{ status }}</span>
+</h2>
+
+<pre class="job-output">{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
+{% else %}{{ line }}
+{% endif %}{% endfor %}</pre>
+
+{% if status == "waiting_for_input" %}
+<div class="prompt-box">
+  <form method="post" action="/jobs/{{ job.id }}/answer">
+    <label for="answer">{{ prompt }}</label>
+    <input type="text" id="answer" name="answer" autofocus>
+    <button type="submit">Answer</button>
+  </form>
+</div>
+{% elif not is_finished %}
+<p class="empty">Running... this page refreshes automatically.</p>
+{% endif %}
+{% endblock %}

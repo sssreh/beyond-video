@@ -8,12 +8,15 @@ anything richer. bv-web's CLI (cli/bv_web.py) is the only thing that
 imports this module, and only inside `bv-web serve` - see
 web/__init__.py's docstring for why that matters.
 
-This first increment is browse/watch only: login (owner/viewer
+The core of this app is still browse/watch: login (owner/viewer
 roles), the trip list, and a trip detail page with video playback
 (range-request support comes for free from Starlette's own
-FileResponse) plus GPX/SRT/LRC download links. Triggering
-download/generate/export from the browser is intentionally not part
-of this increment - see WORKING_CONTEXT.md.
+FileResponse) plus GPX/SRT/LRC download links. On top of that, the
+owner can now also trigger bv-config and bv-gps as background jobs
+from the browser (see jobs.py for how - a real job-runner
+infrastructure, since either can run for a while and bv-config's
+wizard needs to ask questions back). bv-download/bv-generate/bv-export
+aren't wired in yet - see WORKING_CONTEXT.md for the increment plan.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -39,6 +42,9 @@ from fastapi.templating import Jinja2Templates
 from .auth import SESSION_COOKIE_NAME
 from .auth import SessionStore
 from .auth import require_login
+from .auth import require_owner
+from .jobs import Job
+from .jobs import JobRunner
 from .trips import TripAssets
 from .trips import scan_trip
 from .trips import scan_trips
@@ -67,6 +73,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     app.state.target = target
     app.state.users_config = users_config
     app.state.session_store = SessionStore()
+    app.state.job_runner = JobRunner()
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -167,7 +174,106 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         return FileResponse(path)
 
+    @app.get("/jobs/bv-config", response_class=HTMLResponse)
+    async def new_bv_config_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request, "job_new_bv_config.html", {"user": user}
+        )
+
+    @app.post("/jobs/bv-config")
+    async def new_bv_config_submit(
+        request: Request,
+        id: str = Form(...),
+        user: User = Depends(require_owner),
+    ):
+        job = app.state.job_runner.start_bv_config(id_=id, username=user.username)
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-gps", response_class=HTMLResponse)
+    async def new_bv_gps_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request, "job_new_bv_gps.html", {"user": user}
+        )
+
+    @app.post("/jobs/bv-gps")
+    async def new_bv_gps_submit(
+        request: Request,
+        id: str = Form(""),
+        host: str = Form(""),
+        no_address: bool = Form(False),
+        user: User = Depends(require_owner),
+    ):
+        job = app.state.job_runner.start_bv_gps(
+            id_=id or None,
+            host=host or None,
+            no_address=no_address,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
+    async def job_detail(
+        request: Request, job_id: str, user: User = Depends(require_owner)
+    ):
+        job = _find_job(app.state.job_runner, job_id)
+        job_status, output, prompt = job.snapshot()
+        return templates.TemplateResponse(
+            request,
+            "job_detail.html",
+            {
+                "user": user,
+                "job": job,
+                # .value, not the raw JobStatus - a `str, Enum` member's
+                # own __str__ renders as "JobStatus.RUNNING", not the
+                # plain "running" the template's CSS classes and
+                # {% if %} checks below actually need.
+                "status": job_status.value,
+                "is_finished": job_status.is_finished,
+                "output": output,
+                "prompt": prompt,
+            },
+        )
+
+    @app.post("/jobs/{job_id}/answer")
+    async def job_answer(
+        job_id: str,
+        answer: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # A missing job or one that isn't actually waiting for input
+        # (job_runner.answer() returns False either way) is treated as
+        # a harmless no-op redirect back to the job page, not an
+        # error - the most likely real cause is a double form submit
+        # or a stale browser tab, not something the owner needs an
+        # error page for.
+        app.state.job_runner.answer(job_id, answer)
+        return RedirectResponse(
+            url=f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
     return app
+
+
+def _find_job(job_runner: JobRunner, job_id: str) -> Job:
+    """Resolve a job id to a Job, 404ing if it doesn't exist - covers
+    both a genuinely bad id and a job_runner that's been restarted
+    since the id was handed out (see jobs.py's own docstring on why
+    jobs don't survive a restart)."""
+
+    job = job_runner.get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
+        )
+    return job
 
 
 def _find_trip(target: Path, trip_id: str) -> TripAssets:

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Set up camera - Beyond Video{% endblock %}
+{% block content %}
+<h2>Set up a camera (bv-config)</h2>
+<p>Creates a new camera, or edits an existing one if the id already
+exists - every question defaults to the current value, same as
+running <code>bv-config</code> yourself.</p>
+<form method="post" action="/jobs/bv-config">
+  <label for="id">Camera id</label>
+  <input type="text" id="id" name="id" autofocus required
+         placeholder="e.g. kirby">
+  <button type="submit">Start</button>
+</form>
+{% endblock %}

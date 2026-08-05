@@ -28,77 +28,96 @@ EXIT_INVALID_ID = 1
 EXIT_CONFIG_ERROR = 2
 
 
-def prompt(question: str, default: str = "") -> str:
-    """Ask a question, showing a default the user can accept with Enter."""
+def prompt(question: str, default: str = "", *, ask=input) -> str:
+    """Ask a question, showing a default the user can accept with Enter.
+
+    `ask` is injectable (default: the real `input`) so bv-web's job
+    runner (see web/jobs.py) can drive this same wizard from a
+    browser instead of a real terminal - it just needs to match
+    input()'s own signature (a prompt string in, one line of text
+    out). Real terminal use is completely unchanged, since that's
+    exactly what the default does.
+    """
 
     suffix = f" [{default}]" if default else ""
-    answer = input(f"{question}{suffix}: ").strip()
+    answer = ask(f"{question}{suffix}: ").strip()
 
     return answer or default
 
 
-def edit_endpoints(existing: list[Endpoint]) -> list[Endpoint]:
+def edit_endpoints(
+    existing: list[Endpoint], *, ask=input, say=print
+) -> list[Endpoint]:
     """Interactively edit an endpoint list, in try order.
 
     Existing endpoints are reviewed one by one (Enter keeps the
     current value, typing 'remove' drops the endpoint), then new
     endpoints can be appended. Order given here is the order the
     endpoints are tried in.
+
+    `ask`/`say` are injectable for the same reason as prompt()'s own
+    `ask` - see its docstring.
     """
 
     endpoints: list[Endpoint] = []
 
     for number, endpoint in enumerate(existing, start=1):
-        print(f"Endpoint {number} (currently {endpoint.name}, {endpoint.address}):")
+        say(f"Endpoint {number} (currently {endpoint.name}, {endpoint.address}):")
 
-        address = prompt("  Address (or 'remove')", default=endpoint.address)
+        address = prompt("  Address (or 'remove')", default=endpoint.address, ask=ask)
 
         if address.strip().lower() == "remove":
             continue
 
-        name = prompt("  Name", default=endpoint.name)
+        name = prompt("  Name", default=endpoint.name, ask=ask)
 
         endpoints.append(Endpoint(name=name, address=address))
 
-    print("Add another endpoint? Leave the address blank to stop.")
+    say("Add another endpoint? Leave the address blank to stop.")
 
     while True:
         number = len(endpoints) + 1
 
-        address = input("  New endpoint address: ").strip()
+        address = ask("  New endpoint address: ").strip()
 
         if not address:
             break
 
-        name = prompt("  Name", default=f"EP{number}")
+        name = prompt("  Name", default=f"EP{number}", ask=ask)
 
         endpoints.append(Endpoint(name=name, address=address))
 
     return endpoints
 
 
-def run_wizard(id_: str, existing: CameraConfig | None) -> CameraConfig:
-    """Run the interactive question-and-answer wizard."""
+def run_wizard(
+    id_: str, existing: CameraConfig | None, *, ask=input, say=print
+) -> CameraConfig:
+    """Run the interactive question-and-answer wizard.
+
+    `ask`/`say` are injectable for the same reason as prompt()'s own
+    `ask` - see its docstring.
+    """
 
     default_name = existing.name if existing else id_
     default_target = str(existing.target) if existing else ""
     existing_endpoints = existing.endpoints if existing else []
 
     while True:
-        name = prompt("Name", default=default_name)
+        name = prompt("Name", default=default_name, ask=ask)
         try:
             validate_name(name)
             break
         except CameraConfigError as exc:
-            print(f"  {exc}")
+            say(f"  {exc}")
 
     while True:
-        target = prompt("Target (download path)", default=default_target)
+        target = prompt("Target (download path)", default=default_target, ask=ask)
         if target:
             break
-        print("  Target must not be empty.")
+        say("  Target must not be empty.")
 
-    endpoints = edit_endpoints(existing_endpoints)
+    endpoints = edit_endpoints(existing_endpoints, ask=ask, say=say)
 
     return CameraConfig(
         id=id_,
@@ -140,13 +159,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _run(args: argparse.Namespace) -> int:
-    """Run bv-config for already-parsed arguments."""
+def _default_warn(message: str) -> None:
+    """`_run()`'s default `warn` - real stderr, the CLI's normal
+    error-output contract. Kept as its own top-level function (rather
+    than a lambda) so it's easy to point at from a test or from
+    bv-web's job runner if a caller ever wants "real stderr" as an
+    explicit choice rather than just the default."""
+
+    print(message, file=sys.stderr)
+
+
+def _run(
+    args: argparse.Namespace, *, ask=input, say=print, warn=_default_warn
+) -> int:
+    """Run bv-config for already-parsed arguments.
+
+    `ask`/`say` are threaded straight through to run_wizard() - see
+    its docstring. `warn` is the equivalent for this function's own
+    error-path messages, kept separate from `say` (rather than one
+    combined callable) so real terminal use keeps writing errors to
+    actual stderr by default, exactly as before this parameter
+    existed; bv-web's job runner passes its own `warn` (routed into
+    the same job output the browser sees) explicitly instead of
+    relying on this default.
+    """
 
     try:
         validate_id(args.id)
     except CameraConfigError as exc:
-        print(f"bv-config: {exc}", file=sys.stderr)
+        warn(f"bv-config: {exc}")
         return EXIT_INVALID_ID
 
     path = config_path(args.config_dir, args.id)
@@ -157,18 +198,18 @@ def _run(args: argparse.Namespace) -> int:
         try:
             existing = load_camera_config(path)
         except CameraConfigError as exc:
-            print(f"bv-config: {exc}", file=sys.stderr)
+            warn(f"bv-config: {exc}")
             return EXIT_CONFIG_ERROR
 
-        print(f"Editing existing config: {path}")
+        say(f"Editing existing config: {path}")
     else:
-        print(f"Creating new config: {path}")
+        say(f"Creating new config: {path}")
 
-    config = run_wizard(args.id, existing)
+    config = run_wizard(args.id, existing, ask=ask, say=say)
 
     save_camera_config(path, config)
 
-    print(f"Saved {path}")
+    say(f"Saved {path}")
 
     return EXIT_OK
 
