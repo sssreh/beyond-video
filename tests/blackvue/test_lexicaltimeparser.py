@@ -110,6 +110,27 @@ def test_timestamp_cannot_combine_with_from_or_until() -> None:
         LexicalTimeParser(timestamp="2025", until="2025").parse()
 
 
+def test_empty_string_from_and_until_count_as_combined_not_unset() -> None:
+    # Documents a real trap, not just a hypothetical one: this class
+    # checks `is not None`, not truthiness, to detect a --timestamp/
+    # --from(/--until) conflict - so an empty string "" (not None)
+    # for from_/until is treated the same as a real value, i.e. as
+    # "the caller set this too". A CLI caller never hits this because
+    # argparse leaves an unset flag as a genuine None. bv-web's
+    # archive-browser filter form did hit this though: an HTML GET
+    # form submits every named field, even ones left blank, as
+    # `name=` (empty string) rather than omitting it - so leaving
+    # "From"/"Until" untouched while filling in "Exact" still sent
+    # from_="" and until="" to this class, which read that as a
+    # conflict and raised even though the user only meant to filter
+    # by "Exact". app.py's archive_recording_list() route now
+    # normalizes "" to None before constructing LexicalTimeParser for
+    # exactly this reason - this test exists so nobody "simplifies"
+    # that normalization away without re-introducing the bug.
+    with pytest.raises(ValueError):
+        LexicalTimeParser(timestamp="20260715", from_="", until="").parse()
+
+
 def test_unset_from_and_until_default_to_the_full_range() -> None:
     interval = LexicalTimeParser().parse()
 

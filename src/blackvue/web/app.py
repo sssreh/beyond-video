@@ -207,6 +207,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         from_: str | None = Query(default=None, alias="from"),
         until: str | None = Query(default=None, alias="until"),
     ):
+        # A GET form always submits every named field, even ones the
+        # user left blank - an empty text box arrives here as "", not
+        # an absent query param, so Query(default=None) never actually
+        # kicks in for it. LexicalTimeParser.parse() checks `is not
+        # None` (not truthiness) to detect a --timestamp/--from
+        # combination, since a CLI caller's unset argparse flags are
+        # real None - normalize "" to None here so a page load with
+        # only "Exact" filled in doesn't get treated as if "From"/
+        # "Until" were filled in too. Confirmed as a real bug, not
+        # just theoretical: Christer hit this leaving From/Until
+        # untouched and got "cannot be combined" anyway.
+        timestamp = timestamp or None
+        from_ = from_ or None
+        until = until or None
+
         archive_path = _find_camera_archive(camera_id)
         recordings = scan_archive(archive_path, camera_id)
 
