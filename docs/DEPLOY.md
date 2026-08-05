@@ -193,12 +193,15 @@ Nothing Docker-specific here - this is your PC's normal `bv-generate`/`bv-export
 
 ```
 cd /volume1/beyond-video
-git pull
+git fetch origin
+git reset --hard origin/main
 sudo docker-compose up -d --build bv-web
 sudo docker-compose build bv-cli
 ```
 
-(`bv-cli` has no long-running container to restart - just rebuilding the image is enough, since it's only ever used via `docker-compose run`.) `data/` is untouched by this - accounts, camera config, archive, and trips all survive.
+`git fetch` + `git reset --hard origin/main`, not `git pull`: this repo's history was rewritten once already (purging some large committed video clips - see `WORKING_CONTEXT.md`), and a plain `git pull` on a checkout from before that rewrite fails with "divergent branches"/"forced update" - the old and new histories share old commits but diverge after the rewrite point, so there's nothing for a merge or rebase to reconcile. `reset --hard origin/main` sidesteps that entirely by just pointing the local branch straight at whatever `origin/main` is, discarding any local commits (there shouldn't be any on a NAS checkout - see step 2) rather than trying to merge two unrelated histories. If it happens again after a future rewrite, the same two commands fix it.
+
+(`bv-cli` has no long-running container to restart - just rebuilding the image is enough, since it's only ever used via `docker-compose run`.) `data/` is untouched by this - accounts, camera config, archive, and trips all survive, since `git reset --hard` only touches files git tracks and `data/` is gitignored.
 
 ## Restarting / logs
 
