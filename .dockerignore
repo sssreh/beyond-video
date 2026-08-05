@@ -9,3 +9,18 @@ images/
 **/*.pyc
 .osm_cache/
 data/
+
+# Synology DSM housekeeping folders that live at the root of every
+# shared folder, invisible in File Station but very real on disk -
+# confirmed on Christer's NAS: #recycle alone held 83G (the shared
+# folder's Recycle Bin - files "deleted" through DSM land here
+# instead of actually being removed), which is why "docker-compose
+# build bv-web" printed "Sending build context to Docker daemon
+# 88.56GB" and then sat silent for minutes before Step 1 even showed
+# - Docker doesn't print anything while gathering/tar-ing the
+# context. A leading '#' starts a comment in .dockerignore (same
+# convention as .gitignore), so it has to be escaped as '\#recycle'
+# to actually match a folder literally named "#recycle" - a bare
+# "#recycle" line here would have been silently ignored.
+\#recycle/
+@eaDir/
