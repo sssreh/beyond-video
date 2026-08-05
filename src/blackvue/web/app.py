@@ -39,6 +39,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from .archive_browser import ArchiveRecording
+from .archive_browser import find_recording
+from .archive_browser import group_by_day
+from .archive_browser import scan_archive
 from .auth import SESSION_COOKIE_NAME
 from .auth import SessionStore
 from .auth import require_login
@@ -179,6 +183,78 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         return FileResponse(path)
 
+    @app.get("/archive", response_class=HTMLResponse)
+    async def archive_camera_list(
+        request: Request, user: User = Depends(require_login)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "archive_camera_list.html",
+            {"user": user, "cameras": _camera_options()},
+        )
+
+    @app.get("/archive/{camera_id}", response_class=HTMLResponse)
+    async def archive_recording_list(
+        request: Request, camera_id: str, user: User = Depends(require_login)
+    ):
+        archive_path = _find_camera_archive(camera_id)
+        days = group_by_day(scan_archive(archive_path, camera_id))
+        return templates.TemplateResponse(
+            request,
+            "archive_recording_list.html",
+            {"user": user, "camera_id": camera_id, "days": days},
+        )
+
+    @app.get("/archive/{camera_id}/{recording_id}", response_class=HTMLResponse)
+    async def archive_recording_detail(
+        request: Request,
+        camera_id: str,
+        recording_id: str,
+        user: User = Depends(require_login),
+    ):
+        recording = _find_archive_recording(camera_id, recording_id)
+        return templates.TemplateResponse(
+            request,
+            "archive_recording_detail.html",
+            {"user": user, "camera_id": camera_id, "recording": recording},
+        )
+
+    @app.get("/archive/{camera_id}/{recording_id}/thumbnail/{direction}")
+    async def archive_recording_thumbnail(
+        camera_id: str,
+        recording_id: str,
+        direction: str,
+        user: User = Depends(require_login),
+    ):
+        recording = _find_archive_recording(camera_id, recording_id)
+        path = recording.thumbnail_path(direction)
+        if path is None or not path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="thumbnail not found"
+            )
+        return FileResponse(path)
+
+    @app.get("/archive/{camera_id}/{recording_id}/files/{filename}")
+    async def archive_recording_file(
+        camera_id: str,
+        recording_id: str,
+        filename: str,
+        user: User = Depends(require_login),
+    ):
+        recording = _find_archive_recording(camera_id, recording_id)
+        if filename not in recording.known_filenames:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
+            )
+
+        path = recording.file_path(filename)
+        if path is None or not path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
+            )
+
+        return FileResponse(path)
+
     @app.get("/jobs/bv-config", response_class=HTMLResponse)
     async def new_bv_config_form(
         request: Request, user: User = Depends(require_owner)
@@ -311,6 +387,66 @@ def _camera_options() -> list[dict[str, str]]:
         label = id_ if config.name == id_ else f"{config.name} ({id_})"
         options.append({"id": id_, "label": label})
     return options
+
+
+def _find_camera_archive(camera_id: str) -> Path:
+    """Resolve a camera id (from the URL) to its archive directory -
+    CameraConfig.target, the directory bv-download writes raw
+    recordings to. This is NOT the same thing as bv-export --target
+    (app.state.target, the trips directory trips.py reads) - a camera
+    id names a *source* archive, a trip id names *processed* output;
+    don't conflate the two.
+
+    `camera_id` comes straight from the URL path and is therefore
+    untrusted - reject anything that could walk outside
+    default_config_dir() before it ever reaches config_path(), same
+    guard _find_trip() applies to trip_id below. A camera id that
+    doesn't have a config file at all (never set up, or a typo) 404s
+    the same way a bad trip id does.
+    """
+
+    if (
+        "/" in camera_id
+        or "\\" in camera_id
+        or camera_id in (".", "..")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
+        )
+
+    try:
+        config = load_camera_config(config_path(default_config_dir(), camera_id))
+    except CameraConfigError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
+        )
+
+    return config.target
+
+
+def _find_archive_recording(camera_id: str, recording_id: str) -> ArchiveRecording:
+    """Resolve a (camera id, recording id) pair to an ArchiveRecording,
+    404ing if either the camera or the recording within it doesn't
+    exist. `recording_id` is as untrusted as `camera_id` - same
+    path-separator/dot-segment guard as everywhere else URL segments
+    reach the filesystem."""
+
+    if (
+        "/" in recording_id
+        or "\\" in recording_id
+        or recording_id in (".", "..")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"
+        )
+
+    archive_path = _find_camera_archive(camera_id)
+    recording = find_recording(archive_path, camera_id, recording_id)
+    if recording is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"
+        )
+    return recording
 
 
 def _find_job(job_runner: JobRunner, job_id: str) -> Job:

@@ -12,10 +12,23 @@ It also has its own, heavier optional-dependency group (`fastapi`, `uvicorn`, `p
 
 Started as deliberately browse/watch only; a second increment (below) now also lets the owner trigger `bv-config` and `bv-gps` from the browser. Triggering `bv-download`/`bv-generate`/`bv-export` this way is still not part of this yet (see `WORKING_CONTEXT.md`) - the job-runner infrastructure below was built with those in mind, but only bv-config/bv-gps are actually wired up so far.
 
-- **Login** - username/password, session cookie. Two roles: `owner` (currently just Christer) and `viewer` (everyone else). Browsing/watching trips works the same for both roles; triggering a job (below) is `owner`-only.
+- **Login** - username/password, session cookie. Two roles: `owner` (currently just Christer) and `viewer` (everyone else). Browsing/watching trips and the raw archive works the same for both roles; triggering a job (below) is `owner`-only.
 - **Trip list** - every trip folder under the configured `--target` directory, scanned fresh on every request (not cached), so a trip `bv-export` finishes writing while `bv-web` is already running shows up without a restart.
 - **Trip detail** - video playback (range-request support comes for free from Starlette's own `FileResponse`, so seeking/scrubbing works), plus GPX/SRT/LRC download links, whichever of those a given trip actually has (a trip only has the files the `bv-export` run that produced it actually asked for - no `map.mp4` without `--map`, etc.).
+- **Archive browser** - the raw per-camera archive `bv-download` actually writes to disk, before `bv-export` groups anything into trips: a camera picker, a day-grouped thumbnail grid per camera, and a per-recording detail page. See "Archive browser" below for how.
 - **Jobs (owner-only)** - the owner can trigger `bv-config` (set up or edit a camera) or `bv-gps` (get a live GPS fix, against an already-configured camera id only) as a background job from the browser, watch its output, answer `bv-config`'s wizard questions as they come up, and cancel a job that's running or stuck. See "Job runner" below for how.
+
+## Archive browser
+
+Trips only exist once `bv-export` has processed them; the archive browser shows what's on disk before that - every raw recording `bv-download` has already saved for a camera, with a thumbnail per recording so a long archive is easy to scan visually. `web/archive_browser.py` (`ArchiveRecording`, `scan_archive()`, `find_recording()`, `group_by_day()`) is deliberately thin, the same way `trips.py` is thin: it reuses `blackvue.archive.Archive`/`ArchiveReader` - the exact same reader `bv-ls`/`bv-export` already use to enumerate recordings from a flat, unstructured archive directory - rather than adding any new disk-scanning logic of its own.
+
+A camera id in a URL (`/archive/{camera_id}`) is resolved to its archive directory via `CameraConfig.target` - the directory `bv-download` writes raw recordings to. This is a different directory from `bv-export --target`/`app.state.target` (the trips directory `trips.py` reads) - a camera id names a *source* archive, a trip id names *processed* output. Don't confuse the two; `app.py`'s `_find_camera_archive()` helper is the only place this resolution happens, precisely to avoid that mix-up spreading across routes.
+
+The camera list (`/archive`) reuses `_camera_options()` - the same pick-list `bv-config`/`bv-gps`'s job forms already build (see "Camera pick-list" below). The per-camera page (`/archive/{camera_id}`) groups recordings by calendar day, newest day and newest recording first, and shows each recording's thumbnail if it has one - real `.thm` files `bv-download` already downloads (see the sidecar-probing feature in `WORKING_CONTEXT.md`), preferring front, then rear, then interior. A recording with no thumbnail at all (an older archive, or a camera/firmware that doesn't serve `.thm` files) shows a plain "No thumbnail" placeholder instead of breaking the grid - thumbnail presence was never guaranteed, and there's no ffmpeg-based thumbnail generation anywhere in this project to fall back to. The detail page (`/archive/{camera_id}/{recording_id}`) plays the recording's best available video and links every file it actually has (front/rear/interior video, GPS/g-sensor sidecars).
+
+Two file-serving routes (`/archive/{camera_id}/{recording_id}/thumbnail/{direction}`, `/archive/{camera_id}/{recording_id}/files/{filename}`) follow the same allow-list pattern `trips.py`'s `trip_file` route already established: `ArchiveRecording.known_filenames` is the frozenset of real filenames a recording actually owns, checked before ever touching the filesystem, and `camera_id`/`recording_id` path segments are rejected outright if they contain `/`, `\`, or a `.`/`..` segment - the same guard `_find_trip()` applies to `trip_id`.
+
+Access is `require_login` (any logged-in user), the same as trip browsing - not `require_owner` like the job-trigger routes. Like `trips.py`, there's no caching: every request rescans the archive directory fresh.
 
 ## Job runner
 
@@ -58,15 +71,22 @@ src/blackvue/web/
                    the source recordings before a trip exists as a folder;
                    this only ever looks at bv-export's already-written
                    output.
+    archive_browser.py
+                   ArchiveRecording wrapper + scan_archive()/
+                   find_recording()/group_by_day() - browses a camera's
+                   raw bv-download archive (CameraConfig.target), reusing
+                   blackvue.archive.Archive rather than scanning the
+                   filesystem itself. See "Archive browser" above.
     jobs.py         JobRunner/Job/JobStatus - runs bv-config/bv-gps as
                    background threads (in-process, not subprocesses) and
                    tracks each one's output/status/pending-prompt. See
                    "Job runner" above.
     templates/      Server-rendered Jinja2 templates (base/login/trip_list/
-                   trip_detail/forbidden/job_new_bv_config/job_new_bv_gps/
-                   job_detail) - no client-side app to build, no JSON API;
-                   the job_detail page polls via a <meta refresh>, not a
-                   websocket.
+                   trip_detail/archive_camera_list/archive_recording_list/
+                   archive_recording_detail/forbidden/job_new_bv_config/
+                   job_new_bv_gps/job_detail) - no client-side app to
+                   build, no JSON API; the job_detail page polls via a
+                   <meta refresh>, not a websocket.
 ```
 
 `cli/bv_web.py` is the actual entry point (`bv-web` in `pyproject.toml`'s `[project.scripts]`), with two subcommands: `bv-web serve` (run the app against a `--target` directory and a users file) and `bv-web adduser` (create/update an account without needing the app itself running).

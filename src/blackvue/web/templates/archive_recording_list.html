@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Archive: {{ camera_id }} - Beyond Video{% endblock %}
+{% block content %}
+<p><a href="/archive">&larr; All cameras</a></p>
+<h2>Archive: {{ camera_id }}</h2>
+
+{% if days %}
+{% for day, recordings in days %}
+<h3 class="day-heading">{{ day.strftime("%A, %B %d, %Y") }}</h3>
+<div class="thumb-grid">
+  {% for recording in recordings %}
+  <a class="thumb-card" href="/archive/{{ camera_id }}/{{ recording.id }}">
+    {% if recording.thumbnail_direction %}
+    <img class="thumb-image"
+         src="/archive/{{ camera_id }}/{{ recording.id }}/thumbnail/{{ recording.thumbnail_direction }}"
+         alt="">
+    {% else %}
+    <div class="thumb-placeholder">No thumbnail</div>
+    {% endif %}
+    <div class="thumb-meta">
+      <span>{{ recording.timestamp.strftime("%H:%M:%S") }}</span>
+      <span class="badge">{{ recording.kind_label }}</span>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">No recordings found in this camera's archive yet.</p>
+{% endif %}
+{% endblock %}

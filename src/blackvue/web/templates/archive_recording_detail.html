@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ recording.id }} - Beyond Video{% endblock %}
+{% block content %}
+<p><a href="/archive/{{ camera_id }}">&larr; {{ camera_id }} archive</a></p>
+<h2>{{ recording.id }} <span class="badge">{{ recording.kind_label }}</span></h2>
+<p class="hint">{{ recording.timestamp.strftime("%A, %B %d, %Y %H:%M:%S") }} &middot; {{ recording.size_label }}</p>
+
+{% if recording.videos %}
+<video controls preload="metadata"
+       src="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ recording.videos[0][1] }}"></video>
+{% else %}
+<p class="empty">No video available for this recording.</p>
+{% endif %}
+
+<ul class="asset-list">
+  {% for label, filename in recording.videos %}
+  <li><a href="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ filename }}">{{ label }}: {{ filename }}</a></li>
+  {% endfor %}
+  {% for label, filename in recording.sidecars %}
+  <li><a href="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ filename }}">{{ label }}: {{ filename }}</a></li>
+  {% endfor %}
+</ul>
+{% endblock %}

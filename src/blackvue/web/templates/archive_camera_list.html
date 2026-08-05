@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Archive - Beyond Video{% endblock %}
+{% block content %}
+<h2>Browse archive</h2>
+<p class="hint">The raw archive - every recording bv-download has saved for a
+camera, before bv-export groups anything into trips.</p>
+{% if cameras %}
+<table>
+  <thead>
+    <tr><th>Camera</th></tr>
+  </thead>
+  <tbody>
+    {% for camera in cameras %}
+    <tr><td><a href="/archive/{{ camera.id }}">{{ camera.label }}</a></td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No cameras set up yet.</p>
+{% endif %}
+{% endblock %}
