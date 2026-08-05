@@ -36,6 +36,30 @@ def config_path(config_dir: Path, id_: str) -> Path:
     return config_dir / f"{id_}.cfg"
 
 
+def list_camera_ids(config_dir: Path) -> list[str]:
+    """Return every camera system id with a config file in config_dir,
+    sorted alphabetically.
+
+    Just filenames (each *.cfg file's stem) - deliberately doesn't
+    load/validate the contents, so one corrupt config can't make the
+    whole listing fail; a caller that wants a human-friendly label per
+    id (e.g. bv-web's job-trigger forms) can load_camera_config() each
+    one itself and fall back to the bare id if that raises.
+
+    Every bv-* command that takes a camera id still requires it
+    explicitly (see e.g. bv_config.py's `id` positional argument) -
+    this exists for UIs that want to offer a pick-list rather than
+    making someone remember/retype an id, not to change that.
+    Returns an empty list if config_dir doesn't exist yet (e.g. before
+    bv-config has ever been run).
+    """
+
+    if not config_dir.is_dir():
+        return []
+
+    return sorted(path.stem for path in config_dir.glob("*.cfg") if path.is_file())
+
+
 def validate_id(id_: str) -> None:
     """Validate a camera system id.
 

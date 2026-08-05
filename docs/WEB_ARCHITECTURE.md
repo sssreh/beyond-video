@@ -31,6 +31,8 @@ This sidesteps a real problem a subprocess approach would have: a subprocess's s
 
 All job routes (`GET`/`POST /jobs/bv-config`, `GET`/`POST /jobs/bv-gps`, `GET /jobs/{job_id}`, `POST /jobs/{job_id}/answer`, `POST /jobs/{job_id}/cancel`) are gated by the existing `require_owner` dependency rather than a granular per-command permission system - simpler, and there's currently no real semi-trusted third party that would need finer-grained access.
 
+**Camera pick-list**: most people only ever have one camera configured, but nothing stops there being more, so the job-trigger forms don't make the owner remember/retype an id from memory. `core/camera_config.py`'s `list_camera_ids(config_dir)` scans `default_config_dir()` for `*.cfg` files and returns their ids (filenames only - deliberately doesn't parse each file, so one corrupt config can't break the listing). `app.py`'s `_camera_options()` then loads each id's config just to get a friendly `"<name> (<id>)"` label, falling back to the bare id if that load fails. `job_new_bv_config.html` offers this as a `<datalist>` alongside its free-text id field (bv-config can still create a brand-new id, so the field stays free text - the list is a suggestion, not a constraint); `job_new_bv_gps.html` uses a `<select>` instead, since bv-gps only ever works against an already-configured id - if none exist yet, the page points at bv-config instead of showing an empty dropdown.
+
 ## Structure
 
 ```

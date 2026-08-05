@@ -5,6 +5,7 @@ import pytest
 from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import CameraConfigError
 from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import list_camera_ids
 from blackvue.core.camera_config import load_camera_config
 from blackvue.core.camera_config import save_camera_config
 from blackvue.core.camera_config import validate_id
@@ -85,3 +86,44 @@ def test_load_defaults_id_and_name_from_filename(tmp_path):
     assert loaded.id == "Kirby"
     assert loaded.name == "Kirby"
     assert loaded.endpoints == []
+
+
+def test_list_camera_ids_returns_every_cfg_stem_sorted(tmp_path):
+    (tmp_path / "zebra.cfg").write_text('target = "/x"\n')
+    (tmp_path / "Kirby.cfg").write_text('target = "/x"\n')
+    (tmp_path / "acorn.cfg").write_text('target = "/x"\n')
+
+    assert list_camera_ids(tmp_path) == ["Kirby", "acorn", "zebra"]
+
+
+def test_list_camera_ids_ignores_non_cfg_files(tmp_path):
+    (tmp_path / "Kirby.cfg").write_text('target = "/x"\n')
+    (tmp_path / "notes.txt").write_text("not a config\n")
+    (tmp_path / "backup.cfg.bak").write_text("also not a config\n")
+
+    assert list_camera_ids(tmp_path) == ["Kirby"]
+
+
+def test_list_camera_ids_ignores_subdirectories_named_like_a_config(tmp_path):
+    (tmp_path / "Kirby.cfg").mkdir()
+
+    assert list_camera_ids(tmp_path) == []
+
+
+def test_list_camera_ids_empty_when_dir_has_no_configs(tmp_path):
+    assert list_camera_ids(tmp_path) == []
+
+
+def test_list_camera_ids_empty_when_dir_does_not_exist(tmp_path):
+    assert list_camera_ids(tmp_path / "does-not-exist") == []
+
+
+def test_list_camera_ids_does_not_raise_on_a_corrupt_config(tmp_path):
+    # list_camera_ids() is filename-only (no tomllib.load()) so one
+    # unparsable .cfg can't break the whole listing - load_camera_
+    # config() is what a caller would use per-id to get a friendly
+    # display name, and that's expected to fail for this file, but the
+    # listing itself must still succeed.
+    (tmp_path / "broken.cfg").write_text("this is not valid TOML {{{\n")
+
+    assert list_camera_ids(tmp_path) == ["broken"]

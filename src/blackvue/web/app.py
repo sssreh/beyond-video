@@ -50,6 +50,11 @@ from .trips import scan_trip
 from .trips import scan_trips
 from .users import User
 from .users import UsersConfig
+from ..core.camera_config import CameraConfigError
+from ..core.camera_config import config_path
+from ..core.camera_config import default_config_dir
+from ..core.camera_config import list_camera_ids
+from ..core.camera_config import load_camera_config
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -179,7 +184,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         request: Request, user: User = Depends(require_owner)
     ):
         return templates.TemplateResponse(
-            request, "job_new_bv_config.html", {"user": user}
+            request,
+            "job_new_bv_config.html",
+            {"user": user, "cameras": _camera_options()},
         )
 
     @app.post("/jobs/bv-config")
@@ -198,7 +205,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         request: Request, user: User = Depends(require_owner)
     ):
         return templates.TemplateResponse(
-            request, "job_new_bv_gps.html", {"user": user}
+            request,
+            "job_new_bv_gps.html",
+            {"user": user, "cameras": _camera_options()},
         )
 
     @app.post("/jobs/bv-gps")
@@ -271,6 +280,35 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         )
 
     return app
+
+
+def _camera_options() -> list[dict[str, str]]:
+    """List every camera already set up via bv-config, for the
+    bv-config/bv-gps job-trigger forms to offer as a pick-list instead
+    of making the owner remember/retype an id - most people only ever
+    have one, but nothing stops there being more.
+
+    Scans the same default_config_dir() the job runner itself actually
+    uses (see jobs.py's start_bv_config()/start_bv_gps(), neither of
+    which take a --config-dir override - "curated subset, not every
+    CLI flag"). Each id's own config is loaded just to get a friendly
+    `label` ("<name> (<id>)", or just the id if the name and id are
+    the same) - a config that fails to load (corrupt, hand-edited
+    wrong) still shows up by its bare id rather than disappearing from
+    the list or breaking the whole page.
+    """
+
+    config_dir = default_config_dir()
+    options = []
+    for id_ in list_camera_ids(config_dir):
+        try:
+            config = load_camera_config(config_path(config_dir, id_))
+        except CameraConfigError:
+            options.append({"id": id_, "label": id_})
+            continue
+        label = id_ if config.name == id_ else f"{config.name} ({id_})"
+        options.append({"id": id_, "label": label})
+    return options
 
 
 def _find_job(job_runner: JobRunner, job_id: str) -> Job:

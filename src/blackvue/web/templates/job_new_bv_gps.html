@@ -2,12 +2,17 @@
 {% block title %}Get GPS fix - Beyond Video{% endblock %}
 {% block content %}
 <h2>Get a GPS fix (bv-gps)</h2>
-<p>Enter the id of a camera already set up via bv-config. (bv-gps's own
---host option, for probing a bare IP that hasn't been configured yet,
-is a terminal-only tool - not exposed here.)</p>
+{% if cameras %}
+<p>Pick a camera already set up via bv-config. (bv-gps's own --host
+option, for probing a bare IP that hasn't been configured yet, is a
+terminal-only tool - not exposed here.)</p>
 <form method="post" action="/jobs/bv-gps">
-  <label for="id">Camera id (already set up via bv-config)</label>
-  <input type="text" id="id" name="id" autofocus required placeholder="e.g. kirby">
+  <label for="id">Camera</label>
+  <select id="id" name="id" autofocus required>
+    {% for camera in cameras %}
+    <option value="{{ camera.id }}">{{ camera.label }}</option>
+    {% endfor %}
+  </select>
   <label>
     <input type="checkbox" id="no_address" name="no_address" value="true"
            style="width: auto; margin-right: 0.4rem;">
@@ -17,4 +22,8 @@ is a terminal-only tool - not exposed here.)</p>
     <button type="submit">Start</button>
   </div>
 </form>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
 {% endblock %}
