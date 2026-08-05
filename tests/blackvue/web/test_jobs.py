@@ -18,6 +18,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import threading
 import time
 
 from blackvue.cli import bv_config as bv_config_module
@@ -55,6 +56,7 @@ def test_job_status_is_finished_only_for_terminal_states():
     assert JobStatus.WAITING_FOR_INPUT.is_finished is False
     assert JobStatus.SUCCEEDED.is_finished is True
     assert JobStatus.FAILED.is_finished is True
+    assert JobStatus.CANCELLED.is_finished is True
 
 
 def test_job_status_value_is_the_plain_lowercase_string():
@@ -66,6 +68,7 @@ def test_job_status_value_is_the_plain_lowercase_string():
     assert JobStatus.WAITING_FOR_INPUT.value == "waiting_for_input"
     assert JobStatus.SUCCEEDED.value == "succeeded"
     assert JobStatus.FAILED.value == "failed"
+    assert JobStatus.CANCELLED.value == "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +148,51 @@ def test_job_submit_answer_rejected_once_finished():
     job.set_status(JobStatus.SUCCEEDED)
 
     assert job.submit_answer("too late") is False
+
+
+def test_job_cancel_while_running_marks_cancelled_immediately():
+    job = _new_job()
+
+    assert job.cancel() is True
+
+    status, output, prompt = job.snapshot()
+    assert status == JobStatus.CANCELLED
+    assert prompt is None
+    assert "Cancelled." in output
+
+
+def test_job_cancel_while_waiting_for_input_unblocks_the_answer_queue():
+    job = _new_job()
+    job.set_status(JobStatus.WAITING_FOR_INPUT, prompt="Name [kirby]: ")
+
+    assert job.cancel() is True
+
+    status, output, prompt = job.snapshot()
+    assert status == JobStatus.CANCELLED
+    assert prompt is None
+    assert "Cancelled." in output
+
+    from blackvue.web.jobs import _CANCEL_SENTINEL
+
+    assert job._answer_queue.get(timeout=1) is _CANCEL_SENTINEL
+
+
+def test_job_cancel_is_a_noop_once_already_finished():
+    job = _new_job()
+    job.set_status(JobStatus.SUCCEEDED)
+
+    assert job.cancel() is False
+
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert "Cancelled." not in output
+
+
+def test_job_cancel_is_a_noop_once_already_cancelled():
+    job = _new_job()
+    job.cancel()
+
+    assert job.cancel() is False
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +290,82 @@ def test_answer_returns_false_when_job_is_not_waiting():
     assert runner.answer(job.id, "too late") is False
 
 
+def test_cancel_returns_false_for_an_unknown_job_id():
+    runner = JobRunner()
+
+    assert runner.cancel("does-not-exist") is False
+
+
+def test_cancel_unblocks_a_job_waiting_for_input_and_stops_it_immediately():
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+    ask = runner._make_ask(job)
+
+    reached_after_ask = []
+
+    def run() -> int:
+        ask("Name [kirby]: ")
+        # Only reached if ask() returns normally instead of raising -
+        # cancellation should mean this line never executes.
+        reached_after_ask.append(True)
+        return 0
+
+    runner._spawn(job, run)
+
+    _wait_until(lambda: job.snapshot()[0] == JobStatus.WAITING_FOR_INPUT)
+
+    assert runner.cancel(job.id) is True
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, prompt = job.snapshot()
+    assert status == JobStatus.CANCELLED
+    assert prompt is None
+    assert "Cancelled." in output
+    assert reached_after_ask == []
+    # The thread's own target() wrapper must not overwrite CANCELLED
+    # with a stale success/failure status after _JobCancelled unwinds.
+    assert "(exit code" not in " ".join(output)
+
+
+def test_cancel_a_running_job_with_no_open_prompt_marks_it_cancelled():
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+
+    release = threading.Event()
+
+    def run() -> int:
+        release.wait(timeout=2)
+        return 0
+
+    runner._spawn(job, run)
+
+    _wait_until(lambda: job.snapshot()[0] == JobStatus.RUNNING)
+    assert runner.cancel(job.id) is True
+
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.CANCELLED
+    assert "Cancelled." in output
+
+    # Let the background thread actually finish (run() returns 0) and
+    # confirm that late completion doesn't clobber the CANCELLED
+    # status the browser has already been shown.
+    release.set()
+    time.sleep(0.1)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.CANCELLED
+    assert "(exit code 0)" not in output
+
+
+def test_cancel_returns_false_once_job_already_finished():
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+    runner._spawn(job, lambda: 0)
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+
+    assert runner.cancel(job.id) is False
+
+
 # ---------------------------------------------------------------------------
 # JobRunner.start_bv_config / start_bv_gps - real wiring, fake _run
 # ---------------------------------------------------------------------------
@@ -294,15 +418,14 @@ def test_start_bv_config_job_fails_when_run_returns_nonzero(monkeypatch):
 def test_start_bv_gps_wires_say_warn_but_needs_no_ask(monkeypatch):
     def fake_run(args, *, say, warn):
         assert args.id == "kirby"
+        assert args.host is None
         say("Coordinates: 1.0,2.0")
         return bv_gps_module.EXIT_OK
 
     monkeypatch.setattr(bv_gps_module, "_run", fake_run)
 
     runner = JobRunner()
-    job = runner.start_bv_gps(
-        id_="kirby", host=None, no_address=False, username="christer"
-    )
+    job = runner.start_bv_gps(id_="kirby", no_address=False, username="christer")
 
     assert job.command == "bv-gps kirby"
 
@@ -312,23 +435,18 @@ def test_start_bv_gps_wires_say_warn_but_needs_no_ask(monkeypatch):
     assert "Coordinates: 1.0,2.0" in output
 
 
-def test_start_bv_gps_by_host_when_no_id_given(monkeypatch):
+def test_start_bv_gps_no_address_flag_reaches_parsed_args(monkeypatch):
     def fake_run(args, *, say, warn):
-        assert args.id is None
-        assert args.host == "192.168.1.42"
-        say("Coordinates: 3.0,4.0")
+        assert args.id == "kirby"
+        assert args.no_address is True
+        say("Coordinates: 1.0,2.0")
         return bv_gps_module.EXIT_OK
 
     monkeypatch.setattr(bv_gps_module, "_run", fake_run)
 
     runner = JobRunner()
-    job = runner.start_bv_gps(
-        id_=None, host="192.168.1.42", no_address=False, username="christer"
-    )
-
-    assert job.command == "bv-gps 192.168.1.42"
+    job = runner.start_bv_gps(id_="kirby", no_address=True, username="christer")
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
-    status, output, _ = job.snapshot()
+    status, _, _ = job.snapshot()
     assert status == JobStatus.SUCCEEDED
-    assert "Coordinates: 3.0,4.0" in output

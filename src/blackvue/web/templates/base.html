@@ -63,11 +63,17 @@
     .status-badge.running, .status-badge.waiting_for_input { background: #4a3f00; color: #ffd166; }
     .status-badge.succeeded { background: #1e3a24; color: #7de08a; }
     .status-badge.failed { background: #3a1e1e; color: #ff8080; }
+    .status-badge.cancelled { background: #2a2d33; color: #9aa0aa; }
     .prompt-box {
       background: #1c1f24; border: 1px solid #2a2d33; border-radius: 4px;
       padding: 1rem; margin-top: 1rem;
     }
     .prompt-box label { font-weight: 600; }
+    .cancel-form { margin-top: 1rem; }
+    .cancel-button {
+      background: none; border: 1px solid #5a2a2a; color: #ff8080;
+      padding: 0.4rem 1rem; border-radius: 4px; font: inherit; cursor: pointer;
+    }
   </style>
 </head>
 <body>

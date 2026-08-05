@@ -204,14 +204,12 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     @app.post("/jobs/bv-gps")
     async def new_bv_gps_submit(
         request: Request,
-        id: str = Form(""),
-        host: str = Form(""),
+        id: str = Form(...),
         no_address: bool = Form(False),
         user: User = Depends(require_owner),
     ):
         job = app.state.job_runner.start_bv_gps(
-            id_=id or None,
-            host=host or None,
+            id_=id,
             no_address=no_address,
             username=user.username,
         )
@@ -255,6 +253,19 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # or a stale browser tab, not something the owner needs an
         # error page for.
         app.state.job_runner.answer(job_id, answer)
+        return RedirectResponse(
+            url=f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.post("/jobs/{job_id}/cancel")
+    async def job_cancel(
+        job_id: str,
+        user: User = Depends(require_owner),
+    ):
+        # Same no-op-if-already-finished treatment as job_answer()
+        # above - a stale tab's Cancel button hitting an already-done
+        # job isn't an error.
+        app.state.job_runner.cancel(job_id)
         return RedirectResponse(
             url=f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
         )

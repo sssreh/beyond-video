@@ -24,4 +24,10 @@
 {% elif not is_finished %}
 <p class="empty">Running... this page refreshes automatically.</p>
 {% endif %}
+
+{% if not is_finished %}
+<form method="post" action="/jobs/{{ job.id }}/cancel" class="cancel-form">
+  <button type="submit" class="cancel-button">Cancel job</button>
+</form>
+{% endif %}
 {% endblock %}

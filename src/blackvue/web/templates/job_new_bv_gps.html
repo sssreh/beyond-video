@@ -2,14 +2,12 @@
 {% block title %}Get GPS fix - Beyond Video{% endblock %}
 {% block content %}
 <h2>Get a GPS fix (bv-gps)</h2>
-<p>Fill in <strong>one</strong> of the two fields below - a configured
-camera id, or a bare IP/host to connect to directly. If both are
-filled in, the camera id wins and the host is ignored.</p>
+<p>Enter the id of a camera already set up via bv-config. (bv-gps's own
+--host option, for probing a bare IP that hasn't been configured yet,
+is a terminal-only tool - not exposed here.)</p>
 <form method="post" action="/jobs/bv-gps">
   <label for="id">Camera id (already set up via bv-config)</label>
-  <input type="text" id="id" name="id" autofocus placeholder="e.g. kirby">
-  <label for="host">...or a bare host/IP</label>
-  <input type="text" id="host" name="host" placeholder="e.g. 192.168.1.42">
+  <input type="text" id="id" name="id" autofocus required placeholder="e.g. kirby">
   <label>
     <input type="checkbox" id="no_address" name="no_address" value="true"
            style="width: auto; margin-right: 0.4rem;">
