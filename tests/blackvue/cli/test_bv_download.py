@@ -589,9 +589,18 @@ def test_run_skips_a_recording_whose_download_fails_and_continues(
     assert "timed out" in err
 
 
-def test_run_skips_a_recording_whose_sidecar_probe_fails(
+def test_run_still_downloads_a_recording_whose_sidecar_probe_fails(
     tmp_path, monkeypatch, capsys
 ):
+    """A sidecar-probe failure (transient WiFi/timeout hitting the
+    opportunistic .gps/.3gf/.thm check) must not stop the recording's
+    actual video from being attempted - see the comment in _run()'s
+    per-recording loop. This matters most for a recording with a
+    partially-downloaded video already on disk from an earlier run:
+    camera.download()'s own resume logic is what fixes that, and it
+    never got a chance to run if a flaky probe skipped the recording
+    outright."""
+
     recordings = [
         recording("20260803_161020_N"),
         recording("20260803_161120_N"),
@@ -612,8 +621,14 @@ def test_run_skips_a_recording_whose_sidecar_probe_fails(
 
     exit_code = _run(_host_args(tmp_path))
 
-    assert camera.downloaded_ids == ["20260803_161120_N"]
-    assert exit_code == EXIT_PARTIAL_FAILURE
+    # Both recordings get downloaded - the failed probe is reported,
+    # but doesn't stop the video download from being attempted, and
+    # doesn't count as a batch failure on its own.
+    assert camera.downloaded_ids == [
+        "20260803_161020_N",
+        "20260803_161120_N",
+    ]
+    assert exit_code == EXIT_OK
 
     err = capsys.readouterr().err
     assert "20260803_161020_N" in err

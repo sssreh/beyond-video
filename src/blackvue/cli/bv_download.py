@@ -641,13 +641,25 @@ def _run(args: argparse.Namespace) -> int:
             try:
                 found = camera.probe_missing_sidecars(recording)
             except OSError as exc:
-                failed_ids.append(recording.id)
+                # A failed probe only means the opportunistic sidecar
+                # check itself didn't complete - it says nothing about
+                # whether the recording's actual video is reachable.
+                # Falling through to the download step below (instead
+                # of `continue`-ing past it) matters most for a
+                # recording with a partially-downloaded video already
+                # on disk from an earlier run: camera.download()'s own
+                # size-comparison/resume logic is what would have
+                # fixed that, and skipping the recording entirely here
+                # meant it never got the chance to run. Christer hit
+                # this: a partial video stopped getting repaired once
+                # its sidecar probe started hitting a transient
+                # WiFi/timeout error on every run.
+                found = []
                 print(
                     f"bv-download: {recording.id}: couldn't check for "
-                    f"sidecar files ({exc}) - skipping this recording",
+                    f"sidecar files ({exc}) - continuing without it",
                     file=sys.stderr,
                 )
-                continue
 
             if found and args.verbose:
                 summary = _summarize_found_kinds(found)
