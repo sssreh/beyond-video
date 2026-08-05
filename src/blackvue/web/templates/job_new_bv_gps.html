@@ -2,25 +2,47 @@
 {% block title %}Get GPS fix - Beyond Video{% endblock %}
 {% block content %}
 <h2>Get a GPS fix (bv-gps)</h2>
+<div class="command-help">
+  <p>Fetches a camera's current GPS reading live over the network and
+  prints a pasteable coordinate pair, a Google Maps link, and (unless
+  skipped below) a reverse-geocoded address. Connects using whichever
+  endpoint from the camera's bv-config setup answers first.</p>
+</div>
 {% if cameras %}
-<p>Pick a camera already set up via bv-config. (bv-gps's own --host
-option, for probing a bare IP that hasn't been configured yet, is a
-terminal-only tool - not exposed here.)</p>
 <form method="post" action="/jobs/bv-gps">
-  <label for="id">Camera</label>
-  <select id="id" name="id" autofocus required>
-    {% for camera in cameras %}
-    <option value="{{ camera.id }}">{{ camera.label }}</option>
-    {% endfor %}
-  </select>
-  <label>
-    <input type="checkbox" id="no_address" name="no_address" value="true"
-           style="width: auto; margin-right: 0.4rem;">
-    Skip the reverse-geocoded address lookup
-  </label>
-  <div style="margin-top: 1rem;">
-    <button type="submit">Start</button>
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera to fetch a GPS fix from. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
   </div>
+
+  <div class="option-group">
+    <h3>Defaults</h3>
+    <label class="field-label" for="timeout">
+      Connection timeout (seconds)
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">How long to wait for each configured endpoint to answer before trying the next one. 5 seconds works for most home networks - raise it for a slow mobile/LTE connection.</span></span>
+    </label>
+    <input type="number" id="timeout" name="timeout" value="5" min="1" step="1">
+  </div>
+
+  <div class="option-group">
+    <h3>Optional</h3>
+    <label class="field-label" for="no_address">
+      <input type="checkbox" id="no_address" name="no_address" value="true"
+             style="width: auto; margin: 0;">
+      Skip the reverse-geocoded address lookup
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Reverse-geocoding turns coordinates into a street address via an external lookup (Nominatim). Skip it for a faster, address-free result, or if that lookup isn't reachable from this network.</span></span>
+    </label>
+  </div>
+
+  <button type="submit">Start</button>
 </form>
 {% else %}
 <p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up

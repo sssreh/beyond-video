@@ -214,11 +214,13 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def new_bv_gps_submit(
         request: Request,
         id: str = Form(...),
+        timeout: int = Form(5, ge=1),
         no_address: bool = Form(False),
         user: User = Depends(require_owner),
     ):
         job = app.state.job_runner.start_bv_gps(
             id_=id,
+            timeout=timeout,
             no_address=no_address,
             username=user.username,
         )

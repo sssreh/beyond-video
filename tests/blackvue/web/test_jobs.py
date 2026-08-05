@@ -425,7 +425,9 @@ def test_start_bv_gps_wires_say_warn_but_needs_no_ask(monkeypatch):
     monkeypatch.setattr(bv_gps_module, "_run", fake_run)
 
     runner = JobRunner()
-    job = runner.start_bv_gps(id_="kirby", no_address=False, username="christer")
+    job = runner.start_bv_gps(
+        id_="kirby", timeout=5, no_address=False, username="christer"
+    )
 
     assert job.command == "bv-gps kirby"
 
@@ -445,7 +447,28 @@ def test_start_bv_gps_no_address_flag_reaches_parsed_args(monkeypatch):
     monkeypatch.setattr(bv_gps_module, "_run", fake_run)
 
     runner = JobRunner()
-    job = runner.start_bv_gps(id_="kirby", no_address=True, username="christer")
+    job = runner.start_bv_gps(
+        id_="kirby", timeout=5, no_address=True, username="christer"
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+
+
+def test_start_bv_gps_timeout_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.id == "kirby"
+        assert args.timeout == 15
+        say("Coordinates: 1.0,2.0")
+        return bv_gps_module.EXIT_OK
+
+    monkeypatch.setattr(bv_gps_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_gps(
+        id_="kirby", timeout=15, no_address=False, username="christer"
+    )
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, _, _ = job.snapshot()

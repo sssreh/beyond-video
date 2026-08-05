@@ -2,21 +2,31 @@
 {% block title %}Set up camera - Beyond Video{% endblock %}
 {% block content %}
 <h2>Set up a camera (bv-config)</h2>
-<p>Creates a new camera, or edits an existing one if the id already
-exists - every question defaults to the current value, same as
-running <code>bv-config</code> yourself.</p>
+<div class="command-help">
+  <p>Creates a new camera, or edits an existing one if the id already
+  exists - every question defaults to the current value, same as
+  running <code>bv-config</code> yourself. bv-config then asks for the
+  camera's display name, its download target, and its endpoints
+  (addresses tried in order) one at a time on the next page.</p>
+</div>
 <form method="post" action="/jobs/bv-config">
-  <label for="id">Camera id</label>
-  <input type="text" id="id" name="id" autofocus required
-         placeholder="e.g. kirby" list="camera-ids">
-  {% if cameras %}
-  <datalist id="camera-ids">
-    {% for camera in cameras %}
-    <option value="{{ camera.id }}" label="{{ camera.label }}">
-    {% endfor %}
-  </datalist>
-  <p class="hint">Existing: {% for camera in cameras %}{{ camera.label }}{% if not loop.last %}, {% endif %}{% endfor %} - or type a new id to set up another camera.</p>
-  {% endif %}
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera id
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">A short identifier used as this camera's config filename and as the id you'll pass to bv-gps and the rest of the pipeline later. ASCII letters/numbers only, no spaces.</span></span>
+    </label>
+    <input type="text" id="id" name="id" autofocus required
+           placeholder="e.g. kirby" list="camera-ids">
+    {% if cameras %}
+    <datalist id="camera-ids">
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}" label="{{ camera.label }}">
+      {% endfor %}
+    </datalist>
+    <p class="hint">Existing: {% for camera in cameras %}{{ camera.label }}{% if not loop.last %}, {% endif %}{% endfor %} - or type a new id to set up another camera.</p>
+    {% endif %}
+  </div>
   <button type="submit">Start</button>
 </form>
 {% endblock %}

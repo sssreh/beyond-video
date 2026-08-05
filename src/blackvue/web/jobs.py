@@ -205,6 +205,7 @@ class JobRunner:
         self,
         *,
         id_: str,
+        timeout: int,
         no_address: bool,
         username: str,
     ) -> Job:
@@ -213,11 +214,17 @@ class JobRunner:
         from a real terminal for probing a camera that hasn't been
         set up with bv-config yet - deliberately not exposed here:
         that's a "test/scan an arbitrary address" escape hatch, not
-        something bv-web's job trigger should let anyone reach for."""
+        something bv-web's job trigger should let anyone reach for.
+
+        `timeout` is bv-gps's own --timeout (per-endpoint connection
+        timeout in seconds) - unlike --host/--config-dir this one is
+        exposed, since it's just a number with a sensible default
+        (job_new_bv_gps.html's own "Defaults" group), not an escape
+        hatch around the curated id-only design."""
 
         from ..cli import bv_gps
 
-        argv: list[str] = [id_]
+        argv: list[str] = [id_, "--timeout", str(timeout)]
         if no_address:
             argv.append("--no-address")
         args = bv_gps.parse_args(argv)
