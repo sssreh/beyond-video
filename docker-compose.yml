@@ -15,6 +15,15 @@ services:
     restart: unless-stopped
     ports:
       - "19373:19373"
+    environment:
+      # See core/camera_config.py's own comment on this variable: it
+      # points default_config_dir() (used by both the camera pick-list/
+      # archive browser and the in-process bv-config/bv-gps job runner)
+      # at the SAME host folder bv-cli's `docker-compose run` commands
+      # use via their explicit --config-dir /data/config - without
+      # this, bv-web's container has no persistent $HOME, so it sees
+      # zero cameras no matter how many are actually configured.
+      - BEYOND_VIDEO_CONFIG_DIR=/data/camera-config
     volumes:
       # The trip archive bv-export writes into (--target). Read-only:
       # this increment of bv-web only browses/plays existing trips,
@@ -28,6 +37,13 @@ services:
       # with `docker exec -it beyond-video-web bv-web adduser ...`
       # (see docs/DEPLOY.md).
       - ./data/config:/data/config
+      # Camera .cfg files - the SAME host folder bv-cli's own
+      # ./data/camera-config mount below points at, so a camera set up
+      # from bv-web's own "Trigger bv-config" job (or from the CLI via
+      # bv-cli) is visible to both. Read-write: bv-web's job runner can
+      # create/edit a camera's config through its own UI, not just read
+      # one bv-cli already wrote.
+      - ./data/camera-config:/data/camera-config
 
   # The full bv-* pipeline (bv-config, bv-download, bv-generate,
   # bv-lang, bv-export) - see docs/DEPLOY.md's "Feeding it real trips"

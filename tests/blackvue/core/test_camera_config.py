@@ -5,6 +5,7 @@ import pytest
 from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import CameraConfigError
 from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import list_camera_ids
 from blackvue.core.camera_config import load_camera_config
 from blackvue.core.camera_config import save_camera_config
@@ -15,6 +16,34 @@ from blackvue.core.endpoint import Endpoint
 
 def test_config_path():
     assert config_path(Path("/cfg"), "Kirby") == Path("/cfg/Kirby.cfg")
+
+
+# ---------------------------------------------------------------------------
+# default_config_dir() - BEYOND_VIDEO_CONFIG_DIR env var override, added so
+# bv-web's Docker container (no persistent $HOME) can be pointed at the same
+# host folder bv-cli's `docker-compose run --config-dir /data/config`
+# invocations use. See core/camera_config.py's own comment on this.
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_dir_uses_env_var_override_when_set(monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_CONFIG_DIR", "/data/camera-config")
+
+    assert default_config_dir() == Path("/data/camera-config")
+
+
+def test_default_config_dir_falls_back_to_home_when_unset(monkeypatch):
+    monkeypatch.delenv("BEYOND_VIDEO_CONFIG_DIR", raising=False)
+
+    assert default_config_dir() == Path.home() / ".config" / "beyond-video"
+
+
+def test_default_config_dir_falls_back_to_home_when_empty(monkeypatch):
+    # An empty string is falsy - treated the same as unset, not as "use the
+    # current directory" (Path("")'s own surprising meaning).
+    monkeypatch.setenv("BEYOND_VIDEO_CONFIG_DIR", "")
+
+    assert default_config_dir() == Path.home() / ".config" / "beyond-video"
 
 
 @pytest.mark.parametrize(

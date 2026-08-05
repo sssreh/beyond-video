@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from dataclasses import dataclass
 from dataclasses import field
@@ -19,14 +20,41 @@ from .endpoint import Endpoint
 MAX_ID_LENGTH = 128
 MAX_NAME_LENGTH = 128
 
+# Every bv-* CLI's own --config-dir flag defaults to
+# default_config_dir() - fine for a native/bare-metal install, but
+# bv-web's Docker container has no persistent $HOME (a fresh, empty
+# one baked into the image, recreated on every rebuild) and no
+# per-invocation flag to override it: unlike bv-cli's one-off
+# `docker-compose run` commands (which always get an explicit
+# --config-dir /data/config), bv-web is a single long-running process
+# whose own camera-picker (app.py's _camera_options()/
+# _find_camera_archive()) and in-process job runner
+# (jobs.py's start_bv_config()/start_bv_gps(), deliberately kept to a
+# "curated subset, not every CLI flag" of options - see their own
+# docstrings) call default_config_dir() with no override at all. This
+# environment variable lets docker-compose.yml point every one of
+# those call sites at the same persisted host folder bv-cli/native CLI
+# use, without adding a --config-dir flag to bv-web's own CLI surface
+# or threading it through create_app()/JobRunner - confirmed missing
+# entirely on a real deployment: Christer's bv-web container could see
+# zero cameras (empty pick-list, archive browser 404ing every camera
+# id) until this was set, since $HOME/.config/beyond-video inside the
+# container was never mounted to anything.
+_CONFIG_DIR_ENV_VAR = "BEYOND_VIDEO_CONFIG_DIR"
+
 
 class CameraConfigError(Exception):
     """Raised when a camera configuration cannot be loaded or is invalid."""
 
 
 def default_config_dir() -> Path:
-    """Return the default directory camera configs live in."""
+    """Return the default directory camera configs live in - the
+    BEYOND_VIDEO_CONFIG_DIR environment variable if set (see its own
+    comment above), otherwise ~/.config/beyond-video."""
 
+    override = os.environ.get(_CONFIG_DIR_ENV_VAR)
+    if override:
+        return Path(override)
     return Path.home() / ".config" / "beyond-video"
 
 

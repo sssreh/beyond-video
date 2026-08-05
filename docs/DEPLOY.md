@@ -18,7 +18,7 @@ Everything lives under one folder, `/volume1/beyond-video`:
         trips/                  <- bv-export --target output - bv-web browses it (read-only); written by bv-cli and/or Christer's PC over SMB
         config/                 <- bv-web's web-users.cfg (accounts file)
         archive/                <- bv-download's target - the raw camera archive; also reachable from Christer's PC over SMB
-        camera-config/          <- bv-config's camera .cfg files (e.g. Kirby.cfg)
+        camera-config/          <- bv-config's camera .cfg files (e.g. Kirby.cfg) - bv-web reads this too (see below), not just bv-cli
 ```
 
 `data/` isn't part of the git repo (see `.gitignore`) - it's created once, on the NAS, and holds everything that needs to persist across container rebuilds (accounts, camera config, the raw archive, and exported trips). `data/archive` and `data/trips` also need to be reachable from Christer's PC over SMB if using the PC path for `bv-generate`/`bv-export` (see step 7) - if `/volume1/beyond-video` itself isn't already a browsable network share, set that up in **Control Panel -> Shared Folder** first.
@@ -66,7 +66,7 @@ mkdir -p /volume1/beyond-video/data/archive
 mkdir -p /volume1/beyond-video/data/camera-config
 ```
 
-All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` writes into, whether run on the NAS or from Christer's PC over SMB (see step 7) - leaving it empty for now is fine, `bv-web` just shows "No trips found yet."
+All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` writes into, whether run on the NAS or from Christer's PC over SMB (see step 7) - leaving it empty for now is fine, `bv-web` just shows "No trips found yet." `data/camera-config` is mounted into `bv-web`'s own container too (`docker-compose.yml`'s `BEYOND_VIDEO_CONFIG_DIR=/data/camera-config` environment variable, read by `core/camera_config.py`'s `default_config_dir()`) - without it, `bv-web` has no persistent `$HOME` inside its container and can't see any camera `.cfg` file `bv-config` wrote, whether from `bv-cli` or from bv-web's own job-trigger form: the camera pick-list on the job forms shows empty, and the archive browser 404s every camera id. Same host folder either way, no extra setup needed - this is just why it's mounted into both containers rather than only `bv-cli`'s.
 
 ## 4. Build and start bv-web
 

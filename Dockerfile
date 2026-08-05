@@ -22,11 +22,18 @@ COPY src/ src/
 
 RUN pip install --no-cache-dir ".[web]"
 
-# Where the two volumes docker-compose.yml mounts land inside the
+# Where the volumes docker-compose.yml mounts land inside the
 # container: the trip archive bv-web browses (read-only - this
-# increment never writes into it) and the accounts file (read-write -
-# `bv-web adduser` needs to create/update it via `docker exec`).
-RUN mkdir -p /data/trips /data/config
+# increment never writes into it), the accounts file (read-write -
+# `bv-web adduser` needs to create/update it via `docker exec`), and
+# camera .cfg files (read-write - see core/camera_config.py's
+# BEYOND_VIDEO_CONFIG_DIR comment). Baked in even though
+# docker-compose's bind mounts would create these anyway, so running
+# the image without those volumes mounted (e.g. a stray `docker run`)
+# degrades to "zero trips/cameras found" rather than erroring on a
+# missing path - the same "missing directory reads as empty, not an
+# error" convention used everywhere else in this app.
+RUN mkdir -p /data/trips /data/config /data/camera-config
 
 EXPOSE 19373
 
