@@ -16,8 +16,5 @@
   {% for label, filename in recording.videos %}
   <li><a href="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ filename }}">{{ label }}: {{ filename }}</a></li>
   {% endfor %}
-  {% for label, filename in recording.sidecars %}
-  <li><a href="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ filename }}">{{ label }}: {{ filename }}</a></li>
-  {% endfor %}
 </ul>
 {% endblock %}
