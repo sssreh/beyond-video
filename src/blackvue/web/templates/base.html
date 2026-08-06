@@ -106,6 +106,15 @@
       filter: blur(18px);
       transform: scale(1.1); /* hides the blur's own soft edge fringe at the viewport border */
     }
+    /* Sibling of .page-tint--none below, for the same reason: Christer's
+       "totally untinted" turned out to mean untinted *and* unblurred -
+       with .page-tint off, the 18px blur alone still read as a flat,
+       washed-out gray photo rather than the vivid original ("It look
+       tinted to me" - confirmed via screenshot: no dark wash was
+       actually present, the blur itself was doing that). No scale(1.1)
+       needed here either, since that only exists to hide the blur's own
+       edge fringe - nothing to hide once there's no blur. */
+    .page-bg--sharp { filter: none; transform: none; }
     .page-tint {
       position: fixed; inset: 0; z-index: 1;
       /* Tuned down five times from an initial 0.82-0.9, each time on
@@ -128,7 +137,10 @@
        page_tint_class block below), and "no tint at all" is a much
        easier thing to reason about/reuse than "some other number".
        Christer's own framing when asking for the welcome page: "we
-       could also make the background totally untinted for this page." */
+       could also make the background totally untinted for this page."
+       Paired with .page-bg--sharp above - both are opted into together
+       by welcome.html, since "untinted" alone still looked washed out
+       from the blur. */
     .page-tint--none { opacity: 0; }
     .page-shell {
       position: relative; z-index: 2;
@@ -363,14 +375,24 @@
        here would fight with that "let the photo breathe" choice for
        the one page it's meant to apply to. */
     .welcome-hero { text-align: center; margin: 2.5rem 0 1.75rem; }
+    /* This heading/summary sits directly over the now-unblurred,
+       untinted photo (.page-bg--sharp/.page-tint--none - see comments
+       above), which is much busier/higher-contrast than every other
+       page's blurred backdrop, so it needs a stronger text-shadow than
+       a typical "photo caption" treatment to stay legible over
+       whatever happens to be behind it (bright sky, dark rooftops,
+       etc.) - a tight dark shadow for edge contrast plus a wider, softer
+       one for a bit of general legibility, rather than a background
+       chip/box, which would reintroduce the kind of solid wash Christer
+       asked to remove from this page. */
     .welcome-hero h2 {
       font-size: 2.1rem; margin: 0 0 0.6rem;
-      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65), 0 4px 20px rgba(0, 0, 0, 0.5);
     }
     .welcome-hero p {
       max-width: 40rem; margin: 0 auto; color: var(--text);
       font-size: 1.05rem; line-height: 1.6;
-      text-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 2px 14px rgba(0, 0, 0, 0.45);
     }
     .quick-links {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -391,7 +413,7 @@
   </style>
 </head>
 <body>
-  <div class="page-bg" aria-hidden="true"></div>
+  <div class="page-bg{% block page_bg_class %}{% endblock %}" aria-hidden="true"></div>
   <div class="page-tint{% block page_tint_class %}{% endblock %}" aria-hidden="true"></div>
   <div class="page-shell">
   <header>
