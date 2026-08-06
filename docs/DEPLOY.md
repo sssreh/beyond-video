@@ -1,6 +1,6 @@
 # Deploying bv-web (and the bv-* pipeline) on a Synology NAS
 
-A step-by-step walkthrough for running `bv-web` in Container Manager, browsable at `http://<nas-ip>:19373`, plus getting real trips into it. `bv-download`/`bv-config` always run on the NAS; `bv-generate`/`bv-export` can run either on the NAS (via the `bv-cli` service, self-contained) or natively on Christer's PC over an SMB-mapped drive (faster - GPU acceleration) - see step 7's "Two ways to run bv-generate/bv-export" for both. `bv-web` itself covers increment 1 only (browse/watch trips, owner/viewer login) - see `WORKING_CONTEXT.md` for what's not built yet.
+A step-by-step walkthrough for running `bv-web` in Container Manager, browsable at `http://<nas-ip>:19373`, plus getting real trips into it. `bv-download`/`bv-config` always run on the NAS; `bv-generate`/`bv-export` can run on the NAS via the `bv-cli` service (self-contained), natively on Christer's PC over an SMB-mapped drive (faster - GPU acceleration), or straight from `bv-web`'s own "Generate assets"/"Export trips" job pages in the browser - see step 7's "Three ways to run bv-generate/bv-export" for all three. `bv-web`'s image and volume mounts now match `bv-cli`'s (full toolchain, read-write archive/trips) precisely so that third option works - see `WORKING_CONTEXT.md` for the NAS failure that drove this.
 
 ## Layout on the NAS
 
@@ -15,10 +15,10 @@ Everything lives under one folder, `/volume1/beyond-video`:
     src/
     ...
     data/
-        trips/                  <- bv-export --target output - bv-web browses it (read-only); written by bv-cli and/or Christer's PC over SMB
+        trips/                  <- bv-export --target output - read-write from all three places that can write it: bv-cli, Christer's PC over SMB, and bv-web's own "Export trips" job
         config/                 <- bv-web's web-users.cfg (accounts file)
-        archive/                <- bv-download's target - the raw camera archive; also reachable from Christer's PC over SMB. bv-web reads this too, for its archive-browser feature (see below), read-only
-        camera-config/          <- bv-config's camera .cfg files (e.g. Kirby.cfg) - bv-web reads this too (see below), not just bv-cli
+        archive/                <- bv-download's target - the raw camera archive; read-write from bv-cli, Christer's PC over SMB, and bv-web's own "Download recordings"/"Generate assets" jobs
+        camera-config/          <- bv-config's camera .cfg files (e.g. Kirby.cfg) - bv-web reads/writes this too (see below), not just bv-cli
 ```
 
 `data/` isn't part of the git repo (see `.gitignore`) - it's created once, on the NAS, and holds everything that needs to persist across container rebuilds (accounts, camera config, the raw archive, and exported trips). `data/archive` and `data/trips` also need to be reachable from Christer's PC over SMB if using the PC path for `bv-generate`/`bv-export` (see step 7) - if `/volume1/beyond-video` itself isn't already a browsable network share, set that up in **Control Panel -> Shared Folder** first.
@@ -68,7 +68,7 @@ mkdir -p /volume1/beyond-video/data/camera-config
 
 All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` writes into, whether run on the NAS or from Christer's PC over SMB (see step 7) - leaving it empty for now is fine, `bv-web` just shows "No trips found yet." `data/camera-config` is mounted into `bv-web`'s own container too (`docker-compose.yml`'s `BEYOND_VIDEO_CONFIG_DIR=/data/camera-config` environment variable, read by `core/camera_config.py`'s `default_config_dir()`) - without it, `bv-web` has no persistent `$HOME` inside its container and can't see any camera `.cfg` file `bv-config` wrote, whether from `bv-cli` or from bv-web's own job-trigger form: the camera pick-list on the job forms shows empty, and the archive browser 404s every camera id. Same host folder either way, no extra setup needed - this is just why it's mounted into both containers rather than only `bv-cli`'s.
 
-`data/archive` is *also* mounted into `bv-web`'s container (read-only), separately from `data/camera-config` above - a camera's `.cfg` `target` field points into `data/archive` (see step 6's "Target (download path)" answer), and `bv-web`'s archive-browser feature (`/archive` routes) reads recordings straight from that path, not from `data/trips`. Without this mount, the camera picker and camera-config work fine but every camera's archive page says "No recordings found in this camera's archive yet." even once `bv-download` has actually written files there.
+`data/archive` is *also* mounted into `bv-web`'s container (read-write - its own job runner writes here too when it triggers `bv-download`/`bv-generate`, not just the archive browser reading from it), separately from `data/camera-config` above - a camera's `.cfg` `target` field points into `data/archive` (see step 6's "Target (download path)" answer), and `bv-web`'s archive-browser feature (`/archive` routes) reads recordings straight from that path, not from `data/trips`. Without this mount, the camera picker and camera-config work fine but every camera's archive page says "No recordings found in this camera's archive yet." even once `bv-download` has actually written files there.
 
 ## 4. Build and start bv-web
 
@@ -79,6 +79,8 @@ cd /volume1/beyond-video
 sudo docker-compose build bv-web
 sudo docker-compose up -d bv-web
 ```
+
+The `build` step here is slow the first time - `bv-web`'s image now carries the same faster-whisper/pyannote.audio/argostranslate (and torch, transitively) dependencies `bv-cli`'s image does, plus `ffmpeg`, since `bv-web`'s own job runner can trigger `bv-generate`/`bv-export`/`bv-download` directly (see step 7). Expect several minutes and a multi-GB image; that's normal, not stuck.
 
 Note the hyphen: Synology's Container Manager only puts the old standalone `docker-compose` 1.x CLI on the SSH `$PATH`, not the newer `docker compose` (space) v2 plugin - `docker compose ...` will fail with a confusing `unknown shorthand flag` error rather than a clear "not found." Check which one you have with `docker-compose --version` (v1, hyphenated) vs `docker compose version` (v2 plugin) if unsure; every command in this doc uses the hyphenated form to match Christer's actual NAS.
 
@@ -102,14 +104,15 @@ If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Fir
 
 ## 7. Feeding it real trips
 
-### Two ways to run bv-generate/bv-export
+### Three ways to run bv-generate/bv-export
 
-`bv-download`/`bv-config` always run on the NAS (the camera reaches its network directly). For `bv-generate`/`bv-export` there are two options, and they're not exclusive - use whichever fits a given moment:
+`bv-download`/`bv-config` always run on the NAS (the camera reaches its network directly). For `bv-generate`/`bv-export` there are three options, and they're not exclusive - use whichever fits a given moment:
 
 - **On the NAS**, via the `bv-cli` service (below) - works standalone, good for scheduled/unattended exports that shouldn't depend on the PC being on.
 - **On Christer's PC**, natively, reaching the NAS's `data/archive`/`data/trips` over an SMB-mapped network drive - faster (GPU acceleration, already proven to work there - see `WORKING_CONTEXT.md`'s "GPU auto-detect + CPU fallback" work), good for anything time-sensitive or GPU-hungry (`--transcribe`/`--diarize` in particular).
+- **From a browser**, via `bv-web`'s own "Generate assets"/"Export trips" job pages - no SSH or `docker-compose run` needed, good for a quick one-off from a phone or another PC. Runs inside the `bv-web` container itself (CPU-only, same as the `bv-cli` path - not GPU-accelerated the way the PC path is), which is why `bv-web`'s image now carries the same full toolchain `bv-cli`'s does rather than just the lightweight `web` extra.
 
-Either way writes into the exact same `data/trips` folder `bv-web` browses, so there's nothing to reconcile between them - a trip exported from the NAS and a trip exported from the PC show up in `bv-web` identically.
+All three write into the exact same `data/trips`/`data/archive` folders, so there's nothing to reconcile between them - a trip exported from the NAS CLI, the browser, or the PC shows up in `bv-web` identically.
 
 ### On the NAS: the full pipeline
 
@@ -133,11 +136,11 @@ services:
       - ./data/camera-config:/data/config
   bv-web:
     volumes:
-      - /volume1/Dashcam/files:/data/archive:ro
+      - /volume1/Dashcam/files:/data/archive
 EOF
 ```
 
-All three of `bv-cli`'s volumes are repeated here (not just the archive one) since compose merges a service's `volumes:` list as a whole, not entry-by-entry - leaving the other two out would drop them, not keep them. `bv-web`'s override only needs the one line since it only has this single volume to redirect - its other two (`data/trips`, `data/camera-config`) already point at the right place by default. Skipping the `bv-web` block here is an easy mistake: `bv-web`'s own `./data/archive:/data/archive:ro` mount (see `docker-compose.yml`) points at `/volume1/beyond-video/data/archive` unless overridden too, which is a different, empty folder from `bv-cli`'s real archive - the archive browser would still say "No recordings found" even though `bv-cli` can see everything fine. Verify the merge did what's expected before running anything for real:
+All three of `bv-cli`'s volumes are repeated here (not just the archive one) since compose merges a service's `volumes:` list as a whole, not entry-by-entry - leaving the other two out would drop them, not keep them. `bv-web`'s override only needs the one line since it only has this single volume to redirect - its other two (`data/trips`, `data/camera-config`) already point at the right place by default. Skipping the `bv-web` block here is an easy mistake: `bv-web`'s own `./data/archive:/data/archive` mount (see `docker-compose.yml`) points at `/volume1/beyond-video/data/archive` unless overridden too, which is a different, empty folder from `bv-cli`'s real archive - the archive browser would still say "No recordings found" even though `bv-cli` can see everything fine (and no `:ro` suffix on either side now - `bv-web` writes into this same folder too, via its own "Download recordings"/"Generate assets" jobs). Verify the merge did what's expected before running anything for real:
 
 ```
 sudo docker-compose config
@@ -219,5 +222,5 @@ sudo docker-compose down          # stops and removes bv-web's container (data/ 
 ## See also
 
 - `docs/WEB_ARCHITECTURE.md` - what bv-web is, structurally, and how it relates to the rest of the project
-- `WORKING_CONTEXT.md` - what bv-web does and doesn't do yet (increment 1: browse/watch only).
+- `WORKING_CONTEXT.md` - the running log of what's been built, including the NAS mount/toolchain fix that let bv-web's own job runner actually write to the archive.
 - `docs/PIPELINE.md` - the bv-download -> bv-generate -> bv-export pipeline that produces what `data/trips` holds.

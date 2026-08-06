@@ -51,13 +51,19 @@ translate = [
     "argostranslate>=1.9",
 ]
 # bv-web and bv-live. Deliberately its own group, not bundled with the
-# above - the Docker image bv-web actually runs in (see Dockerfile)
-# has no need to pull in faster-whisper/pyannote.audio/argostranslate
-# (and torch, transitively) just to serve trip-browsing/live-camera
-# pages. bv-live shares this group rather than getting its own: it
-# needs the exact same fastapi/uvicorn stack, just for a different
-# app (see live/app.py's own docstring for why it's a separate
-# top-level package from web/ despite the shared dependency).
+# above - bv-live never needs faster-whisper/pyannote.audio/
+# argostranslate (and torch, transitively), so keeping this group
+# free of them means `pip install .[web]` alone is enough to run it.
+# bv-web now often does need them too, since its job runner can
+# trigger bv-generate/bv-export - see Dockerfile, which installs
+# `.[web,speech,translate]` explicitly rather than folding those
+# groups into this one, precisely so bv-live-only installs (and any
+# future bv-web deployment that really is just a read-only browser)
+# can still skip the heavy stuff by installing `.[web]` alone.
+# bv-live shares this group rather than getting its own: it needs the
+# exact same fastapi/uvicorn stack, just for a different app (see
+# live/app.py's own docstring for why it's a separate top-level
+# package from web/ despite the shared dependency).
 web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",

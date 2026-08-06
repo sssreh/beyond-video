@@ -1,17 +1,25 @@
 # Runs bv-web only - see docs/DEPLOY.md for the full walkthrough of
 # deploying this on a Synology NAS via Container Manager.
 #
-# Deliberately installs the "web" extra only (fastapi/uvicorn/jinja2),
-# not the full beyond-video dependency set - bv-download/bv-generate/
-# bv-export (and their heavier faster-whisper/pyannote.audio/
-# argostranslate/torch dependencies) are meant to keep running as
-# regular CLI commands on whatever machine actually has the camera
-# archive, not inside this container. This image only ever reads the
-# trip folders those commands already wrote - see
-# blackvue.web.trips.scan_trips().
+# Used to install the "web" extra only (fastapi/uvicorn/jinja2) on the
+# theory that bv-download/bv-generate/bv-export would only ever run as
+# separate CLI commands elsewhere, never inside this container. That
+# stopped being true once bv-web's own job runner grew triggers for
+# those three commands (see WORKING_CONTEXT.md) - a job started from
+# the web UI runs *in this container*, so it needs the same toolchain
+# bv-cli's own image has: ffmpeg (for real audio extraction/duration,
+# not just the pure-Python MP4-box fallback) plus the speech/translate
+# extras (faster-whisper/pyannote.audio/argostranslate, and torch
+# transitively - same size/build-time trade-off Dockerfile.cli already
+# accepts). This image is now effectively bv-cli's image plus the web
+# server, not a separate lightweight thing.
 FROM python:3.13-slim
 
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Only what setuptools needs to build/install the package - not the
 # whole repo (tests/, docs/, .git/, ...; see .dockerignore), so an
@@ -20,20 +28,22 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir ".[web]"
+RUN pip install --no-cache-dir ".[web,speech,translate]"
 
 # Where the volumes docker-compose.yml mounts land inside the
-# container: the trip archive bv-web browses (read-only - this
-# increment never writes into it), the accounts file (read-write -
-# `bv-web adduser` needs to create/update it via `docker exec`), and
-# camera .cfg files (read-write - see core/camera_config.py's
-# BEYOND_VIDEO_CONFIG_DIR comment). Baked in even though
-# docker-compose's bind mounts would create these anyway, so running
-# the image without those volumes mounted (e.g. a stray `docker run`)
-# degrades to "zero trips/cameras found" rather than erroring on a
-# missing path - the same "missing directory reads as empty, not an
-# error" convention used everywhere else in this app.
-RUN mkdir -p /data/trips /data/config /data/camera-config
+# container: the raw camera archive and trip archive (both read-write
+# now - bv-web's own job runner writes into both when it triggers
+# bv-download/bv-generate/bv-export, not just the archive browser
+# reading them), the accounts file (read-write - `bv-web adduser`
+# needs to create/update it via `docker exec`), and camera .cfg files
+# (read-write - see core/camera_config.py's BEYOND_VIDEO_CONFIG_DIR
+# comment). Baked in even though docker-compose's bind mounts would
+# create these anyway, so running the image without those volumes
+# mounted (e.g. a stray `docker run`) degrades to "zero trips/cameras
+# found" rather than erroring on a missing path - the same "missing
+# directory reads as empty, not an error" convention used everywhere
+# else in this app.
+RUN mkdir -p /data/archive /data/trips /data/config /data/camera-config
 
 EXPOSE 19373
 

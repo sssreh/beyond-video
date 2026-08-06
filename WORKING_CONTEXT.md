@@ -7693,3 +7693,24 @@ Christer, after confirming background jobs survive navigating away: "I noticed i
 Fixed by adding `Cache-Control: no-store` to the `GET /jobs/{job_id}` response (`app.py`'s `job_detail` route) - this tells the browser the page can never be served from any cache, bfcache included, so Back now always triggers a fresh request and shows current status/output exactly like a manual reload would. No JS needed, consistent with the rest of this app; it's a one-line header addition on the response object `templates.TemplateResponse()` already returns.
 
 **Verification**: `ast.parse()`-clean on `app.py`. Couldn't exercise this against a real browser or `fastapi.testclient.TestClient` in this sandbox (no `fastapi`/`starlette` installed, no network to install them - the same constraint every increment in this session has worked around), so this rests on the header being both necessary and sufficient by HTTP spec (`Cache-Control: no-store` is explicitly defined to disable bfcache in every major browser) rather than an end-to-end test here. Worth Christer confirming on the real deployment: start a job, navigate to another job-trigger page, hit Back, and check the output/status are current without a manual reload.
+
+## NAS: bv-generate through bv-web's own UI hit read-only archive + missing ffmpeg
+
+Christer, running bv-generate from bv-web's job page on the NAS:
+
+```
+bv-generate: 20260806_070217_N: ffprobe not found on PATH
+20260806_070217_N: 31s
+Error: [Errno 30] Read-only file system: '/data/archive/20260806_070217_N.duration.txt'
+```
+
+Two separate problems, both traceable to the same root cause: bv-web's job runner grew triggers for bv-download/bv-generate/bv-export (see the earlier job-runner entries in this file), but the Docker deployment around it was never updated to match - it was still built entirely around the original "bv-web only browses, never writes" assumption from before that feature existed.
+
+1. **`ffprobe not found`**: `Dockerfile` installed only the `web` extra (fastapi/uvicorn/jinja2) - no ffmpeg at all. The pure-Python MP4-box fallback (see the earlier "Pure-Python MP4 box parser fallback" entry) covered duration lookup well enough to still print "31s", masking how broken this was - a real `--transcribe`/`--diarize` job would have failed outright, not just warned, since there's no fallback for those.
+2. **`Read-only file system`**: `docker-compose.yml` mounted bv-web's `/data/archive` (and `/data/trips`) `:ro` - correct for a pure archive browser, wrong the moment that same container's own job runner needs to write `.duration.txt`/`.aac`/exported trip folders into those same paths.
+
+Asked Christer which way to fix it: make bv-web's container capable of running these jobs for real (heavier image, read-write mounts), or keep it light and steer NAS users back to `bv-cli`/the PC path for anything beyond browsing. He picked the former.
+
+**Fix**: `Dockerfile` now installs `ffmpeg` via `apt-get` and `.[web,speech,translate]` instead of `.[web]` alone - the same toolchain `Dockerfile.cli` already carries (torch and its build time included; same trade-off, already accepted there). `docker-compose.yml` drops `:ro` from both of bv-web's `./data/archive` and `./data/trips` mounts. `pyproject.toml`'s `web` extras group itself is untouched (still just fastapi/uvicorn/jinja2) so `bv-live` - which shares that group and has no need for the heavy stuff - and any future truly-read-only bv-web deployment can still install `.[web]` alone; the Dockerfile just now asks for more groups explicitly. `docs/DEPLOY.md` updated throughout: "Two ways to run bv-generate/bv-export" is now "Three ways" (adds triggering from bv-web's own job pages), the directory-tree/mount comments no longer say read-only, the `docker-compose.override.yml` example for a differently-located archive folder drops its `:ro` suffix on bv-web's override too, and step 4's build command now warns the first `bv-web` build is slow/multi-GB, same warning `bv-cli`'s build already carries.
+
+**Verification**: grepped `docker-compose.yml` for `:ro` - none remain. Read back the full `Dockerfile`, `docker-compose.yml`, and the touched sections of `docs/DEPLOY.md` to confirm every comment referencing the old read-only/lightweight assumptions was updated, not just the mounts themselves - stale comments claiming "read-only" next to a now-read-write mount would be worse than no comment. Couldn't actually build either Docker image or run `docker-compose config` in this sandbox (no Docker available), so the compose-file merge behavior described in the override example is unverified beyond careful reading - worth Christer running `sudo docker-compose config` after pulling this to confirm the merged volumes look right before relying on it, same as the existing override-file instructions already tell him to do.
