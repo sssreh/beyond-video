@@ -5,86 +5,125 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Beyond Video{% endblock %}</title>
   <style>
-    :root { color-scheme: dark light; }
+    /* Light theme - was a single hardcoded dark palette (see
+       WORKING_CONTEXT.md); now a set of custom properties so a
+       future theme change only touches this one block. Every color
+       below (with the deliberate exceptions of the <video>/thumbnail
+       canvas backgrounds, which stay dark regardless of theme - they
+       hold photographic/video content, not page chrome) reads from
+       one of these instead of a bare hex value. */
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel-bg: #ffffff;
+      --panel-border: #dde1e7;
+      --text: #1a1d21;
+      --muted: #5b6270;
+      --link: #2159c9;
+      --badge-bg: #e9ecef;
+      --badge-text: #5b6270;
+      --input-bg: #ffffff;
+      --input-border: #c9ced6;
+      --error: #c92a2a;
+      --canvas-bg: #14161a;
+    }
     body {
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       max-width: 960px;
       margin: 0 auto;
       padding: 1.5rem;
-      background: #14161a;
-      color: #e6e6e6;
+      background: var(--bg);
+      color: var(--text);
       line-height: 1.5;
     }
-    a { color: #7cb7ff; }
+    a { color: var(--link); }
     header {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      border-bottom: 1px solid #2a2d33;
       padding-bottom: 0.75rem;
-      margin-bottom: 1.5rem;
+      margin-bottom: 0;
     }
     header h1 { font-size: 1.25rem; margin: 0; }
     header h1 a { color: inherit; text-decoration: none; }
-    .user-bar { font-size: 0.9rem; color: #9aa0aa; }
-    .user-bar form { display: inline; }
-    .user-bar button {
-      background: none; border: none; color: #7cb7ff; cursor: pointer;
+    .account-bar { font-size: 0.9rem; color: var(--muted); }
+    .account-bar form { display: inline; }
+    .account-bar button {
+      background: none; border: none; color: var(--link); cursor: pointer;
       font: inherit; padding: 0;
     }
+    /* Top nav as tabs, not a middot-separated line of links - the
+       active one (matched against request.url.path, since every
+       route already gets `request` for free via Jinja2Templates)
+       gets an underline instead of relying on browser :visited/
+       default link color to show where you are. */
+    .tabs {
+      display: flex; flex-wrap: wrap; gap: 0.25rem;
+      border-bottom: 1px solid var(--panel-border);
+      margin-bottom: 1.5rem;
+    }
+    .tab {
+      display: inline-block; padding: 0.6rem 1rem;
+      color: var(--muted); text-decoration: none; font-size: 0.9rem;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--text); font-weight: 600; border-bottom-color: var(--link);
+    }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #2a2d33; }
-    th { color: #9aa0aa; font-weight: 600; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--panel-border); }
+    th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
     .badge {
       display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem;
-      border-radius: 1rem; background: #2a2d33; color: #9aa0aa; margin-left: 0.35rem;
+      border-radius: 1rem; background: var(--badge-bg); color: var(--badge-text); margin-left: 0.35rem;
     }
-    video { width: 100%; max-height: 70vh; background: #000; border-radius: 6px; }
+    video { width: 100%; max-height: 70vh; background: var(--canvas-bg); border-radius: 6px; }
     .asset-list { list-style: none; padding: 0; margin: 1rem 0; }
     .asset-list li { padding: 0.35rem 0; }
-    .empty { color: #9aa0aa; padding: 2rem 0; }
-    .error { color: #ff8080; margin-bottom: 1rem; }
+    .empty { color: var(--muted); padding: 2rem 0; }
+    .error { color: var(--error); margin-bottom: 1rem; }
     input[type="text"], input[type="password"], select {
       width: 100%; padding: 0.5rem; margin: 0.35rem 0 1rem;
-      background: #1c1f24; border: 1px solid #2a2d33; color: inherit; border-radius: 4px;
+      background: var(--input-bg); border: 1px solid var(--input-border); color: inherit; border-radius: 4px;
       box-sizing: border-box; font: inherit;
     }
-    .hint { color: #9aa0aa; font-size: 0.85rem; margin: -0.5rem 0 1rem; }
+    .hint { color: var(--muted); font-size: 0.85rem; margin: -0.5rem 0 1rem; }
     button[type="submit"] {
-      background: #2f6fed; color: white; border: none; padding: 0.55rem 1.25rem;
+      background: var(--link); color: white; border: none; padding: 0.55rem 1.25rem;
       border-radius: 4px; font: inherit; cursor: pointer;
     }
     .login-box { max-width: 320px; margin: 3rem auto; }
     pre.job-output {
-      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 4px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
       padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word;
       max-height: 60vh; overflow-y: auto; font-size: 0.9rem;
     }
-    .job-output .echo { color: #7cb7ff; }
-    .status-badge.running, .status-badge.waiting_for_input { background: #4a3f00; color: #ffd166; }
-    .status-badge.succeeded { background: #1e3a24; color: #7de08a; }
-    .status-badge.failed { background: #3a1e1e; color: #ff8080; }
-    .status-badge.cancelled { background: #2a2d33; color: #9aa0aa; }
+    .job-output .echo { color: var(--link); }
+    .status-badge.running, .status-badge.waiting_for_input { background: #fff2c2; color: #8a6a00; }
+    .status-badge.succeeded { background: #d9f2df; color: #1e7a34; }
+    .status-badge.failed { background: #fbdede; color: #c92a2a; }
+    .status-badge.cancelled { background: var(--badge-bg); color: var(--muted); }
     .prompt-box {
-      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 4px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
       padding: 1rem; margin-top: 1rem;
     }
     .prompt-box label { font-weight: 600; }
     .cancel-form { margin-top: 1rem; }
     .cancel-button {
-      background: none; border: 1px solid #5a2a2a; color: #ff8080;
+      background: none; border: 1px solid #e5a3a3; color: var(--error);
       padding: 0.4rem 1rem; border-radius: 4px; font: inherit; cursor: pointer;
     }
     .command-help {
-      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 4px;
-      padding: 0.75rem 1rem; margin-bottom: 1.5rem; color: #b8bcc4;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
+      padding: 0.75rem 1rem; margin-bottom: 1.5rem; color: var(--muted);
     }
     .command-help p { margin: 0.3rem 0; }
     .option-group { margin-bottom: 1.5rem; }
     .option-group h3 {
       text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.06em;
-      color: #9aa0aa; font-weight: 600; margin: 0 0 0.6rem;
-      border-bottom: 1px solid #2a2d33; padding-bottom: 0.3rem;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.6rem;
+      border-bottom: 1px solid var(--panel-border); padding-bottom: 0.3rem;
     }
     .field-label {
       display: flex; align-items: center; gap: 0.4rem;
@@ -93,27 +132,27 @@
       position: relative;
       display: inline-flex; align-items: center; justify-content: center;
       width: 1.05rem; height: 1.05rem; border-radius: 50%;
-      background: #2a2d33; color: #9aa0aa;
+      background: var(--badge-bg); color: var(--muted);
       font-size: 0.68rem; font-weight: 700; line-height: 1;
       cursor: help; flex-shrink: 0;
     }
     .help-tip .tooltip-text {
       visibility: hidden; opacity: 0;
       position: absolute; bottom: 145%; left: 0;
-      background: #24272e; border: 1px solid #383c44; color: #e6e6e6;
+      background: var(--text); border: 1px solid var(--text); color: var(--bg);
       padding: 0.5rem 0.7rem; border-radius: 4px;
       font-size: 0.8rem; font-weight: 400; line-height: 1.4;
       width: max-content; max-width: 260px; z-index: 10;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
       transition: opacity 0.12s ease;
     }
     .help-tip:hover .tooltip-text, .help-tip:focus .tooltip-text {
       visibility: visible; opacity: 1;
     }
     .day-heading {
-      color: #9aa0aa; font-size: 0.9rem; font-weight: 600;
+      color: var(--muted); font-size: 0.9rem; font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.04em;
-      margin: 1.5rem 0 0.75rem; border-bottom: 1px solid #2a2d33; padding-bottom: 0.3rem;
+      margin: 1.5rem 0 0.75rem; border-bottom: 1px solid var(--panel-border); padding-bottom: 0.3rem;
     }
     .day-heading:first-child { margin-top: 0; }
     .thumb-grid {
@@ -122,25 +161,27 @@
     }
     .thumb-card {
       display: block; color: inherit; text-decoration: none;
-      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 6px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 6px;
       overflow: hidden;
     }
-    .thumb-card:hover { border-color: #3a3f48; }
+    .thumb-card:hover { border-color: var(--muted); }
     .thumb-image-wrap { position: relative; }
     .thumb-image, .thumb-placeholder {
       width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block;
-      background: #0f1114;
+      background: var(--canvas-bg);
     }
     .thumb-placeholder {
       display: flex; align-items: center; justify-content: center;
-      color: #5a5f68; font-size: 0.8rem;
+      color: #9aa0aa; font-size: 0.8rem;
     }
     /* Diagonal red cross overlaid on a thumbnail when the recording
        has no video at all (see ArchiveRecording.has_video's own
        docstring for why that can happen even with a thumbnail
        present) - two rotated bars rather than an image, so no extra
        asset to bundle/serve. pointer-events: none so it never blocks
-       the surrounding .thumb-card link/click target. */
+       the surrounding .thumb-card link/click target. Drawn over a
+       photographic thumbnail, so kept theme-independent rather than
+       reading the page's light-theme variables. */
     .thumb-no-video {
       position: absolute; inset: 0; pointer-events: none;
       background: rgba(20, 4, 4, 0.35);
@@ -157,7 +198,7 @@
       padding: 0.4rem 0.6rem; font-size: 0.8rem;
     }
     .filter-bar {
-      background: #1c1f24; border: 1px solid #2a2d33; border-radius: 6px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 6px;
       padding: 0.85rem 1rem; margin-bottom: 1.25rem;
     }
     .filter-row {
@@ -167,7 +208,7 @@
     .filter-row:last-child { margin-bottom: 0; }
     .filter-label {
       display: inline-flex; align-items: center; gap: 0.4rem;
-      font-size: 0.8rem; color: #9aa0aa; min-width: 5.5rem;
+      font-size: 0.8rem; color: var(--muted); min-width: 5.5rem;
     }
     .filter-modes { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; }
     .filter-checkbox {
@@ -178,7 +219,7 @@
     .filter-fields { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; }
     .filter-fields label {
       display: inline-flex; align-items: center; gap: 0.4rem;
-      font-size: 0.85rem; color: #9aa0aa;
+      font-size: 0.85rem; color: var(--muted);
     }
     .filter-fields input[type="text"] { width: auto; margin: 0; }
     .filter-actions { gap: 1rem; }
@@ -192,23 +233,23 @@
   <header>
     <h1><a href="/">Beyond Video</a></h1>
     {% if user %}
-    <div class="user-bar">
-      <a href="/">Trips</a>
-      &middot;
-      <a href="/archive">Browse archive</a>
-      &middot;
-      {% if user.role == "owner" %}
-      <a href="/jobs/bv-config">Set up camera</a>
-      &middot;
-      <a href="/jobs/bv-gps">Get GPS fix</a>
-      &middot;
-      {% endif %}
+    <div class="account-bar">
       {{ user.username }} <span class="badge">{{ user.role }}</span>
       &middot;
       <form method="post" action="/logout"><button type="submit">Log out</button></form>
     </div>
     {% endif %}
   </header>
+  {% if user %}
+  <nav class="tabs">
+    <a class="tab{{ ' active' if request.url.path == '/' else '' }}" href="/">Trips</a>
+    <a class="tab{{ ' active' if request.url.path.startswith('/archive') else '' }}" href="/archive">Browse archive</a>
+    {% if user.role == "owner" %}
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-config' else '' }}" href="/jobs/bv-config">Set up camera</a>
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-gps' else '' }}" href="/jobs/bv-gps">GPS Current loc</a>
+    {% endif %}
+  </nav>
+  {% endif %}
   {% block content %}{% endblock %}
 </body>
 </html>
