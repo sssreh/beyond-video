@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Welcome - Beyond Video{% endblock %}
+{% block page_tint_class %} page-tint--none{% endblock %}
+{% block content %}
+<div class="welcome-hero">
+  <h2>Welcome to Beyond Video, {{ user.username }}</h2>
+  <p>Beyond Video turns a BlackVue dashcam's raw recordings into finished
+  trip footage - maps, transcripts, g-sensor overlays and a stitched
+  export - starting from whatever's still sitting on the camera itself.
+  Trips are the end goal, but everything below is where a recording's
+  journey actually starts.</p>
+</div>
+
+<p class="quick-links-group-label">Start here</p>
+<div class="quick-links">
+  <a class="quick-link-card" href="/trips">
+    <h3>Trips</h3>
+    <p>Browse finished, exported trips - video, map, transcript and
+    every other asset bv-export has produced so far.</p>
+  </a>
+  <a class="quick-link-card" href="/archive">
+    <h3>Browse archive</h3>
+    <p>Look through a camera's raw downloaded recordings directly,
+    before they're grouped into a trip.</p>
+  </a>
+</div>
+
+{% if user.role == "owner" %}
+<p class="quick-links-group-label">Run a pipeline step</p>
+<div class="quick-links">
+  <a class="quick-link-card" href="/jobs/bv-config">
+    <h3>Set up camera</h3>
+    <p>Add or edit a camera's connection details - the first step for
+    any camera that isn't configured yet.</p>
+  </a>
+  <a class="quick-link-card" href="/jobs/bv-gps">
+    <h3>GPS current location</h3>
+    <p>Fetch a configured camera's live GPS position.</p>
+  </a>
+  <a class="quick-link-card" href="/jobs/bv-download">
+    <h3>Download recordings</h3>
+    <p>Pull recordings off a camera's own storage into its archive.</p>
+  </a>
+  <a class="quick-link-card" href="/jobs/bv-generate">
+    <h3>Generate assets</h3>
+    <p>Produce transcripts, translations and other per-recording assets
+    from already-downloaded footage.</p>
+  </a>
+  <a class="quick-link-card" href="/jobs/bv-export">
+    <h3>Export trips</h3>
+    <p>Group an archive's recordings into trips and render the finished
+    video, map and overlays that show up on the Trips page.</p>
+  </a>
+</div>
+{% endif %}
+{% endblock %}

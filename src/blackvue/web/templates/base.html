@@ -123,6 +123,13 @@
         rgba(var(--bg-rgb), 0.15)
       );
     }
+    /* Opt-in per-page override, not a per-page opacity variable - there's
+       only one page that wants this today (welcome.html, via the
+       page_tint_class block below), and "no tint at all" is a much
+       easier thing to reason about/reuse than "some other number".
+       Christer's own framing when asking for the welcome page: "we
+       could also make the background totally untinted for this page." */
+    .page-tint--none { opacity: 0; }
     .page-shell {
       position: relative; z-index: 2;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -350,11 +357,42 @@
       padding: 0.4rem 1rem; font-size: 0.9rem;
     }
     .filter-actions a { font-size: 0.85rem; }
+    /* welcome.html - the post-login landing page. Deliberately not a
+       .panel-style box (no background) since this page's own tint is
+       already turned off (see .page-tint--none above) - a solid card
+       here would fight with that "let the photo breathe" choice for
+       the one page it's meant to apply to. */
+    .welcome-hero { text-align: center; margin: 2.5rem 0 1.75rem; }
+    .welcome-hero h2 {
+      font-size: 2.1rem; margin: 0 0 0.6rem;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    }
+    .welcome-hero p {
+      max-width: 40rem; margin: 0 auto; color: var(--text);
+      font-size: 1.05rem; line-height: 1.6;
+      text-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
+    }
+    .quick-links {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem; margin-bottom: 1.5rem;
+    }
+    .quick-link-card {
+      display: block; color: inherit; text-decoration: none;
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 8px; padding: 1rem 1.1rem;
+    }
+    .quick-link-card:hover { border-color: var(--link); }
+    .quick-link-card h3 { margin: 0 0 0.3rem; font-size: 1rem; }
+    .quick-link-card p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+    .quick-links-group-label {
+      color: var(--muted); font-size: 0.8rem; text-transform: uppercase;
+      letter-spacing: 0.06em; font-weight: 600; margin: 0 0 0.6rem;
+    }
   </style>
 </head>
 <body>
   <div class="page-bg" aria-hidden="true"></div>
-  <div class="page-tint" aria-hidden="true"></div>
+  <div class="page-tint{% block page_tint_class %}{% endblock %}" aria-hidden="true"></div>
   <div class="page-shell">
   <header>
     <h1><a href="/">Beyond Video</a></h1>
@@ -374,7 +412,8 @@
   </header>
   {% if user %}
   <nav class="tabs">
-    <a class="tab{{ ' active' if request.url.path == '/' else '' }}" href="/">Trips</a>
+    <a class="tab{{ ' active' if request.url.path == '/' else '' }}" href="/">Home</a>
+    <a class="tab{{ ' active' if request.url.path == '/trips' or request.url.path.startswith('/trips/') else '' }}" href="/trips">Trips</a>
     <a class="tab{{ ' active' if request.url.path.startswith('/archive') else '' }}" href="/archive">Browse archive</a>
     {% if user.role == "owner" %}
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-config' else '' }}" href="/jobs/bv-config">Set up camera</a>

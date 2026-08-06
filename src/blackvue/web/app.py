@@ -223,6 +223,18 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         return response
 
     @app.get("/", response_class=HTMLResponse)
+    async def welcome(request: Request, user: User = Depends(require_login)):
+        # The landing page after login used to be the trip list itself
+        # (this route used to be trip_list()) - Christer's own feedback:
+        # "I don't think we should start with trips after login, yes trips
+        # are the end goal, but not the starting." Trips moved to their
+        # own GET /trips below; this route now renders a short welcome/
+        # orientation page instead, with quick links into the rest of the
+        # app rather than immediately dropping the owner into a (possibly
+        # empty) trip table.
+        return templates.TemplateResponse(request, "welcome.html", {"user": user})
+
+    @app.get("/trips", response_class=HTMLResponse)
     async def trip_list(request: Request, user: User = Depends(require_login)):
         trips = scan_trips(target)
         return templates.TemplateResponse(
