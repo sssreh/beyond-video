@@ -49,6 +49,7 @@ from .archive_browser import group_by_day
 from .archive_browser import kind_options
 from .archive_browser import scan_archive
 from .auth import SESSION_COOKIE_NAME
+from .auth import THEME_COOKIE_NAME
 from .auth import SessionStore
 from .auth import require_login
 from .auth import require_owner
@@ -173,6 +174,33 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             url="/login", status_code=status.HTTP_303_SEE_OTHER
         )
         response.delete_cookie(SESSION_COOKIE_NAME)
+        return response
+
+    @app.post("/theme")
+    async def set_theme(theme: str = Form(...), next: str = Form("/")):
+        # Manual light/dark toggle (Christer chose "manual" over
+        # auto-follow-system when asked) - a plain preference cookie,
+        # not tied to login. base.html reads it directly via
+        # request.cookies rather than every route passing a theme
+        # variable through its own TemplateResponse context, the same
+        # way the tab nav already reads request.url.path directly.
+        #
+        # `next` guarded against becoming an open redirect (e.g.
+        # "//evil.example.com", which browsers treat as
+        # protocol-relative) since, unlike /login's next, this route
+        # doesn't require a login and so is reachable by anyone who
+        # can get a victim's browser to POST here.
+        if not next.startswith("/") or next.startswith("//"):
+            next = "/"
+
+        response = RedirectResponse(url=next, status_code=status.HTTP_303_SEE_OTHER)
+        response.set_cookie(
+            THEME_COOKIE_NAME,
+            "dark" if theme == "dark" else "light",
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            samesite="lax",
+        )
         return response
 
     @app.get("/", response_class=HTMLResponse)

@@ -1,5 +1,6 @@
+{% set current_theme = 'dark' if request.cookies.get('bv_theme') == 'dark' else 'light' %}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ current_theme }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -26,6 +27,42 @@
       --input-border: #c9ced6;
       --error: #c92a2a;
       --canvas-bg: #14161a;
+      --badge-running-bg: #fff2c2;
+      --badge-running-text: #8a6a00;
+      --badge-succeeded-bg: #d9f2df;
+      --badge-succeeded-text: #1e7a34;
+      --badge-failed-bg: #fbdede;
+      --badge-failed-text: #c92a2a;
+      --cancel-border: #e5a3a3;
+    }
+    /* Dark theme override - the original single hardcoded palette
+       this project started with (see WORKING_CONTEXT.md), restored
+       here as an opt-in alternative to the light theme above rather
+       than the default. Selected by data-theme="dark" on <html>,
+       which base.html sets from the bv_theme cookie (see the
+       account-bar toggle form below and app.py's POST /theme route) -
+       a manual per-browser choice, not automatic/system-following,
+       per Christer's explicit answer when asked. */
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #14161a;
+      --panel-bg: #1c1f24;
+      --panel-border: #2a2d33;
+      --text: #e6e6e6;
+      --muted: #9aa0aa;
+      --link: #7cb7ff;
+      --badge-bg: #2a2d33;
+      --badge-text: #9aa0aa;
+      --input-bg: #1c1f24;
+      --input-border: #2a2d33;
+      --error: #ff8080;
+      --badge-running-bg: #4a3d14;
+      --badge-running-text: #f2c94c;
+      --badge-succeeded-bg: #1c3324;
+      --badge-succeeded-text: #6fcf8e;
+      --badge-failed-bg: #3a1f1f;
+      --badge-failed-text: #ff8080;
+      --cancel-border: #7a3a3a;
     }
     body {
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -100,9 +137,9 @@
       max-height: 60vh; overflow-y: auto; font-size: 0.9rem;
     }
     .job-output .echo { color: var(--link); }
-    .status-badge.running, .status-badge.waiting_for_input { background: #fff2c2; color: #8a6a00; }
-    .status-badge.succeeded { background: #d9f2df; color: #1e7a34; }
-    .status-badge.failed { background: #fbdede; color: #c92a2a; }
+    .status-badge.running, .status-badge.waiting_for_input { background: var(--badge-running-bg); color: var(--badge-running-text); }
+    .status-badge.succeeded { background: var(--badge-succeeded-bg); color: var(--badge-succeeded-text); }
+    .status-badge.failed { background: var(--badge-failed-bg); color: var(--badge-failed-text); }
     .status-badge.cancelled { background: var(--badge-bg); color: var(--muted); }
     .prompt-box {
       background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
@@ -111,7 +148,7 @@
     .prompt-box label { font-weight: 600; }
     .cancel-form { margin-top: 1rem; }
     .cancel-button {
-      background: none; border: 1px solid #e5a3a3; color: var(--error);
+      background: none; border: 1px solid var(--cancel-border); color: var(--error);
       padding: 0.4rem 1rem; border-radius: 4px; font: inherit; cursor: pointer;
     }
     .command-help {
@@ -235,6 +272,12 @@
     {% if user %}
     <div class="account-bar">
       {{ user.username }} <span class="badge">{{ user.role }}</span>
+      &middot;
+      <form method="post" action="/theme">
+        <input type="hidden" name="theme" value="{{ 'light' if current_theme == 'dark' else 'dark' }}">
+        <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+        <button type="submit">{{ 'Light mode' if current_theme == 'dark' else 'Dark mode' }}</button>
+      </form>
       &middot;
       <form method="post" action="/logout"><button type="submit">Log out</button></form>
     </div>

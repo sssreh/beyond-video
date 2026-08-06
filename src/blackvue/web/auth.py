@@ -35,6 +35,13 @@ from .users import UsersConfig
 
 SESSION_COOKIE_NAME = "bv_session"
 
+# Not session/login state - a plain per-browser preference cookie
+# ("light"/"dark") read directly by base.html via request.cookies, not
+# through get_current_user()/require_login. Set by app.py's POST
+# /theme route. Defined here rather than in app.py so every cookie
+# name bv-web sets lives in one place.
+THEME_COOKIE_NAME = "bv_theme"
+
 
 class SessionStore:
     """In-memory session-id -> username map. One instance lives on
