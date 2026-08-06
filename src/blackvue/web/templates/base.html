@@ -225,6 +225,32 @@
     .field-label {
       display: flex; align-items: center; gap: 0.4rem;
     }
+    /* Sits several related fields side by side within one
+       .option-group instead of each taking its own full-width line -
+       added when Christer asked the bv-generate/bv-export job forms
+       to fit more on screen without scrolling. Each field's own
+       label+input pair is wrapped in a .field div so flexbox has a
+       real child to lay out (a bare label+input pair as siblings
+       can't be individually wrapped) - see job_new_bv_export.html/
+       job_new_bv_generate.html for the wrapping. flex-wrap means a
+       row that doesn't fit a narrow/mobile viewport just drops to
+       the next line on its own, so this never needs a separate
+       narrow-screen rule. */
+    .field-row {
+      display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;
+    }
+    .field-row .field {
+      flex: 1 1 180px; min-width: 140px;
+    }
+    /* Same idea as .field-row but for a run of checkboxes, which
+       already render inline (.filter-checkbox is inline-flex) - this
+       just gives them a shared flex-wrap container instead of a <br>
+       after each one, and a bit of row spacing. */
+    .checkbox-row {
+      display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .checkbox-row .filter-checkbox { margin: 0; }
     .help-tip {
       position: relative;
       display: inline-flex; align-items: center; justify-content: center;
