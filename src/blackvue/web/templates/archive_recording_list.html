@@ -48,13 +48,18 @@
 <div class="thumb-grid">
   {% for recording in recordings %}
   <a class="thumb-card" href="/archive/{{ camera_id }}/{{ recording.id }}">
-    {% if recording.thumbnail_direction %}
-    <img class="thumb-image"
-         src="/archive/{{ camera_id }}/{{ recording.id }}/thumbnail/{{ recording.thumbnail_direction }}"
-         alt="">
-    {% else %}
-    <div class="thumb-placeholder">No thumbnail</div>
-    {% endif %}
+    <div class="thumb-image-wrap">
+      {% if recording.thumbnail_direction %}
+      <img class="thumb-image"
+           src="/archive/{{ camera_id }}/{{ recording.id }}/thumbnail/{{ recording.thumbnail_direction }}"
+           alt="">
+      {% else %}
+      <div class="thumb-placeholder">No thumbnail</div>
+      {% endif %}
+      {% if not recording.has_video %}
+      <div class="thumb-no-video" title="No video for this recording" aria-hidden="true"></div>
+      {% endif %}
+    </div>
     <div class="thumb-meta">
       <span>{{ recording.timestamp.strftime("%H:%M:%S") }}</span>
       <span class="badge">{{ recording.kind_label }}</span>

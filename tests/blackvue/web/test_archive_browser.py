@@ -104,6 +104,29 @@ def test_recording_with_no_video_has_empty_videos_list(tmp_path):
     assert recording.videos == []
 
 
+def test_has_video_true_when_a_video_exists(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.has_video is True
+
+
+def test_has_video_false_with_only_a_thumbnail(tmp_path):
+    # The exact case that prompted this property: a thumbnail can
+    # exist without its video (they download separately) - the
+    # archive-browser grid still shows the thumbnail, but overlays a
+    # red cross using this flag rather than pretending the recording
+    # is playable.
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.thm")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.has_video is False
+
+
 def test_thumbnail_direction_prefers_front_then_rear_then_interior(tmp_path):
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NR.thm")

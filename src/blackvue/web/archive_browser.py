@@ -156,6 +156,21 @@ class ArchiveRecording:
         return result
 
     @property
+    def has_video(self) -> bool:
+        """False if this recording has no video at all - possible
+        even with a thumbnail present, since the two download
+        separately (the thumbnail is small and downloads fast; the
+        video is much bigger and can fail/lag behind, or the camera
+        may have rotated the video off its SD card via loop recording
+        before bv-download ever got to it - see WORKING_CONTEXT.md).
+        The grid still shows the thumbnail in this case (it's useful
+        information on its own), but archive_recording_list.html
+        overlays a red cross on it using this flag, since a thumbnail
+        alone isn't something the detail page can actually play."""
+
+        return bool(self.videos)
+
+    @property
     def has_gps(self) -> bool:
         return self.recording.has(Asset.GPS)
 
