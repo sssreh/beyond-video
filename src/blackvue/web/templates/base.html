@@ -108,20 +108,19 @@
     }
     .page-tint {
       position: fixed; inset: 0; z-index: 1;
-      /* First pass (0.82-0.9) was way too strong - Christer: "I can
-         hardly see anything of the background." Dropped to 0.4-0.55,
-         then again ("better, but a little bit more") to 0.25-0.4, then
-         once more ("less tinted, but not as much as it takes over" -
-         i.e. keep going, but stop short of the tint disappearing
-         entirely) to 0.18-0.3. Panels/tables/etc. still sit on their
-         own solid --panel-bg regardless, so legibility there doesn't
-         depend on this number at all - only the page's own margins/
-         header/tab bar show the tint directly. */
+      /* Tuned down four times from an initial 0.82-0.9, each time on
+         Christer's direct feedback on the actual rendered page - see
+         git log for the exact quotes at each step (0.82-0.9 -> 0.4-
+         0.55 -> 0.25-0.4 -> 0.18-0.3 -> this, 0.14-0.24). Panels/
+         tables/etc. still sit on their own solid --panel-bg
+         regardless, so legibility there doesn't depend on this number
+         at all - only the page's own margins/header/tab bar show the
+         tint directly. */
       background: linear-gradient(
         to bottom,
-        rgba(var(--bg-rgb), 0.3),
-        rgba(var(--bg-rgb), 0.18) 20%,
-        rgba(var(--bg-rgb), 0.25)
+        rgba(var(--bg-rgb), 0.24),
+        rgba(var(--bg-rgb), 0.14) 20%,
+        rgba(var(--bg-rgb), 0.2)
       );
     }
     .page-shell {
