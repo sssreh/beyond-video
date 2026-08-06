@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}List recordings - Beyond Video{% endblock %}
+{% block content %}
+<h2>List recordings (bv-ls)</h2>
+<div class="command-help">
+  <p>Prints an already-configured camera's archive as a compact table -
+  one row per recording (or, with Trips below, one row per detected
+  trip) - the same output <code>bv-ls</code> prints from the command
+  line. For browsing thumbnails and playing video, use
+  <a href="/archive">Browse archive</a> instead; this is the plain-text
+  listing bv-ls itself has always produced.</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<form method="post" action="/jobs/bv-ls">
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera's archive to list. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="option-group">
+    <h3>Time range</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="from_">
+          From
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward (e.g. 20260715_120000, or a lexical time like "yesterday"). Leave blank for the whole archive.</span></span>
+        </label>
+        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="until">
+          Until
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
+        </label>
+        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" placeholder="matches a single recording/day">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Optional</h3>
+
+    <label class="field-label">
+      <input type="checkbox" id="all" name="all" value="true" style="width: auto; margin: 0;">
+      Show every recording individually
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">By default, recordings that belong together (e.g. front/rear/interior from the same event) are grouped into one row. Check this to list every recording on its own row instead.</span></span>
+    </label>
+
+    <label class="field-label">
+      <input type="checkbox" id="trips" name="trips" value="true" style="width: auto; margin: 0;">
+      List detected trips instead of recordings
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">One row per detected trip (start, end, duration, recording count) instead of one row per recording/group. A trip is a run of recordings with no gap longer than Max gap between them - the same detection the Trips page's own grouping uses.</span></span>
+    </label>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="max_gap_minutes">
+          Max gap (minutes)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: the largest gap between two recordings that still counts as the same trip. Leave blank for bv-ls's own default (5 minutes).</span></span>
+        </label>
+        <input type="number" id="max_gap_minutes" name="max_gap_minutes" min="0" step="1" placeholder="default: 5">
+      </div>
+      <div class="field">
+        <label class="field-label" for="gap_tolerance_seconds">
+          Gap tolerance (seconds)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: a small fixed margin added on top of Max gap before a gap counts as a split - absorbs measurement noise rather than being a detection setting itself. Leave blank for bv-ls's own default (10 seconds).</span></span>
+        </label>
+        <input type="number" id="gap_tolerance_seconds" name="gap_tolerance_seconds" min="0" step="1" placeholder="default: 10">
+      </div>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="movement" name="movement" value="true" style="width: auto; margin: 0;">
+        Bridge gaps using GPS/g-sensor movement
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: bridge a gap over Max gap into one trip anyway if the vehicle looks like it was still moving at the edge of the gap. Off by default - this heuristic has no ceiling on how large a gap it'll bridge.</span></span>
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;">
+        Ignore recorded durations
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: measure gaps from each recording's start timestamp only, ignoring any recorded .duration.txt span. By default a recording's real span (if bv-generate's Get duration has been run) is added before comparing the gap, so a long recording isn't mistaken for a gap.</span></span>
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Start</button>
+</form>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}

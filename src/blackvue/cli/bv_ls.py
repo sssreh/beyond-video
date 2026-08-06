@@ -87,6 +87,7 @@ def print_trips(
     use_movement: bool = False,
     use_duration: bool = True,
     gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
+    say=print,
 ) -> None:
     """Print one row per detected trip instead of one row per
     recording/group.
@@ -116,6 +117,13 @@ def print_trips(
     what its video actually covers). A recording with no video simply
     isn't part of any trip here - it still shows up in a plain,
     non-`--trips` bv-ls listing.
+
+    `say` is injectable (default: real stdout via print) so bv-web's
+    job runner (see web/jobs.py) can capture bv-ls's table output into
+    a job's transcript instead of the real terminal, the same reason
+    every other bv-* command's own core function accepts it - bv-ls
+    has no warnings/prompts of its own, so unlike bv_gps.py's `_run()`
+    there's no `warn`/`ask` to thread through here.
     """
 
     bridge = movement_bridges_gap if use_movement else None
@@ -145,12 +153,12 @@ def print_trips(
         f'{"Trip":<{trip_width}}  {"Start":<19}  {"End":<19}  '
         f'{"Duration":>8}  {"Recs":>4}  {"Size":>{size_width}}'
     )
-    print(header)
-    print("-" * len(header))
+    say(header)
+    say("-" * len(header))
 
     for trip in trips:
         size = format_size(sum(r.size for r in trip))
-        print(
+        say(
             f"{trip.label:<{trip_width}}  "
             f"{trip.start_timestamp:%Y-%m-%d %H:%M:%S}  "
             f"{trip.end_timestamp:%Y-%m-%d %H:%M:%S}  "
@@ -172,8 +180,19 @@ def bv_ls(
     movement: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
+    say=print,
 ) -> int:
-    """List recordings."""
+    """List recordings.
+
+    `say` is injectable (default: real stdout via print) - see
+    print_trips()'s own docstring above for why. The grouped-table
+    path below used to build each row across several print(...,
+    end=...) calls rather than one call per line; a `say` that
+    appends one Job.output entry per call (as bv-web's job runner
+    supplies - see web/jobs.py) has no way to represent a partial,
+    still-open line, so each row is now built up as a plain string
+    first and handed to `say` once, complete - the printed result is
+    byte-for-byte the same as before, just assembled differently."""
 
     archive = Archive(path)
 
@@ -213,6 +232,7 @@ def bv_ls(
             use_movement=movement,
             use_duration=duration,
             gap_tolerance=gap_tolerance,
+            say=say,
         )
         return 0
 
@@ -241,22 +261,19 @@ def bv_ls(
         default=len("Size"),
     )
 
-    print(f'{"":<{recording_width}}', end="  ")
-
+    group_header = f'{"":<{recording_width}}' + "  "
     for group_label, span in _asset_group_spans(assets):
         width = sum(widths[asset] for asset in span) + (len(span) - 1)
-        print(f"{group_label or '':^{width}}", end=" ")
+        group_header += f"{group_label or '':^{width}}" + " "
+    say(group_header)
 
-    print()
-
-    print(f'{"Recording":<{recording_width}}', end="  ")
-
+    asset_header = f'{"Recording":<{recording_width}}' + "  "
     for asset in assets:
-        print(f"{asset.label:^{widths[asset]}}", end=" ")
+        asset_header += f"{asset.label:^{widths[asset]}}" + " "
+    asset_header += f'{"Size":>{size_width}}'
+    say(asset_header)
 
-    print(f'{"Size":>{size_width}}')
-
-    print(
+    say(
         "-"
         * (
             recording_width
@@ -269,18 +286,24 @@ def bv_ls(
     )
 
     for group in groups:
-        print(f"{group.label:<{recording_width}}", end=" ")
+        row = f"{group.label:<{recording_width}}" + " "
 
         for asset in assets:
             mark = "X" if group.has(asset) else ""
-            print(f"{mark:^{widths[asset]}}", end=" ")
+            row += f"{mark:^{widths[asset]}}" + " "
 
-        print(f"{format_size(group.size):>{size_width}}")
+        row += f"{format_size(group.size):>{size_width}}"
+        say(row)
 
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command line arguments - split out from main() so bv-web's
+    job runner (see web/jobs.py) can build the same argparse.Namespace
+    _run() takes, the same way every other bv-* command's own
+    parse_args() is already used from JobRunner.start_bv_*()."""
+
     parser = argparse.ArgumentParser(
         prog="bv-ls",
         description="List recordings in a BlackVue archive.",
@@ -394,9 +417,19 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
 
-    return run_cli("bv-ls", lambda: bv_ls(
+
+def _run(args: argparse.Namespace, *, say=print) -> int:
+    """Run bv-ls for already-parsed arguments.
+
+    `say` is injectable (default: real stdout via print) so bv-web's
+    job runner (see web/jobs.py) can capture bv-ls's table output into
+    a job's transcript instead of the real terminal - bv-ls has no
+    warnings/prompts of its own, so unlike bv_config.py's `_run()`
+    there's no `ask`/`warn` to thread through here."""
+
+    return bv_ls(
         path=args.path,
         all=args.all,
         from_=args.from_,
@@ -407,7 +440,13 @@ def main(argv: list[str] | None = None) -> int:
         movement=args.movement,
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
-    ))
+        say=say,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    return run_cli("bv-ls", lambda: _run(args))
 
 
 if __name__ == "__main__":

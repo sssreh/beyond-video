@@ -1,13 +1,24 @@
 {% extends "base.html" %}
 {% block title %}{{ job.command }} - Beyond Video{% endblock %}
 {% block content %}
-{% if status == "running" %}
+{% if status == "running" and not paused %}
 <meta http-equiv="refresh" content="2">
 {% endif %}
 <h2>
   {{ job.command }}
   <span class="badge status-badge {{ status }}">{{ status }}</span>
 </h2>
+
+{% if status == "running" %}
+<p class="refresh-toggle">
+  {% if paused %}
+  Auto-refresh paused - output frozen as of this load.
+  <a href="/jobs/{{ job.id }}">Resume auto-refresh</a>
+  {% else %}
+  <a href="/jobs/{{ job.id }}?paused=1">Pause auto-refresh</a> to read without the page jumping back to the top.
+  {% endif %}
+</p>
+{% endif %}
 
 <pre class="job-output">{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
 {% else %}{{ line }}
@@ -21,7 +32,7 @@
     <button type="submit">Answer</button>
   </form>
 </div>
-{% elif not is_finished %}
+{% elif not is_finished and not paused %}
 <p class="empty">Running... this page refreshes automatically.</p>
 {% endif %}
 

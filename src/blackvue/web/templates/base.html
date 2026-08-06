@@ -259,6 +259,7 @@
     .asset-list { list-style: none; padding: 0; margin: 1rem 0; }
     .asset-list li { padding: 0.35rem 0; }
     .empty { color: var(--muted); padding: 2rem 0; }
+    .refresh-toggle { color: var(--muted); font-size: 0.9rem; margin: -0.5rem 0 1rem; }
     .error { color: var(--error); margin-bottom: 1rem; }
     input[type="text"], input[type="password"], select {
       width: 100%; padding: 0.5rem; margin: 0.35rem 0 1rem;
@@ -502,6 +503,7 @@
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-download' else '' }}" href="/jobs/bv-download">Download recordings</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-generate' else '' }}" href="/jobs/bv-generate">Generate assets</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-export' else '' }}" href="/jobs/bv-export">Export trips</a>
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-ls' else '' }}" href="/jobs/bv-ls">List recordings</a>
     {% endif %}
   </nav>
   {% endif %}

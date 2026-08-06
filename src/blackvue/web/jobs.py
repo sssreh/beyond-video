@@ -256,6 +256,71 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_ls(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        all: bool,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        trips: bool,
+        max_gap_minutes: int | None,
+        movement: bool,
+        duration: bool,
+        gap_tolerance_seconds: int | None,
+        username: str,
+    ) -> Job:
+        """Start bv-ls as a job against one already-configured camera's
+        archive - the last of the six bv-* commands to get a browser
+        trigger (bv-config/bv-gps/bv-download/bv-generate/bv-export
+        already had one; bv-ls, the very first bv-* command this
+        project ever had, was overlooked until Christer pointed it
+        out). Full flag parity with the CLI, same as
+        start_bv_generate()/start_bv_export() above - bv-ls has no
+        cross-field validation to re-check (unlike bv-generate's
+        diarize/srt/lrc rules) and nothing destructive or slow, so
+        there was no reason to curate a subset the way
+        bv-config/bv-gps's id-only triggers do.
+
+        `archive_path` is resolved by the caller (app.py's route) the
+        same way start_bv_generate()'s own docstring explains.
+        """
+
+        from ..cli import bv_ls as bv_ls_cli
+
+        argv: list[str] = [str(archive_path)]
+
+        if all:
+            argv.append("--all")
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if trips:
+            argv.append("--trips")
+        if max_gap_minutes is not None:
+            argv += ["--max-gap", str(max_gap_minutes)]
+        if movement:
+            argv.append("--movement")
+        if not duration:
+            argv.append("--no-duration")
+        if gap_tolerance_seconds is not None:
+            argv += ["--gap-tolerance", str(gap_tolerance_seconds)]
+
+        args = bv_ls_cli.parse_args(argv)
+        job = self._new_job(command=f"bv-ls {camera_id}", username=username)
+
+        def run() -> int:
+            say = job.append_output
+            return bv_ls_cli._run(args, say=say)
+
+        self._spawn(job, run)
+        return job
+
     def start_bv_generate(
         self,
         *,

@@ -29,6 +29,7 @@ from blackvue.cli import bv_download as bv_download_module
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli import bv_generate as bv_generate_module
 from blackvue.cli import bv_gps as bv_gps_module
+from blackvue.cli import bv_ls as bv_ls_module
 from blackvue.web.jobs import BvExportArgError
 from blackvue.web.jobs import Job
 from blackvue.web.jobs import JobRunner
@@ -994,3 +995,129 @@ def test_start_bv_download_job_fails_when_run_returns_nonzero(monkeypatch):
     status, output, _ = job.snapshot()
     assert status == JobStatus.FAILED
     assert any("unreachable" in line for line in output)
+
+
+# ---------------------------------------------------------------------------
+# JobRunner.start_bv_ls - real wiring, fake _run
+# ---------------------------------------------------------------------------
+
+
+def _ls_kwargs(**overrides):
+    """Every start_bv_ls() keyword, defaulted to bv-ls's own plainest
+    possible invocation (grouped table, no time filter, no --trips) -
+    the same per-test-override shape _generate_kwargs()/_export_kwargs()
+    above use."""
+
+    kwargs = dict(
+        camera_id="kirby",
+        archive_path=Path("/archive/kirby"),
+        all=False,
+        from_=None,
+        until=None,
+        timestamp=None,
+        trips=False,
+        max_gap_minutes=None,
+        movement=False,
+        duration=True,
+        gap_tolerance_seconds=None,
+        username="christer",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_start_bv_ls_wires_say_but_needs_no_ask_or_warn(monkeypatch):
+    def fake_run(args, *, say):
+        assert args.path == "/archive/kirby"
+        say("Recording          Front ...")
+        return 0
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_ls(**_ls_kwargs())
+
+    assert job.command == "bv-ls kirby"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert "Recording          Front ..." in output
+
+
+def test_start_bv_ls_all_flag_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say):
+        assert args.all is True
+        return 0
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_ls(**_ls_kwargs(all=True))
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_ls_trips_flags_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_ls(
+        **_ls_kwargs(
+            trips=True,
+            max_gap_minutes=10,
+            movement=True,
+            duration=False,
+            gap_tolerance_seconds=5,
+            from_="20260101_000000",
+            until="20260102_000000",
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.trips is True
+    assert args.max_gap_minutes == 10
+    assert args.movement is True
+    assert args.duration is False
+    assert args.gap_tolerance_seconds == 5
+    assert args.from_ == "20260101_000000"
+    assert args.until == "20260102_000000"
+
+
+def test_start_bv_ls_duration_default_true_omits_no_duration_flag(monkeypatch):
+    # duration=True (the default) must NOT translate into --no-duration
+    # ending up on the argv bv-ls's own parse_args() sees - only the
+    # duration=False override should.
+    def fake_run(args, *, say):
+        assert args.duration is True
+        return 0
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_ls(**_ls_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_ls_job_fails_when_run_returns_nonzero(monkeypatch):
+    def fake_run(args, *, say):
+        return 1
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_ls(**_ls_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.FAILED

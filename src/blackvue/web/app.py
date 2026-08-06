@@ -861,12 +861,100 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
         )
 
+    @app.get("/jobs/bv-ls", response_class=HTMLResponse)
+    async def new_bv_ls_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_ls.html",
+            {"user": user, "cameras": _camera_options(), "error": None},
+        )
+
+    @app.post("/jobs/bv-ls")
+    async def new_bv_ls_submit(
+        request: Request,
+        id: str = Form(...),
+        all: bool = Form(False),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        trips: bool = Form(False),
+        max_gap_minutes: str = Form(""),
+        movement: bool = Form(False),
+        no_duration: bool = Form(False),
+        gap_tolerance_seconds: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # max_gap_minutes/gap_tolerance_seconds are the only two
+        # numeric fields bv-ls's own CLI has, and both are genuinely
+        # optional (a blank field means "use bv-ls's own default", not
+        # zero) - a plain int(...) with a friendly re-render on
+        # ValueError is enough here, unlike bv-export's much larger
+        # numeric surface (see jobs.py's BvExportArgError docstring),
+        # since neither of these has a range to also enforce beyond
+        # "is this a whole number at all".
+        error = None
+        max_gap_minutes_value: int | None = None
+        gap_tolerance_seconds_value: int | None = None
+
+        if max_gap_minutes.strip():
+            try:
+                max_gap_minutes_value = int(max_gap_minutes.strip())
+            except ValueError:
+                error = "Max gap must be a whole number of minutes."
+
+        if error is None and gap_tolerance_seconds.strip():
+            try:
+                gap_tolerance_seconds_value = int(gap_tolerance_seconds.strip())
+            except ValueError:
+                error = "Gap tolerance must be a whole number of seconds."
+
+        if error is not None:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_ls.html",
+                {"user": user, "cameras": _camera_options(), "error": error},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        job = app.state.job_runner.start_bv_ls(
+            camera_id=id,
+            archive_path=archive_path,
+            all=all,
+            from_=from_.strip() or None,
+            until=until.strip() or None,
+            timestamp=timestamp.strip() or None,
+            trips=trips,
+            max_gap_minutes=max_gap_minutes_value,
+            movement=movement,
+            duration=not no_duration,
+            gap_tolerance_seconds=gap_tolerance_seconds_value,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_detail(
         request: Request, job_id: str, user: User = Depends(require_owner)
     ):
         job = _find_job(app.state.job_runner, job_id)
         job_status, output, prompt = job.snapshot()
+        # Auto-refresh (the <meta http-equiv="refresh"> below) is a full
+        # page reload, which always snaps scroll back to the top - fine
+        # for a short job, but Christer hit this trying to read further
+        # up in a long-running job's output and kept getting yanked back
+        # down. Rather than rebuild this into a JS-polled partial update
+        # (this app has stayed deliberately JS-free everywhere else), a
+        # plain "paused" query param lets the owner freeze the page on
+        # its current snapshot - same server-rendered-link pattern the
+        # archive browser's filters already use - and resume by
+        # dropping it, no different from an ordinary manual reload.
+        paused = request.query_params.get("paused") == "1"
         return templates.TemplateResponse(
             request,
             "job_detail.html",
@@ -881,6 +969,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "is_finished": job_status.is_finished,
                 "output": output,
                 "prompt": prompt,
+                "paused": paused,
             },
         )
 
