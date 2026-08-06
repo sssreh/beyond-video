@@ -34,6 +34,16 @@
       --badge-failed-bg: #fbdede;
       --badge-failed-text: #c92a2a;
       --cancel-border: #e5a3a3;
+      /* Full-app background image (Christer's own derived aerial-city
+         renders - see WORKING_CONTEXT.md for how the dark one was
+         color-remapped from this light one, not generated
+         independently, so the two are a true matched pair) plus its
+         RGB triplet, used below by .page-tint's rgba() overlay since
+         CSS can't add alpha to a bare custom-property hex color
+         directly. Swapped per-theme by the html[data-theme="dark"]
+         override, same mechanism as every other --* variable here. */
+      --bg-image: url('/static/backgrounds/bg-light.jpg');
+      --bg-rgb: 246, 247, 249;
     }
     /* Dark theme override - the original single hardcoded palette
        this project started with (see WORKING_CONTEXT.md), restored
@@ -63,14 +73,56 @@
       --badge-failed-bg: #3a1f1f;
       --badge-failed-text: #ff8080;
       --cancel-border: #7a3a3a;
+      --bg-image: url('/static/backgrounds/bg-dark.jpg');
+      --bg-rgb: 20, 22, 26;
     }
+    html, body { height: 100%; }
     body {
+      margin: 0;
+      background: var(--bg); /* fallback if the image never loads */
+      color: var(--text);
+    }
+    /* Full-app background, every page (Christer's choice when asked
+       "full app background" vs. e.g. just the login page). Two fixed,
+       full-viewport layers sit behind everything and scroll with
+       nothing:
+         .page-bg   - the photo itself, blurred so it reads as
+                      atmosphere rather than competing with page
+                      content for attention.
+         .page-tint - a flat wash of the theme's own --bg color at
+                      partial opacity on top of it (Christer's other
+                      choice: "blur + dark gradient overlay"), which
+                      is what actually keeps text/panels legible - the
+                      blur alone wasn't enough over the busier parts
+                      of the source photo (bright pavement, signage).
+       .page-shell then holds the real page chrome/content, unchanged
+       from the old body rule above except it's a child div now
+       instead of body itself, so it can sit above both layers via
+       z-index without them clipping to its own 960px-wide column. */
+    .page-bg {
+      position: fixed; inset: 0; z-index: 0;
+      background-image: var(--bg-image);
+      background-size: cover; background-position: center; background-repeat: no-repeat;
+      filter: blur(18px);
+      transform: scale(1.1); /* hides the blur's own soft edge fringe at the viewport border */
+    }
+    .page-tint {
+      position: fixed; inset: 0; z-index: 1;
+      background: linear-gradient(
+        to bottom,
+        rgba(var(--bg-rgb), 0.9),
+        rgba(var(--bg-rgb), 0.82) 20%,
+        rgba(var(--bg-rgb), 0.88)
+      );
+    }
+    .page-shell {
+      position: relative; z-index: 2;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       max-width: 960px;
       margin: 0 auto;
       padding: 1.5rem;
-      background: var(--bg);
-      color: var(--text);
+      min-height: 100%;
+      box-sizing: border-box;
       line-height: 1.5;
     }
     a { color: var(--link); }
@@ -267,6 +319,9 @@
   </style>
 </head>
 <body>
+  <div class="page-bg" aria-hidden="true"></div>
+  <div class="page-tint" aria-hidden="true"></div>
+  <div class="page-shell">
   <header>
     <h1><a href="/">Beyond Video</a></h1>
     {% if user %}
@@ -296,5 +351,6 @@
   </nav>
   {% endif %}
   {% block content %}{% endblock %}
+  </div>
 </body>
 </html>

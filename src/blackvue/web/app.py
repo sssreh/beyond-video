@@ -39,6 +39,7 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .archive_browser import ArchiveRecording
@@ -73,6 +74,17 @@ from ..generate.media import MediaToolError
 from ..lexicaltimeparser import LexicalTimeParser
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Bundled, fixed assets (currently just the two theme background
+# images - see base.html's page-bg layer) - not the trip archive
+# itself, which is served through its own authenticated routes
+# instead of a blanket StaticFiles mount. Packaged via
+# [tool.setuptools.package-data]'s own "blackvue.web" entry in
+# pyproject.toml; see that file's comments for why non-.py assets
+# need to be listed there explicitly or a real `pip install .` drops
+# them silently (bit us twice before, with templates and then with
+# the bundled font/mirror-icon).
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
@@ -114,6 +126,12 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     app.state.camera_config_cache = CameraConfigCache()
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+    # Unauthenticated on purpose: just the two theme background
+    # images (cosmetic, not trip data), served the same way for
+    # anyone including the /login page itself, which also wants the
+    # background applied.
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.exception_handler(HTTPException)
     async def _handle_http_exception(request: Request, exc: HTTPException):

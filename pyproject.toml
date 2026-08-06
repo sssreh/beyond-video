@@ -85,7 +85,11 @@ bv-live = "blackvue.cli.bv_live:main"
 # one, since site-packages/blackvue/web/templates/ didn't exist at
 # all.
 [tool.setuptools.package-data]
-"blackvue.web" = ["templates/*.html"]
+# static/backgrounds/*.jpg: the two theme background images (see
+# base.html's page-bg layer + web/app.py's StaticFiles mount) -
+# same "or a real install silently drops it" lesson as
+# templates/*.html right below.
+"blackvue.web" = ["templates/*.html", "static/backgrounds/*.jpg"]
 # The bundled default --stitch-mirror-icon photo (mirror_icon.py's
 # DEFAULT_MIRROR_ICON_PATH) - same reasoning as templates/*.html
 # above: without this, `pip install .` silently drops it, and the

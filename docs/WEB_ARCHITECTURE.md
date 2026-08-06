@@ -17,6 +17,7 @@ Started as deliberately browse/watch only; later increments (below) added the ab
 - **Trip detail** - video playback (range-request support comes for free from Starlette's own `FileResponse`, so seeking/scrubbing works), plus GPX/SRT/LRC download links, whichever of those a given trip actually has (a trip only has the files the `bv-export` run that produced it actually asked for - no `map.mp4` without `--map`, etc.). A video player issues one HTTP request per range while seeking/buffering, and each one resolves the same `trip_id` again - `trips.TripCache` (a small per-trip, short-TTL cache, default 2 seconds) sits behind that resolution so a burst of range requests from one seek/buffer event collapses into a single real `scan_trip()` call instead of repeating its ~nine stat()/open() calls every time. Deliberately scoped to this single-trip lookup only - the trip list below still scans fresh on every request, unaffected.
 - **Archive browser** - the raw per-camera archive `bv-download` actually writes to disk, before `bv-export` groups anything into trips: a camera picker, a day-grouped thumbnail grid per camera, and a per-recording detail page. See "Archive browser" below for how.
 - **Jobs (owner-only)** - the owner can trigger `bv-config` (set up or edit a camera), `bv-gps` (get a live GPS fix, against an already-configured camera id only), `bv-generate` (extract audio/duration/transcript/translation for a camera's archive), or `bv-export` (detect trips and export them) as a background job from the browser, watch its output, answer `bv-config`'s wizard questions as they come up, and cancel a job that's running or stuck. See "Job runner" below for how.
+- **Theme** - a manual light/dark toggle (a `bv_theme` cookie, read directly in `base.html` via `request.cookies` rather than every route threading a theme variable through its own `TemplateResponse` context), and a full-app background image behind every page: two fixed, full-viewport layers (`.page-bg` - the theme's own photo, blurred; `.page-tint` - a flat wash of the theme's `--bg` color at partial opacity over it) sit behind the real page content (now a `.page-shell` div, not `<body>` itself), swapped per-theme the same way every other CSS custom property in `base.html` is. Christer's own two derived aerial-city renders (see `WORKING_CONTEXT.md` for how the dark one was color-remapped from the light one specifically, to keep them a true matched pair) - shipped as `web/static/backgrounds/bg-light.jpg`/`bg-dark.jpg`, served through a plain unauthenticated `StaticFiles` mount at `/static` (cosmetic images, not trip data, so no login check needed - unlike every other file-serving route in this app).
 
 ## Archive browser
 
@@ -127,6 +128,14 @@ src/blackvue/web/
                    job_detail) - no client-side app to build, no JSON API;
                    the job_detail page polls via a <meta refresh>, not a
                    websocket.
+    static/
+        backgrounds/  bg-light.jpg/bg-dark.jpg - the two theme background
+                   images (see "Theme" above), pre-downscaled/re-encoded
+                   to a web-appropriate size rather than shipping the
+                   much larger PNG originals. Listed in pyproject.toml's
+                   [tool.setuptools.package-data] (same lesson as
+                   templates/*.html above) and served via a StaticFiles
+                   mount app.py adds at /static.
 ```
 
 `cli/bv_web.py` is the actual entry point (`bv-web` in `pyproject.toml`'s `[project.scripts]`), with two subcommands: `bv-web serve` (run the app against a `--target` directory and a users file) and `bv-web adduser` (create/update an account without needing the app itself running).
