@@ -564,6 +564,90 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_download(
+        self,
+        *,
+        id_: str,
+        timeout: int,
+        modes: list[str],
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        dry_run: bool,
+        files: bool,
+        verbose: bool,
+        trace: bool,
+        username: str,
+    ) -> Job:
+        """Start bv-download as a job, against an already-configured
+        camera id only - --host/--target (a one-off connection with no
+        saved config) and --config-dir are deliberately not exposed,
+        same "curated, not an arbitrary-connection escape hatch"
+        reasoning as start_bv_gps()'s own omitted --host, and the same
+        default_config_dir() every other job-trigger method here uses.
+
+        `--yes` is always forced on, never a form field: bv-download's
+        own confirm() prompt (skipped already whenever stdin/stdout
+        aren't a real terminal, which a background thread inside
+        bv-web's own process already isn't) reads real process stdin
+        if it ever were reached, which this job runner has no way to
+        answer through its own ask()/Job.submit_answer() mechanism
+        (unlike bv-config's wizard, built around exactly that) - a
+        stray real-stdin block would hang the job forever with no way
+        for the browser to unblock it. Forcing --yes here removes any
+        dependence on bv-web's own process happening to have no
+        attached tty; see bv_download._run()'s own docstring for the
+        same reasoning from the CLI side.
+
+        `modes` is a list of kind letters (any of A/E/M/N/P, from the
+        web form's checkboxes) joined into a single --mode value, or
+        omitted entirely when empty - matching bv-download's own
+        default (no --mode) of the event/manual-plus-context selection
+        policy rather than a blank/invalid --mode. Checking all five
+        letters is equivalent to bv-download's own --mode all, since
+        parse_mode() treats them the same (see cli/bv_download.py).
+
+        `files` (--files, "list every individual file under --dry-run"
+        - only meaningful combined with dry_run) is NOT cross-checked
+        here the way bv-export's dozens of validators are - bv-download
+        only has this one condition, so app.py's route pre-checks it
+        directly, the same "small number of conditions -> a plain
+        pre-check" approach start_bv_generate's own route already
+        uses, rather than a BvExportArgError-style exception class
+        built for a much larger validator surface.
+        """
+
+        from ..cli import bv_download
+
+        argv: list[str] = [id_, "--timeout", str(timeout), "--yes"]
+
+        if modes:
+            argv += ["--mode", ",".join(modes)]
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if dry_run:
+            argv.append("--dry-run")
+        if files:
+            argv.append("--files")
+        if verbose:
+            argv.append("--verbose")
+        if trace:
+            argv.append("--trace")
+
+        args = bv_download.parse_args(argv)
+        job = self._new_job(command=f"bv-download {id_}", username=username)
+
+        def run() -> int:
+            say = job.append_output
+            return bv_download._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
     def answer(self, job_id: str, text: str) -> bool:
         """Feed an answer to a waiting job. Returns False if the job
         doesn't exist or isn't actually waiting (see

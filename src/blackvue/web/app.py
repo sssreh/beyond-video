@@ -12,12 +12,11 @@ The core of this app is still browse/watch: login (owner/viewer
 roles), the trip list, and a trip detail page with video playback
 (range-request support comes for free from Starlette's own
 FileResponse) plus GPX/SRT/LRC download links. On top of that, the
-owner can now also trigger bv-config, bv-gps, bv-generate, and
-bv-export as background jobs from the browser (see jobs.py for how -
-a real job-runner infrastructure, since any of these can run for a
-while and bv-config's wizard needs to ask questions back).
-bv-download isn't wired in yet - see WORKING_CONTEXT.md for the
-increment plan.
+owner can now also trigger bv-config, bv-gps, bv-generate, bv-export,
+and bv-download as background jobs from the browser (see jobs.py for
+how - a real job-runner infrastructure, since any of these can run
+for a while and bv-config's wizard needs to ask questions back).
+Every bv-* pipeline command now has a browser trigger.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -776,6 +775,76 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-download", response_class=HTMLResponse)
+    async def new_bv_download_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_download.html",
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "kind_options": kind_options(),
+                "error": None,
+            },
+        )
+
+    @app.post("/jobs/bv-download")
+    async def new_bv_download_submit(
+        request: Request,
+        id: str = Form(...),
+        timeout: int = Form(5, ge=1),
+        mode: list[str] = Form([]),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        dry_run: bool = Form(False),
+        files: bool = Form(False),
+        verbose: bool = Form(False),
+        trace: bool = Form(False),
+        user: User = Depends(require_owner),
+    ):
+        # Mirrors bv_download.parse_args()'s own "--files requires
+        # --dry-run" check (see jobs.py's start_bv_download docstring
+        # for why this one condition gets a plain pre-check here
+        # rather than a BvExportArgError-style exception class) - so a
+        # bad web form re-renders with a friendly error instead of
+        # parse_args() raising SystemExit(2) inside this route.
+        error = None
+        if files and not dry_run:
+            error = "List every file requires dry run."
+
+        if error is not None:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_download.html",
+                {
+                    "user": user,
+                    "cameras": _camera_options(),
+                    "kind_options": kind_options(),
+                    "error": error,
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        job = app.state.job_runner.start_bv_download(
+            id_=id,
+            timeout=timeout,
+            modes=mode,
+            from_=from_.strip() or None,
+            until=until.strip() or None,
+            timestamp=timestamp.strip() or None,
+            dry_run=dry_run,
+            files=files,
+            verbose=verbose,
+            trace=trace,
+            username=user.username,
+        )
         return RedirectResponse(
             url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
         )

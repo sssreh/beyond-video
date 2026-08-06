@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from blackvue.cli import bv_config as bv_config_module
+from blackvue.cli import bv_download as bv_download_module
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli import bv_generate as bv_generate_module
 from blackvue.cli import bv_gps as bv_gps_module
@@ -822,3 +823,174 @@ def test_start_bv_export_job_fails_when_run_returns_nonzero(monkeypatch):
     status, output, _ = job.snapshot()
     assert status == JobStatus.FAILED
     assert any("something went wrong" in line for line in output)
+
+
+# ---------------------------------------------------------------------------
+# JobRunner.start_bv_download - real wiring, fake _run
+# ---------------------------------------------------------------------------
+
+
+def _download_kwargs(**overrides):
+    """Every start_bv_download() keyword, defaulted to "give me the
+    default CLI behavior" - same helper shape as _generate_kwargs()/
+    _export_kwargs() above."""
+
+    kwargs = dict(
+        id_="kirby",
+        timeout=5,
+        modes=[],
+        from_=None,
+        until=None,
+        timestamp=None,
+        dry_run=False,
+        files=False,
+        verbose=False,
+        trace=False,
+        username="christer",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_start_bv_download_wires_say_warn_and_forces_yes(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.id == "kirby"
+        assert args.host is None
+        # --yes is always forced on by start_bv_download() itself,
+        # never a form field - see that method's own docstring for
+        # why (confirm()'s input() call reads real process stdin,
+        # which this job runner has no way to answer).
+        assert args.yes is True
+        say("bv-download: kirby: downloading into /archive/kirby")
+        return bv_download_module.EXIT_OK
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(**_download_kwargs())
+
+    assert job.command == "bv-download kirby"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert any("downloading into" in line for line in output)
+    assert "(exit code 0)" in output
+
+
+def test_start_bv_download_defaults_reach_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.mode is None
+        assert args.from_ is None
+        assert args.until is None
+        assert args.timestamp is None
+        assert args.dry_run is False
+        assert args.files is False
+        assert args.verbose is False
+        assert args.trace is False
+        assert args.timeout == 5
+        return bv_download_module.EXIT_OK
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(**_download_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_download_modes_reach_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.mode == frozenset({"A", "E"})
+        return bv_download_module.EXIT_OK
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(**_download_kwargs(modes=["A", "E"]))
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_download_time_range_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.from_ == "20260701"
+        assert args.until == "20260731"
+        assert args.timestamp is None
+        return bv_download_module.EXIT_OK
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(
+        **_download_kwargs(from_="20260701", until="20260731")
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_download_dry_run_and_files_reach_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.dry_run is True
+        assert args.files is True
+        return bv_download_module.EXIT_OK
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(
+        **_download_kwargs(dry_run=True, files=True)
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_download_verbose_and_trace_reach_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.verbose is True
+        assert args.trace is True
+        return bv_download_module.EXIT_OK
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(
+        **_download_kwargs(verbose=True, trace=True)
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_download_never_exposes_host_or_target():
+    # Same "curated, not an arbitrary-connection escape hatch"
+    # guarantee as start_bv_export()'s own target test - confirmed
+    # here by checking start_bv_download()'s own signature has no
+    # host/target parameter at all, rather than just trusting the
+    # docstring.
+    import inspect
+
+    params = inspect.signature(JobRunner.start_bv_download).parameters
+    assert "host" not in params
+    assert "target" not in params
+    assert "config_dir" not in params
+
+
+def test_start_bv_download_job_fails_when_run_returns_nonzero(monkeypatch):
+    def fake_run(args, *, say, warn):
+        warn("bv-download: kirby: unreachable")
+        return bv_download_module.EXIT_UNREACHABLE
+
+    monkeypatch.setattr(bv_download_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_download(**_download_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.FAILED
+    assert any("unreachable" in line for line in output)

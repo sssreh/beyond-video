@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Download recordings - Beyond Video{% endblock %}
+{% block content %}
+<h2>Download recordings (bv-download)</h2>
+<div class="command-help">
+  <p>Downloads recordings from an already-configured camera's own
+  storage into its archive - the same work <code>bv-download</code>
+  does from the command line. By default, downloads video for event
+  and manual recordings plus the recording immediately before each,
+  for context; metadata (thumbnails, GPS, g-sensor) is always
+  downloaded for every recording regardless. Downloaded files show up
+  in the archive browser right away.</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<form method="post" action="/jobs/bv-download">
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera to download from. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="option-group">
+    <h3>Time range</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="from_">
+          From
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward (e.g. 20260715_120000, or a lexical time like "yesterday"). Leave blank for the whole archive.</span></span>
+        </label>
+        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="until">
+          Until
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
+        </label>
+        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" placeholder="matches a single recording/day">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Defaults</h3>
+    <label class="field-label" for="timeout">
+      Connection timeout (seconds)
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Per-endpoint connection timeout in seconds.</span></span>
+    </label>
+    <input type="number" id="timeout" name="timeout" value="5" min="1" step="1">
+  </div>
+
+  <div class="option-group">
+    <h3>Optional</h3>
+
+    <label class="field-label">
+      Recording kinds
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Download video for only these kinds instead of the default event/manual-plus-context selection. Leave every box unchecked to keep that default. Checking every box downloads video for everything, same as bv-download's own --mode all.</span></span>
+    </label>
+    <div class="checkbox-row">
+      {% for letter, label in kind_options %}
+      <label class="filter-checkbox">
+        <input type="checkbox" name="mode" value="{{ letter }}" style="width: auto; margin: 0;">
+        {{ label }}
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
+        Dry run (list what would be downloaded, download nothing)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="files" name="files" value="true" style="width: auto; margin: 0;">
+        List every individual file, not just one line per recording (requires dry run)
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="verbose" name="verbose" value="true" style="width: auto; margin: 0;">
+        Print each file as it's downloaded
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="trace" name="trace" value="true" style="width: auto; margin: 0;">
+        Progress dots every 10MB (server's own log only, not shown here)
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Start</button>
+</form>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}

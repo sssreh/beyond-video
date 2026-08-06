@@ -354,12 +354,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _default_warn(message: str) -> None:
+    """`_run()`'s default `warn` - real stderr, the CLI's normal
+    error-output contract. See bv_config.py's own `_default_warn` for
+    why this is a named function rather than a lambda."""
+
+    print(message, file=sys.stderr)
+
+
 def _capture_record_time(
     client: BlackVueClient,
     destination: Path,
     recording_id: str,
     *,
     verbose: bool,
+    say=print,
+    warn=_default_warn,
 ) -> None:
     """Fetch the camera's current config.ini, extract RecordTime, and
     write a new snapshot (see archive/configuration.py) into
@@ -398,16 +408,19 @@ def _capture_record_time(
     is reported to stderr if --verbose and otherwise silently ignored -
     this only ever informs bv-export's own --max-gap default, so it
     must never be allowed to fail a download run.
+
+    `say`/`warn` are injectable (default: real stdout/stderr via
+    print/`_default_warn`) so bv-web's job runner (see web/jobs.py)
+    can capture this function's own --verbose output into a job's
+    transcript the same way `_run()` below does for the rest of this
+    module.
     """
 
     try:
         record_time_seconds = parse_record_time_seconds(client.config())
     except Exception as exc:
         if verbose:
-            print(
-                f"bv-download: couldn't read RecordTime from config.ini: {exc}",
-                file=sys.stderr,
-            )
+            warn(f"bv-download: couldn't read RecordTime from config.ini: {exc}")
         return
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -431,12 +444,12 @@ def _capture_record_time(
 
     if verbose:
         if value_changed:
-            print(
+            say(
                 f"bv-download: recorded RecordTime={record_time_seconds}s "
                 f"as of {recording_id}"
             )
         else:
-            print(
+            say(
                 f"bv-download: extended RecordTime={record_time_seconds}s "
                 f"coverage back to {recording_id} (this run's earliest "
                 "recording predates the archive's existing snapshot)"
@@ -482,8 +495,29 @@ def confirm(
     return answer in ("y", "yes")
 
 
-def _run(args: argparse.Namespace) -> int:
-    """Run bv-download for already-parsed arguments."""
+def _run(
+    args: argparse.Namespace, *, say=print, warn=_default_warn
+) -> int:
+    """Run bv-download for already-parsed arguments.
+
+    `say`/`warn` are injectable (default: real stdout/stderr via
+    print/`_default_warn`) so bv-web's job runner (see web/jobs.py)
+    can capture this command's output into a job's transcript instead
+    of the real terminal - same pattern as bv_generate.py/bv_gps.py's
+    own `_run()`.
+
+    Unlike those two, this module does have one interactive prompt -
+    confirm(), gated on `interactive = sys.stdin.isatty() and
+    sys.stdout.isatty()` below - but it's never reached from the job
+    runner regardless: web/jobs.py's start_bv_download() always
+    passes --yes, since confirm()'s own input() call reads the real
+    process stdin, which the job runner has no way to answer through
+    its own ask()/Job.submit_answer() prompt mechanism (unlike
+    bv-config's wizard, which is built around exactly that) - a
+    real-stdin block here would hang the job forever with no way for
+    the browser to unblock it. See start_bv_download()'s own
+    docstring for the forced --yes.
+    """
 
     if args.host is not None:
         #
@@ -501,21 +535,18 @@ def _run(args: argparse.Namespace) -> int:
         try:
             config = load_camera_config(path)
         except CameraConfigError as exc:
-            print(f"bv-download: {exc}", file=sys.stderr)
+            warn(f"bv-download: {exc}")
             return EXIT_CONFIG_ERROR
 
         if not config.endpoints:
-            print(
-                f"bv-download: {path}: no [[endpoint]] entries found",
-                file=sys.stderr,
-            )
+            warn(f"bv-download: {path}: no [[endpoint]] entries found")
             return EXIT_CONFIG_ERROR
 
         endpoints = config.endpoints
         destination = config.target
         display_name = config.name
 
-    print(_destination_message(display_name, destination, dry_run=args.dry_run))
+    say(_destination_message(display_name, destination, dry_run=args.dry_run))
 
     try:
         interval = LexicalTimeParser(
@@ -524,7 +555,7 @@ def _run(args: argparse.Namespace) -> int:
             until=args.until,
         ).parse()
     except ValueError as exc:
-        print(f"bv-download: {exc}", file=sys.stderr)
+        warn(f"bv-download: {exc}")
         return EXIT_CONFIG_ERROR
 
     has_range = (
@@ -544,11 +575,11 @@ def _run(args: argparse.Namespace) -> int:
     try:
         endpoint, client = connect(endpoints, timeout=args.timeout)
     except CameraUnreachableError as exc:
-        print(f"bv-download: {exc}", file=sys.stderr)
+        warn(f"bv-download: {exc}")
         return EXIT_UNREACHABLE
 
     if args.verbose:
-        print(
+        say(
             f"bv-download: connected to {display_name} "
             f"via {endpoint.name} ({endpoint.address})"
         )
@@ -579,7 +610,7 @@ def _run(args: argparse.Namespace) -> int:
 
     if interactive and not args.dry_run and not args.yes:
         if not confirm(recordings, interval):
-            print("bv-download: aborted")
+            say("bv-download: aborted")
             return EXIT_ABORTED
 
     #
@@ -595,6 +626,8 @@ def _run(args: argparse.Namespace) -> int:
             destination,
             recordings[0].id,
             verbose=args.verbose,
+            say=say,
+            warn=warn,
         )
 
     if mode is not None:
@@ -602,6 +635,16 @@ def _run(args: argparse.Namespace) -> int:
     else:
         selection = select_by_context(recordings)
 
+    # DotProgress prints its dots straight to real stdout, not through
+    # `say` - deliberately not made injectable. It's a partial-line,
+    # no-trailing-newline "still alive" stream (see its own docstring)
+    # meant for someone watching a real terminal; Job.output (see
+    # web/jobs.py) is a list of complete lines, so there's no sensible
+    # way to represent an in-progress dot-stream there anyway. A
+    # --trace job from the browser still runs fine - the dots just go
+    # to bv-web's own process console/log instead of the job's own
+    # output, the same as any other --trace run whose stdout happens
+    # to be redirected somewhere other than a live terminal.
     progress = DotProgress() if args.trace else None
 
     #
@@ -655,30 +698,29 @@ def _run(args: argparse.Namespace) -> int:
                 # its sidecar probe started hitting a transient
                 # WiFi/timeout error on every run.
                 found = []
-                print(
+                warn(
                     f"bv-download: {recording.id}: couldn't check for "
-                    f"sidecar files ({exc}) - continuing without it",
-                    file=sys.stderr,
+                    f"sidecar files ({exc}) - continuing without it"
                 )
 
             if found and args.verbose:
                 summary = _summarize_found_kinds(found)
-                print(
+                say(
                     f"bv-download: {recording.id}: found {summary} "
                     "for downloading"
                 )
 
             if args.dry_run:
                 if args.files:
-                    print(f"{recording.id}:")
+                    say(f"{recording.id}:")
                     for filename, would_download in describe_recording_files(
                         recording, want_video
                     ):
                         marker = "download" if would_download else "skip"
-                        print(f"  {filename}: {marker}")
+                        say(f"  {filename}: {marker}")
                 else:
                     kind = "video+metadata" if want_video else "metadata only"
-                    print(f"{recording.id}: {kind}")
+                    say(f"{recording.id}: {kind}")
                 continue
 
             select = None if want_video else (lambda entry: not entry.is_video)
@@ -692,25 +734,23 @@ def _run(args: argparse.Namespace) -> int:
                 )
             except OSError as exc:
                 failed_ids.append(recording.id)
-                print(
+                warn(
                     f"bv-download: {recording.id}: download failed "
-                    f"({exc}) - skipping to the next recording",
-                    file=sys.stderr,
+                    f"({exc}) - skipping to the next recording"
                 )
                 continue
 
             if args.verbose and changed:
-                print(f"{recording.id}: downloaded")
+                say(f"{recording.id}: downloaded")
     finally:
         if progress is not None:
             progress.finish()
 
     if failed_ids:
-        print(
+        warn(
             f"bv-download: {len(failed_ids)} of "
             f"{len(recordings)} recording(s) failed and were skipped: "
-            f"{', '.join(failed_ids)}",
-            file=sys.stderr,
+            f"{', '.join(failed_ids)}"
         )
         return EXIT_PARTIAL_FAILURE
 
