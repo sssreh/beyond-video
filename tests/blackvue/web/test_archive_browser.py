@@ -20,6 +20,7 @@ from datetime import datetime
 from blackvue.web.archive_browser import ArchiveRecordingCache
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
+from blackvue.web.archive_browser import first_valid_gps_fix
 from blackvue.web.archive_browser import group_by_day
 from blackvue.web.archive_browser import kind_options
 from blackvue.web.archive_browser import scan_archive
@@ -173,6 +174,63 @@ def test_sidecars_lists_gps_and_gsensor_when_present(tmp_path):
         ("GPS log", "20260715_140212_N.gps"),
         ("G-sensor log", "20260715_140212_N.3gf"),
     ]
+
+
+def test_gps_path_resolves_when_present(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(archive, "20260715_140212_N.gps")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.gps_path == archive / "20260715_140212_N.gps"
+
+
+def test_gps_path_is_none_without_a_gps_file(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.gps_path is None
+
+
+# ---------------------------------------------------------------------------
+# first_valid_gps_fix() - added for the archive detail page's "Show start
+# location" link (see app.py's archive_recording_location route). Fixture
+# NMEA text mirrors tests/blackvue/telemetry/test_gps_reader.py's own -
+# real read_gps() parsing is exercised end-to-end here, not mocked.
+# ---------------------------------------------------------------------------
+
+
+def test_first_valid_gps_fix_skips_leading_no_fix_sentences(tmp_path):
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        # Cold start: no fix yet (mode N).
+        "[1700000000000]$GPRMC,120000.00,V,,,,,,,010124,,,N*7F\n"
+        # Then a real position (mode A).
+        "[1700000001000]$GPRMC,120001.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    fix = first_valid_gps_fix(path)
+
+    assert fix is not None
+    assert fix.valid is True
+    assert fix.latitude == 48 + 7.038 / 60
+    assert fix.longitude == 11 + 31 / 60
+
+
+def test_first_valid_gps_fix_returns_none_when_no_fix_ever_has_a_position(
+    tmp_path,
+):
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000000000]$GPRMC,120000.00,V,,,,,,,010124,,,N*7F\n"
+        "[1700000001000]$GPRMC,120001.00,V,,,,,,,010124,,,N*7F\n"
+    )
+
+    assert first_valid_gps_fix(path) is None
 
 
 def test_known_filenames_matches_what_actually_exists(tmp_path):

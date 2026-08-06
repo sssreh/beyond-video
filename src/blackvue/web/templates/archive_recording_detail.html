@@ -21,4 +21,8 @@
   <li><a href="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ filename }}">{{ label }}: {{ filename }}</a></li>
   {% endfor %}
 </ul>
+
+{% if recording.has_gps %}
+<p><a href="/archive/{{ camera_id }}/{{ recording.id }}/location">Show start location</a></p>
+{% endif %}
 {% endblock %}

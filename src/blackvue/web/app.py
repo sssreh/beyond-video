@@ -44,6 +44,7 @@ from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
 from .archive_browser import filter_recordings
 from .archive_browser import find_recording
+from .archive_browser import first_valid_gps_fix
 from .archive_browser import group_by_day
 from .archive_browser import kind_options
 from .archive_browser import scan_archive
@@ -64,6 +65,8 @@ from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
+from ..export.geocoding import load_or_reverse_geocode
+from ..generate.media import MediaToolError
 from ..lexicaltimeparser import LexicalTimeParser
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -309,6 +312,71 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             request,
             "archive_recording_detail.html",
             {"user": user, "camera_id": camera_id, "recording": recording},
+        )
+
+    @app.get(
+        "/archive/{camera_id}/{recording_id}/location", response_class=HTMLResponse
+    )
+    async def archive_recording_location(
+        request: Request,
+        camera_id: str,
+        recording_id: str,
+        user: User = Depends(require_login),
+    ):
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
+        )
+
+        coordinates = None
+        google_maps_url = None
+        address = None
+        address_error = None
+        error = None
+
+        if recording.gps_path is None:
+            error = "This recording has no GPS log."
+        else:
+            fix = first_valid_gps_fix(recording.gps_path)
+            if fix is None:
+                error = (
+                    "No valid GPS fix found in this recording's GPS log "
+                    "(no signal)."
+                )
+            else:
+                coordinates = f"{fix.latitude},{fix.longitude}"
+                google_maps_url = f"https://www.google.com/maps?q={coordinates}"
+
+                # Reverse-geocoded and cached next to the camera's own
+                # archive, same one-fetch-then-offline pattern
+                # trip_export.py's trip_info.txt already uses - see
+                # geocoding.load_or_reverse_geocode()'s own docstring.
+                archive_path = _find_camera_archive(
+                    app.state.camera_config_cache, camera_id
+                )
+                geocode_cache_dir = archive_path / ".osm_cache"
+                try:
+                    address = load_or_reverse_geocode(
+                        fix.latitude, fix.longitude, geocode_cache_dir
+                    )
+                except MediaToolError as exc:
+                    address_error = str(exc)
+
+        return templates.TemplateResponse(
+            request,
+            "archive_recording_location.html",
+            {
+                "user": user,
+                "camera_id": camera_id,
+                "recording_id": recording_id,
+                "coordinates": coordinates,
+                "google_maps_url": google_maps_url,
+                "address": address,
+                "address_error": address_error,
+                "error": error,
+            },
         )
 
     @app.get("/archive/{camera_id}/{recording_id}/thumbnail/{direction}")

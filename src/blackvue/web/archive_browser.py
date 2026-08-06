@@ -38,6 +38,8 @@ from ..archive import Asset
 from ..archive import Recording
 from ..archive import RecordingId
 from ..lexicaltimeparser import TimeInterval
+from ..telemetry.gps_reader import GpsFix
+from ..telemetry.gps_reader import read_gps
 
 # (display label, video asset, thumbnail asset), in the order the
 # detail page's video tabs and the list page's per-direction badges
@@ -176,6 +178,16 @@ class ArchiveRecording:
         return self.recording.has(Asset.GPS)
 
     @property
+    def gps_path(self) -> Path | None:
+        """Path to this recording's .gps sidecar file, or None if it
+        doesn't have one (see has_gps) - what the archive detail
+        page's "Show start location" link reads via
+        first_valid_gps_fix() below."""
+
+        asset_file = self.recording.file(Asset.GPS)
+        return asset_file.path if asset_file else None
+
+    @property
     def has_gsensor(self) -> bool:
         return self.recording.has(Asset.GSENSOR)
 
@@ -211,6 +223,30 @@ class ArchiveRecording:
             return None
         asset_file = self.recording.file(asset)
         return asset_file.path if asset_file else None
+
+
+def first_valid_gps_fix(gps_path: Path) -> GpsFix | None:
+    """Return the first fix in a .gps sidecar file that has a real
+    position - the location "at the start" of the recording, for the
+    archive detail page's "Show start location" link. None if the
+    file has no valid fix at all (e.g. the camera hadn't acquired a
+    GPS signal yet when the clip started - common for the first
+    recording after the car's been parked somewhere without sky
+    view); the file existing at all (see ArchiveRecording.has_gps) is
+    a separate, weaker guarantee than this actually finding a fix.
+
+    "Valid" matches GpsFix.valid's own definition (a real position
+    per the sentence's mode indicator) plus a defensive check that
+    latitude/longitude both parsed - read_gps() already skips
+    malformed sentences entirely, but a $GPRMC sentence can in
+    principle report a valid mode with an unparsed coordinate field,
+    so this doesn't assume the two always travel together.
+    """
+
+    for fix in read_gps(gps_path):
+        if fix.valid and fix.latitude is not None and fix.longitude is not None:
+            return fix
+    return None
 
 
 def kind_options() -> list[tuple[str, str]]:

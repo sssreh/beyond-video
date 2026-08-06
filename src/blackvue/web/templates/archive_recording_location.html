@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ recording_id }} location - Beyond Video{% endblock %}
+{% block content %}
+<p><a href="/archive/{{ camera_id }}/{{ recording_id }}">&larr; {{ recording_id }}</a></p>
+<h2>Start location</h2>
+
+{% if error %}
+<p class="error">{{ error }}</p>
+{% else %}
+<p class="hint">The first GPS fix with a real position in this recording's GPS log - same format as <code>bv-gps</code>'s own output.</p>
+<p>Coordinates: {{ coordinates }}</p>
+<p>Google Maps: <a href="{{ google_maps_url }}" target="_blank" rel="noopener">{{ google_maps_url }}</a></p>
+{% if address_error %}
+<p>Address: unavailable ({{ address_error }})</p>
+{% else %}
+<p>Address: {{ address or "no address found for this location" }}</p>
+{% endif %}
+{% endif %}
+{% endblock %}
