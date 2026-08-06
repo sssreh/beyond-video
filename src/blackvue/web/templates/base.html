@@ -105,7 +105,7 @@
        .page-shell then holds the real page chrome/content, unchanged
        from the old body rule above except it's a child div now
        instead of body itself, so it can sit above both layers via
-       z-index without them clipping to its own 960px-wide column. */
+       z-index without them clipping to its own 1344px-wide column. */
     .page-bg {
       position: fixed; inset: 0; z-index: 0;
       background-image: var(--bg-image);
@@ -206,7 +206,7 @@
     .page-shell {
       position: relative; z-index: 2;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-      max-width: 960px;
+      max-width: 1344px;
       margin: 0 auto;
       padding: 1.5rem;
       min-height: 100%;

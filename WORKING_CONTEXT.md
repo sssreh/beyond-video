@@ -7665,3 +7665,9 @@ Christer, after using the new bv-ls job page: "Your hint talks about lexical dat
 Replaced the false claim on all four with an accurate description of what the prefix expansion actually does: "or a shorter prefix - 2026 matches the whole year, 20260715 matches just that day."
 
 **Verification**: `grep -rn "yesterday" src/blackvue/web/templates/` now returns nothing. Rendered all four edited templates via `jinja2.Environment(loader=FileSystemLoader(...), autoescape=select_autoescape(["html"]))` with `PYTHONPATH=src` set (the first verification attempt crashed on a missing `PYTHONPATH` before importing `blackvue.web.app` for `kind_options`; re-run correctly this time) - all four render cleanly with the new tooltip text present and no leftover trace of the old claim.
+
+## Widen .page-shell 40% (960px -> 1344px)
+
+Christer, after the "yesterday" fix: "no wider page can continue" (do the width change now rather than waiting). `.page-shell`'s `max-width` was 960px; bumped to 1344px (960 * 1.4). Checked first whether this would need any other CSS changes - it doesn't. `.thumb-grid` and `.quick-links` already use `grid-template-columns: repeat(auto-fill/auto-fit, minmax(...), 1fr)`, and `.field-row`/`.checkbox-row` already use flex-wrap, so all of them pack in more columns per row automatically as the container widens; no template or CSS beyond the one `max-width` value needed touching. Also updated the one code comment (near `.page-bg`) that referenced the old "960px-wide column" figure so it doesn't go stale.
+
+**Verification**: confirmed via grep that `.thumb-grid`/`.quick-links` still use `auto-fill`/`auto-fit` grids (nothing to adjust there). Rendered `base.html`, `welcome.html`, `trip_list.html`, and `job_new_bv_ls.html` via the usual Jinja2 approach - all render cleanly and `base.html`'s output contains `max-width: 1344px`.
