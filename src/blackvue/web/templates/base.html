@@ -108,19 +108,19 @@
     }
     .page-tint {
       position: fixed; inset: 0; z-index: 1;
-      /* Tuned down four times from an initial 0.82-0.9, each time on
+      /* Tuned down five times from an initial 0.82-0.9, each time on
          Christer's direct feedback on the actual rendered page - see
          git log for the exact quotes at each step (0.82-0.9 -> 0.4-
-         0.55 -> 0.25-0.4 -> 0.18-0.3 -> this, 0.14-0.24). Panels/
-         tables/etc. still sit on their own solid --panel-bg
+         0.55 -> 0.25-0.4 -> 0.18-0.3 -> 0.14-0.24 -> this, 0.09-0.18).
+         Panels/tables/etc. still sit on their own solid --panel-bg
          regardless, so legibility there doesn't depend on this number
          at all - only the page's own margins/header/tab bar show the
          tint directly. */
       background: linear-gradient(
         to bottom,
-        rgba(var(--bg-rgb), 0.24),
-        rgba(var(--bg-rgb), 0.14) 20%,
-        rgba(var(--bg-rgb), 0.2)
+        rgba(var(--bg-rgb), 0.18),
+        rgba(var(--bg-rgb), 0.09) 20%,
+        rgba(var(--bg-rgb), 0.15)
       );
     }
     .page-shell {
