@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from blackvue.core.camera_config import CameraConfig
+from blackvue.core.camera_config import CameraConfigCache
 from blackvue.core.camera_config import CameraConfigError
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import default_config_dir
@@ -156,3 +157,96 @@ def test_list_camera_ids_does_not_raise_on_a_corrupt_config(tmp_path):
     (tmp_path / "broken.cfg").write_text("this is not valid TOML {{{\n")
 
     assert list_camera_ids(tmp_path) == ["broken"]
+
+
+# ---------------------------------------------------------------------------
+# CameraConfigCache - added for bv-web's archive browser: every thumbnail
+# request, the detail page, and every HTTP range request during video
+# playback resolves a camera id to its config, and that was re-reading and
+# re-parsing the same .cfg file from scratch every time. Same short-TTL
+# pattern as web/trips.py's TripCache and web/archive_browser.py's
+# ArchiveRecordingCache - see this class's own docstring. time.monotonic()
+# is monkeypatched here (rather than a real time.sleep()) to control TTL
+# expiry deterministically and instantly, matching those two caches' tests.
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self, start=0.0):
+        self.value = start
+
+    def __call__(self):
+        return self.value
+
+
+def test_camera_config_cache_reuses_result_within_ttl(tmp_path, monkeypatch):
+    import blackvue.core.camera_config as camera_config_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
+
+    (tmp_path / "Kirby.cfg").write_text('target = "/data/archive"\n')
+
+    cache = CameraConfigCache(ttl_seconds=2.0)
+    first = cache.get(tmp_path, "Kirby")
+
+    # The .cfg changes after the first (real) load - a second get() still
+    # within the TTL should return the exact same cached CameraConfig, not
+    # notice the change yet.
+    (tmp_path / "Kirby.cfg").write_text('target = "/data/other"\n')
+    clock.value += 1.0
+    second = cache.get(tmp_path, "Kirby")
+
+    assert second is first
+    assert second.target == Path("/data/archive")
+
+
+def test_camera_config_cache_reloads_once_ttl_expires(tmp_path, monkeypatch):
+    import blackvue.core.camera_config as camera_config_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
+
+    (tmp_path / "Kirby.cfg").write_text('target = "/data/archive"\n')
+
+    cache = CameraConfigCache(ttl_seconds=2.0)
+    first = cache.get(tmp_path, "Kirby")
+
+    (tmp_path / "Kirby.cfg").write_text('target = "/data/other"\n')
+    clock.value += 2.1
+    second = cache.get(tmp_path, "Kirby")
+
+    assert second is not first
+    assert second.target == Path("/data/other")
+
+
+def test_camera_config_cache_does_not_cache_a_load_failure(tmp_path, monkeypatch):
+    import blackvue.core.camera_config as camera_config_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
+
+    cache = CameraConfigCache(ttl_seconds=2.0)
+
+    with pytest.raises(CameraConfigError):
+        cache.get(tmp_path, "Kirby")
+
+    # No time has passed at all - if the failure had been cached, this
+    # would still raise even though the config now genuinely exists.
+    (tmp_path / "Kirby.cfg").write_text('target = "/data/archive"\n')
+    assert cache.get(tmp_path, "Kirby").target == Path("/data/archive")
+
+
+def test_camera_config_cache_keys_are_per_camera_id(tmp_path, monkeypatch):
+    import blackvue.core.camera_config as camera_config_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
+
+    (tmp_path / "Kirby.cfg").write_text('target = "/data/kirby"\n')
+    (tmp_path / "Volvo.cfg").write_text('target = "/data/volvo"\n')
+
+    cache = CameraConfigCache(ttl_seconds=2.0)
+
+    assert cache.get(tmp_path, "Kirby").target == Path("/data/kirby")
+    assert cache.get(tmp_path, "Volvo").target == Path("/data/volvo")

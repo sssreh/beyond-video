@@ -58,6 +58,7 @@ from .trips import TripCache
 from .trips import scan_trips
 from .users import User
 from .users import UsersConfig
+from ..core.camera_config import CameraConfigCache
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
@@ -97,6 +98,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # trip_cache above, applied to the archive browser's detail/
     # thumbnail/file-serving routes instead of the trip player.
     app.state.archive_recording_cache = ArchiveRecordingCache()
+
+    # See CameraConfigCache's own docstring (core/camera_config.py) -
+    # same reasoning again, one layer further out: every one of those
+    # archive-browser requests also has to resolve which camera's
+    # config to read first, and that resolution was itself being
+    # redone from scratch (a fresh file read + TOML parse) on every
+    # single request.
+    app.state.camera_config_cache = CameraConfigCache()
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -233,7 +242,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         from_ = from_ or None
         until = until or None
 
-        archive_path = _find_camera_archive(camera_id)
+        archive_path = _find_camera_archive(app.state.camera_config_cache, camera_id)
         recordings = scan_archive(archive_path, camera_id)
 
         # An empty `mode` (nothing checked) means "don't filter by
@@ -291,7 +300,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         user: User = Depends(require_login),
     ):
         recording = _find_archive_recording(
-            app.state.archive_recording_cache, camera_id, recording_id
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
         )
         return templates.TemplateResponse(
             request,
@@ -307,7 +319,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         user: User = Depends(require_login),
     ):
         recording = _find_archive_recording(
-            app.state.archive_recording_cache, camera_id, recording_id
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
         )
         path = recording.thumbnail_path(direction)
         if path is None or not path.is_file():
@@ -324,7 +339,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         user: User = Depends(require_login),
     ):
         recording = _find_archive_recording(
-            app.state.archive_recording_cache, camera_id, recording_id
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
         )
         if filename not in recording.known_filenames:
             raise HTTPException(
@@ -473,7 +491,7 @@ def _camera_options() -> list[dict[str, str]]:
     return options
 
 
-def _find_camera_archive(camera_id: str) -> Path:
+def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:
     """Resolve a camera id (from the URL) to its archive directory -
     CameraConfig.target, the directory bv-download writes raw
     recordings to. This is NOT the same thing as bv-export --target
@@ -487,6 +505,10 @@ def _find_camera_archive(camera_id: str) -> Path:
     guard _find_trip() applies to trip_id below. A camera id that
     doesn't have a config file at all (never set up, or a typo) 404s
     the same way a bad trip id does.
+
+    Goes through `cache` (see CameraConfigCache's own docstring in
+    core/camera_config.py) rather than calling load_camera_config()
+    directly.
     """
 
     if (
@@ -499,7 +521,7 @@ def _find_camera_archive(camera_id: str) -> Path:
         )
 
     try:
-        config = load_camera_config(config_path(default_config_dir(), camera_id))
+        config = cache.get(default_config_dir(), camera_id)
     except CameraConfigError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
@@ -509,7 +531,10 @@ def _find_camera_archive(camera_id: str) -> Path:
 
 
 def _find_archive_recording(
-    cache: ArchiveRecordingCache, camera_id: str, recording_id: str
+    recording_cache: ArchiveRecordingCache,
+    camera_config_cache: CameraConfigCache,
+    camera_id: str,
+    recording_id: str,
 ) -> ArchiveRecording:
     """Resolve a (camera id, recording id) pair to an ArchiveRecording,
     404ing if either the camera or the recording within it doesn't
@@ -517,10 +542,12 @@ def _find_archive_recording(
     path-separator/dot-segment guard as everywhere else URL segments
     reach the filesystem.
 
-    Goes through `cache` (see ArchiveRecordingCache's own docstring)
-    rather than calling find_recording() directly - the detail page,
-    its thumbnail, and every HTTP range request while its video plays
-    all resolve the same recording through here."""
+    Goes through `recording_cache` (see ArchiveRecordingCache's own
+    docstring) rather than calling find_recording() directly, and
+    passes `camera_config_cache` through to _find_camera_archive() -
+    the detail page, its thumbnail, and every HTTP range request while
+    its video plays all resolve the same recording (and the same
+    camera config) through here."""
 
     if (
         "/" in recording_id
@@ -531,8 +558,8 @@ def _find_archive_recording(
             status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"
         )
 
-    archive_path = _find_camera_archive(camera_id)
-    recording = cache.get(archive_path, camera_id, recording_id)
+    archive_path = _find_camera_archive(camera_config_cache, camera_id)
+    recording = recording_cache.get(archive_path, camera_id, recording_id)
     if recording is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"

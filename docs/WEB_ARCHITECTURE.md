@@ -98,7 +98,14 @@ src/blackvue/web/
                    short TTL, same pattern as trips.py's TripCache -
                    the detail page/thumbnail/file-serving routes all
                    resolve the same recording through it rather than
-                   re-scanning per request.
+                   re-scanning per request. Those same routes also
+                   resolve a camera id to its archive path via
+                   core/camera_config.py's CameraConfigCache (same
+                   short-TTL pattern again) instead of re-reading and
+                   re-parsing that camera's .cfg on every request -
+                   see that class's own docstring for why it lives in
+                   core/ rather than here, unlike the other two
+                   caches.
     jobs.py         JobRunner/Job/JobStatus - runs bv-config/bv-gps as
                    background threads (in-process, not subprocesses) and
                    tracks each one's output/status/pending-prompt. See

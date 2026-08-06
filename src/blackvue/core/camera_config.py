@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import tomllib
 from dataclasses import dataclass
 from dataclasses import field
@@ -169,6 +170,54 @@ def load_camera_config(path: Path) -> CameraConfig:
         target=Path(data["target"]),
         endpoints=endpoints,
     )
+
+
+class CameraConfigCache:
+    """Caches load_camera_config() results briefly, per camera id -
+    same short-TTL pattern as bv-web's TripCache (web/trips.py) and
+    ArchiveRecordingCache (web/archive_browser.py); see their own
+    docstrings for the full reasoning. Added for bv-web's archive
+    browser specifically: every thumbnail request, the detail page,
+    and every HTTP range request during video playback resolves a
+    camera id to its archive path first (see app.py's
+    _find_camera_archive()), and that was re-reading and re-parsing
+    the same small TOML .cfg file from scratch on every single
+    request, even though it never changes between requests in a
+    burst. Small next to the read_recording() directory-scan bug this
+    followed (see WORKING_CONTEXT.md), but genuine, redundant work.
+
+    Lives here rather than in web/app.py, unlike the other two caches
+    which live next to the functions they wrap - this module is
+    shared with every CLI tool (bv-config, bv-gps, ...), which each
+    run once and should always see a config fresh from disk, not
+    through a caching layer meant for a burst of concurrent HTTP
+    requests. Those callers are unaffected: they keep calling
+    load_camera_config() directly, and simply never construct this
+    class.
+
+    A load_camera_config() failure (CameraConfigError - a missing or
+    corrupt .cfg) is never cached, matching the other two caches'
+    "don't cache a miss" rule: it isn't caught here, so it propagates
+    straight to the caller (which already 404s on it in bv-web)
+    without ever reaching the point where a result would be stored.
+    """
+
+    def __init__(self, ttl_seconds: float = 2.0) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[str, tuple[CameraConfig, float]] = {}
+
+    def get(self, config_dir: Path, id_: str) -> CameraConfig:
+        now = time.monotonic()
+
+        cached = self._entries.get(id_)
+        if cached is not None:
+            config, expires_at = cached
+            if now < expires_at:
+                return config
+
+        config = load_camera_config(config_path(config_dir, id_))
+        self._entries[id_] = (config, now + self._ttl_seconds)
+        return config
 
 
 def _toml_string(value: str) -> str:
