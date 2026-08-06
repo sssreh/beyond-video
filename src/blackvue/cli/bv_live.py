@@ -86,7 +86,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=8100,
         help=(
             "Port to listen on (default: %(default)s - deliberately "
-            "different from bv-web's own default 8000, so both can "
+            "different from bv-web's own default 19373, so both can "
             "run at once)."
         ),
     )

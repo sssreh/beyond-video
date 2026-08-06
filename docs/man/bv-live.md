@@ -40,7 +40,7 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 | `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--host HOST` | Address to listen on. Default: 127.0.0.1 - this is a personal, run-when-you-want-it tool, not meant to sit reachable by anyone else on the network. |
-| `--port PORT` | Port to listen on. Default: 8100 (different from `bv-web`'s own default 8000, so both can run at once). |
+| `--port PORT` | Port to listen on. Default: 8100 (different from `bv-web`'s own default 19373, so both can run at once). |
 | `--map-zoom METERS` | Live map follow-camera radius in meters. Default: 100. |
 | `--gsensor-window SECONDS` | How many seconds of live g-sensor history the scrolling strip shows at once. Default: 60. |
 | `--no-browser` | Don't automatically open a browser window once the server starts - just print the URL. |

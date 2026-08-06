@@ -138,7 +138,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     serve_parser.add_argument(
-        "--port", type=int, default=8000, help="Port to listen on (default: 8000)."
+        "--port",
+        type=int,
+        default=19373,
+        help=(
+            "Port to listen on (default: %(default)s - matches the port "
+            "the Docker deployment's Dockerfile CMD already hardcodes via "
+            "--port, so a native run needs no flag to land on the same "
+            "port bv-web is normally reached at)."
+        ),
     )
 
     adduser_parser = subparsers.add_parser(
