@@ -22,6 +22,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -166,3 +167,60 @@ def scan_trips(target: Path) -> list[TripAssets]:
     ]
     trips.sort(key=lambda trip: trip.label, reverse=True)
     return trips
+
+
+class TripCache:
+    """Caches scan_trip() results briefly, per trip id.
+
+    Exists for one specific request pattern: a video player issues an
+    HTTP range request for every chunk it fetches while seeking or
+    buffering - many per second during active playback - and every
+    one of those hits app.py's trip_file() route, which resolves the
+    same trip_id via _find_trip() on every single call. scan_trip()
+    itself does around nine stat()/open() calls (trip.log, up to
+    three video filenames, a map_zoom_*.mp4 glob, map/gsensor/gpx/
+    srt/lrc checks) against the trip's own folder - cheap in
+    isolation, but repeated identically on every range request in a
+    burst adds up to real, felt latency, especially against a
+    Synology bind-mounted volume where each syscall can cost more
+    than on a plain local disk.
+
+    A short TTL collapses a whole burst of range requests from one
+    seek/buffer event into a single real scan_trip() call, while
+    still refreshing often enough that create_app()'s own documented
+    promise - a trip bv-export finishes writing while bv-web is
+    already running shows up without a restart - still holds: the
+    TTL only ever adds a few seconds of staleness, never a restart
+    requirement. Deliberately scoped to the single-trip lookup
+    _find_trip() uses (trip_detail()/trip_file()), not scan_trips()'s
+    full trip-list scan - the trip list is loaded once per page view,
+    not once per range request, so it has nothing comparable to
+    collapse and is left exactly as fresh as before.
+    """
+
+    def __init__(self, ttl_seconds: float = 2.0) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[str, tuple[TripAssets, float]] = {}
+
+    def get(self, target: Path, trip_id: str) -> TripAssets | None:
+        """Same result as scan_trip(target / trip_id), but reused
+        from cache if it was resolved within the last ttl_seconds."""
+
+        now = time.monotonic()
+
+        cached = self._entries.get(trip_id)
+        if cached is not None:
+            trip, expires_at = cached
+            if now < expires_at:
+                return trip
+
+        trip = scan_trip(target / trip_id)
+        if trip is not None:
+            self._entries[trip_id] = (trip, now + self._ttl_seconds)
+        else:
+            # Don't cache a miss - a trip that doesn't exist yet (a
+            # typo'd id, or a bv-export run that hasn't started
+            # writing trip.log yet) should be re-checked on the very
+            # next request, not held as "not found" for the TTL.
+            self._entries.pop(trip_id, None)
+        return trip

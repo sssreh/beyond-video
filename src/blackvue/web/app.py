@@ -53,7 +53,7 @@ from .auth import require_owner
 from .jobs import Job
 from .jobs import JobRunner
 from .trips import TripAssets
-from .trips import scan_trip
+from .trips import TripCache
 from .trips import scan_trips
 from .users import User
 from .users import UsersConfig
@@ -87,6 +87,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     app.state.users_config = users_config
     app.state.session_store = SessionStore()
     app.state.job_runner = JobRunner()
+    # See TripCache's own docstring: collapses the burst of stat()
+    # calls a video player's HTTP range requests would otherwise
+    # repeat on every single chunk while seeking/buffering.
+    app.state.trip_cache = TripCache()
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -164,7 +168,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def trip_detail(
         request: Request, trip_id: str, user: User = Depends(require_login)
     ):
-        trip = _find_trip(target, trip_id)
+        trip = _find_trip(app.state.trip_cache, target, trip_id)
         return templates.TemplateResponse(
             request, "trip_detail.html", {"user": user, "trip": trip}
         )
@@ -173,7 +177,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def trip_file(
         trip_id: str, filename: str, user: User = Depends(require_login)
     ):
-        trip = _find_trip(target, trip_id)
+        trip = _find_trip(app.state.trip_cache, target, trip_id)
         if filename not in trip.known_filenames:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
@@ -528,13 +532,18 @@ def _find_job(job_runner: JobRunner, job_id: str) -> Job:
     return job
 
 
-def _find_trip(target: Path, trip_id: str) -> TripAssets:
+def _find_trip(cache: TripCache, target: Path, trip_id: str) -> TripAssets:
     """Resolve a trip id (its folder name) to a TripAssets inside
     `target`, 404ing if it doesn't exist or isn't actually a trip
     folder. `trip_id` comes straight from the URL path and is
     therefore untrusted - reject anything that could walk outside
     `target` (a component like ".." or a path separator) before ever
-    touching the filesystem with it."""
+    touching the filesystem with it.
+
+    Goes through `cache` (see TripCache's own docstring) rather than
+    calling scan_trip() directly - trip_file() calls this once per
+    HTTP range request, and a video player issues many of those per
+    second while seeking/buffering."""
 
     if (
         "/" in trip_id
@@ -545,7 +554,7 @@ def _find_trip(target: Path, trip_id: str) -> TripAssets:
             status_code=status.HTTP_404_NOT_FOUND, detail="trip not found"
         )
 
-    trip = scan_trip(target / trip_id)
+    trip = cache.get(target, trip_id)
     if trip is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="trip not found"

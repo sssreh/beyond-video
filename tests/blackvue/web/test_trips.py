@@ -1,3 +1,4 @@
+from blackvue.web.trips import TripCache
 from blackvue.web.trips import scan_trip
 from blackvue.web.trips import scan_trips
 
@@ -155,3 +156,82 @@ def test_scan_trips_sorts_newest_first(tmp_path):
 
 def test_scan_trips_returns_empty_list_for_missing_target(tmp_path):
     assert scan_trips(tmp_path / "does_not_exist") == []
+
+
+# ---------------------------------------------------------------------------
+# TripCache - added so a video player's HTTP range requests (many per
+# second while seeking/buffering) don't each redo scan_trip()'s ~nine
+# stat()/open() calls against the trip's own folder. See its own docstring
+# for why. time.monotonic() is monkeypatched here (rather than a real
+# time.sleep()) to control TTL expiry deterministically and instantly.
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self, start=0.0):
+        self.value = start
+
+    def __call__(self):
+        return self.value
+
+
+def test_trip_cache_reuses_result_within_ttl(tmp_path, monkeypatch):
+    import blackvue.web.trips as trips_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(trips_module.time, "monotonic", clock)
+
+    target = tmp_path / "trips"
+    _write_trip_log(target / "trip_1")
+
+    cache = TripCache(ttl_seconds=2.0)
+    first = cache.get(target, "trip_1")
+
+    # A file appears after the first (real) scan - a second get() still
+    # within the TTL should return the exact same cached TripAssets,
+    # not notice the new file yet.
+    (target / "trip_1" / "front.mp4").write_bytes(b"")
+    clock.value += 1.0
+    second = cache.get(target, "trip_1")
+
+    assert second is first
+    assert second.videos == ()
+
+
+def test_trip_cache_rescans_once_ttl_expires(tmp_path, monkeypatch):
+    import blackvue.web.trips as trips_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(trips_module.time, "monotonic", clock)
+
+    target = tmp_path / "trips"
+    _write_trip_log(target / "trip_1")
+
+    cache = TripCache(ttl_seconds=2.0)
+    first = cache.get(target, "trip_1")
+
+    (target / "trip_1" / "front.mp4").write_bytes(b"")
+    clock.value += 2.1
+    second = cache.get(target, "trip_1")
+
+    assert second is not first
+    assert second.videos == ("front.mp4",)
+
+
+def test_trip_cache_does_not_cache_a_miss(tmp_path, monkeypatch):
+    import blackvue.web.trips as trips_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(trips_module.time, "monotonic", clock)
+
+    target = tmp_path / "trips"
+    target.mkdir()
+
+    cache = TripCache(ttl_seconds=2.0)
+    assert cache.get(target, "trip_1") is None
+
+    # No time has passed at all - if the miss had been cached, this
+    # would still return None even though the trip now genuinely
+    # exists.
+    _write_trip_log(target / "trip_1")
+    assert cache.get(target, "trip_1") is not None
