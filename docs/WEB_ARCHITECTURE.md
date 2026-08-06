@@ -94,6 +94,11 @@ src/blackvue/web/
                    find_recording() uses ArchiveReader's targeted
                    read_recording() rather than a full scan - see
                    "Archive browser" above for why that matters.
+                   ArchiveRecordingCache wraps find_recording() with a
+                   short TTL, same pattern as trips.py's TripCache -
+                   the detail page/thumbnail/file-serving routes all
+                   resolve the same recording through it rather than
+                   re-scanning per request.
     jobs.py         JobRunner/Job/JobStatus - runs bv-config/bv-gps as
                    background threads (in-process, not subprocesses) and
                    tracks each one's output/status/pending-prompt. See

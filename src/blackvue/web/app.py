@@ -41,6 +41,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .archive_browser import ArchiveRecording
+from .archive_browser import ArchiveRecordingCache
 from .archive_browser import filter_recordings
 from .archive_browser import find_recording
 from .archive_browser import group_by_day
@@ -91,6 +92,11 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # calls a video player's HTTP range requests would otherwise
     # repeat on every single chunk while seeking/buffering.
     app.state.trip_cache = TripCache()
+
+    # See ArchiveRecordingCache's own docstring - same reasoning as
+    # trip_cache above, applied to the archive browser's detail/
+    # thumbnail/file-serving routes instead of the trip player.
+    app.state.archive_recording_cache = ArchiveRecordingCache()
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -284,7 +290,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         recording_id: str,
         user: User = Depends(require_login),
     ):
-        recording = _find_archive_recording(camera_id, recording_id)
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache, camera_id, recording_id
+        )
         return templates.TemplateResponse(
             request,
             "archive_recording_detail.html",
@@ -298,7 +306,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         direction: str,
         user: User = Depends(require_login),
     ):
-        recording = _find_archive_recording(camera_id, recording_id)
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache, camera_id, recording_id
+        )
         path = recording.thumbnail_path(direction)
         if path is None or not path.is_file():
             raise HTTPException(
@@ -313,7 +323,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         filename: str,
         user: User = Depends(require_login),
     ):
-        recording = _find_archive_recording(camera_id, recording_id)
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache, camera_id, recording_id
+        )
         if filename not in recording.known_filenames:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
@@ -496,12 +508,19 @@ def _find_camera_archive(camera_id: str) -> Path:
     return config.target
 
 
-def _find_archive_recording(camera_id: str, recording_id: str) -> ArchiveRecording:
+def _find_archive_recording(
+    cache: ArchiveRecordingCache, camera_id: str, recording_id: str
+) -> ArchiveRecording:
     """Resolve a (camera id, recording id) pair to an ArchiveRecording,
     404ing if either the camera or the recording within it doesn't
     exist. `recording_id` is as untrusted as `camera_id` - same
     path-separator/dot-segment guard as everywhere else URL segments
-    reach the filesystem."""
+    reach the filesystem.
+
+    Goes through `cache` (see ArchiveRecordingCache's own docstring)
+    rather than calling find_recording() directly - the detail page,
+    its thumbnail, and every HTTP range request while its video plays
+    all resolve the same recording through here."""
 
     if (
         "/" in recording_id
@@ -513,7 +532,7 @@ def _find_archive_recording(camera_id: str, recording_id: str) -> ArchiveRecordi
         )
 
     archive_path = _find_camera_archive(camera_id)
-    recording = find_recording(archive_path, camera_id, recording_id)
+    recording = cache.get(archive_path, camera_id, recording_id)
     if recording is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"

@@ -25,6 +25,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import itertools
+import time
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
@@ -317,6 +318,56 @@ def find_recording(
         return None
 
     return ArchiveRecording(camera_id=camera_id, recording=recording)
+
+
+class ArchiveRecordingCache:
+    """Caches find_recording() results briefly, per (camera_id,
+    recording_id) pair - mirrors trips.py's TripCache (see its own
+    docstring for the full reasoning) for the same underlying problem
+    on the archive-browser side.
+
+    find_recording() is already a targeted single-recording lookup,
+    not a full scan_archive() (see its own docstring), but a single
+    page view still fires it several times in a burst: once for the
+    detail page itself, once for its thumbnail, and then again for
+    every HTTP range request while a video plays. Each of those redoes
+    the same handful of filesystem calls against the same recording.
+    On a LAN where bv-web's Docker host is the NAS rather than the
+    machine actually watching the video, that repeated per-request
+    cost is what shows up as felt lag on playback and thumbnail loads
+    - the same story that motivated TripCache for trip playback.
+
+    A short TTL (default 2 seconds, same as TripCache) keeps this from
+    masking a recording bv-download is still in the middle of writing
+    - a request just outside the window re-checks the real filesystem.
+    Misses are deliberately NOT cached, matching TripCache, so a bad
+    id or a recording that hasn't finished downloading yet is
+    re-checked on the very next request rather than held as "not
+    found" for the TTL.
+    """
+
+    def __init__(self, ttl_seconds: float = 2.0) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[tuple[str, str], tuple[ArchiveRecording, float]] = {}
+
+    def get(
+        self, archive_path: Path, camera_id: str, recording_id: str
+    ) -> ArchiveRecording | None:
+        now = time.monotonic()
+        key = (camera_id, recording_id)
+
+        cached = self._entries.get(key)
+        if cached is not None:
+            recording, expires_at = cached
+            if now < expires_at:
+                return recording
+
+        recording = find_recording(archive_path, camera_id, recording_id)
+        if recording is not None:
+            self._entries[key] = (recording, now + self._ttl_seconds)
+        else:
+            self._entries.pop(key, None)
+        return recording
 
 
 def group_by_day(

@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import date
 from datetime import datetime
 
+from blackvue.web.archive_browser import ArchiveRecordingCache
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
 from blackvue.web.archive_browser import group_by_day
@@ -383,3 +384,87 @@ def test_filter_recordings_combines_mode_and_time_filters(tmp_path):
     filtered = filter_recordings(recordings, modes={"E"}, time_interval=interval)
 
     assert [r.id for r in filtered] == ["20260715_110000_E"]
+
+
+# ---------------------------------------------------------------------------
+# ArchiveRecordingCache - mirrors trips.py's TripCache (see its own
+# docstring). Added because a recording's detail page, thumbnail, and every
+# HTTP range request while its video plays each re-resolve the same
+# recording via find_recording() - cheap in isolation, but repeated on a LAN
+# where bv-web's Docker host is a different machine than the one playing the
+# video, that adds up to felt lag. time.monotonic() is monkeypatched here
+# (rather than a real time.sleep()) to control TTL expiry deterministically
+# and instantly.
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self, start=0.0):
+        self.value = start
+
+    def __call__(self):
+        return self.value
+
+
+def test_archive_recording_cache_reuses_result_within_ttl(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    cache = ArchiveRecordingCache(ttl_seconds=2.0)
+    first = cache.get(archive, "kirby", "20260715_140212_N")
+
+    # A rear video appears after the first (real) lookup - a second get()
+    # still within the TTL should return the exact same cached
+    # ArchiveRecording, not notice the new file yet.
+    _write(archive, "20260715_140212_NR.mp4")
+    clock.value += 1.0
+    second = cache.get(archive, "kirby", "20260715_140212_N")
+
+    assert second is first
+    assert second.videos == [("Front", "20260715_140212_NF.mp4")]
+
+
+def test_archive_recording_cache_rescans_once_ttl_expires(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    cache = ArchiveRecordingCache(ttl_seconds=2.0)
+    first = cache.get(archive, "kirby", "20260715_140212_N")
+
+    _write(archive, "20260715_140212_NR.mp4")
+    clock.value += 2.1
+    second = cache.get(archive, "kirby", "20260715_140212_N")
+
+    assert second is not first
+    assert second.videos == [
+        ("Front", "20260715_140212_NF.mp4"),
+        ("Rear", "20260715_140212_NR.mp4"),
+    ]
+
+
+def test_archive_recording_cache_does_not_cache_a_miss(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    cache = ArchiveRecordingCache(ttl_seconds=2.0)
+    assert cache.get(archive, "kirby", "20260715_140212_N") is None
+
+    # No time has passed at all - if the miss had been cached, this would
+    # still return None even though the recording now genuinely exists.
+    _write(archive, "20260715_140212_NF.mp4")
+    assert cache.get(archive, "kirby", "20260715_140212_N") is not None
