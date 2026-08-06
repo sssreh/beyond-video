@@ -363,14 +363,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 coordinates = f"{fix.latitude},{fix.longitude}"
                 google_maps_url = f"https://www.google.com/maps?q={coordinates}"
 
-                # Reverse-geocoded and cached next to the camera's own
-                # archive, same one-fetch-then-offline pattern
-                # trip_export.py's trip_info.txt already uses - see
-                # geocoding.load_or_reverse_geocode()'s own docstring.
-                archive_path = _find_camera_archive(
-                    app.state.camera_config_cache, camera_id
-                )
-                geocode_cache_dir = archive_path / ".osm_cache"
+                # Reverse-geocoded and cached under default_config_dir()
+                # - bv-web's own writable scratch space (the same
+                # directory CameraConfigCache/the job runner already
+                # use), NOT next to the camera's archive the way
+                # trip_export.py's trip_info.txt caches (destination.
+                # parent / ".osm_cache"): that convention assumed a
+                # writable archive path, true for bv-cli's container
+                # (which mounts /data/archive read-write) but false for
+                # bv-web's own container - docker-compose.yml mounts
+                # /data/archive read-only there (the archive browser
+                # only ever reads recordings), so writing a cache
+                # anywhere under it 500s with "Read-only file system"
+                # the moment reverse geocoding is actually used. Real
+                # bug hit on Christer's NAS - see WORKING_CONTEXT.md.
+                geocode_cache_dir = default_config_dir() / ".osm_cache"
                 try:
                     address = load_or_reverse_geocode(
                         fix.latitude, fix.longitude, geocode_cache_dir
