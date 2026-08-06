@@ -108,19 +108,19 @@
     }
     .page-tint {
       position: fixed; inset: 0; z-index: 1;
-      /* First pass at these numbers (0.82-0.9) was way too strong -
-         Christer: "I can hardly see anything of the background" -
-         that's almost a flat --bg fill with the photo barely showing
-         through the blur. Dropped substantially so the image actually
-         reads; panels/tables/etc. still sit on their own solid
-         --panel-bg regardless, so legibility there doesn't depend on
-         this number at all - only the page's own margins/header/tab
-         bar show the tint directly. */
+      /* First pass (0.82-0.9) was way too strong - Christer: "I can
+         hardly see anything of the background." Dropped to 0.4-0.55,
+         then Christer again: "better, but a little bit more" (more
+         image, i.e. lower opacity still) - down again to 0.25-0.4.
+         Panels/tables/etc. still sit on their own solid --panel-bg
+         regardless, so legibility there doesn't depend on this number
+         at all - only the page's own margins/header/tab bar show the
+         tint directly. */
       background: linear-gradient(
         to bottom,
-        rgba(var(--bg-rgb), 0.55),
-        rgba(var(--bg-rgb), 0.4) 20%,
-        rgba(var(--bg-rgb), 0.5)
+        rgba(var(--bg-rgb), 0.4),
+        rgba(var(--bg-rgb), 0.25) 20%,
+        rgba(var(--bg-rgb), 0.35)
       );
     }
     .page-shell {
