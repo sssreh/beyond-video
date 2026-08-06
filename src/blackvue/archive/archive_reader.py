@@ -81,42 +81,47 @@ class ArchiveReader:
         """Read a single recording by id, or None if it doesn't exist
         in this archive.
 
-        Unlike read(), this doesn't scandir()/stat() every file in the
-        archive - only a targeted glob for filenames that could
-        possibly belong to this one recording_id (its 17-character
-        prefix). This exists for callers that already know exactly
-        which recording they want and would otherwise pay read()'s
-        full-archive cost on every single lookup - e.g. bv-web's
-        archive browser, which resolves one recording per thumbnail
-        image request and per video-player range request. On a large
-        archive, doing that via read() would make an N-thumbnail page
-        load O(N^2), and a video player making dozens of range
-        requests while seeking would re-scan the whole archive on
-        every one of them.
+        Unlike read(), this never lists the archive directory at all -
+        it only stat()s the small, fixed set of filenames a recording
+        could possibly have, one per ASSETS entry, built by appending
+        each known suffix directly to recording_id.value. This exists
+        for callers that already know exactly which recording they
+        want and would otherwise pay read()'s full-archive cost on
+        every single lookup - e.g. bv-web's archive browser, which
+        resolves one recording per thumbnail image request and per
+        video-player range request. On a large archive, doing that via
+        read() would make an N-thumbnail page load O(N^2), and a video
+        player making dozens of range requests while seeking would
+        re-scan the whole archive on every one of them.
+
+        This used to be implemented as
+        `self._path.glob(f"{recording_id.value}*")`, which reads as
+        "targeted" but isn't: pathlib's glob() still has to list every
+        entry in the directory (an os.scandir() over the parent,
+        filtered by pattern) to find matches - it just skips stat()ing
+        the entries that don't match. On a small archive that's fine,
+        but on a large one it's no cheaper than read()'s own directory
+        listing. This bit for real: on Christer's archive, which has
+        years of unpruned recordings sitting in one flat directory, a
+        single thumbnail request was still slow even in isolation with
+        nothing else competing for the server - the earlier per-
+        recording caches added to bv-web (see WORKING_CONTEXT.md)
+        couldn't help, because the very first lookup of any given
+        recording already paid this cost, and a thumbnail grid asks
+        for a different recording each time. Probing each of the
+        dozen-ish known exact filenames directly turns this into a
+        fixed number of stat()s regardless of archive size - a
+        filesystem can resolve one specific name via its own directory
+        index without reading the whole directory, the same way
+        find_recording() always claimed to work.
         """
 
         recording: Recording | None = None
 
-        try:
-            candidates = self._path.glob(f"{recording_id.value}*")
-        except OSError:
-            return None
+        for suffix, asset in self.ASSETS:
+            path = self._path / f"{recording_id.value}{suffix}"
 
-        for path in candidates:
             if not path.is_file():
-                continue
-
-            # The glob pattern is already an exact prefix match, but
-            # confirm the full parsed id too - a filename that merely
-            # starts with this prefix (rather than being exactly it,
-            # e.g. a differently-shaped name that happens to share the
-            # digits) shouldn't be silently folded into this
-            # recording.
-            if RecordingId.parse(path.name) != recording_id:
-                continue
-
-            asset = self._detect_asset(path.name)
-            if asset is None:
                 continue
 
             if recording is None:

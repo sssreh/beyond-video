@@ -203,3 +203,32 @@ def test_read_recording_computes_correct_total_size(tmp_path):
 
     assert recording is not None
     assert recording.size == 150
+
+
+def test_read_recording_never_lists_the_directory(tmp_path, monkeypatch):
+    # The whole point of read_recording() (see its own docstring on
+    # the glob()-based version this replaced, which read as targeted
+    # but still listed every entry in the directory under the hood):
+    # probing the known exact filenames must never require the OS to
+    # enumerate the directory, since that's exactly the O(archive
+    # size) cost this method exists to avoid. Monkeypatch every
+    # directory-listing primitive to blow up if called at all - a
+    # passing test proves read_recording() really doesn't take that
+    # path, not just that its return value happens to look right.
+    import os
+    from pathlib import Path as PathClass
+
+    (tmp_path / "20260715_140212_NF.mp4").write_bytes(b"x")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("read_recording() must not list the directory")
+
+    monkeypatch.setattr(os, "scandir", _boom)
+    monkeypatch.setattr(PathClass, "glob", _boom)
+    monkeypatch.setattr(PathClass, "iterdir", _boom)
+
+    recording_id = RecordingId.parse("20260715_140212_N")
+    recording = ArchiveReader(tmp_path).read_recording(recording_id)
+
+    assert recording is not None
+    assert recording.has(Asset.FRONT)
