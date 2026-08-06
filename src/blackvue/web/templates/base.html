@@ -41,8 +41,15 @@
          RGB triplet, used below by .page-tint's rgba() overlay since
          CSS can't add alpha to a bare custom-property hex color
          directly. Swapped per-theme by the html[data-theme="dark"]
-         override, same mechanism as every other --* variable here. */
-      --bg-image: url('/static/backgrounds/bg-light.jpg');
+         override, same mechanism as every other --* variable here.
+         The ?v= query param is a manual cache-buster: StaticFiles
+         serves these with Last-Modified but no Cache-Control, so
+         browsers apply heuristic caching and can keep showing a
+         stale image for a plain reload after the file changes on
+         disk (this is exactly what hid the submarine easter egg -
+         see WORKING_CONTEXT.md). Bump the number whenever either
+         JPEG is overwritten. */
+      --bg-image: url('/static/backgrounds/bg-light.jpg?v=2');
       --bg-rgb: 246, 247, 249;
     }
     /* Dark theme override - the original single hardcoded palette
@@ -73,7 +80,7 @@
       --badge-failed-bg: #3a1f1f;
       --badge-failed-text: #ff8080;
       --cancel-border: #7a3a3a;
-      --bg-image: url('/static/backgrounds/bg-dark.jpg');
+      --bg-image: url('/static/backgrounds/bg-dark.jpg?v=2');
       --bg-rgb: 20, 22, 26;
     }
     html, body { height: 100%; }
