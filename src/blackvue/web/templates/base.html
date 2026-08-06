@@ -142,6 +142,24 @@
        by welcome.html, since "untinted" alone still looked washed out
        from the blur. */
     .page-tint--none { opacity: 0; }
+    /* The header title and nav tabs sit directly on top of the tint
+       layer on every page - normally the tint (even at its current
+       faint 0.09-0.18) is enough contrast for them to read against a
+       blurred photo underneath. With .page-tint--none they have nothing
+       behind them at all except a now also-unblurred (.page-bg--sharp)
+       photo, which made them nearly unreadable in light theme
+       (Christer: "Hard to see some text in light mode", after a
+       screenshot showed the title/tabs almost vanishing into a bright
+       rooftop). The ~ combinator only matches .page-shell when it
+       follows a .page-tint--none sibling in the DOM, so this - like the
+       hero text-shadow above - only ever applies to the one page that's
+       turned its own tint off; every other page's header/nav is
+       completely untouched. */
+    .page-tint--none ~ .page-shell header,
+    .page-tint--none ~ .page-shell .tabs .tab,
+    .page-tint--none ~ .page-shell .quick-links-group-label {
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 2px 10px rgba(0, 0, 0, 0.45);
+    }
     .page-shell {
       position: relative; z-index: 2;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
