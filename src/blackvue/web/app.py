@@ -210,6 +210,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         timestamp: str | None = Query(default=None),
         from_: str | None = Query(default=None, alias="from"),
         until: str | None = Query(default=None, alias="until"),
+        videos_only: bool = Query(default=False),
     ):
         # A GET form always submits every named field, even ones the
         # user left blank - an empty text box arrives here as "", not
@@ -255,6 +256,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 recordings,
                 modes=selected_modes or None,
                 time_interval=time_interval,
+                videos_only=videos_only,
             )
 
         days = group_by_day(recordings)
@@ -270,6 +272,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "timestamp_value": timestamp or "",
                 "from_value": from_ or "",
                 "until_value": until or "",
+                "videos_only": videos_only,
                 "error": error,
             },
         )

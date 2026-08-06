@@ -30,9 +30,18 @@
       <label>Until <input type="text" name="until" value="{{ until_value }}" placeholder="20260731" size="14"></label>
     </span>
   </div>
+  <div class="filter-row">
+    <span class="filter-label">Options</span>
+    <span class="filter-modes">
+      <label class="filter-checkbox">
+        <input type="checkbox" name="videos_only" value="1" {% if videos_only %}checked{% endif %}>
+        Show only with videos
+      </label>
+    </span>
+  </div>
   <div class="filter-row filter-actions">
     <button type="submit">Apply</button>
-    {% if selected_modes or timestamp_value or from_value or until_value %}
+    {% if selected_modes or timestamp_value or from_value or until_value or videos_only %}
     <a href="/archive/{{ camera_id }}">Clear filters</a>
     {% endif %}
   </div>
@@ -69,7 +78,7 @@
 </div>
 {% endfor %}
 {% else %}
-{% if selected_modes or timestamp_value or from_value or until_value %}
+{% if selected_modes or timestamp_value or from_value or until_value or videos_only %}
 <p class="empty">No recordings match these filters.</p>
 {% else %}
 <p class="empty">No recordings found in this camera's archive yet.</p>

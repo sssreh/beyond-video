@@ -87,6 +87,10 @@ src/blackvue/web/
                    blackvue.archive.Archive/ArchiveReader rather than
                    scanning the filesystem itself, and
                    lexicaltimeparser.py for the time-range filter.
+                   filter_recordings() also takes videos_only, for the
+                   list page's "Show only with videos" checkbox - it
+                   hides recordings whose ArchiveRecording.has_video is
+                   False (thumbnail downloaded, video never did).
                    find_recording() uses ArchiveReader's targeted
                    read_recording() rather than a full scan - see
                    "Archive browser" above for why that matters.

@@ -225,17 +225,24 @@ def filter_recordings(
     *,
     modes: Collection[str] | None = None,
     time_interval: TimeInterval | None = None,
+    videos_only: bool = False,
 ) -> list[ArchiveRecording]:
-    """Filter an already-scanned recording list by kind letter(s)
-    and/or a lexical timestamp range - the same TimeInterval bv-ls/
-    bv-export/bv-download/bv-generate already filter recordings with
-    (see lexicaltimeparser.py's LexicalTimeParser), applied here for
-    the archive browser's own filter bar instead of a CLI flag.
+    """Filter an already-scanned recording list by kind letter(s),
+    a lexical timestamp range, and/or whether a video actually
+    downloaded - the same TimeInterval bv-ls/bv-export/bv-download/
+    bv-generate already filter recordings with (see
+    lexicaltimeparser.py's LexicalTimeParser), applied here for the
+    archive browser's own filter bar instead of a CLI flag.
 
     `modes=None` means "no mode filter" (every kind shows), not "show
     nothing" - the same convention an unchecked-by-default checkbox
     row implies. `time_interval=None` likewise means no time filter.
-    Order is preserved from the input list (already newest-first from
+    `videos_only=True` hides recordings with no video at all (see
+    ArchiveRecording.has_video's docstring on why a recording can have
+    a thumbnail but no video) - the "Show only with videos" checkbox
+    Christer asked for after the red-cross overlay made those
+    recordings visible but still cluttering the grid. Order is
+    preserved from the input list (already newest-first from
     scan_archive()), so this can run before or after group_by_day()
     depending on what a caller needs.
     """
@@ -244,6 +251,8 @@ def filter_recordings(
         if modes is not None and recording.recording.id.kind not in modes:
             return False
         if time_interval is not None and recording.id not in time_interval:
+            return False
+        if videos_only and not recording.has_video:
             return False
         return True
 

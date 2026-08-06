@@ -336,6 +336,42 @@ def test_filter_recordings_by_exact_timestamp_prefix(tmp_path):
     assert [r.id for r in filtered] == ["20260715_100000_N"]
 
 
+def test_filter_recordings_videos_only_excludes_thumbnail_only_recordings(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_100000_NF.mp4")
+    _write(archive, "20260715_110000_NF.thm")  # thumbnail, no video
+
+    recordings = scan_archive(archive, "kirby")
+    filtered = filter_recordings(recordings, videos_only=True)
+
+    assert [r.id for r in filtered] == ["20260715_100000_N"]
+
+
+def test_filter_recordings_videos_only_false_keeps_everything(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_100000_NF.mp4")
+    _write(archive, "20260715_110000_NF.thm")
+
+    recordings = scan_archive(archive, "kirby")
+
+    assert filter_recordings(recordings, videos_only=False) == recordings
+
+
+def test_filter_recordings_combines_videos_only_with_mode_and_time_filters(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_100000_EF.mp4")
+    _write(archive, "20260715_110000_EF.thm")  # same day/mode, no video
+    _write(archive, "20260716_120000_EF.mp4")  # wrong day
+
+    recordings = scan_archive(archive, "kirby")
+    interval = LexicalTimeParser(timestamp="20260715").parse()
+    filtered = filter_recordings(
+        recordings, modes={"E"}, time_interval=interval, videos_only=True
+    )
+
+    assert [r.id for r in filtered] == ["20260715_100000_E"]
+
+
 def test_filter_recordings_combines_mode_and_time_filters(tmp_path):
     archive = tmp_path / "archive"
     _write(archive, "20260715_100000_NF.mp4")
