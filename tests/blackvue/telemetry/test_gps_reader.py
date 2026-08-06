@@ -163,3 +163,46 @@ def test_read_gps_returns_empty_tuple_for_empty_file(tmp_path):
     path.write_text("")
 
     assert read_gps(path) == ()
+
+
+# ---------------------------------------------------------------------------
+# Malformed field *values* (not just the wrong field count) - regression
+# tests for a real "Internal Server Error" Christer hit on bv-web's archive
+# detail page for an older recording. _parse_rmc()'s docstring always
+# claimed a too-malformed sentence returns None, but only the field-count
+# check actually did that - a coordinate with no decimal point, or a
+# non-numeric speed/course, raised a raw ValueError straight out of
+# read_gps() instead. Every caller (bv-export's _merge_gps(), bv-web's
+# archive_recording_location route) only guards MediaToolError, so this
+# used to be an uncaught crash rather than "skip this one bad sentence."
+# ---------------------------------------------------------------------------
+
+
+def test_read_gps_skips_a_sentence_with_a_malformed_coordinate(tmp_path):
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        # Latitude field has no decimal point - a real coordinate
+        # never looks like this, but corrupted data (e.g. the camera
+        # losing power mid-write) can produce exactly this shape.
+        "[1700000000000]$GPRMC,120000.00,A,4807,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*00\n"
+        "[1700000001000]$GPRMC,120001.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    fixes = read_gps(path)
+
+    # The malformed sentence is skipped entirely, not raised - only the
+    # well-formed second one comes through.
+    assert len(fixes) == 1
+    assert fixes[0].timestamp == datetime.utcfromtimestamp(1700000001.0)
+
+
+def test_read_gps_skips_a_sentence_with_a_non_numeric_speed(tmp_path):
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "notanumber,45.00,010124,,,A*00\n"
+    )
+
+    assert read_gps(path) == ()

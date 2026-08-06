@@ -339,12 +339,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         if recording.gps_path is None:
             error = "This recording has no GPS log."
         else:
-            fix = first_valid_gps_fix(recording.gps_path)
+            # first_valid_gps_fix() calls read_gps(), which raises
+            # MediaToolError on an unreadable .gps file (permissions,
+            # a truncated/corrupt file, etc.) - trip_export.py's own
+            # _merge_gps() guards the exact same read_gps() call the
+            # same way (skip and move on) rather than letting it
+            # propagate, and this route needs the same guard: without
+            # it, a single bad .gps file 500s the page instead of
+            # showing a friendly message.
+            try:
+                fix = first_valid_gps_fix(recording.gps_path)
+            except MediaToolError as exc:
+                fix = None
+                error = f"could not read this recording's GPS log: {exc}"
+
             if fix is None:
-                error = (
-                    "No valid GPS fix found in this recording's GPS log "
-                    "(no signal)."
-                )
+                if error is None:
+                    error = (
+                        "No valid GPS fix found in this recording's GPS "
+                        "log (no signal)."
+                    )
             else:
                 coordinates = f"{fix.latitude},{fix.longitude}"
                 google_maps_url = f"https://www.google.com/maps?q={coordinates}"

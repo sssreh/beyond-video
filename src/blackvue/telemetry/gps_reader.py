@@ -103,7 +103,23 @@ def _nmea_coordinate_to_decimal(value: str, hemisphere: str) -> float:
 
 def _parse_rmc(timestamp_ms: str, sentence: str) -> GpsFix | None:
     """Parse one [ts]$GPRMC,... match into a GpsFix, or None if the
-    sentence is too malformed to use."""
+    sentence is too malformed to use - either the wrong number of
+    fields, or a field that doesn't parse as the number it's
+    supposed to be (a coordinate with no decimal point, a non-numeric
+    speed/course, ...). The latter was a real gap until this docstring's
+    own claim was actually true: a single corrupted sentence -
+    plausible on a recording where the camera lost power mid-write,
+    the same class of real-world corruption this project has already
+    hit elsewhere (see WORKING_CONTEXT.md) - used to raise a raw
+    ValueError straight out of this function instead of being treated
+    like any other malformed line. Every caller (bv-export's own
+    _merge_gps(), and bv-web's archive_recording_location route) only
+    ever guards against MediaToolError, not ValueError, so an
+    unhandled one here would have propagated all the way up as an
+    uncaught exception - a crashed export or a 500 page - rather than
+    just skipping the one bad sentence the way a non-matching line
+    already does.
+    """
 
     body = sentence.split("*", 1)[0].strip()
     fields = body.split(",")
@@ -115,19 +131,22 @@ def _parse_rmc(timestamp_ms: str, sentence: str) -> GpsFix | None:
 
     _, _time, _status, lat, ns, lon, ew, speed_knots, course, _date, _mv, _mvd, mode = fields
 
-    timestamp = datetime.utcfromtimestamp(int(timestamp_ms) / 1000)
-    # See GpsFix.valid's own docstring - deliberately the mode
-    # indicator, not the older `_status` field.
-    valid = mode != "N"
+    try:
+        timestamp = datetime.utcfromtimestamp(int(timestamp_ms) / 1000)
+        # See GpsFix.valid's own docstring - deliberately the mode
+        # indicator, not the older `_status` field.
+        valid = mode != "N"
 
-    latitude = (
-        _nmea_coordinate_to_decimal(lat, ns) if lat and ns else None
-    )
-    longitude = (
-        _nmea_coordinate_to_decimal(lon, ew) if lon and ew else None
-    )
-    speed_kmh = float(speed_knots) * 1.852 if speed_knots else None
-    course_value = float(course) if course else None
+        latitude = (
+            _nmea_coordinate_to_decimal(lat, ns) if lat and ns else None
+        )
+        longitude = (
+            _nmea_coordinate_to_decimal(lon, ew) if lon and ew else None
+        )
+        speed_kmh = float(speed_knots) * 1.852 if speed_knots else None
+        course_value = float(course) if course else None
+    except ValueError:
+        return None
 
     return GpsFix(
         timestamp=timestamp,
