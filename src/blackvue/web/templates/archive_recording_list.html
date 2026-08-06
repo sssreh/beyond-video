@@ -55,8 +55,13 @@
 {% for day, recordings in days %}
 <h3 class="day-heading">{{ day.strftime("%A, %B %d, %Y") }}</h3>
 <div class="thumb-grid">
+  {# Carry this page's own filter query string (mode/date/videos_only)
+     onto each recording link, so the detail page's own back-link
+     (archive_recording_detail.html) can hand it straight back rather
+     than resetting to the unfiltered list - see that template for
+     the other half of this round trip. #}
   {% for recording in recordings %}
-  <a class="thumb-card" href="/archive/{{ camera_id }}/{{ recording.id }}">
+  <a class="thumb-card" href="/archive/{{ camera_id }}/{{ recording.id }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
     <div class="thumb-image-wrap">
       {% if recording.thumbnail_direction %}
       <img class="thumb-image"

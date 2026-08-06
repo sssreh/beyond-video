@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ recording.id }} - Beyond Video{% endblock %}
 {% block content %}
-<p><a href="/archive/{{ camera_id }}">&larr; {{ camera_id }} archive</a></p>
+{# The query string here (if any) is whatever archive_recording_list.html
+   forwarded onto the link that led here - handing it straight back
+   returns to the exact filtered/scrolled-to view instead of resetting
+   Mode/Date/"only with videos" filters. #}
+<p><a href="/archive/{{ camera_id }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">&larr; {{ camera_id }} archive</a></p>
 <h2>{{ recording.id }} <span class="badge">{{ recording.kind_label }}</span></h2>
 <p class="hint">{{ recording.timestamp.strftime("%A, %B %d, %Y %H:%M:%S") }} &middot; {{ recording.size_label }}</p>
 
