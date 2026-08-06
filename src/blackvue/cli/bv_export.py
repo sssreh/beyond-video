@@ -115,6 +115,23 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _default_warn(message: str) -> None:
+    """Default `warn` for `bv_export()`/`_run()` below - real stderr,
+    the CLI's normal error-output contract. Same "every say/warn
+    -taking function defaults to real print/stderr" convention
+    bv_config.py/bv_gps.py/bv_generate.py's own `_run()`s (and
+    bv_generate.py's internal helpers) already use, extended here to
+    `bv_export()` itself (not just a thin `_run()` wrapper around it)
+    so bv-web's job runner (see web/jobs.py) can capture this
+    command's per-trip progress into a job's transcript - a real
+    export can run for many minutes, so unlike bv-config/bv-gps this
+    one especially needs live progress visible in the browser, not
+    just a final result. See bv_gps.py's own `_default_warn` for why
+    this is a named function rather than a lambda."""
+
+    print(message, file=sys.stderr)
+
+
 def _parse_resolution(value: str) -> tuple[int, int]:
     try:
         width_str, height_str = value.lower().split("x")
@@ -405,6 +422,8 @@ def bv_export(
     dry_run: bool = False,
     debug: bool = False,
     command_line: str | None = None,
+    say=print,
+    warn=_default_warn,
 ) -> int:
     """Export every detected trip in `path` to its own folder under
     `target`. Returns 0 on success, 1 if any trip failed.
@@ -628,7 +647,7 @@ def bv_export(
     ]
 
     if not trips:
-        print("bv-export: no recordings found in range - nothing to export.")
+        say("bv-export: no recordings found in range - nothing to export.")
         return 0
 
     target_path = Path(target)
@@ -676,8 +695,8 @@ def bv_export(
                 action = "wipe and rebuild"
             else:
                 action = "update in place"
-            print(f"bv-export: [dry run] would {action} {folder} "
-                  f"({len(trip)} recording(s))")
+            say(f"bv-export: [dry run] would {action} {folder} "
+                f"({len(trip)} recording(s))")
             continue
 
         if folder.exists():
@@ -732,7 +751,7 @@ def bv_export(
                 debug=debug,
             )
         except MediaToolError as exc:
-            print(f"bv-export: {trip.label}: {exc}", file=sys.stderr)
+            warn(f"bv-export: {trip.label}: {exc}")
             exit_code = 1
             continue
 
@@ -747,15 +766,25 @@ def bv_export(
             if written_path is not None
         ] + list(result.text)
 
-        print(f"bv-export: {folder} - {len(written)} file(s) written")
+        say(f"bv-export: {folder} - {len(written)} file(s) written")
 
         for warning in result.warnings:
-            print(f"bv-export: {trip.label}: warning: {warning}", file=sys.stderr)
+            warn(f"bv-export: {trip.label}: warning: {warning}")
 
     return exit_code
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Build bv-export's argument parser and parse `argv` (defaulting
+    to sys.argv[1:] when None, argparse's own convention) - pulled out
+    of main() into its own function, the same parse_args()/main()
+    split every other bv-* CLI in this package already uses (see
+    bv_generate.py's own parse_args() for the identical shape). Lets
+    bv-web's job runner (see web/jobs.py's start_bv_export()) parse a
+    web form's own argv and run bv-export in-process without going
+    through main()'s command_line reconstruction, which assumes a
+    real terminal invocation with a real sys.argv.
+    """
     parser = argparse.ArgumentParser(
         prog="bv-export",
         description=(
@@ -1518,7 +1547,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     # The exact invoking command, written verbatim into every trip's
     # own trip.log (see export_trip()'s docstring) - reconstructed
@@ -1528,55 +1561,109 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = argv if argv is not None else sys.argv[1:]
     command_line = "bv-export " + shlex.join(raw_argv)
 
-    return run_cli("bv-export", lambda: bv_export(
-        path=args.path,
-        target=args.target,
-        prefix=args.prefix,
-        from_=args.from_,
-        until=args.until,
-        timestamp=args.timestamp,
-        max_gap_minutes=args.max_gap_minutes,
-        movement=args.movement,
-        duration=args.duration,
-        duration_heal_archive=args.duration_heal_archive,
-        gap_tolerance_seconds=args.gap_tolerance_seconds,
-        max_parking_duration_minutes=args.max_parking_duration_minutes,
-        render_map=args.render_map,
-        map_icon=args.map_icon,
-        map_zoom_meters=args.map_zoom_meters,
-        render_gsensor=args.render_gsensor,
-        render_gsensor_graph=args.render_gsensor_graph,
-        gsensor_graph_z=args.gsensor_graph_z,
-        stitch_layout=args.stitch_layout if args.stitch else None,
-        stitch_resolution=args.stitch_resolution,
-        stitch_bitrate=args.stitch_bitrate,
-        stitch_scale=args.stitch_scale,
-        stitch_max_width=args.stitch_max_width,
-        stitch_max_height=args.stitch_max_height,
-        stitch_mirror_size=args.stitch_mirror_size,
-        stitch_mirror_radius=args.stitch_mirror_radius,
-        stitch_mirror_zoom=args.stitch_mirror_zoom,
-        stitch_mirror_pan_x=args.stitch_mirror_pan_x,
-        stitch_mirror_pan_y=args.stitch_mirror_pan_y,
-        stitch_mirror_icon=args.stitch_mirror_icon,
-        stitch_map=args.stitch_map if args.stitch else None,
-        stitch_map_side=args.stitch_map_side,
-        stitch_map_size=args.stitch_map_size,
-        stitch_gsensor=args.stitch_gsensor if args.stitch else False,
-        stitch_gsensor_size=args.stitch_gsensor_size,
-        stitch_gsensor_pos=args.stitch_gsensor_pos,
-        stitch_gsensor_xy=args.stitch_gsensor_xy,
-        stitch_graph=args.stitch_graph if args.stitch else False,
-        stitch_graph_side=args.stitch_graph_side,
-        stitch_graph_size=args.stitch_graph_size,
-        stitch_subtitles=args.stitch_subtitles if args.stitch else False,
-        stitch_subtitles_background=args.subtitles_bg,
-        include_parking=args.include_parking,
-        overwrite=args.overwrite,
-        dry_run=args.dry_run,
-        debug=args.debug,
-        command_line=command_line,
-    ))
+    return run_cli("bv-export", lambda: _run(args, command_line=command_line))
+
+
+def _run(
+    args: argparse.Namespace,
+    *,
+    command_line: str | None = None,
+    say=print,
+    warn=_default_warn,
+) -> int:
+    """Run bv-export for already-parsed arguments - the same
+    args-to-`bv_export()`-kwargs mapping `main()` always did, pulled
+    out into its own function so bv-web's job runner (see
+    web/jobs.py's `start_bv_export()`) can call it directly with
+    `parse_args()`-built args, the same shape every other bv-*
+    command's own `_run()` already takes.
+
+    `command_line` defaults to None here (no fabricated shell command
+    for a web-triggered export - jobs.py builds and passes a real one
+    reconstructed from the same argv it used for parse_args(), so it's
+    normally given) rather than being reconstructed from sys.argv the
+    way `main()` does, since there is no real argv for a job that was
+    never actually typed at a shell.
+
+    `bv_export()` itself still raises `SystemExit` for its own two
+    fatal-argument-combination checks (`--duration-heal-archive` with
+    `--no-duration`; an unparseable `--from`/`--until`/`--timestamp`) -
+    deliberately left as-is (see bv_export()'s own tests, which assert
+    this) rather than changed to a `warn()`+return like everywhere
+    else, since that's this function's own already-tested public
+    contract. Caught here instead, right at this one call site, and
+    turned into a normal `warn()`+return-1 - the only place that needs
+    to know about it, so neither a real terminal run through main()
+    (SystemExit already propagates correctly there via run_cli, same
+    as always) nor bv-web's job runner (which must never see a raw
+    SystemExit escape a background thread - see jobs.py's own
+    docstring for why) has to handle it a second time.
+    """
+
+    try:
+        return bv_export(
+            path=args.path,
+            target=args.target,
+            prefix=args.prefix,
+            from_=args.from_,
+            until=args.until,
+            timestamp=args.timestamp,
+            max_gap_minutes=args.max_gap_minutes,
+            movement=args.movement,
+            duration=args.duration,
+            duration_heal_archive=args.duration_heal_archive,
+            gap_tolerance_seconds=args.gap_tolerance_seconds,
+            max_parking_duration_minutes=args.max_parking_duration_minutes,
+            render_map=args.render_map,
+            map_icon=args.map_icon,
+            map_zoom_meters=args.map_zoom_meters,
+            render_gsensor=args.render_gsensor,
+            render_gsensor_graph=args.render_gsensor_graph,
+            gsensor_graph_z=args.gsensor_graph_z,
+            stitch_layout=args.stitch_layout if args.stitch else None,
+            stitch_resolution=args.stitch_resolution,
+            stitch_bitrate=args.stitch_bitrate,
+            stitch_scale=args.stitch_scale,
+            stitch_max_width=args.stitch_max_width,
+            stitch_max_height=args.stitch_max_height,
+            stitch_mirror_size=args.stitch_mirror_size,
+            stitch_mirror_radius=args.stitch_mirror_radius,
+            stitch_mirror_zoom=args.stitch_mirror_zoom,
+            stitch_mirror_pan_x=args.stitch_mirror_pan_x,
+            stitch_mirror_pan_y=args.stitch_mirror_pan_y,
+            stitch_mirror_icon=args.stitch_mirror_icon,
+            stitch_map=args.stitch_map if args.stitch else None,
+            stitch_map_side=args.stitch_map_side,
+            stitch_map_size=args.stitch_map_size,
+            stitch_gsensor=args.stitch_gsensor if args.stitch else False,
+            stitch_gsensor_size=args.stitch_gsensor_size,
+            stitch_gsensor_pos=args.stitch_gsensor_pos,
+            stitch_gsensor_xy=args.stitch_gsensor_xy,
+            stitch_graph=args.stitch_graph if args.stitch else False,
+            stitch_graph_side=args.stitch_graph_side,
+            stitch_graph_size=args.stitch_graph_size,
+            stitch_subtitles=args.stitch_subtitles if args.stitch else False,
+            stitch_subtitles_background=args.subtitles_bg,
+            include_parking=args.include_parking,
+            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+            debug=args.debug,
+            command_line=command_line,
+            say=say,
+            warn=warn,
+        )
+    except SystemExit as exc:
+        # Not warn(f"bv-export: {exc}") - one of the two raise sites
+        # this can only ever be (see this function's own docstring)
+        # already bakes its own "bv-export: " prefix into the message
+        # itself, and the other never had one even when this
+        # propagated all the way to Python's default top-level
+        # SystemExit handler (str(exc) printed verbatim) - adding a
+        # second, universal prefix here would double up the first
+        # case and inconsistently decorate the second, changing
+        # already-real output for no benefit.
+        warn(str(exc))
+        return 1
 
 
 if __name__ == "__main__":

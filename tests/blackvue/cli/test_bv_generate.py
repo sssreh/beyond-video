@@ -1424,7 +1424,7 @@ def test_run_reports_no_recordings_found_for_an_empty_archive(
 ):
     args = parse_args([str(tmp_path), "--extract-audio"])
 
-    exit_code = bv_generate.run(args)
+    exit_code = bv_generate._run(args)
 
     out = capsys.readouterr().out
 

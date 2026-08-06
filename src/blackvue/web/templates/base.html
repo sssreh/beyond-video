@@ -290,6 +290,8 @@
     {% if user.role == "owner" %}
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-config' else '' }}" href="/jobs/bv-config">Set up camera</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-gps' else '' }}" href="/jobs/bv-gps">GPS Current loc</a>
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-generate' else '' }}" href="/jobs/bv-generate">Generate assets</a>
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-export' else '' }}" href="/jobs/bv-export">Export trips</a>
     {% endif %}
   </nav>
   {% endif %}

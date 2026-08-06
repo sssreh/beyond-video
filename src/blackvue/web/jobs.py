@@ -45,6 +45,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import contextlib
+import io
 import queue
 import threading
 import uuid
@@ -55,6 +57,23 @@ from datetime import datetime
 from datetime import timezone
 from enum import Enum
 from pathlib import Path
+
+
+class BvExportArgError(Exception):
+    """Raised by JobRunner.start_bv_export() when bv-export's own
+    parse_args() rejects the argv built from the web form - a bad
+    numeric value out of range, an invalid --stitch-resolution, both
+    --stitch-gsensor-pos and --stitch-gsensor-xy given, and so on.
+
+    argparse only reports this as a raised SystemExit plus a message
+    printed straight to stderr (parser.error() -> print_usage() +
+    exit(2)) - neither is something app.py's route can turn into a
+    re-rendered form on its own, so start_bv_export() catches the
+    SystemExit around its own parse_args() call, captures what
+    argparse printed, and re-raises as this instead. See
+    start_bv_export()'s own docstring for why that one capture is safe
+    despite this module's usual rule against redirecting real
+    stdout/stderr for a job."""
 
 # Sentinel pushed onto a job's answer queue by Job.cancel() to unblock
 # an ask() that's currently waiting - a plain object() rather than a
@@ -237,6 +256,314 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_generate(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        extract_audio: bool,
+        get_duration: bool,
+        transcribe: bool,
+        translate: str | None,
+        language: str | None,
+        model_size: str,
+        diarize: bool,
+        hf_token: str | None,
+        srt: bool,
+        lrc: bool,
+        overwrite: bool,
+        dry_run: bool,
+        username: str,
+    ) -> Job:
+        """Start bv-generate as a job against one already-configured
+        camera's archive - full flag parity with the CLI (Christer's
+        own choice when asked how much of bv-generate/bv-export's
+        surface to expose: "full parity but grouped by required,
+        default and the rest", see job_new_bv_generate.html's own
+        Required/Defaults/Optional groups), unlike bv-config/bv-gps's
+        deliberately curated subset above.
+
+        `archive_path` is resolved by the caller (app.py's route, via
+        the same `_find_camera_archive()` the archive browser already
+        uses) rather than here - camera-id-to-archive-path resolution
+        (including the untrusted-camera_id-in-URL guard) is already an
+        app.py concern for every other archive route, so this method
+        takes the already-resolved Path rather than duplicating that
+        lookup.
+
+        argparse's own cross-field validation (at least one action;
+        --diarize/--srt/--lrc require --transcribe or --translate) is
+        deliberately re-checked by app.py's route *before* this is
+        ever called, so a bad web form re-renders with a friendly
+        error instead of parse_args() raising SystemExit(2) - a
+        subprocess-CLI concern, not something to let escape into a
+        FastAPI route.
+        """
+
+        from ..cli import bv_generate
+
+        argv: list[str] = [str(archive_path)]
+
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if extract_audio:
+            argv.append("--extract-audio")
+        if get_duration:
+            argv.append("--get-duration")
+        if transcribe:
+            argv.append("--transcribe")
+        if translate:
+            argv += ["--translate", translate]
+        if language:
+            argv += ["--language", language]
+        if model_size:
+            argv += ["--model-size", model_size]
+        if diarize:
+            argv.append("--diarize")
+        if hf_token:
+            argv += ["--hf-token", hf_token]
+        if srt:
+            argv.append("--srt")
+        if lrc:
+            argv.append("--lrc")
+        if overwrite:
+            argv.append("--overwrite")
+        if dry_run:
+            argv.append("--dry-run")
+
+        args = bv_generate.parse_args(argv)
+        job = self._new_job(command=f"bv-generate {camera_id}", username=username)
+
+        def run() -> int:
+            say = job.append_output
+            return bv_generate._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
+    def start_bv_export(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        target: Path,
+        prefix: str | None,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        max_gap_minutes: int | None,
+        movement: bool,
+        no_duration: bool,
+        duration_heal_archive: bool,
+        gap_tolerance_seconds: int | None,
+        max_parking_duration_minutes: int | None,
+        render_map: bool,
+        map_icon: str | None,
+        map_zoom_meters: float | None,
+        render_gsensor: bool,
+        render_gsensor_graph: bool,
+        gsensor_graph_z: bool,
+        stitch: bool,
+        stitch_layout: str,
+        stitch_mirror_size: float | None,
+        stitch_mirror_radius: float | None,
+        stitch_mirror_zoom: float | None,
+        stitch_mirror_pan_x: float | None,
+        stitch_mirror_pan_y: float | None,
+        stitch_mirror_icon: str | None,
+        stitch_resolution: str | None,
+        stitch_bitrate: str | None,
+        stitch_scale: float | None,
+        stitch_max_width: int | None,
+        stitch_max_height: int | None,
+        stitch_map: str | None,
+        stitch_map_side: str | None,
+        stitch_map_size: float | None,
+        stitch_gsensor: bool,
+        stitch_gsensor_size: float | None,
+        stitch_gsensor_pos: str | None,
+        stitch_gsensor_xy: str | None,
+        stitch_graph: bool,
+        stitch_graph_side: str | None,
+        stitch_graph_size: float | None,
+        stitch_subtitles: bool,
+        no_subtitles_bg: bool,
+        include_parking: bool,
+        overwrite: bool,
+        dry_run: bool,
+        debug: bool,
+        username: str,
+    ) -> Job:
+        """Start bv-export as a job against one already-configured
+        camera's archive - full CLI parity (every bv-export flag gets
+        its own parameter here), per Christer's own answer when asked
+        how much of bv-export's surface the web form should expose:
+        "full parity but grouped by required, default and the rest".
+
+        `archive_path` is resolved by the caller (app.py's route, via
+        `_find_camera_archive()`) the same way start_bv_generate()
+        already documents. `target` is NOT resolved from the web form
+        at all - it's always `app.state.target`, the exact directory
+        the Trips tab already scans (trips.py's scan_trips()), so a
+        web-triggered export shows up there immediately. Exposing
+        --target as its own field would let the web form write
+        anywhere on the filesystem the bv-web process can reach - the
+        one flag deliberately NOT given full parity, for the same
+        "curated, not an arbitrary filesystem write" reasoning
+        bv-gps's own --host omission already established.
+
+        Building argv here and calling bv_export.parse_args() (like
+        every other start_bv_*() method) means argparse's own `type=`
+        validators (numeric ranges, --stitch-resolution's WIDTHxHEIGHT
+        shape, the --stitch-gsensor-pos/--stitch-gsensor-xy mutually
+        -exclusive group) all still run - bv-export has dozens of
+        these, far more than bv-config/bv-gps/bv-generate combined,
+        so hand-replicating each one as a separate app.py pre-check
+        (the approach start_bv_generate's route uses for its own much
+        smaller 3-condition check) isn't practical here. Instead,
+        parse_args() itself runs under a *synchronous*,
+        single-call-scoped `contextlib.redirect_stderr()` - safe
+        despite this module's own docstring warning against
+        redirecting real stdout/stderr for a job: that warning is
+        about redirecting *for the duration of a background job* while
+        other jobs may be running concurrently in their own threads;
+        this redirect wraps one plain function call, entirely before
+        any Job exists or any thread is spawned, so there is nothing
+        else running that could be affected by it. A validation
+        failure raises BvExportArgError with argparse's own message
+        text (extracted from what would otherwise have only gone to
+        the real terminal) instead of ever creating a Job - app.py's
+        route catches it and re-renders the form, the same
+        friendly-error pattern used for bv-generate's own required
+        -action check.
+        """
+
+        from ..cli import bv_export
+
+        argv: list[str] = [str(archive_path), "--target", str(target)]
+
+        if prefix:
+            argv += ["--prefix", prefix]
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if max_gap_minutes is not None:
+            argv += ["--max-gap", str(max_gap_minutes)]
+        if movement:
+            argv.append("--movement")
+        if no_duration:
+            argv.append("--no-duration")
+        if duration_heal_archive:
+            argv.append("--duration-heal-archive")
+        if gap_tolerance_seconds is not None:
+            argv += ["--gap-tolerance", str(gap_tolerance_seconds)]
+        if max_parking_duration_minutes is not None:
+            argv += ["--max-parking-duration", str(max_parking_duration_minutes)]
+        if render_map:
+            argv.append("--map")
+        if map_icon:
+            argv += ["--map-icon", map_icon]
+        if map_zoom_meters is not None:
+            argv += ["--map-zoom", str(map_zoom_meters)]
+        if render_gsensor:
+            argv.append("--gsensor-video")
+        if render_gsensor_graph:
+            argv.append("--gsensor-graph-video")
+        if gsensor_graph_z:
+            argv.append("--gsensor-graph-z")
+        if stitch:
+            argv.append("--stitch")
+        if stitch_layout:
+            argv += ["--stitch-layout", stitch_layout]
+        if stitch_mirror_size is not None:
+            argv += ["--stitch-mirror-size", str(stitch_mirror_size)]
+        if stitch_mirror_radius is not None:
+            argv += ["--stitch-mirror-radius", str(stitch_mirror_radius)]
+        if stitch_mirror_zoom is not None:
+            argv += ["--stitch-mirror-zoom", str(stitch_mirror_zoom)]
+        if stitch_mirror_pan_x is not None:
+            argv += ["--stitch-mirror-pan-x", str(stitch_mirror_pan_x)]
+        if stitch_mirror_pan_y is not None:
+            argv += ["--stitch-mirror-pan-y", str(stitch_mirror_pan_y)]
+        if stitch_mirror_icon:
+            argv += ["--stitch-mirror-icon", stitch_mirror_icon]
+        if stitch_resolution:
+            argv += ["--stitch-resolution", stitch_resolution]
+        if stitch_bitrate:
+            argv += ["--stitch-bitrate", stitch_bitrate]
+        if stitch_scale is not None:
+            argv += ["--stitch-scale", str(stitch_scale)]
+        if stitch_max_width is not None:
+            argv += ["--stitch-max-width", str(stitch_max_width)]
+        if stitch_max_height is not None:
+            argv += ["--stitch-max-height", str(stitch_max_height)]
+        if stitch_map:
+            argv += ["--stitch-map", stitch_map]
+        if stitch_map_side:
+            argv += ["--stitch-map-side", stitch_map_side]
+        if stitch_map_size is not None:
+            argv += ["--stitch-map-size", str(stitch_map_size)]
+        if stitch_gsensor:
+            argv.append("--stitch-gsensor")
+        if stitch_gsensor_size is not None:
+            argv += ["--stitch-gsensor-size", str(stitch_gsensor_size)]
+        if stitch_gsensor_pos:
+            argv += ["--stitch-gsensor-pos", stitch_gsensor_pos]
+        if stitch_gsensor_xy:
+            argv += ["--stitch-gsensor-xy", stitch_gsensor_xy]
+        if stitch_graph:
+            argv.append("--stitch-graph")
+        if stitch_graph_side:
+            argv += ["--stitch-graph-side", stitch_graph_side]
+        if stitch_graph_size is not None:
+            argv += ["--stitch-graph-size", str(stitch_graph_size)]
+        if stitch_subtitles:
+            argv.append("--stitch-subtitles")
+        if no_subtitles_bg:
+            argv.append("--no-subtitles-bg")
+        if include_parking:
+            argv.append("--include-parking")
+        if overwrite:
+            argv.append("--overwrite")
+        if dry_run:
+            argv.append("--dry-run")
+        if debug:
+            argv.append("--debug")
+
+        stderr_capture = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr_capture):
+                args = bv_export.parse_args(argv)
+        except SystemExit:
+            lines = [
+                line for line in stderr_capture.getvalue().splitlines() if line.strip()
+            ]
+            raise BvExportArgError(
+                lines[-1] if lines else "Invalid bv-export options."
+            )
+
+        command_line = "bv-export " + " ".join(argv)
+        job = self._new_job(command=f"bv-export {camera_id}", username=username)
+
+        def run() -> int:
+            say = job.append_output
+            return bv_export._run(
+                args, command_line=command_line, say=say, warn=say
+            )
+
+        self._spawn(job, run)
+        return job
+
     def answer(self, job_id: str, text: str) -> bool:
         """Feed an answer to a waiting job. Returns False if the job
         doesn't exist or isn't actually waiting (see
@@ -280,7 +607,20 @@ class JobRunner:
                 # "Cancelled." before unblocking ask() - nothing left
                 # to record.
                 return
-            except Exception as exc:  # noqa: BLE001 - report, never crash silently
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 - report, never crash silently
+                # SystemExit alongside the usual Exception: none of
+                # this project's own _run()s should ever let one
+                # escape here (bv_export._run() in particular converts
+                # its own internal SystemExit into a normal return
+                # before this point - see that function's own
+                # docstring for why), but SystemExit subclasses
+                # BaseException, not Exception, so a bare `except
+                # Exception` would silently miss it entirely - the
+                # background thread would just end with this job
+                # stuck showing RUNNING forever, since nothing would
+                # ever set its status. Defense in depth against
+                # exactly that, not a substitute for handling it
+                # properly at the source.
                 job.append_output(f"Error: {exc}")
                 job.set_status(JobStatus.FAILED)
                 return

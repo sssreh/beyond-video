@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Generate assets - Beyond Video{% endblock %}
+{% block content %}
+<h2>Generate assets (bv-generate)</h2>
+<div class="command-help">
+  <p>Extracts audio, computes real-world duration, and transcribes/
+  translates recordings in one camera's archive - the same actions
+  <code>bv-generate</code> runs from the command line. Generated files
+  are written next to their source recording and show up in the
+  archive browser and bv-ls.</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<form method="post" action="/jobs/bv-generate">
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera's archive to generate assets for. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+
+    <label class="field-label">
+      What to generate
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Select at least one. Translate needs a target language code (e.g. sv, es) - filling it in is enough, no checkbox needed alongside it.</span></span>
+    </label>
+    <label class="filter-checkbox">
+      <input type="checkbox" id="extract_audio" name="extract_audio" value="true" style="width: auto; margin: 0;">
+      Extract audio (.aac)
+    </label><br>
+    <label class="filter-checkbox">
+      <input type="checkbox" id="get_duration" name="get_duration" value="true" style="width: auto; margin: 0;">
+      Compute real-world duration (.duration.txt)
+    </label><br>
+    <label class="filter-checkbox">
+      <input type="checkbox" id="transcribe" name="transcribe" value="true" style="width: auto; margin: 0;">
+      Transcribe audio to text (.transcript.txt)
+    </label><br>
+    <label class="field-label" for="translate">
+      Translate to language
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">A language code (e.g. sv, es, fr). Leave blank to skip translation. Implies transcription internally - --transcribe above isn't required alongside it.</span></span>
+    </label>
+    <input type="text" id="translate" name="translate" placeholder="e.g. sv (leave blank to skip)">
+  </div>
+
+  <div class="option-group">
+    <h3>Defaults</h3>
+    <label class="field-label" for="model_size">
+      Whisper model size
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">faster-whisper model size for transcription/translation. Larger models are more accurate but slower.</span></span>
+    </label>
+    <select id="model_size" name="model_size">
+      <option value="tiny">tiny</option>
+      <option value="base">base</option>
+      <option value="small" selected>small</option>
+      <option value="medium">medium</option>
+      <option value="large-v3">large-v3</option>
+    </select>
+
+    <label class="field-label" for="language">
+      Spoken language hint
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Language actually spoken in the recording (e.g. en). Auto-detected if left blank.</span></span>
+    </label>
+    <input type="text" id="language" name="language" placeholder="auto-detected if blank">
+  </div>
+
+  <div class="option-group">
+    <h3>Optional</h3>
+    <label class="field-label" for="from_">
+      From
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward (e.g. 20260715_120000, or a lexical time like "yesterday"). Leave blank for the whole archive.</span></span>
+    </label>
+    <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+
+    <label class="field-label" for="until">
+      Until
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
+    </label>
+    <input type="text" id="until" name="until" placeholder="whole archive if blank">
+
+    <label class="field-label" for="timestamp">
+      Timestamp
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
+    </label>
+    <input type="text" id="timestamp" name="timestamp" placeholder="matches a single recording/day">
+
+    <label class="filter-checkbox">
+      <input type="checkbox" id="diarize" name="diarize" value="true" style="width: auto; margin: 0;">
+      Label speakers (--diarize)
+    </label><br>
+    <label class="field-label" for="hf_token">
+      HuggingFace token
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Required for --diarize's speaker diarization model. Create one at huggingface.co/settings/tokens and accept the model license. Falls back to the server's HF_TOKEN environment variable if left blank.</span></span>
+    </label>
+    <input type="text" id="hf_token" name="hf_token" placeholder="falls back to HF_TOKEN if blank">
+
+    <label class="filter-checkbox">
+      <input type="checkbox" id="srt" name="srt" value="true" style="width: auto; margin: 0;">
+      Also write SRT subtitles
+    </label><br>
+    <label class="filter-checkbox">
+      <input type="checkbox" id="lrc" name="lrc" value="true" style="width: auto; margin: 0;">
+      Also write LRC timestamps
+    </label><br>
+    <label class="filter-checkbox">
+      <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
+      Overwrite files that already exist
+    </label><br>
+    <label class="filter-checkbox">
+      <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
+      Dry run (show what would be generated, generate nothing)
+    </label>
+  </div>
+
+  <button type="submit">Start</button>
+</form>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}

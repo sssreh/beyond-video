@@ -12,11 +12,12 @@ The core of this app is still browse/watch: login (owner/viewer
 roles), the trip list, and a trip detail page with video playback
 (range-request support comes for free from Starlette's own
 FileResponse) plus GPX/SRT/LRC download links. On top of that, the
-owner can now also trigger bv-config and bv-gps as background jobs
-from the browser (see jobs.py for how - a real job-runner
-infrastructure, since either can run for a while and bv-config's
-wizard needs to ask questions back). bv-download/bv-generate/bv-export
-aren't wired in yet - see WORKING_CONTEXT.md for the increment plan.
+owner can now also trigger bv-config, bv-gps, bv-generate, and
+bv-export as background jobs from the browser (see jobs.py for how -
+a real job-runner infrastructure, since any of these can run for a
+while and bv-config's wizard needs to ask questions back).
+bv-download isn't wired in yet - see WORKING_CONTEXT.md for the
+increment plan.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -53,6 +54,7 @@ from .auth import THEME_COOKIE_NAME
 from .auth import SessionStore
 from .auth import require_login
 from .auth import require_owner
+from .jobs import BvExportArgError
 from .jobs import Job
 from .jobs import JobRunner
 from .trips import TripAssets
@@ -519,6 +521,243 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             no_address=no_address,
             username=user.username,
         )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-generate", response_class=HTMLResponse)
+    async def new_bv_generate_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_generate.html",
+            {"user": user, "cameras": _camera_options(), "error": None},
+        )
+
+    @app.post("/jobs/bv-generate")
+    async def new_bv_generate_submit(
+        request: Request,
+        id: str = Form(...),
+        extract_audio: bool = Form(False),
+        get_duration: bool = Form(False),
+        transcribe: bool = Form(False),
+        translate: str = Form(""),
+        language: str = Form(""),
+        model_size: str = Form("small"),
+        diarize: bool = Form(False),
+        hf_token: str = Form(""),
+        srt: bool = Form(False),
+        lrc: bool = Form(False),
+        overwrite: bool = Form(False),
+        dry_run: bool = Form(False),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Blank optional text fields arrive as "" (HTML forms always
+        # send a value for a present <input>, never omit it) - "" and
+        # "not given at all" mean the same thing here, so normalize to
+        # None the same way bv_generate.parse_args() itself defaults
+        # them, rather than passing an empty string through to argv.
+        translate = translate.strip() or None
+        language = language.strip() or None
+        hf_token = hf_token.strip() or None
+        from_ = from_.strip() or None
+        until = until.strip() or None
+        timestamp = timestamp.strip() or None
+
+        # Mirrors bv_generate.parse_args()'s own cross-field checks
+        # (see that module's docstring reasoning in jobs.py's
+        # start_bv_generate) - re-checked here so a bad web form
+        # re-renders with a friendly error instead of parse_args()
+        # raising SystemExit(2) inside this route.
+        error = None
+        if not (extract_audio or get_duration or transcribe or translate):
+            error = (
+                "Select at least one action: extract audio, compute "
+                "duration, transcribe, or translate."
+            )
+        elif diarize and not (transcribe or translate):
+            error = "Label speakers requires transcribe or translate."
+        elif (srt or lrc) and not (transcribe or translate):
+            error = "SRT/LRC require transcribe or translate."
+
+        if error is not None:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_generate.html",
+                {"user": user, "cameras": _camera_options(), "error": error},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        job = app.state.job_runner.start_bv_generate(
+            camera_id=id,
+            archive_path=archive_path,
+            from_=from_,
+            until=until,
+            timestamp=timestamp,
+            extract_audio=extract_audio,
+            get_duration=get_duration,
+            transcribe=transcribe,
+            translate=translate,
+            language=language,
+            model_size=model_size,
+            diarize=diarize,
+            hf_token=hf_token,
+            srt=srt,
+            lrc=lrc,
+            overwrite=overwrite,
+            dry_run=dry_run,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-export", response_class=HTMLResponse)
+    async def new_bv_export_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_export.html",
+            {"user": user, "cameras": _camera_options(), "error": None},
+        )
+
+    @app.post("/jobs/bv-export")
+    async def new_bv_export_submit(
+        request: Request,
+        id: str = Form(...),
+        prefix: str = Form(""),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        max_gap_minutes: str = Form(""),
+        movement: bool = Form(False),
+        no_duration: bool = Form(False),
+        duration_heal_archive: bool = Form(False),
+        gap_tolerance_seconds: str = Form(""),
+        max_parking_duration_minutes: str = Form(""),
+        render_map: bool = Form(False),
+        map_icon: str = Form(""),
+        map_zoom_meters: str = Form(""),
+        render_gsensor: bool = Form(False),
+        render_gsensor_graph: bool = Form(False),
+        gsensor_graph_z: bool = Form(False),
+        stitch: bool = Form(False),
+        stitch_layout: str = Form("auto"),
+        stitch_mirror_size: str = Form("40"),
+        stitch_mirror_radius: str = Form("0"),
+        stitch_mirror_zoom: str = Form("40"),
+        stitch_mirror_pan_x: str = Form("0"),
+        stitch_mirror_pan_y: str = Form("-30"),
+        stitch_mirror_icon: str = Form(""),
+        stitch_resolution: str = Form(""),
+        stitch_bitrate: str = Form(""),
+        stitch_scale: str = Form(""),
+        stitch_max_width: str = Form(""),
+        stitch_max_height: str = Form(""),
+        stitch_map: str = Form(""),
+        stitch_map_side: str = Form(""),
+        stitch_map_size: str = Form(""),
+        stitch_gsensor: bool = Form(False),
+        stitch_gsensor_size: str = Form("15"),
+        stitch_gsensor_pos: str = Form(""),
+        stitch_gsensor_xy: str = Form(""),
+        stitch_graph: bool = Form(False),
+        stitch_graph_side: str = Form(""),
+        stitch_graph_size: str = Form(""),
+        stitch_subtitles: bool = Form(False),
+        no_subtitles_bg: bool = Form(False),
+        include_parking: bool = Form(False),
+        overwrite: bool = Form(False),
+        dry_run: bool = Form(False),
+        debug: bool = Form(False),
+        user: User = Depends(require_owner),
+    ):
+        # Every text/number field arrives as a plain string (HTML forms
+        # always send *something* for a present <input>, even an empty
+        # one) - normalize blank to None uniformly here rather than
+        # parsing each one to int/float in this route. jobs.py's
+        # start_bv_export() just str()s whatever isn't None straight
+        # into argv, so a numeric field's real parsing/range-checking
+        # happens exactly once, inside bv_export.parse_args() itself
+        # (via its own `type=` validators) - not duplicated here and
+        # not left to FastAPI's automatic int/float coercion, which
+        # would 422 on a blank optional field instead of re-rendering
+        # this form the same friendly way an invalid value does (see
+        # BvExportArgError below).
+        def _clean(value: str) -> str | None:
+            value = value.strip()
+            return value or None
+
+        job_runner = app.state.job_runner
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        try:
+            job = job_runner.start_bv_export(
+                camera_id=id,
+                archive_path=archive_path,
+                target=app.state.target,
+                prefix=_clean(prefix),
+                from_=_clean(from_),
+                until=_clean(until),
+                timestamp=_clean(timestamp),
+                max_gap_minutes=_clean(max_gap_minutes),
+                movement=movement,
+                no_duration=no_duration,
+                duration_heal_archive=duration_heal_archive,
+                gap_tolerance_seconds=_clean(gap_tolerance_seconds),
+                max_parking_duration_minutes=_clean(max_parking_duration_minutes),
+                render_map=render_map,
+                map_icon=_clean(map_icon),
+                map_zoom_meters=_clean(map_zoom_meters),
+                render_gsensor=render_gsensor,
+                render_gsensor_graph=render_gsensor_graph,
+                gsensor_graph_z=gsensor_graph_z,
+                stitch=stitch,
+                stitch_layout=_clean(stitch_layout) or "auto",
+                stitch_mirror_size=_clean(stitch_mirror_size),
+                stitch_mirror_radius=_clean(stitch_mirror_radius),
+                stitch_mirror_zoom=_clean(stitch_mirror_zoom),
+                stitch_mirror_pan_x=_clean(stitch_mirror_pan_x),
+                stitch_mirror_pan_y=_clean(stitch_mirror_pan_y),
+                stitch_mirror_icon=_clean(stitch_mirror_icon),
+                stitch_resolution=_clean(stitch_resolution),
+                stitch_bitrate=_clean(stitch_bitrate),
+                stitch_scale=_clean(stitch_scale),
+                stitch_max_width=_clean(stitch_max_width),
+                stitch_max_height=_clean(stitch_max_height),
+                stitch_map=_clean(stitch_map),
+                stitch_map_side=_clean(stitch_map_side),
+                stitch_map_size=_clean(stitch_map_size),
+                stitch_gsensor=stitch_gsensor,
+                stitch_gsensor_size=_clean(stitch_gsensor_size),
+                stitch_gsensor_pos=_clean(stitch_gsensor_pos),
+                stitch_gsensor_xy=_clean(stitch_gsensor_xy),
+                stitch_graph=stitch_graph,
+                stitch_graph_side=_clean(stitch_graph_side),
+                stitch_graph_size=_clean(stitch_graph_size),
+                stitch_subtitles=stitch_subtitles,
+                no_subtitles_bg=no_subtitles_bg,
+                include_parking=include_parking,
+                overwrite=overwrite,
+                dry_run=dry_run,
+                debug=debug,
+                username=user.username,
+            )
+        except BvExportArgError as exc:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_export.html",
+                {"user": user, "cameras": _camera_options(), "error": str(exc)},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         return RedirectResponse(
             url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
         )
