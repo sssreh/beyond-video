@@ -92,7 +92,19 @@ def list_camera_ids(config_dir: Path) -> list[str]:
 def validate_id(id_: str) -> None:
     """Validate a camera system id.
 
-    An id is pure ASCII alphanumeric, at most 128 characters.
+    An id is ASCII alphanumeric plus underscore/hyphen, at most 128
+    characters. Underscore and hyphen were added specifically so a
+    camera's archive can be split into per-year ids like "Kirby_2019"
+    .. "Kirby_2026" (each with its own .cfg and a `target` pointing
+    at that year's own subfolder) - a manual way to shrink an
+    otherwise huge single archive-browser page, on top of (not
+    instead of) archive_recording_list.html's own lazy-loaded
+    thumbnails. Still excludes "/", "\\", space, and anything non-
+    ASCII: the id becomes both a filename (config_path()'s
+    f"{id_}.cfg") and a raw URL path segment (bv-web's
+    /archive/{camera_id}/... routes), so it needs to stay
+    filesystem-safe and URL-safe without escaping - underscore and
+    hyphen are both, the characters excluded here generally aren't.
     """
 
     if not id_:
@@ -103,9 +115,9 @@ def validate_id(id_: str) -> None:
             f"id is too long ({len(id_)} > {MAX_ID_LENGTH} characters)"
         )
 
-    if not id_.isascii() or not id_.isalnum():
+    if not id_.isascii() or not all(c.isalnum() or c in "_-" for c in id_):
         raise CameraConfigError(
-            f"id must be ASCII alphanumeric: {id_!r}"
+            f"id must be ASCII alphanumeric, underscore, or hyphen: {id_!r}"
         )
 
 

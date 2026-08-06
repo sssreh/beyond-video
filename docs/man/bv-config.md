@@ -28,7 +28,7 @@ The wizard asks, in order:
 
 | Argument | Description |
 |---|---|
-| `ID` | Camera system id - an ASCII alphanumeric string, max 128 characters, used everywhere else on the command line (`bv-download ID`, etc.) and as the config's own filename. Distinct from the free-form display **Name** asked by the wizard. |
+| `ID` | Camera system id - ASCII alphanumeric plus `_`/`-`, max 128 characters, used everywhere else on the command line (`bv-download ID`, etc.) and as the config's own filename. Distinct from the free-form display **Name** asked by the wizard. |
 
 ## OPTIONS
 
@@ -42,7 +42,7 @@ The wizard asks, in order:
 | Code | Meaning |
 |---|---|
 | 0 | Config saved successfully. |
-| 1 | `ID` failed validation (not ASCII alphanumeric, too long, etc.) |
+| 1 | `ID` failed validation (not ASCII alphanumeric/`_`/`-`, too long, etc.) |
 | 2 | Config file exists but couldn't be read/parsed. |
 
 ## EXAMPLES

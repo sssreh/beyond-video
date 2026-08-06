@@ -49,14 +49,19 @@ def test_default_config_dir_falls_back_to_home_when_empty(monkeypatch):
 
 @pytest.mark.parametrize(
     "id_",
-    ["", "has space", "has-dash", "kåge", "x" * 129],
+    ["", "has space", "kåge", "x" * 129, "slash/id", "back\\slash"],
 )
 def test_validate_id_rejects(id_):
     with pytest.raises(CameraConfigError):
         validate_id(id_)
 
 
-@pytest.mark.parametrize("id_", ["Kirby123", "x" * 128])
+@pytest.mark.parametrize(
+    "id_",
+    # Underscore/hyphen accepted specifically for per-year camera ids
+    # like "Kirby_2019" - see validate_id()'s own docstring.
+    ["Kirby123", "x" * 128, "Kirby_2019", "Kirby-2019", "_-_"],
+)
 def test_validate_id_accepts(id_):
     validate_id(id_)
 
