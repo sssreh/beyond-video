@@ -61,7 +61,7 @@
       {% if recording.thumbnail_direction %}
       <img class="thumb-image"
            src="/archive/{{ camera_id }}/{{ recording.id }}/thumbnail/{{ recording.thumbnail_direction }}"
-           alt="">
+           alt="" loading="lazy" decoding="async">
       {% else %}
       <div class="thumb-placeholder">No thumbnail</div>
       {% endif %}
