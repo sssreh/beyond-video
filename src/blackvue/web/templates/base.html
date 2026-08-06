@@ -152,12 +152,19 @@
        screenshot showed the title/tabs almost vanishing into a bright
        rooftop). The ~ combinator only matches .page-shell when it
        follows a .page-tint--none sibling in the DOM, so this - like the
-       hero text-shadow above - only ever applies to the one page that's
-       turned its own tint off; every other page's header/nav is
-       completely untouched. */
+       hero text-shadow above - only ever applies to a page that's
+       turned its own tint off (currently welcome.html and login.html);
+       every other page's header/nav is completely untouched.
+       .login-box label/.error are here too, since login.html is the
+       other page opted into .page-tint--none - its plain-text field
+       labels and error message have the exact same "floating directly
+       on the photo, no panel behind them" problem the welcome page's
+       own copy had. */
     .page-tint--none ~ .page-shell header,
     .page-tint--none ~ .page-shell .tabs .tab,
-    .page-tint--none ~ .page-shell .quick-links-group-label {
+    .page-tint--none ~ .page-shell .quick-links-group-label,
+    .page-tint--none ~ .page-shell .login-box label,
+    .page-tint--none ~ .page-shell .error {
       text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 2px 10px rgba(0, 0, 0, 0.45);
     }
     .page-shell {
