@@ -955,7 +955,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # archive browser's filters already use - and resume by
         # dropping it, no different from an ordinary manual reload.
         paused = request.query_params.get("paused") == "1"
-        return templates.TemplateResponse(
+        response = templates.TemplateResponse(
             request,
             "job_detail.html",
             {
@@ -972,6 +972,18 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "paused": paused,
             },
         )
+        # Christer noticed that navigating away from a running job (e.g.
+        # to start bv-ls) and then hitting the browser's Back button
+        # showed stale output until he manually reloaded. That's the
+        # browser's back/forward cache (bfcache) restoring the exact DOM
+        # snapshot from when he left instead of asking the server for
+        # anything - the <meta refresh> above never gets a chance to
+        # fire again since no new page load happens. no-store tells the
+        # browser this response (and therefore Back to it) is never
+        # allowed to come from cache, only from a fresh request - so
+        # Back now shows current status/output the same as a reload.
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/jobs/{job_id}/answer")
     async def job_answer(
