@@ -5,6 +5,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Beyond Video{% endblock %}</title>
+  <link rel="icon" type="image/png" href="/static/logo/favicon.png">
+  <link rel="icon" type="image/x-icon" href="/static/logo/favicon.ico">
   <style>
     /* Light theme - was a single hardcoded dark palette (see
        WORKING_CONTEXT.md); now a set of custom properties so a
@@ -217,12 +219,18 @@
     header {
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: center;
       padding-bottom: 0.75rem;
       margin-bottom: 0;
     }
     header h1 { font-size: 1.25rem; margin: 0; }
-    header h1 a { color: inherit; text-decoration: none; }
+    header h1 a { color: inherit; text-decoration: none; display: block; }
+    /* Christer's gold/black "Beyond Video" wordmark (see WORKING_CONTEXT.md
+       for how it was extracted from a white-background source image into
+       a transparent PNG) replaces the plain text title here. Fixed height
+       so it reads consistently in the header row regardless of viewport;
+       width follows the image's own aspect ratio. */
+    .site-logo { height: 40px; width: auto; display: block; }
     .account-bar { font-size: 0.9rem; color: var(--muted); }
     .account-bar form { display: inline; }
     .account-bar button {
@@ -449,6 +457,10 @@
       padding: 2rem 2.25rem;
       box-sizing: border-box;
     }
+    .welcome-hero-logo {
+      display: block; max-width: 320px; width: 60%; height: auto;
+      margin: 0 auto 1.25rem;
+    }
     .welcome-hero h2 { font-size: 2.1rem; margin: 0 0 0.6rem; }
     .welcome-hero p {
       margin: 0; color: var(--text);
@@ -477,7 +489,7 @@
   <div class="page-tint{% block page_tint_class %}{% endblock %}" aria-hidden="true"></div>
   <div class="page-shell">
   <header>
-    <h1><a href="/">Beyond Video</a></h1>
+    <h1><a href="/"><img class="site-logo" src="/static/logo/beyond-video-logo-small.png" alt="Beyond Video"></a></h1>
     {% if user %}
     <div class="account-bar">
       {{ user.username }} <span class="badge">{{ user.role }}</span>

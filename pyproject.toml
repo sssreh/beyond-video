@@ -89,7 +89,14 @@ bv-live = "blackvue.cli.bv_live:main"
 # base.html's page-bg layer + web/app.py's StaticFiles mount) -
 # same "or a real install silently drops it" lesson as
 # templates/*.html right below.
-"blackvue.web" = ["templates/*.html", "static/backgrounds/*.jpg"]
+# static/logo/*: Christer's "Beyond Video" wordmark (header logo,
+# welcome-page hero image, favicon) - same reasoning again.
+"blackvue.web" = [
+    "templates/*.html",
+    "static/backgrounds/*.jpg",
+    "static/logo/*.png",
+    "static/logo/*.ico",
+]
 # The bundled default --stitch-mirror-icon photo (mirror_icon.py's
 # DEFAULT_MIRROR_ICON_PATH) - same reasoning as templates/*.html
 # above: without this, `pip install .` silently drops it, and the

@@ -4,7 +4,8 @@
 {% block page_tint_class %} page-tint--none{% endblock %}
 {% block content %}
 <div class="welcome-hero">
-  <h2>Welcome to Beyond Video, {{ user.username }}</h2>
+  <img class="welcome-hero-logo" src="/static/logo/beyond-video-logo.png" alt="Beyond Video">
+  <h2>Welcome, {{ user.username }}</h2>
   <p>Beyond Video turns a BlackVue dashcam's raw recordings into finished
   trip footage - maps, transcripts, g-sensor overlays and a stitched
   export - starting from whatever's still sitting on the camera itself.
