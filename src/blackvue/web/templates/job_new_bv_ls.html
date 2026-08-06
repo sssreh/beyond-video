@@ -32,6 +32,13 @@
     <h3>Time range</h3>
     <div class="field-row">
       <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" placeholder="matches a single recording/day">
+      </div>
+      <div class="field">
         <label class="field-label" for="from_">
           From
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward (e.g. 20260715_120000), or a shorter prefix - 2026 matches the whole year, 20260715 matches just that day. Leave blank for the whole archive.</span></span>
@@ -44,13 +51,6 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
         </label>
         <input type="text" id="until" name="until" placeholder="whole archive if blank">
-      </div>
-      <div class="field">
-        <label class="field-label" for="timestamp">
-          Timestamp
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
-        </label>
-        <input type="text" id="timestamp" name="timestamp" placeholder="matches a single recording/day">
       </div>
     </div>
   </div>
