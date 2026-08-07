@@ -25,11 +25,29 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import tomllib
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+
+# Same escape hatch core/camera_config.py's BEYOND_VIDEO_CONFIG_DIR
+# gives default_config_dir(), and for the same reason: bv-web's Docker
+# container has no persistent $HOME (a fresh, empty one baked into the
+# image, recreated on every rebuild/container recreation), so
+# Path.home() below silently lands `bv-web adduser` (run without an
+# explicit --users-file) at /root/.config/beyond-video/web-users.cfg -
+# a path nothing mounts, so the account "succeeds" and then vanishes
+# on the next `docker-compose run`/rebuild, while `serve` (whose
+# Dockerfile CMD always passes --users-file /data/config/web-users.cfg
+# explicitly) looks for accounts at a completely different path and
+# finds none. Confirmed on Christer's NAS: `adduser` created
+# /root/.config/beyond-video/web-users.cfg while `serve` was reading
+# /data/config/web-users.cfg. Setting this in docker-compose.yml's
+# bv-web environment (see its own comment there) makes the two agree
+# by default, with no flag required on either subcommand.
+_USERS_FILE_ENV_VAR = "BEYOND_VIDEO_USERS_FILE"
 
 # OWASP's 2023 guidance for PBKDF2-HMAC-SHA256 is >= 600,000
 # iterations - re-check this number occasionally as hardware gets
@@ -55,8 +73,13 @@ class UsersConfigError(Exception):
 
 
 def default_users_path() -> Path:
-    """Return the default path bv-web's accounts file lives at."""
+    """Return the default path bv-web's accounts file lives at - the
+    BEYOND_VIDEO_USERS_FILE environment variable if set (see its own
+    comment above), otherwise ~/.config/beyond-video/web-users.cfg."""
 
+    override = os.environ.get(_USERS_FILE_ENV_VAR)
+    if override:
+        return Path(override)
     return Path.home() / ".config" / "beyond-video" / "web-users.cfg"
 
 

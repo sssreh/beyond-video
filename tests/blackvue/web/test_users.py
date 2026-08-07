@@ -4,11 +4,50 @@ import pytest
 
 from blackvue.web.users import UsersConfig
 from blackvue.web.users import UsersConfigError
+from blackvue.web.users import default_users_path
 from blackvue.web.users import hash_password
 from blackvue.web.users import load_users_config
 from blackvue.web.users import save_users_config
 from blackvue.web.users import validate_role
 from blackvue.web.users import verify_password
+
+
+# ---------------------------------------------------------------------------
+# default_users_path() - BEYOND_VIDEO_USERS_FILE env var override, added
+# because `bv-web adduser` run without an explicit --users-file flag
+# silently fell back to $HOME/.config/beyond-video/web-users.cfg -
+# /root/.config/... inside bv-web's Docker container, a path nothing mounts
+# - while `serve` read from /data/config/web-users.cfg. Mirrors
+# core/camera_config.py's default_config_dir()/BEYOND_VIDEO_CONFIG_DIR
+# pattern. See web/users.py's own comment on this.
+# ---------------------------------------------------------------------------
+
+
+def test_default_users_path_uses_env_var_override_when_set(monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_USERS_FILE", "/data/config/web-users.cfg")
+
+    assert default_users_path() == Path("/data/config/web-users.cfg")
+
+
+def test_default_users_path_falls_back_to_home_when_unset(monkeypatch):
+    monkeypatch.delenv("BEYOND_VIDEO_USERS_FILE", raising=False)
+
+    assert (
+        default_users_path()
+        == Path.home() / ".config" / "beyond-video" / "web-users.cfg"
+    )
+
+
+def test_default_users_path_falls_back_to_home_when_empty(monkeypatch):
+    # An empty string is falsy - treated the same as unset, not as "use the
+    # current directory" (Path("")'s own surprising meaning) - same
+    # convention default_config_dir() uses.
+    monkeypatch.setenv("BEYOND_VIDEO_USERS_FILE", "")
+
+    assert (
+        default_users_path()
+        == Path.home() / ".config" / "beyond-video" / "web-users.cfg"
+    )
 
 
 def test_hash_password_round_trip():

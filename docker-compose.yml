@@ -24,6 +24,18 @@ services:
       # this, bv-web's container has no persistent $HOME, so it sees
       # zero cameras no matter how many are actually configured.
       - BEYOND_VIDEO_CONFIG_DIR=/data/camera-config
+      # See web/users.py's own comment on this variable: without it,
+      # `bv-web adduser` run without an explicit --users-file flag
+      # falls back to $HOME/.config/beyond-video/web-users.cfg, which
+      # inside this container is /root/.config/... - a path nothing
+      # mounts, so the account "succeeds" and then vanishes on the
+      # next `docker-compose run`/rebuild, while `serve` (which reads
+      # /data/config/web-users.cfg, the ./data/config mount below)
+      # never sees it. Confirmed on Christer's NAS: adduser created
+      # /root/.config/beyond-video/web-users.cfg, serve looked in
+      # /data/config. This makes adduser and serve agree on the same
+      # file by default, with no flag required on either subcommand.
+      - BEYOND_VIDEO_USERS_FILE=/data/config/web-users.cfg
     volumes:
       # The trip archive bv-export writes into (--target). Read-write:
       # bv-web's own job runner can trigger bv-export directly (its

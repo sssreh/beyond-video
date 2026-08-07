@@ -47,5 +47,13 @@ RUN mkdir -p /data/archive /data/trips /data/config /data/camera-config
 
 EXPOSE 19373
 
+# No explicit --users-file here - docker-compose.yml's
+# BEYOND_VIDEO_USERS_FILE environment variable (see web/users.py's own
+# comment on it) already points default_users_path() at
+# /data/config/web-users.cfg, and that same default is what a bare
+# `docker-compose run --rm bv-web adduser ...` (no CMD involved -
+# `run` replaces it with the given command) needs to land on too. A
+# hardcoded flag here only fixed `serve`; the env var fixes both
+# subcommands from one place.
 ENTRYPOINT ["bv-web"]
-CMD ["serve", "/data/trips", "--users-file", "/data/config/web-users.cfg", "--host", "0.0.0.0", "--port", "19373"]
+CMD ["serve", "/data/trips", "--host", "0.0.0.0", "--port", "19373"]

@@ -84,17 +84,17 @@ The `build` step here is slow the first time - `bv-web`'s image now carries the 
 
 Note the hyphen: Synology's Container Manager only puts the old standalone `docker-compose` 1.x CLI on the SSH `$PATH`, not the newer `docker compose` (space) v2 plugin - `docker compose ...` will fail with a confusing `unknown shorthand flag` error rather than a clear "not found." Check which one you have with `docker-compose --version` (v1, hyphenated) vs `docker compose version` (v2 plugin) if unsure; every command in this doc uses the hyphenated form to match Christer's actual NAS.
 
-`bv-web`'s image only installs the `web` extra (fastapi/uvicorn/jinja2) - it does not pull in faster-whisper/pyannote.audio/argostranslate/torch, so this build should be quick (the `bv-cli` image in step 7 is the heavy one). `sudo docker-compose ps` should show `beyond-video-web` as `Up`.
+`sudo docker-compose ps` should show `beyond-video-web` as `Up`.
 
 ## 5. Create your owner account
 
 One-time, over SSH:
 
 ```
-sudo docker-compose run --rm bv-web adduser christer --role owner --users-file /data/config/web-users.cfg
+sudo docker-compose run --rm bv-web adduser christer --role owner
 ```
 
-Prompts for a password twice. This writes `data/config/web-users.cfg` on the host, which survives container rebuilds. Repeat with `--role viewer` later for family members. (`docker-compose run` rather than `docker exec` here since `bv-web`'s main container is running the long-lived `serve` process, which crash-loops if the accounts file is still empty at boot - `run` spins up a separate one-off container from the same image/volumes instead of touching that one.)
+Prompts for a password twice. No `--users-file` flag needed - `docker-compose.yml`'s `BEYOND_VIDEO_USERS_FILE=/data/config/web-users.cfg` environment variable (read by `web/users.py`'s `default_users_path()`) already points both `adduser` and `serve` at the same file by default, so this writes `data/config/web-users.cfg` on the host, which survives container rebuilds. (Without that variable, `adduser` would silently fall back to `$HOME/.config/beyond-video/web-users.cfg` - `/root/.config/...` inside the container, a path nothing mounts, so the account would vanish on the next `docker-compose run` while `serve` never saw it either - this bit Christer once before the variable was added; see `WORKING_CONTEXT.md`.) Repeat with `--role viewer` later for family members. (`docker-compose run` rather than `docker exec` here since `bv-web`'s main container is running the long-lived `serve` process, which crash-loops if the accounts file is still empty at boot - `run` spins up a separate one-off container from the same image/volumes instead of touching that one.)
 
 ## 6. Verify
 
