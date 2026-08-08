@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+## [0.3.0] - 2026-08-08
+
+`bv-web` grew from a read-only trip browser into a control panel for the
+whole pipeline; `bv-export` gained playback-speed control and track-up map
+rotation. Most of the rest of this release is real bugs Christer found
+running the toolkit on his own trips, mostly around Parking-mode footage.
+
+### Added
+
+- `bv-web`: a job runner that can trigger every `bv-*` step from the
+  browser - `bv-config`, `bv-download`, `bv-gps`, `bv-generate`,
+  `bv-export`, and `bv-ls` - with live streaming output and a per-job
+  Cancel button, not just browsing trips `bv-export` had already produced.
+- `bv-web`: an archive browser for the raw `bv-download` output -
+  thumbnail grid, mode and lexical time-range filters, a "show only with
+  videos" toggle, a red-cross overlay on thumbnails missing their video,
+  and a "Show start location" GPS link on trip/recording detail pages.
+- `bv-web`: a welcome landing page (the trip list moved to `/trips`), a
+  full-app background photo (light/dark matched pair) with a manual
+  light/dark theme toggle, and a real Beyond Video logo/wordmark and
+  favicon.
+- `bv-web`: progressive disclosure on the `bv-export` job form -
+  collapsible advanced sections so the common case isn't buried under
+  every flag.
+- `bv-export --parking-speed`: play Parking-mode footage back at an
+  adjustable speed (0.10x-5x) instead of the camera's own real-time pace.
+- `bv-export --map-track-up`: rotate `--map`/`--map-zoom`/`--stitch-map`'s
+  panel so the vehicle's current heading always points "up," like a phone
+  turn-by-turn app, instead of the default fixed north-up orientation.
+  Opt-in - costs real extra render time on the whole-trip overview map
+  specifically.
+- `--prefix` (bv-export's output-filename prefix) now shown on
+  `bv-web`'s Trips list and detail pages.
+
+### Changed
+
+- `bv-web` and `bv-cli`'s separate Docker images merged into one
+  full-toolchain image, simplifying the split-machine (NAS + PC)
+  deployment.
+- `bv-web`'s archive browser and job-detail pages no longer rescan the
+  whole archive on every request (new `ArchiveRecordingCache`/
+  `CameraConfigCache`/`TripCache`) - multi-second page loads on a large
+  archive are back to instant.
+- `map_zoom_METERSm.mp4` now matches the trip's own front/rear video
+  shape instead of always rendering square.
+- The g-sensor graph's opt-in third axis moved from Z to X, matching this
+  project's own axis-meaning relabeling; its `--stitch-graph` panel now
+  defaults to a sensible side/orientation for `top_down` layouts even
+  with no map panel present.
+
+### Fixed
+
+- A container quirk in the camera's own Parking-mode MP4s, repaired at
+  download/export time rather than worked around only in the archive
+  browser - fixes several related issues: Parking-mode recordings not
+  playing back in the archive browser, and front.mp4 duration corruption,
+  audio desync, and vanishing subtitles when Parking footage was
+  concatenated into a trip export (`--include-parking`/`--parking-speed`).
+- An O(frames x fixes) hang in the map-rendering phase (`--map-zoom`) on
+  trips with a long stationary Parking span.
+- Trip folder naming and `trip_info.txt` now match what's actually
+  exported when leading/trailing Parking footage is excluded.
+- A harmless "no configuration snapshot" warning no longer fires on
+  every `bv-export` run.
+- Light-theme readability on the Trips list and archive browser (both
+  were hard to read against the new background photo in light mode).
+- Several smaller `bv-web` fixes: stale job-detail pages after browser
+  Back, an archive filter treating empty From/Until fields as set, a
+  Docker container seeing zero cameras, the archive browser only being
+  mounted for `bv-cli`, `adduser` writing outside the mounted volume, and
+  the geocode cache directory living under a read-only mount.
+
 ## [0.2.0] - 2026-08-04
 
 First release meant for other people to actually try, not just Christer's own
