@@ -31,6 +31,18 @@
       return;
     }
 
+    // ?u=y forces the sub to appear this load, bypassing the roll below -
+    // Christer wanted a guaranteed way to pull it up on demand instead of
+    // reloading repeatedly until the dice cooperate (asked for it as
+    // "?U=Y" - so both the key and the value need to match case-
+    // insensitively; URLSearchParams.get() alone is only case-insensitive
+    // on the value side, not the key, hence lowercasing the whole query
+    // string first rather than just the looked-up value). Deliberately
+    // checked after the prefers-reduced-motion return above rather than
+    // before it: reduced motion is an accessibility preference, not a
+    // "did it show up" toggle, so it still wins even with ?u=y set.
+    var forceSpawn = new URLSearchParams(window.location.search.toLowerCase()).get("u") === "y";
+
     // Event-driven, not continuous: Christer's refinement after seeing
     // the first pass - rather than a background timer that keeps
     // re-triggering every few minutes for as long as a tab stays open,
@@ -40,7 +52,7 @@
     // both simpler than a recurring scheduler and a closer match to
     // "most users will never notice it on their first visit" (most
     // *visits*, not just most of a single long-lived one).
-    if (Math.random() > 0.20) return;
+    if (!forceSpawn && Math.random() > 0.20) return;
 
     var ctx = canvas.getContext("2d");
 
@@ -75,6 +87,15 @@
     var HULL_TOWER = isDark ? "rgb(120, 145, 176)" : "rgb(46, 50, 56)";
     var RIPPLE = isDark ? "rgba(150, 180, 205, ALPHA)" : "rgba(170, 195, 215, ALPHA)";
     var PERISCOPE = isDark ? "rgba(210, 214, 200, ALPHA)" : "rgba(230, 230, 210, ALPHA)";
+    // Christer, after seeing it live: "It was a little obvious in dark
+    // theme, please tone it down a little." The lighter steel-blue hull
+    // above is what makes it register against near-pure-black water at
+    // all - once visible, it reads more strongly than the light theme's
+    // own more naturally camouflaged version does. Rather than re-tuning
+    // the colors again, scale every alpha value down for dark only, so
+    // the already-right light theme stays untouched.
+    var VISIBILITY = isDark ? 0.55 : 1;
+    var HULL_ALPHA = 0.92 * VISIBILITY;
 
     function ripple(alpha) { return RIPPLE.replace("ALPHA", alpha); }
     function periscope(alpha) { return PERISCOPE.replace("ALPHA", alpha); }
@@ -221,10 +242,10 @@
         clear();
         wakePoints.forEach(function (w) {
           var age = t - w.born;
-          drawRipple(w.x, w.y, 3 + age * 140, Math.max(0, 55 - age * 220), 1);
+          drawRipple(w.x, w.y, 3 + age * 140, Math.max(0, (55 - age * 220) * VISIBILITY), 1);
         });
-        drawHull(p.x, p.y, heading, p.scale, 0.92, 0);
-        drawPeriscope(p.x, p.y, p.scale, 0.92);
+        drawHull(p.x, p.y, heading, p.scale, HULL_ALPHA, 0);
+        drawPeriscope(p.x, p.y, p.scale, HULL_ALPHA);
       }, function () {
         diveAt(to, heading);
       });
@@ -236,8 +257,8 @@
         var et = ease(t);
         clear();
         var ringR = 4 + et * 46;
-        drawRipple(p0.x, p0.y, ringR * p0.scale, Math.max(0, 200 * (1 - t)), 2);
-        drawHull(p0.x, p0.y, heading, p0.scale, 0.92 * (1 - et), 7 * et);
+        drawRipple(p0.x, p0.y, ringR * p0.scale, Math.max(0, 200 * (1 - t) * VISIBILITY), 2);
+        drawHull(p0.x, p0.y, heading, p0.scale, HULL_ALPHA * (1 - et), 7 * et);
       }, function () {
         hiddenDrift(point);
       });
@@ -265,9 +286,9 @@
         clear();
         var ringR = 4 + (1 - et) * 46;
         var ringA = t < 0.5 ? 180 * t : 180 * (1 - t) * 2;
-        drawRipple(p0.x, p0.y, ringR * p0.scale, Math.max(0, ringA), 2);
-        drawHull(p0.x, p0.y, 0.4, p0.scale, 0.92 * et, 7 * (1 - et));
-        drawPeriscope(p0.x, p0.y, p0.scale, Math.max(0, 0.92 * et - 0.15));
+        drawRipple(p0.x, p0.y, ringR * p0.scale, Math.max(0, ringA * VISIBILITY), 2);
+        drawHull(p0.x, p0.y, 0.4, p0.scale, HULL_ALPHA * et, 7 * (1 - et));
+        drawPeriscope(p0.x, p0.y, p0.scale, Math.max(0, HULL_ALPHA * et - 0.15 * VISIBILITY));
       }, function () {
         holdAt(point);
       });
@@ -278,9 +299,9 @@
       animatePhase(HOLD_MS, function (t) {
         clear();
         var bob = Math.sin(t * Math.PI * 2) * 1.2;
-        drawRipple(p0.x, p0.y + bob, 6 * p0.scale, 40, 1);
-        drawHull(p0.x, p0.y + bob, 0.4, p0.scale, 0.92, 0);
-        drawPeriscope(p0.x, p0.y + bob, p0.scale, 0.92);
+        drawRipple(p0.x, p0.y + bob, 6 * p0.scale, 40 * VISIBILITY, 1);
+        drawHull(p0.x, p0.y + bob, 0.4, p0.scale, HULL_ALPHA, 0);
+        drawPeriscope(p0.x, p0.y + bob, p0.scale, HULL_ALPHA);
       }, function () {
         // One-shot, not a repeating cycle: fades out and stops here.
         // The next sighting is a different page load's own fresh
