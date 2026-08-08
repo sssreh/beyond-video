@@ -208,7 +208,7 @@ Without `--overwrite`: an interactive run asks once whether to wipe or keep exis
 
 ## OUTPUT
 
-Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` under `--target`, containing (depending on flags):
+Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` under `--target`, containing (depending on flags). `STARTTIMESTAMP`/`ENDTIMESTAMP` (and trip_info.txt's own "Started"/"Ended" lines, below) match whatever actually ends up in `front.mp4`/`rear.mp4`: without `--include-parking`, a leading or trailing Parking recording is skipped for this purpose too, not just left out of the video itself - otherwise the folder name/trip_info.txt would claim a wider time range than the exported video actually covers.
 
 | File | Written by |
 |---|---|

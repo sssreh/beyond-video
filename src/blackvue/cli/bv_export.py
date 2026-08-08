@@ -686,7 +686,9 @@ def bv_export(
             for recording in trip:
                 load_or_compute_duration(recording)
 
-        folder = target_path / folder_name_for_trip(trip, prefix)
+        folder = target_path / folder_name_for_trip(
+            trip, prefix, include_parking=include_parking,
+        )
 
         if dry_run:
             if not folder.exists():

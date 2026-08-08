@@ -226,6 +226,79 @@ def test_folder_name_for_trip_with_and_without_prefix():
     )
 
 
+def test_folder_name_for_trip_uses_full_boundary_when_parking_is_included():
+    # include_parking defaults to True - trip.label's own existing
+    # behavior, unchanged - so a leading Parking recording's start
+    # still opens the folder name, matching front.mp4/rear.mp4 which
+    # will actually include it.
+    leading_parking = Recording(id=RecordingId("20260715_093000_P"))
+    driving = Recording(id=RecordingId("20260715_100000_N"))
+    trip = Trip((leading_parking, driving))
+
+    assert folder_name_for_trip(trip, None) == (
+        "trip_20260715_093000_20260715_100000"
+    )
+    assert folder_name_for_trip(trip, None, include_parking=True) == (
+        "trip_20260715_093000_20260715_100000"
+    )
+
+
+def test_folder_name_for_trip_skips_leading_parking_when_excluded():
+    # Christer, on a real export: "the name of the trip includes the
+    # start of the parking video, but in the [stitch].mp4 the parking
+    # is not included unless we specify --include-parking" -
+    # include_parking=False (the default bv-export behavior) must
+    # make the folder name match what's actually in front.mp4/rear.mp4
+    # instead: the first *non*-Parking recording's own start.
+    leading_parking = Recording(id=RecordingId("20260715_093000_P"))
+    driving = Recording(id=RecordingId("20260715_100000_N"))
+    trip = Trip((leading_parking, driving))
+
+    assert folder_name_for_trip(trip, None, include_parking=False) == (
+        "trip_20260715_100000_20260715_100000"
+    )
+
+
+def test_folder_name_for_trip_skips_trailing_parking_when_excluded():
+    driving = Recording(id=RecordingId("20260715_100000_N"))
+    trailing_parking = Recording(id=RecordingId("20260715_110000_P"))
+    trip = Trip((driving, trailing_parking))
+
+    assert folder_name_for_trip(trip, None, include_parking=False) == (
+        "trip_20260715_100000_20260715_100000"
+    )
+
+
+def test_folder_name_for_trip_uses_real_duration_of_last_non_parking_recording():
+    driving_start = Recording(id=RecordingId("20260715_100000_N"))
+    driving_end = Recording(id=RecordingId("20260715_100500_N"))
+    trailing_parking = Recording(id=RecordingId("20260715_110000_P"))
+
+    def duration(recording):
+        return 42.0 if recording is driving_end else None
+
+    trip = Trip(
+        (driving_start, driving_end, trailing_parking),
+        recording_duration=duration,
+    )
+
+    assert folder_name_for_trip(trip, None, include_parking=False) == (
+        "trip_20260715_100000_20260715_100542"
+    )
+
+
+def test_folder_name_for_trip_falls_back_to_full_boundary_when_all_parking():
+    # No non-Parking recording exists at all - nothing narrower to
+    # fall back to, so the full (Parking-inclusive) boundary is used
+    # even with include_parking=False.
+    only_parking = Recording(id=RecordingId("20260715_093000_P"))
+    trip = Trip((only_parking,))
+
+    assert folder_name_for_trip(trip, None, include_parking=False) == (
+        folder_name_for_trip(trip, None, include_parking=True)
+    )
+
+
 def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trip_export_module, "load_or_reverse_geocode", _fake_geocode
@@ -317,6 +390,50 @@ def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
     assert "End location: 1 Fake Street, Fake City" in trip_info_text
 
     assert result.warnings == ()
+
+
+def test_export_trip_info_start_matches_content_when_leading_parking_excluded(
+    tmp_path, monkeypatch,
+):
+    # Christer: "the name of the trip includes the start of the
+    # parking video, but in the [stitch].mp4 the parking is not
+    # included unless we specify --include-parking." trip_info.txt's
+    # own "Started:" line is the same category of claim as the folder
+    # name - it must match front.mp4's real content too, not the
+    # trip's full (Parking-inclusive) detected boundary.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_reverse_geocode", _fake_geocode
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    parking_front = source_dir / "parking_front.mp4"
+    driving_front = source_dir / "driving_front.mp4"
+    _make_video(parking_front, 1.0)
+    _make_video(driving_front, 1.0)
+
+    leading_parking = Recording(
+        id=RecordingId("20260720_093000_P"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, parking_front)},
+    )
+    driving = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, driving_front)},
+    )
+    trip = Trip((leading_parking, driving))
+
+    # include_parking defaults to False, matching bv-export's own CLI
+    # default - the Parking recording is left out of front.mp4.
+    result = export_trip(trip, dest_dir)
+
+    assert result.front_video.exists()
+    assert round(_video_duration(result.front_video)) == 1  # driving only
+
+    trip_info_text = result.trip_info.read_text(encoding="utf-8")
+    assert "Started: 2026-07-20 10:00:00" in trip_info_text
+    assert "2026-07-20 09:30:00" not in trip_info_text
 
 
 def test_export_trip_concatenates_front_rear_audio_independently(

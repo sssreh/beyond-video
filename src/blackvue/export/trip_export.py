@@ -98,15 +98,81 @@ class ExportResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
-def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
+def _content_timestamps(
+    trip: Trip, *, include_parking: bool,
+) -> tuple[datetime, datetime]:
+    """Return the (start, end) timestamps that actually bound this
+    trip's exported front/rear video content.
+
+    `trip.start_timestamp`/`trip.end_timestamp` themselves when
+    `include_parking` is True - every recording, Parking or not, ends
+    up in the video, so the trip's own real detected boundary is
+    exactly right. But when `include_parking` is False (the default),
+    a leading or trailing Parking recording is left out of
+    front.mp4/rear.mp4 entirely (see `_concatenate_asset()`'s own
+    docstring) - so this returns the first/last *non*-Parking
+    recording's own boundary instead. Christer, on a real export: "the
+    name of the trip includes the start of the parking video, but in
+    the [stitch].mp4 the parking is not included unless we specify
+    --include-parking" - the folder name (and trip_info.txt's own
+    "Started"/"Ended" lines) otherwise claimed a wider time range than
+    what the exported video actually covers.
+
+    Deliberately doesn't touch `trip.label` itself (used by bv-ls's
+    --trips listing) or trip.gpx's own name (`write_gpx(...,
+    name=trip.label)`) - both describe the trip as *detected*, and
+    trip.gpx's own content already covers every recording's GPS data
+    regardless of `include_parking` (GPS/g-sensor were never gated
+    behind that flag to begin with, only video/audio content was), so
+    trip.gpx's full-boundary name is already consistent with what's
+    actually inside it.
+
+    Falls back to the full trip boundary when every recording in the
+    trip is Parking-mode - this trip's own video would be empty
+    either way, so there's no narrower boundary that means anything
+    (a vanishingly rare case given trip detection is built around
+    driving/front-video recordings).
+    """
+
+    if include_parking:
+        return trip.start_timestamp, trip.end_timestamp
+
+    non_parking = [r for r in trip.recordings if not r.id.is_parking]
+    if not non_parking:
+        return trip.start_timestamp, trip.end_timestamp
+
+    start = non_parking[0].id.timestamp
+    last = non_parking[-1]
+    duration_seconds = (
+        trip.recording_duration(last) if trip.recording_duration else None
+    )
+    if duration_seconds is not None:
+        end = last.id.timestamp + timedelta(seconds=duration_seconds)
+    else:
+        end = last.id.timestamp
+    return start, end
+
+
+def folder_name_for_trip(
+    trip: Trip, prefix: str | None, *, include_parking: bool = True,
+) -> str:
     """Return the subfolder name bv-export uses for a trip, e.g.
     'Holiday_trip_20260715_133458_20260715_141235' when prefix is
     'Holiday', or just 'trip_20260715_133458_20260715_141235' with no
-    prefix."""
+    prefix.
 
+    `include_parking` defaults to True (trip.label's own full-boundary
+    behavior, unchanged) - pass the export's real `include_parking`
+    value to get a folder name that matches what actually ends up in
+    front.mp4/rear.mp4 instead (see `_content_timestamps()`'s own
+    docstring for why these can otherwise disagree).
+    """
+
+    start, end = _content_timestamps(trip, include_parking=include_parking)
+    label = f"trip_{start:%Y%m%d_%H%M%S}_{end:%Y%m%d_%H%M%S}"
     if prefix:
-        return f"{prefix}_{trip.label}"
-    return trip.label
+        return f"{prefix}_{label}"
+    return label
 
 
 # Below this, a front/rear duration difference is treated as
@@ -1604,11 +1670,14 @@ def export_trip(
                 warnings.append(f"trip info: could not geocode end location: {exc}")
                 log.warning(f"trip info: could not geocode end location: {exc}")
 
+    content_start, content_end = _content_timestamps(
+        trip, include_parking=include_parking,
+    )
     write_trip_info(
         info_path,
-        duration=trip.duration,
-        start_timestamp=trip.start_timestamp,
-        end_timestamp=trip.end_timestamp,
+        duration=content_end - content_start,
+        start_timestamp=content_start,
+        end_timestamp=content_end,
         stats=stats,
         start_address=start_address,
         end_address=end_address,
