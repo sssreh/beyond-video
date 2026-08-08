@@ -9,7 +9,10 @@
   <tbody>
     {% for trip in trips %}
     <tr>
-      <td><a href="/trips/{{ trip.id }}">{{ trip.label }}</a></td>
+      <td>
+        <a href="/trips/{{ trip.id }}">{{ trip.label }}</a>
+        {% if trip.prefix %}<span class="badge">{{ trip.prefix }}</span>{% endif %}
+      </td>
       <td>{{ trip.primary_video or "-" }}</td>
       <td>
         {% if trip.map_video %}<span class="badge">map</span>{% endif %}

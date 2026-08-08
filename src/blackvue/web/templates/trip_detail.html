@@ -2,7 +2,7 @@
 {% block title %}{{ trip.label }} - Beyond Video{% endblock %}
 {% block content %}
 <p><a href="/trips">&larr; All trips</a></p>
-<h2>{{ trip.label }}</h2>
+<h2>{{ trip.label }}{% if trip.prefix %} <span class="badge">{{ trip.prefix }}</span>{% endif %}</h2>
 
 {% if trip.primary_video %}
 <video controls preload="metadata" src="/trips/{{ trip.id }}/files/{{ trip.primary_video }}"></video>

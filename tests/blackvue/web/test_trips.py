@@ -33,6 +33,38 @@ def test_scan_trip_reads_label_from_trip_log(tmp_path):
     assert trip.id == folder.name
 
 
+def test_scan_trip_derives_prefix_from_folder_name_vs_label(tmp_path):
+    folder = tmp_path / "Holiday_trip_20260715_133458_20260715_141235"
+    _write_trip_log(folder, label="trip_20260715_133458_20260715_141235")
+
+    trip = scan_trip(folder)
+
+    assert trip.prefix == "Holiday"
+
+
+def test_scan_trip_prefix_is_none_without_one(tmp_path):
+    folder = tmp_path / "trip_20260715_133458_20260715_141235"
+    _write_trip_log(folder, label="trip_20260715_133458_20260715_141235")
+
+    trip = scan_trip(folder)
+
+    assert trip.prefix is None
+
+
+def test_scan_trip_prefix_is_none_when_folder_name_falls_back_to_label(tmp_path):
+    # _read_trip_label() failed to parse trip.log, so label just
+    # became folder.name itself (see the fallback test below) -
+    # there's no real label to diff the folder name against, so
+    # prefix must not be invented from nothing.
+    folder = tmp_path / "trip_20260715_133458_20260715_141235"
+    folder.mkdir()
+    (folder / "trip.log").write_text("garbage, not a real trip.log\n")
+
+    trip = scan_trip(folder)
+
+    assert trip.prefix is None
+
+
 def test_scan_trip_falls_back_to_folder_name_if_log_is_unparseable(tmp_path):
     folder = tmp_path / "trip_20260715_133458_20260715_141235"
     folder.mkdir()

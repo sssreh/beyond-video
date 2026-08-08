@@ -84,6 +84,30 @@ class TripAssets:
         return self.videos[0] if self.videos else None
 
     @property
+    def prefix(self) -> str | None:
+        """The --prefix bv-export was given for this trip, or None if
+        it was exported without one.
+
+        folder_name_for_trip() (export/trip_export.py) always builds
+        the folder name as either just `label` or `f"{prefix}_{label}"`
+        - never anything else - so the prefix is recovered by
+        stripping the trailing "_{label}" off the folder name, the
+        same label already read straight from trip.log rather than
+        re-derived from the folder name (see the module docstring and
+        _TRIP_LABEL_RE above). Nothing before "--prefix" surfaced this
+        anywhere in bv-web: the folder name (trip.id) is the only
+        place it's visible, and nobody reads raw folder names off a
+        NAS share day to day."""
+
+        suffix = f"_{self.label}"
+        folder_name = self.folder.name
+        if folder_name == self.label:
+            return None
+        if folder_name.endswith(suffix):
+            return folder_name[: -len(suffix)] or None
+        return None
+
+    @property
     def known_filenames(self) -> frozenset[str]:
         """Every filename trip_file() is allowed to serve for this
         trip - the web app's file-serving route checks against this
