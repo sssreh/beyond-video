@@ -1626,8 +1626,23 @@ def export_trip(
     # front.mp4 in place rather than losing it, the same "don't take
     # good footage down with a secondary failure" spirit as
     # _concatenate_asset()'s own per-source readability handling.
+    #
+    # The temp dir is created inside front_video's own parent
+    # directory (dir=...), not the OS default (tempfile's usual
+    # C:\Users\...\AppData\Local\Temp on Windows). Exports commonly
+    # land on a different drive/network share than the OS temp
+    # location (e.g. Z:\data\trips\...), and Path.replace() (os.
+    # rename/os.replace) cannot move a file across drives on Windows -
+    # confirmed by Christer hitting exactly that: "The system cannot
+    # move the file to a different disk drive:
+    # C:\Users\...\Temp\bv_export_mux_.../front_with_audio.mp4".
+    # Building the temp file on the same drive as the destination up
+    # front keeps the final swap a same-volume rename, which always
+    # succeeds.
     if front_video is not None and audio is not None:
-        with tempfile.TemporaryDirectory(prefix="bv_export_mux_") as mux_dir:
+        with tempfile.TemporaryDirectory(
+            prefix=".bv_export_mux_", dir=front_video.parent
+        ) as mux_dir:
             muxed = Path(mux_dir) / "front_with_audio.mp4"
             try:
                 mux_audio_track(front_video, audio, muxed)
