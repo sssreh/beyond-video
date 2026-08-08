@@ -801,6 +801,42 @@ def test_main_leaves_map_zoom_as_none_when_the_flag_is_absent(
     assert captured["map_zoom_meters"] is None
 
 
+def test_main_forwards_map_track_up_flag(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--map", "--map-track-up"])
+
+    assert captured["map_track_up"] is True
+
+
+def test_main_defaults_map_track_up_to_false(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--map"])
+
+    assert captured["map_track_up"] is False
+
+
 def test_bv_export_stitch_flag_produces_a_composed_video(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()

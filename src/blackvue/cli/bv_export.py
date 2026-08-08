@@ -437,6 +437,7 @@ def bv_export(
     render_map: bool = False,
     map_icon: str | Path | None = None,
     map_zoom_meters: float | None = None,
+    map_track_up: bool = False,
     render_gsensor: bool = False,
     render_gsensor_graph: bool = False,
     gsensor_graph_x: bool = False,
@@ -781,6 +782,7 @@ def bv_export(
                 map_cache_dir=map_cache_dir,
                 map_icon=map_icon_path,
                 map_zoom_meters=map_zoom_meters,
+                map_track_up=map_track_up,
                 render_gsensor=render_gsensor,
                 render_gsensor_graph=render_gsensor_graph,
                 gsensor_graph_x=gsensor_graph_x,
@@ -1104,6 +1106,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "whole-trip overview, and independent of it (works with or "
             "without --map given too). Defaults to "
             f"{DEFAULT_ZOOM_RADIUS_METERS:g}m if given with no value."
+        ),
+    )
+
+    parser.add_argument(
+        "--map-track-up",
+        dest="map_track_up",
+        action="store_true",
+        help=(
+            "Rotate --map and/or --map-zoom so the vehicle's current "
+            "heading always points 'up' on screen, like a phone "
+            "turn-by-turn app, instead of the default fixed north-up "
+            "orientation. One switch for both - applies to whichever "
+            "of --map/--map-zoom is given (meaningless alone). Costs "
+            "real extra render time on --map specifically: its normal "
+            "static overview draws the whole road network once and "
+            "reuses it for every frame, but a rotating scene needs a "
+            "fresh redraw whenever the heading changes. Doesn't affect "
+            "--stitch-map's own embedded panel."
         ),
     )
 
@@ -1701,6 +1721,7 @@ def _run(
             render_map=args.render_map,
             map_icon=args.map_icon,
             map_zoom_meters=args.map_zoom_meters,
+            map_track_up=args.map_track_up,
             render_gsensor=args.render_gsensor,
             render_gsensor_graph=args.render_gsensor_graph,
             gsensor_graph_x=args.gsensor_graph_x,

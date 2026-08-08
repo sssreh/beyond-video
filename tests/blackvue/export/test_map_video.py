@@ -332,6 +332,110 @@ def test_render_map_video_skips_the_base_image_when_zoomed(tmp_path, monkeypatch
     assert all(image is None for image in captured_base_images)
 
 
+def test_render_map_video_skips_the_base_image_when_track_up(tmp_path, monkeypatch):
+    # Task #512: track_up rotates the whole scene per-frame by the
+    # current heading, so a single cached base image (drawn once for a
+    # fixed, unrotated scene) can't be reused - same reasoning as the
+    # zoomed-mode test above, but triggered by track_up alone even
+    # though bbox is still static/non-zoomed here.
+    def fail_render_base_map(*_args, **_kwargs):
+        raise AssertionError("render_base_map() should not be called when track_up")
+
+    captured_base_images = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_base_images.append(kwargs.get("base_image"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_base_map", fail_render_base_map)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2, track_up=True,
+    )
+
+    assert len(captured_base_images) >= 2
+    assert all(image is None for image in captured_base_images)
+
+
+def test_render_map_video_forwards_track_up_to_render_frame_visual(
+    tmp_path, monkeypatch
+):
+    captured_track_up = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_track_up.append(kwargs.get("track_up"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2, track_up=True,
+    )
+
+    assert captured_track_up
+    assert all(value is True for value in captured_track_up)
+
+
+def test_render_map_video_defaults_track_up_to_false(tmp_path, monkeypatch):
+    captured_track_up = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_track_up.append(kwargs.get("track_up"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert captured_track_up
+    assert all(value is False for value in captured_track_up)
+
+
 def test_render_map_video_stays_fast_with_many_roads_in_static_mode(tmp_path):
     # End-to-end regression guard (real render_base_map()/render_frame()
     # calls, no mocking) for the bug above: with the fix, road cost is

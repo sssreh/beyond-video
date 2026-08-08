@@ -13,7 +13,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
           [--include-parking] [--parking-speed SPEED]
-          [--map] [--map-icon PATH] [--map-zoom [METERS]]
+          [--map] [--map-icon PATH] [--map-zoom [METERS]] [--map-track-up]
           [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-x]
           [--stitch] [--stitch-layout LAYOUT]
           [--stitch-mirror-size PERCENT] [--stitch-mirror-radius PERCENT]
@@ -117,6 +117,7 @@ An earlier version of this only trimmed a recording once its own front/rear gap 
 | `--map` | Render `map.mp4`: a static whole-trip route/position/speed overlay on an OpenStreetMap basemap. **Off by default** - first fetch of an area's roads needs network (cached under `--target/.osm_cache` afterward), and rendering adds real time. |
 | `--map-icon PATH` | Use a custom image (ideally a transparent PNG pointing "up") as the position marker. Applies to `--map` and `--map-zoom` alike. Default: a bundled red car icon - pass the literal value `none` to use a plain rotating arrow instead, or a path to use your own image. Whatever image is used (bundled or custom) is rendered at half its own source resolution, so the marker reads as a small position indicator rather than dominating the frame. |
 | `--map-zoom [METERS]` | Render `map_zoom_METERSm.mp4`: a scrolling "follow camera" view, real-world half-width `METERS` (default 120 if given with no value). Independent of `--map` - works with or without it. |
+| `--map-track-up` | Rotate `--map` and/or `--map-zoom` so the vehicle's current heading always points "up" on screen, like a phone turn-by-turn app, instead of the default fixed north-up orientation. One switch for both - applies to whichever of `--map`/`--map-zoom` is given (meaningless alone, and does nothing without GPS heading data). **Off by default**, and costs real extra render time on `--map` specifically: its normal static overview draws the whole road network once and reuses that single frame for the entire video, but a rotating scene has to be redrawn from scratch every time the heading changes. Doesn't affect `--stitch-map`'s own embedded panel, which stays north-up. |
 
 `map.mp4` is always square. `map_zoom_METERSm.mp4` isn't: it matches the trip's front (or rear, if no front) video's own frame - full height for a north-south trip, full width for an east-west one, using the same geometry check `--stitch-map`'s embedded panel and `--stitch-layout auto` both use - rather than rendering as a square and getting letterboxed or cropped down the line.
 

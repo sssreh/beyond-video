@@ -432,6 +432,7 @@ class JobRunner:
         render_map: bool,
         map_icon: str | None,
         map_zoom_meters: float | None,
+        map_track_up: bool,
         render_gsensor: bool,
         render_gsensor_graph: bool,
         gsensor_graph_x: bool,
@@ -540,6 +541,8 @@ class JobRunner:
             argv += ["--map-icon", map_icon]
         if map_zoom_meters is not None:
             argv += ["--map-zoom", str(map_zoom_meters)]
+        if map_track_up:
+            argv.append("--map-track-up")
         if render_gsensor:
             argv.append("--gsensor-video")
         if render_gsensor_graph:

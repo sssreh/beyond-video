@@ -434,12 +434,31 @@ def render_map_video(
     video_start: datetime | None = None,
     video_duration_seconds: float | None = None,
     recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
+    track_up: bool = False,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
     speed, and timestamp, drawn against `roads` and `areas` (water/
     green polygons, see osm_roads.py) - `areas` defaults to empty and
     is entirely optional, same as `roads` was before this existed.
+
+    `track_up` (default False, task #512, Christer: "Could we let the
+    maps (booth of them) rotate as the car turns, instead of having
+    north at the top") rotates every frame's whole projected scene -
+    roads, areas, route, and marker position, via
+    map_render.render_frame_visual()'s own `track_up` handling - so the
+    vehicle's current heading always points "up" instead of true north.
+    Applies to both the static overview (`zoom_meters=None`) and the
+    zoomed follow-camera (`zoom_meters` given) modes; in the static
+    case it also disables the whole-render `base_image` reuse this
+    function otherwise relies on (see the `base_image` local below),
+    since a cached background was drawn for a fixed, unrotated scene
+    and can't be shared across frames whose rotation now changes with
+    every heading change - a real (opt-in) cost, not free like the
+    default north-up render. No effect on frames with no heading
+    available (a stationary/single-fix span) - those fall back to the
+    plain unrotated draw, same as map_render.py's own no-heading
+    fallback.
 
     `bbox` frames the whole trip at once by default (a static
     overview, the same every frame). `zoom_meters`, if given, switches
@@ -585,10 +604,15 @@ def render_map_video(
     # instead. Follow-camera (`--map-zoom`) mode gets a fresh bbox/
     # road-set every frame, so there's no single base image to
     # precompute - stays None there, and render_frame() falls back to
-    # its own per-frame road drawing.
+    # its own per-frame road drawing. `track_up` also forces this to
+    # None even in static mode - a cached base image was drawn once for
+    # a fixed, unrotated scene, and track-up needs a fresh rotation
+    # (and therefore a fresh road/area redraw) on every frame whose
+    # heading differs from the last, so there's nothing safe to reuse
+    # (see this function's own `track_up` docstring paragraph).
     base_image = (
         None
-        if zoom_meters is not None
+        if zoom_meters is not None or track_up
         else render_base_map(bbox, roads, areas=areas, width=width, height=height)
     )
 
@@ -745,6 +769,7 @@ def render_map_video(
                     width=width,
                     height=height,
                     base_image=base_image,
+                    track_up=track_up,
                 )
                 cached_visual = visual
                 cached_signature = signature

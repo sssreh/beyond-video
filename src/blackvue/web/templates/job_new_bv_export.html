@@ -164,6 +164,13 @@
         <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" placeholder="skip">
       </div>
     </div>
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="map_track_up" name="map_track_up" value="true" style="width: auto; margin: 0;">
+        Rotate map(s) to vehicle heading (track-up) instead of north-up
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Applies to both Include map and the follow-camera radius above - the vehicle's current heading always points "up" on screen, like a phone turn-by-turn app. Costs extra render time on the whole-trip overview map specifically.</span></span>
+      </label>
+    </div>
   </details>
 
   <details class="option-group" id="advanced-gsensor">

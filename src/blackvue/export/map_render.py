@@ -227,6 +227,42 @@ def _project(
     return x, y
 
 
+def _rotate_point(
+    point: tuple[float, float],
+    center: tuple[float, float],
+    angle_degrees: float,
+) -> tuple[float, float]:
+    """Rotate `point` by `angle_degrees` around `center`, in pixel space
+    (+x right, +y down, same axes _project() and everything drawn from
+    it already use).
+
+    Track-up rotation (task #512, Christer: "Could we let the maps
+    (booth of them) rotate as the car turns, instead of having north at
+    the top") works by rotating every projected point - roads, areas,
+    the route line, and the marker's own position - by the negative of
+    the current heading before drawing anything, so whichever direction
+    the vehicle is currently facing always ends up pointing "up" on
+    screen. Passing `angle_degrees=-heading_degrees` for a point whose
+    un-rotated bearing from `center` was exactly `heading_degrees` puts
+    it straight above `center` - the same derivation _paste_marker_image()/
+    _arrow_points() already rely on for the marker glyph alone (compass
+    heading clockwise from north, negated because rotating the *scene*
+    by -heading is what makes that heading read as "up", vs. those two
+    functions instead rotating the *glyph* itself to point at heading
+    against a fixed, unrotated scene). See render_frame_visual()'s own
+    `track_up` handling for how the two combine without double-rotating
+    the marker glyph on top of an already-rotated scene.
+    """
+
+    angle = math.radians(angle_degrees)
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    x, y = point[0] - center[0], point[1] - center[1]
+    return (
+        center[0] + x * cos_a - y * sin_a,
+        center[1] + x * sin_a + y * cos_a,
+    )
+
+
 def _arrow_points(
     center: tuple[float, float],
     heading_degrees: float,
@@ -485,11 +521,31 @@ def render_frame_visual(
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
     base_image: Image.Image | None = None,
+    track_up: bool = False,
 ) -> Image.Image:
     """Render everything in a map-overlay frame that depends only on
     position/route/roads - background, roads, areas, the route driven
     so far, and the position marker - but *not* the timestamp/speed
     text or the live-GPS badge (see compose_frame_overlay() for those).
+
+    `track_up` (default False, task #512): when True and `heading` is
+    known, every projected point (roads, areas, the route line, and the
+    marker's own position) is rotated around the frame's own center by
+    `-heading` via `_rotate_point()`, so the vehicle's current heading
+    always points "up" on screen instead of true north - the same
+    convention phone turn-by-turn apps default to. The marker glyph
+    itself is drawn pointing straight up in this mode (its own rotation
+    would otherwise double up with the scene rotation it's now sitting
+    inside) rather than at `heading` against a fixed north-up scene.
+    Requires `base_image=None` when combined with a static (whole-trip)
+    `bbox`, since a cached base image was drawn for one specific
+    rotation (none) and can't be reused once rotation changes every
+    frame - render_map_video() enforces this by not building/passing a
+    base_image at all whenever `track_up` is on, even in its normally-
+    cached static overview mode (see that module's own `track_up`
+    handling). No effect when `heading` is None (nothing to rotate
+    to) - same "falls back to the unrotated/no-arrow behavior" spirit
+    as the marker's own heading=None fallback below.
 
     Split out of what used to be all of render_frame() so
     render_map_video() can cache and reuse this (expensive: background
@@ -518,8 +574,22 @@ def render_frame_visual(
         image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
 
+    rotate_scene = track_up and heading is not None
+    center = (width / 2, height / 2)
+
     def proj(lat: float, lon: float) -> tuple[float, float]:
-        return _project(lat, lon, bbox, width, height, margin)
+        point = _project(lat, lon, bbox, width, height, margin)
+        if rotate_scene:
+            return _rotate_point(point, center, -heading)
+        return point
+
+    # In track-up mode the *scene* itself is already rotated so the
+    # current heading reads as "up" (via `proj` above) - the marker
+    # glyph then just needs to point straight up (heading 0) rather
+    # than at `heading` again, or it would visibly over-rotate, always
+    # pointing off to one side instead of always forward. Left as
+    # `heading` unchanged in the normal (non-track-up) case.
+    marker_heading = 0.0 if rotate_scene else heading
 
     if base_image is None:
         for area in areas:
@@ -538,10 +608,10 @@ def render_frame_visual(
         point = proj(*position)
 
         if marker_image is not None:
-            _paste_marker_image(image, marker_image, point, heading)
-        elif heading is not None:
+            _paste_marker_image(image, marker_image, point, marker_heading)
+        elif marker_heading is not None:
             draw.polygon(
-                _arrow_points(point, heading),
+                _arrow_points(point, marker_heading),
                 fill=MARKER_FILL_COLOR,
                 outline=MARKER_OUTLINE_COLOR,
                 width=2,
@@ -612,10 +682,14 @@ def render_frame(
     height: int = DEFAULT_HEIGHT,
     margin: int = DEFAULT_MARGIN_PX,
     base_image: Image.Image | None = None,
+    track_up: bool = False,
 ) -> Image.Image:
     """Render one map-overlay frame: background roads, the route
     driven so far, a position marker, and an optional speed/timestamp
     text overlay in the corner.
+
+    `track_up` is forwarded straight to render_frame_visual() - see its
+    own docstring.
 
     The position marker is an arrow rotated to `heading` (compass
     degrees, clockwise from north) when `heading` is given, `marker_image`
@@ -664,7 +738,7 @@ def render_frame(
         bbox, roads, route_points, position,
         areas=areas, heading=heading, marker_image=marker_image,
         show_marker=show_marker, width=width, height=height,
-        margin=margin, base_image=base_image,
+        margin=margin, base_image=base_image, track_up=track_up,
     )
     return compose_frame_overlay(
         visual,

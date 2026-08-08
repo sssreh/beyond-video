@@ -1389,6 +1389,7 @@ def _render_map_variant(
     video_start: datetime | None = None,
     video_duration_seconds: float | None = None,
     recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
+    track_up: bool = False,
     log: TripLog | None = None,
 ) -> Path | None:
     """Render one map video (either the static map.mp4 or a zoomed
@@ -1396,6 +1397,11 @@ def _render_map_variant(
     failed export) on any image-loading or ffmpeg problem - the rest
     of the trip's export is still worth having even if this one
     output couldn't be built.
+
+    `track_up` (task #512) is forwarded straight to
+    map_video.render_map_video() - see its own docstring for what it
+    does and why it costs more in this function's static (non-zoom)
+    case specifically.
 
     `width`/`height`, if given, are forwarded straight to
     render_map_video() in place of its own square 640x640 default -
@@ -1440,6 +1446,7 @@ def _render_map_variant(
             video_start=video_start,
             video_duration_seconds=video_duration_seconds,
             recording_breakpoints=recording_breakpoints,
+            track_up=track_up,
             **render_kwargs,
         )
     except MediaToolError as exc:
@@ -1514,6 +1521,7 @@ def export_trip(
     map_cache_dir: Path | None = None,
     map_icon: Path | None = None,
     map_zoom_meters: float | None = None,
+    map_track_up: bool = False,
     render_gsensor: bool = False,
     render_gsensor_graph: bool = False,
     gsensor_graph_x: bool = False,
@@ -1570,6 +1578,19 @@ def export_trip(
     current position every frame (see map_video.render_map_video()).
     `render_map` and `map_zoom_meters` can be used separately or
     together - together, both files get rendered.
+
+    `map_track_up` (default False, task #512, Christer: "Could we let
+    the maps (booth of them) rotate as the car turns, instead of having
+    north at the top") applies to both map.mp4 and map_zoom_*m.mp4 when
+    either/both are being rendered - one switch for both, since
+    Christer asked for both together rather than picking one. Forwarded
+    straight to `_render_map_variant()`/`render_map_video()`'s own
+    `track_up` - see that function's docstring for what it actually
+    does (rotates the whole projected scene, not just the marker) and
+    the real render-time cost it adds specifically to map.mp4's
+    otherwise-cached static overview. No effect on --stitch-map's own
+    embedded panel (`stitch_map` below) - that's a separate render
+    Christer's request didn't ask about.
 
     `map_cache_dir` is where fetched OSM road data is cached between
     trips/runs (defaults to a `.osm_cache`
@@ -2267,6 +2288,7 @@ def export_trip(
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
                     recording_breakpoints=recording_breakpoints,
+                    track_up=map_track_up,
                     log=log,
                 )
 
@@ -2308,6 +2330,7 @@ def export_trip(
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
                     recording_breakpoints=recording_breakpoints,
+                    track_up=map_track_up,
                     log=log,
                 )
         if debug:

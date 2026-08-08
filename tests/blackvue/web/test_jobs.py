@@ -628,6 +628,7 @@ def _export_kwargs(**overrides):
         render_map=False,
         map_icon=None,
         map_zoom_meters=None,
+        map_track_up=False,
         render_gsensor=False,
         render_gsensor_graph=False,
         gsensor_graph_x=False,
@@ -730,6 +731,7 @@ def test_start_bv_export_flags_reach_parsed_args(monkeypatch):
             movement=True,
             render_map=True,
             map_zoom_meters=150,
+            map_track_up=True,
             stitch=True,
             stitch_layout="side_by_side",
             stitch_gsensor=True,
@@ -747,6 +749,7 @@ def test_start_bv_export_flags_reach_parsed_args(monkeypatch):
     assert args.movement is True
     assert args.render_map is True
     assert args.map_zoom_meters == 150.0
+    assert args.map_track_up is True
     assert args.stitch is True
     assert args.stitch_layout == "side_by_side"
     assert args.stitch_gsensor is True

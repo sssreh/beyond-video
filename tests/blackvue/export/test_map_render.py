@@ -9,6 +9,7 @@ from blackvue.export.map_render import _arrow_points
 from blackvue.export.map_render import _FONT_CANDIDATES
 from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
+from blackvue.export.map_render import _rotate_point
 from blackvue.export.map_render import compose_frame_overlay
 from blackvue.export.map_render import DEFAULT_MARGIN_PX
 from blackvue.export.map_render import render_base_map
@@ -481,6 +482,125 @@ def test_bundled_font_loads_as_a_real_truetype_font(monkeypatch):
     font = _load_font()
 
     assert isinstance(font, ImageFont.FreeTypeFont)
+
+
+def test_rotate_point_rotates_a_point_east_of_center_to_straight_up():
+    # Task #512 track-up: rotating by -heading should always land a
+    # point that was originally `heading` degrees clockwise from
+    # center's own "up" direction straight above center - here heading
+    # 90 (east) rotated by -90.
+    center = (100.0, 100.0)
+    east = (150.0, 100.0)
+
+    rotated = _rotate_point(east, center, -90.0)
+
+    assert round(rotated[0], 6) == 100.0
+    assert round(rotated[1], 6) == 50.0
+
+
+def test_rotate_point_is_a_no_op_for_zero_angle():
+    point = (123.4, 56.7)
+    center = (10.0, 10.0)
+
+    assert _rotate_point(point, center, 0.0) == point
+
+
+def test_rotate_point_south_by_180_also_lands_straight_up():
+    center = (100.0, 100.0)
+    south = (100.0, 150.0)
+
+    rotated = _rotate_point(south, center, -180.0)
+
+    assert round(rotated[0], 6) == 100.0
+    assert round(rotated[1], 6) == 50.0
+
+
+def test_render_frame_visual_track_up_has_no_effect_without_a_heading():
+    # Nothing to rotate to without a course - falls back to the plain
+    # unrotated draw, same spirit as the marker's own heading=None
+    # fallback.
+    route = ((59.31, 18.02), (59.33, 18.06))
+
+    without_track_up = render_frame_visual(
+        _BBOX, roads=(), route_points=route, position=route[-1],
+    )
+    with_track_up = render_frame_visual(
+        _BBOX, roads=(), route_points=route, position=route[-1], track_up=True,
+    )
+
+    assert list(without_track_up.getdata()) == list(with_track_up.getdata())
+
+
+def test_render_frame_visual_track_up_changes_output_when_heading_is_given():
+    icon = Image.new("RGBA", (10, 10), (0, 0, 255, 255))
+
+    without_track_up = render_frame_visual(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        heading=90.0, marker_image=icon,
+    )
+    with_track_up = render_frame_visual(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        heading=90.0, marker_image=icon, track_up=True,
+    )
+
+    assert list(without_track_up.getdata()) != list(with_track_up.getdata())
+
+
+def test_render_frame_visual_track_up_points_the_marker_glyph_straight_up(
+    monkeypatch,
+):
+    # The scene rotation (via the internal `proj` closure) already
+    # moves the marker's *position* to the "up" side of center - the
+    # marker glyph itself must then be drawn as if heading were 0, or
+    # it would rotate a second time on top of an already-rotated scene.
+    original_arrow_points = map_render_module._arrow_points
+    captured_headings = []
+
+    def fake_arrow_points(point, heading_degrees):
+        captured_headings.append(heading_degrees)
+        return original_arrow_points(point, heading_degrees)
+
+    monkeypatch.setattr(map_render_module, "_arrow_points", fake_arrow_points)
+
+    render_frame_visual(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        heading=90.0, track_up=True,
+    )
+
+    assert captured_headings == [0.0]
+
+
+def test_render_frame_visual_without_track_up_points_the_marker_at_heading(
+    monkeypatch,
+):
+    original_arrow_points = map_render_module._arrow_points
+    captured_headings = []
+
+    def fake_arrow_points(point, heading_degrees):
+        captured_headings.append(heading_degrees)
+        return original_arrow_points(point, heading_degrees)
+
+    monkeypatch.setattr(map_render_module, "_arrow_points", fake_arrow_points)
+
+    render_frame_visual(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        heading=90.0, track_up=False,
+    )
+
+    assert captured_headings == [90.0]
+
+
+def test_render_frame_forwards_track_up_to_render_frame_visual():
+    combined = render_frame(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        heading=90.0, track_up=True,
+    )
+    visual = render_frame_visual(
+        _BBOX, roads=(), route_points=(), position=(59.31, 18.02),
+        heading=90.0, track_up=True,
+    )
+
+    assert list(combined.getdata()) == list(visual.getdata())
 
 
 def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
