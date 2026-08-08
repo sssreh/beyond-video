@@ -728,6 +728,136 @@ def test_concatenate_media_keeps_the_segment_after_a_speed_change_playable_rear(
     _assert_no_collapsed_packets(destination)
 
 
+def _probe_duration_seconds(path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            str(path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    return float(result.stdout.strip())
+
+
+def _extract_frame(path, timestamp_seconds: float, destination) -> Image.Image:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-ss", str(timestamp_seconds),
+            "-i", str(path),
+            "-frames:v", "1",
+            str(destination),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    return Image.open(destination).convert("RGB")
+
+
+def test_concatenate_media_force_reencode_survives_mismatched_provenance(tmp_path):
+    # task #536 - the task #535 timescale fix (see
+    # _speed_change_freeze_regression_sources() above) turned out to
+    # only cover the specific symptom it was diagnosed from. Christer,
+    # after that fix shipped: "both --parking-speed 3 and
+    # --parking-speed 0.1 freezes, not on first frame, but a few
+    # frames in second video" - on front.mp4, rear.mp4, *and*
+    # stitch.mp4. The real cause (see _concatenate_asset()'s own
+    # docstring, task #234's original diagnosis) is that a stream-copy
+    # concat needs every source's SPS/PPS/GOP/profile to already agree
+    # - true for any two recordings straight off the same camera, not
+    # true once one segment was re-encoded by change_playback_speed()
+    # under a completely different encoder session. force_reencode=True
+    # sidesteps the whole class of mismatch by decoding everything and
+    # re-encoding as one continuous stream instead. Sources here are
+    # built with deliberately incompatible profiles/B-frame settings
+    # (baseline+no-B-frames vs. change_playback_speed()'s own libx264
+    # defaults, which use High profile + B-frames) to exercise exactly
+    # that mismatch - this sandbox's ffmpeg tolerates it even via plain
+    # stream copy (see this module's own git history for the synthetic
+    # repro that didn't reproduce the corruption), so this test can't
+    # prove force_reencode=True fixes Christer's exact unreproducible
+    # -here failure, only that the new code path itself produces a
+    # correct, fully continuous, non-frozen result.
+    before = tmp_path / "before.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=30",
+            "-t", "1",
+            "-c:v", "libx264", "-profile:v", "baseline", "-bf", "0",
+            "-pix_fmt", "yuv420p",
+            str(before),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    sped_source = tmp_path / "parking.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=2",
+            "-t", "1",
+            "-c:v", "libx264", "-profile:v", "baseline", "-bf", "0",
+            "-pix_fmt", "yuv420p",
+            str(sped_source),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    # change_playback_speed() re-encodes via its own libx264/NVENC
+    # defaults - High profile, B-frames on - deliberately different
+    # from before/after's baseline/no-B-frames sources above.
+    sped = tmp_path / "parking_sped.mp4"
+    change_playback_speed(sped_source, sped, 0.2)
+
+    after = tmp_path / "after.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "mandelbrot=size=64x64:rate=30",
+            "-t", "1",
+            "-c:v", "libx264", "-profile:v", "baseline", "-bf", "0",
+            "-pix_fmt", "yuv420p",
+            str(after),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    # sped's own real duration, measured rather than assumed - a
+    # source this short (1s at 2fps, only 2 real input frames) leaves
+    # the trailing frame's own displayed length up to the encoder's
+    # own guess, so "1s at 0.2x = 5s" doesn't land exactly.
+    expected_total = (
+        _probe_duration_seconds(before)
+        + _probe_duration_seconds(sped)
+        + _probe_duration_seconds(after)
+    )
+
+    destination = tmp_path / "combined.mp4"
+    concatenate_media([before, sped, after], destination, force_reencode=True)
+
+    # Total duration survives intact - not collapsed the way the
+    # pre-task-#535 bug (or an unreconciled provenance mismatch) would
+    # leave it.
+    assert abs(_probe_duration_seconds(destination) - expected_total) < 1.0
+
+    # No long collapsed-packet run.
+    _assert_no_collapsed_packets(destination)
+
+    # The tail (the "after" segment, the one Christer's report says
+    # freezes) actually keeps changing frame-to-frame instead of being
+    # stuck on a single held frame - sample 3 points in its last second
+    # and confirm they're not all identical.
+    tail_start = expected_total - 1.0
+    frame_a = _extract_frame(destination, tail_start + 0.1, tmp_path / "frame_a.png")
+    frame_b = _extract_frame(destination, tail_start + 0.5, tmp_path / "frame_b.png")
+    frame_c = _extract_frame(destination, tail_start + 0.9, tmp_path / "frame_c.png")
+    assert frame_a.tobytes() != frame_b.tobytes() or frame_b.tobytes() != frame_c.tobytes(), (
+        "the 'after' segment's tail looks frozen - consecutive sampled "
+        "frames are byte-identical"
+    )
+
+
 def test_mux_audio_track_combines_a_video_only_file_with_a_separate_audio_file(
     tmp_path,
 ):

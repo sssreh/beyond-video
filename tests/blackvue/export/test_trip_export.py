@@ -469,7 +469,7 @@ def test_export_trip_concatenates_front_rear_audio_independently(
     # export_trip()'s comment) - the property that actually matters
     # for correctness, not the threading itself, is that one of them
     # failing doesn't block or lose the other two.
-    def _selective_concat(sources, destination, *, video_only=False):
+    def _selective_concat(sources, destination, *, video_only=False, force_reencode=False):
         if destination.name == "front.mp4":
             raise MediaToolError("simulated front failure")
         destination.parent.mkdir(parents=True, exist_ok=True)

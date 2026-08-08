@@ -1103,6 +1103,7 @@ def _concatenate_asset(
     include_parking: bool = True,
     duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
     video_only: bool = False,
+    force_reencode: bool = False,
 ) -> Path | None:
     """Build `sources` in trip order, leaving out any Parking-mode
     recording entirely - wherever it falls in the trip - whenever
@@ -1147,6 +1148,21 @@ def _concatenate_asset(
     video+audio FRONT recordings). `export_trip()` remuxes the trip's
     own `audio.aac` back into the result afterward, once both are
     ready.
+
+    `force_reencode`, also forwarded straight to `concatenate_media()`,
+    is what `export_trip()` passes whenever `_apply_parking_speed()`
+    actually touched *this* asset (FRONT or REAR) for at least one
+    recording in the trip - i.e. only real `--parking-speed` runs pay
+    for it, and only for the side(s) it actually re-encoded. See
+    `_concat_filter_reencode()`'s own docstring (`export/media.py`) for
+    why a plain stream copy isn't safe once one segment came from a
+    different encoder session than its neighbors: `concatenate_media()`
+    forcing a shared `-video_track_timescale` onto every source (see
+    its own docstring) fixed only the specific symptom it was
+    diagnosed from, not the underlying class of bug - Christer's real
+    camera footage kept freezing a few frames into the post-parking
+    segment even after that fix shipped, on front.mp4, rear.mp4, and
+    stitch.mp4 alike.
 
     Every source is probed before being handed to ffmpeg's concat
     demuxer - a single unreadable file (most often one whose moov atom
@@ -1208,7 +1224,10 @@ def _concatenate_asset(
 
     out = destination / filename
     try:
-        concatenate_media(readable_sources, out, video_only=video_only)
+        concatenate_media(
+            readable_sources, out,
+            video_only=video_only, force_reencode=force_reencode,
+        )
     except MediaToolError as exc:
         warnings.append(str(exc))
         if log is not None:
@@ -1911,6 +1930,20 @@ def export_trip(
             speed=parking_speed, include_parking=include_parking,
             source_overrides=parking_repair_overrides,
         )
+        # Which side(s) _apply_parking_speed() actually re-encoded -
+        # front.mp4/rear.mp4's own _concatenate_asset() call below only
+        # needs the safer, more expensive force_reencode=True path
+        # (see _concatenate_asset()'s own docstring) for whichever of
+        # these came back True; a trip that never touched
+        # --parking-speed (or ran --parking-speed 1, the default) gets
+        # both False, since parking_speed_overrides is empty either
+        # way and this stays the normal, fast stream-copy concat.
+        front_needs_reencode = any(
+            asset is Asset.FRONT for _, asset in parking_speed_overrides
+        )
+        rear_needs_reencode = any(
+            asset is Asset.REAR for _, asset in parking_speed_overrides
+        )
         prebuffer_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
             trip, Path(align_dir), warnings, log,
         )
@@ -1975,11 +2008,12 @@ def export_trip(
             front_future = executor.submit(
                 _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
                 include_parking=include_parking, duration_overrides=duration_overrides,
-                video_only=True,
+                video_only=True, force_reencode=front_needs_reencode,
             )
             rear_future = executor.submit(
                 _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
                 include_parking=include_parking, duration_overrides=duration_overrides,
+                force_reencode=rear_needs_reencode,
             )
             audio_future = executor.submit(
                 _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,

@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from ..generate.media import MediaToolError
+from ..generate.media import probe
 
 # Forced onto every source `_strip_audio_stream_copy()` normalizes
 # before a `video_only=True` concat - see that function's own
@@ -25,6 +26,13 @@ from ..generate.media import MediaToolError
 # (90kHz), a safe, universally-supported choice unrelated to any
 # particular source's own frame rate.
 _CONCAT_VIDEO_TRACK_TIMESCALE = 90000
+
+# _concat_filter_reencode()'s own fallback target frame rate, used only
+# if probing the first source (its own preferred target - see that
+# function's own docstring) fails outright. 30fps is a safe, ordinary
+# default for dashcam footage generally, not tied to any particular
+# camera model.
+_DEFAULT_CONCAT_FILTER_FPS = 30.0
 
 
 def _escape_concat_path(path: Path) -> str:
@@ -327,14 +335,145 @@ def _normalize_source_for_concat(
         ) from exc
 
 
+def _concat_filter_reencode(sources: list[Path], destination: Path) -> None:
+    """Concatenate `sources` into `destination` by decoding every one
+    of them to raw frames and re-encoding the result as a single,
+    continuous stream (ffmpeg's `concat` *filter*, not the concat
+    *demuxer* `concatenate_media()` normally uses) - video only, no
+    audio is mapped from any source.
+
+    `concatenate_media()`'s normal path is a plain stream copy: it
+    never touches a single encoded frame, which is fast but means
+    every source has to already agree on how it was encoded (SPS/PPS
+    parameter sets, GOP structure, B-frame usage, container
+    timescale...) for the demuxer's naive packet concatenation to
+    produce something a real decoder can play back correctly. That's
+    always true for two recordings straight off the same camera - they
+    share one encoder session's own settings - but stops being true
+    the moment one segment was re-encoded by something else entirely.
+    `change_playback_speed()` (this module, `--parking-speed`'s own
+    per-segment re-encode) is exactly that: its libx264/NVENC output
+    picks its own profile/level/GOP/B-frame settings, independently of
+    whatever the camera's own hardware encoder used for every
+    recording around it. `_normalize_source_for_concat()`'s
+    `-video_track_timescale` forcing (see its own docstring) fixed the
+    specific "whole next segment collapses into a near-zero-duration
+    sliver right at the transition" symptom this first surfaced as,
+    but Christer's real camera footage kept freezing after that fix
+    too - now a few frames *into* the segment after the sped-up one,
+    not right at the boundary, both at `--parking-speed 3` and `0.1`,
+    on front.mp4, rear.mp4, *and* stitch.mp4 alike. That pattern - a
+    handful of frames decode fine (reusing whatever reference frames
+    already exist), then the picture freezes while audio/map/gsensor
+    keep advancing - is the same signature already diagnosed once
+    before in this codebase, for a completely different feature: see
+    `_concatenate_asset()`'s own docstring on the removed parking
+    -transition-clip feature, which hit "Invalid NAL unit size"/"No
+    ref lists in the SPS" from mixing the dashcam's own encoder output
+    with anything bv-export rendered itself, via this same stream-copy
+    concat path. A timescale fix alone can't reach that: it rewrites
+    container metadata, not the actual encoded bitstream, so a real
+    SPS/PPS/GOP mismatch survives it untouched.
+
+    That earlier feature sidestepped the problem by simply never
+    generating a locally-re-encoded segment to splice in - Christer's
+    own call at the time was "we don't want time consuming stuff if it
+    not gives us something great back. Just skip it altogether."
+    `--parking-speed` can't take that way out: speeding footage up *is*
+    the feature, so a re-encoded segment always has to be joined back
+    into the surrounding untouched camera footage somehow. Decoding
+    everything to raw frames and re-encoding the whole thing as one
+    new, internally-consistent stream sidesteps every one of these
+    mismatches at once (no two segments' SPS/PPS/GOP/timescale ever
+    have to agree, because nothing downstream of this ever sees the
+    original encoded bitstreams again) - at real re-encode cost, unlike
+    a stream copy, which is exactly why `concatenate_media()` only
+    takes this path when a caller explicitly opts in via
+    `force_reencode` (trip_export.py's `_concatenate_asset()` does,
+    only for the specific asset(s) `_apply_parking_speed()` actually
+    touched - most trips never use `--parking-speed` and never pay
+    this cost).
+
+    Reuses `encode_with_nvenc_fallback()` for the actual encode, same
+    as every other real encode in this module, so this gets the same
+    NVENC-with-CPU-fallback behavior and default quality target as
+    everything else.
+
+    Every source is also run through its own `fps=<target>` filter
+    before the concat filter proper, all normalized to the *first*
+    source's own probed frame rate (falling back to
+    `_DEFAULT_CONCAT_FILTER_FPS` if probing it fails). Discovered the
+    hard way, testing this function directly: without it, ffmpeg's
+    concat *filter* (unlike the concat *demuxer* elsewhere in this
+    module) doesn't just get a source's own real frame spacing wrong
+    when inputs disagree on frame rate - a 30fps/2fps/30fps sequence
+    (the exact drive/park/drive shape `--parking-speed` produces)
+    turned into hundreds of thousands of duplicated frames and an
+    effective hang, the filter graph trying to reconcile the frame
+    -rate mismatch by holding/duplicating frames rather than just
+    concatenating cleanly. `change_playback_speed()`'s own `setpts`
+    -based re-encode changes a segment's *effective* frame rate exactly
+    this way (that's the whole point - speeding footage up packs the
+    same frame count into less time), so this is a real, not
+    theoretical, case for `--parking-speed`'s own re-encoded segment
+    sitting between two untouched camera recordings. First source's own
+    rate (not a hardcoded constant) because the untouched camera
+    recordings on either side of a sped-up Parking segment are the
+    ones that should keep their real fps - forcing them onto some
+    unrelated fixed value would resample (and subtly alter the
+    playback speed of) footage `--parking-speed` was never asked to
+    touch.
+    """
+
+    input_args: list[str] = []
+    for source in sources:
+        input_args += ["-i", str(source)]
+
+    target_fps = _DEFAULT_CONCAT_FILTER_FPS
+    try:
+        probed_fps = probe(sources[0]).frame_rate
+        if probed_fps > 0:
+            target_fps = probed_fps
+    except MediaToolError:
+        pass
+
+    per_source_filters = "".join(
+        f"[{index}:v:0]fps={target_fps}[v{index}];"
+        for index in range(len(sources))
+    )
+    filter_inputs = "".join(f"[v{index}]" for index in range(len(sources)))
+    filter_complex = (
+        f"{per_source_filters}{filter_inputs}concat=n={len(sources)}:v=1:a=0[outv]"
+    )
+    input_args += ["-filter_complex", filter_complex, "-map", "[outv]"]
+
+    encode_with_nvenc_fallback(input_args, destination)
+
+
 def concatenate_media(
-    sources: list[Path], destination: Path, *, video_only: bool = False
+    sources: list[Path],
+    destination: Path,
+    *,
+    video_only: bool = False,
+    force_reencode: bool = False,
 ) -> None:
     """Concatenate video or audio files, in order, into `destination`
     via ffmpeg's concat demuxer, copying streams without re-encoding.
 
     Works for a single source too (a plain stream copy). Does nothing
     if `sources` is empty.
+
+    `force_reencode`, if True, bypasses the stream-copy concat
+    entirely in favor of `_concat_filter_reencode()` - decoding every
+    source and re-encoding the result as one continuous stream, video
+    only (see that function's own docstring for why: a stream-copy
+    concat needs every source to share compatible encoder settings,
+    which no longer holds once one segment has been re-encoded by
+    something other than the camera itself, e.g. `--parking-speed`'s
+    `change_playback_speed()`). `video_only` is ignored when
+    `force_reencode` is True - the re-encode path never maps audio
+    from any source, the same effective result `video_only=True`
+    produces on the normal path.
 
     `video_only`, if True, guarantees `destination` carries no audio
     stream at all, regardless of what any individual source has
@@ -392,6 +531,10 @@ def concatenate_media(
         return
 
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if force_reencode:
+        _concat_filter_reencode(sources, destination)
+        return
 
     with contextlib.ExitStack() as stack:
         # ignore_cleanup_errors=True: a leftover lock on one of these
