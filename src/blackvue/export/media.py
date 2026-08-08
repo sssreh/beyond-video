@@ -19,6 +19,13 @@ from pathlib import Path
 
 from ..generate.media import MediaToolError
 
+# Forced onto every source `_strip_audio_stream_copy()` normalizes
+# before a `video_only=True` concat - see that function's own
+# docstring for why. 90000 is the standard MPEG PTS clock rate
+# (90kHz), a safe, universally-supported choice unrelated to any
+# particular source's own frame rate.
+_CONCAT_VIDEO_TRACK_TIMESCALE = 90000
+
 
 def _escape_concat_path(path: Path) -> str:
     """Escape a path for use inside a single-quoted entry in an
@@ -246,26 +253,67 @@ def check_readable(path: Path) -> None:
         ) from exc
 
 
-def _strip_audio_stream_copy(source: Path, destination: Path) -> None:
-    """Stream-copy `source` into `destination` with any audio track
-    dropped (`-an`) - a per-file normalization step used by
-    concatenate_media()'s `video_only=True` path, see that function's
-    own docstring for why this has to happen to *each source*
-    individually rather than just being a flag on the final concat
-    output.
+def _normalize_source_for_concat(
+    source: Path, destination: Path, *, strip_audio: bool
+) -> None:
+    """Stream-copy `source` into `destination`, forcing a consistent
+    `-video_track_timescale` (`_CONCAT_VIDEO_TRACK_TIMESCALE`) onto
+    every source before it reaches the final concat, and additionally
+    dropping any audio track (`-an`) when `strip_audio` is True.
+
+    The audio-track drop is `concatenate_media()`'s own pre-existing
+    `video_only=True` behavior (FRONT only - see that function's own
+    docstring for why a repaired Parking recording's own video-only
+    container otherwise corrupts the concat). The timescale forcing is
+    separate and applies unconditionally, to both FRONT *and* REAR:
+    Christer, running `--parking-speed 0.1` for real, "map, gps and
+    sound good, but video freeze after parking." Root cause, confirmed
+    by inspecting the concatenated front.mp4's own raw packet
+    timestamps: `change_playback_speed()`'s re-encode (`export/
+    media.py`) lands on a different internal MP4 timescale than the
+    camera's own original recordings (libx264/NVENC pick one based on
+    the encoded stream's own frame rate, and a slowed-down Parking
+    clip's effective rate differs from a normal recording's), and
+    ffmpeg's concat demuxer's stream-copy path (`-f concat -c copy`)
+    doesn't correctly reconcile mismatched timescales across segments
+    in the ffmpeg version this was tested against - the segment
+    *after* the mismatched one gets its own real frames collapsed into
+    a fractions-of-a-millisecond sliver right at the transition point,
+    which is exactly what "frozen video, but audio/map/gsensor still
+    advancing" looks like (those three are built independently of
+    front.mp4's own container, so they're unaffected and stay
+    correct - matching Christer's own report). Applies to REAR too,
+    not just FRONT: `_apply_parking_speed()` speeds up both sides of a
+    Parking recording identically, so a rear-camera trip would hit the
+    exact same freeze on rear.mp4 if only FRONT were normalized here.
+    `-video_track_timescale` rewrites only the output container's
+    declared timescale, not the codec data - safe on a plain stream
+    copy, no re-encode needed - and forcing every source onto the
+    *same* one before the final concat sidesteps the whole class of
+    mismatch regardless of which source (any future one, not just a
+    sped-up Parking segment) picked a different one on its own. 90000
+    (the standard MPEG PTS clock rate) is a safe,
+    arbitrary-but-conventional common choice, not matched to any
+    particular source.
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    command = [
+        "ffmpeg", "-y",
+        "-i", str(source),
+    ]
+    if strip_audio:
+        command.append("-an")
+    command += [
+        "-c", "copy",
+        "-video_track_timescale", str(_CONCAT_VIDEO_TRACK_TIMESCALE),
+        str(destination),
+    ]
+
     try:
         subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", str(source),
-                "-an",
-                "-c", "copy",
-                str(destination),
-            ],
+            command,
             capture_output=True,
             text=True,
             check=True,
@@ -274,7 +322,7 @@ def _strip_audio_stream_copy(source: Path, destination: Path) -> None:
         raise MediaToolError("ffmpeg not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
         raise MediaToolError(
-            f"ffmpeg audio-strip failed for {source.name}: "
+            f"ffmpeg source-normalize failed for {source.name}: "
             f"{exc.stderr.strip()}"
         ) from exc
 
@@ -329,6 +377,15 @@ def concatenate_media(
     always-consistent `audio.aac` into the result afterward (see
     `mux_audio_track()` below), rather than depending on front.mp4's
     own raw per-recording audio surviving concatenation intact.
+
+    Every source - regardless of `video_only` - also gets its own
+    `-video_track_timescale` forced to a shared, consistent value
+    before the final concat (see `_normalize_source_for_concat()`'s
+    own docstring for the real "video freeze after parking" bug this
+    fixes). Unlike the audio-stripping above, this isn't FRONT-only:
+    REAR goes through the exact same per-source normalization pass
+    now too, since a `--parking-speed`-sped Parking recording's REAR
+    side needs it exactly as much as FRONT does.
     """
 
     if not sources:
@@ -337,26 +394,26 @@ def concatenate_media(
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     with contextlib.ExitStack() as stack:
-        concat_sources = sources
-        if video_only:
-            # ignore_cleanup_errors=True: a leftover lock on one of
-            # these per-source stripped copies (e.g. antivirus - see
-            # trip_export.py's own front.mp4 mux temp dir for the real
-            # case Christer hit) would otherwise raise out of this
-            # function on the way out, even after the concat itself
-            # already succeeded and destination is already good.
-            strip_dir = Path(
-                stack.enter_context(
-                    tempfile.TemporaryDirectory(
-                        prefix="bv_export_strip_", ignore_cleanup_errors=True
-                    )
+        # ignore_cleanup_errors=True: a leftover lock on one of these
+        # per-source normalized copies (e.g. antivirus - see
+        # trip_export.py's own front.mp4 mux temp dir for the real
+        # case Christer hit) would otherwise raise out of this
+        # function on the way out, even after the concat itself
+        # already succeeded and destination is already good.
+        normalize_dir = Path(
+            stack.enter_context(
+                tempfile.TemporaryDirectory(
+                    prefix="bv_export_strip_", ignore_cleanup_errors=True
                 )
             )
-            concat_sources = []
-            for index, source in enumerate(sources):
-                stripped = strip_dir / f"{index:04d}_{source.name}"
-                _strip_audio_stream_copy(source, stripped)
-                concat_sources.append(stripped)
+        )
+        concat_sources = []
+        for index, source in enumerate(sources):
+            normalized = normalize_dir / f"{index:04d}_{source.name}"
+            _normalize_source_for_concat(
+                source, normalized, strip_audio=video_only
+            )
+            concat_sources.append(normalized)
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"

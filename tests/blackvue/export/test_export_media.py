@@ -616,6 +616,118 @@ def test_concatenate_media_keeps_audio_by_default(tmp_path):
     assert probe_audio_codec(destination) is not None
 
 
+def _video_packet_pts_times(path) -> list[float]:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_packets",
+            "-show_entries", "packet=pts_time",
+            "-of", "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(
+        float(line) for line in result.stdout.strip().splitlines()
+        if line and line != "N/A"
+    )
+
+
+def _speed_change_freeze_regression_sources(tmp_path):
+    # Shared setup for the two tests below - task #535, Christer
+    # running --parking-speed 0.1 for real: "map, gps and sound good,
+    # but video freeze after parking". Root cause: change_playback_
+    # speed()'s re-encode can land on a different internal MP4
+    # timescale than a source that was never re-encoded (libx264/
+    # NVENC pick one based on the encoded stream's own effective frame
+    # rate) - concatenating that against an unrelated-timescale source
+    # via the concat demuxer's stream-copy path collapsed the *next*
+    # segment's own real frames into a fractions-of-a-millisecond
+    # sliver right at the transition, which looks exactly like the
+    # video freezing (while audio/map/gsensor - built independently of
+    # front.mp4/rear.mp4 - keep advancing normally, matching what
+    # Christer saw). Reproducing this reliably needs: (1) the Parking
+    # source's own *native* frame rate to differ from its neighbors'
+    # - realistic, since BlackVue Parking mode commonly records at a
+    # reduced timelapse rate unrelated to a normal recording's own fps
+    # - and (2) a *third* segment after the sped one, matching the
+    # real front.mp4/rear.mp4 shape (drive, park, drive) - a bare
+    # two-segment concat didn't reproduce the corruption in this
+    # sandbox's ffmpeg build, only the three-segment case did.
+    before = tmp_path / "before.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=30",
+            "-t", "1",
+            str(before),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    sped_source = tmp_path / "parking.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=2",
+            "-t", "6",
+            str(sped_source),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    sped = tmp_path / "parking_sped.mp4"
+    change_playback_speed(sped_source, sped, 0.1)
+
+    after = tmp_path / "after.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=30",
+            "-t", "1",
+            str(after),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    return before, sped, after
+
+
+def _assert_no_collapsed_packets(destination) -> None:
+    pts = _video_packet_pts_times(destination)
+    diffs = [round(b - a, 6) for a, b in zip(pts, pts[1:])]
+    # A real 30fps second of footage spread out normally has gaps
+    # around 0.033s apart, never anywhere near zero - collapsed frames
+    # (the freeze bug) show up as a long run of near-simultaneous
+    # timestamps instead.
+    assert not any(diff < 0.01 for diff in diffs), (
+        f"found collapsed (near-simultaneous) packet timestamps: {diffs}"
+    )
+
+
+def test_concatenate_media_keeps_the_segment_after_a_speed_change_playable_video_only(
+    tmp_path,
+):
+    # FRONT's own path (video_only=True).
+    before, sped, after = _speed_change_freeze_regression_sources(tmp_path)
+    destination = tmp_path / "combined.mp4"
+    concatenate_media([before, sped, after], destination, video_only=True)
+    _assert_no_collapsed_packets(destination)
+
+
+def test_concatenate_media_keeps_the_segment_after_a_speed_change_playable_rear(
+    tmp_path,
+):
+    # REAR's own path (video_only=False, the default) - confirms the
+    # timescale-normalization fix isn't FRONT-only.
+    before, sped, after = _speed_change_freeze_regression_sources(tmp_path)
+    destination = tmp_path / "combined.mp4"
+    concatenate_media([before, sped, after], destination)
+    _assert_no_collapsed_packets(destination)
+
+
 def test_mux_audio_track_combines_a_video_only_file_with_a_separate_audio_file(
     tmp_path,
 ):
