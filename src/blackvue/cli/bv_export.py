@@ -439,7 +439,7 @@ def bv_export(
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
     render_gsensor_graph: bool = False,
-    gsensor_graph_z: bool = False,
+    gsensor_graph_x: bool = False,
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
@@ -783,7 +783,7 @@ def bv_export(
                 map_zoom_meters=map_zoom_meters,
                 render_gsensor=render_gsensor,
                 render_gsensor_graph=render_gsensor_graph,
-                gsensor_graph_z=gsensor_graph_z,
+                gsensor_graph_x=gsensor_graph_x,
                 stitch_layout=stitch_layout,
                 stitch_resolution=stitch_resolution,
                 stitch_bitrate=stitch_bitrate,
@@ -1128,7 +1128,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Also render gsensor_graph.mp4: a second, alternate "
             "g-sensor visualization - a static whole-trip strip chart "
-            "of the trip's X/Y (and Z, see --gsensor-graph-z) g-sensor "
+            "of the trip's Y/Z (and X, see --gsensor-graph-x) g-sensor "
             "readings as colored line traces, with a vertical playhead "
             "marking the current position, on the same flat chroma-key "
             "green background as --gsensor-video's dot-gauge. "
@@ -1139,20 +1139,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--gsensor-graph-z",
-        dest="gsensor_graph_z",
+        "--gsensor-graph-x",
+        dest="gsensor_graph_x",
         action="store_true",
         help=(
-            "Also plot Z on the g-sensor graph - both "
+            "Also plot X (up/down) on the g-sensor graph - both "
             "--gsensor-graph-video's own gsensor_graph.mp4 and "
-            "--stitch-graph's panel. Z is hidden by default: \"Z is "
+            "--stitch-graph's panel. X is hidden by default: \"Z is "
             "just not useful, unless you hit a giant pothole, but then "
             "the video probably got that and the reaction of the "
-            "driver\" - the one situation where Z genuinely matters is "
-            "already captured by the footage itself, so it's opt-in "
-            "for a specific look at a bump/vibration event rather than "
-            "on by default. Meaningless on its own without "
-            "--gsensor-graph-video and/or --stitch-graph also given."
+            "driver\" (originally about Z, moved to X once the axes' "
+            "own meanings settled) - the one situation where that axis "
+            "genuinely matters is already captured by the footage "
+            "itself, so it's opt-in for a specific look at a bump/"
+            "vibration event rather than on by default. Meaningless on "
+            "its own without --gsensor-graph-video and/or "
+            "--stitch-graph also given."
         ),
     )
 
@@ -1701,7 +1703,7 @@ def _run(
             map_zoom_meters=args.map_zoom_meters,
             render_gsensor=args.render_gsensor,
             render_gsensor_graph=args.render_gsensor_graph,
-            gsensor_graph_z=args.gsensor_graph_z,
+            gsensor_graph_x=args.gsensor_graph_x,
             stitch_layout=args.stitch_layout if args.stitch else None,
             stitch_resolution=args.stitch_resolution,
             stitch_bitrate=args.stitch_bitrate,

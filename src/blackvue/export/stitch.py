@@ -498,7 +498,7 @@ def stitch_cameras(
     graph_side: str | None = None,
     graph_size: float | None = None,
     graph_video_duration_seconds: float | None = None,
-    graph_z: bool = False,
+    graph_x: bool = False,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -769,10 +769,19 @@ def stitch_cameras(
     actually ended up (see `map_panel_side_used` there) - Christer: "if
     map to the left then graph should be at the bottom, if map at
     bottom then graph to the left ... in order to get close to 16x9
-    format. if no map then bottom" - so the two panels grow the frame
-    on perpendicular axes by default instead of compounding onto the
-    same one, falling back to 'down' whenever no map panel actually
-    ended up in the composite at all. `graph_size` (--stitch-graph-size,
+    format" - so the two panels grow the frame on perpendicular axes by
+    default instead of compounding onto the same one. Whenever no map
+    panel actually ended up in the composite at all, the fallback isn't
+    a flat 'down' any more - it's `layout`-aware, reusing
+    _DEFAULT_MAP_SIDE_FOR_LAYOUT (the same table the map panel itself
+    uses): 'left' for top_down, 'down' for side_by_side/rearview_mirror.
+    A real top_down + --stitch-graph export with no map panel showed the
+    graph landing at the bottom - a third horizontal strip stacked onto
+    an already-tall composite - which Christer flagged after seeing the
+    actual render ("the gsensor graph should be vertical in this
+    composition not horizontal"); this keeps top_down's graph on a side
+    instead, matching how the map panel already defaults for that same
+    layout. `graph_size` (--stitch-graph-size,
     a percent, MIN_/MAX_GRAPH_SIZE_PERCENT) overrides the fixed
     DEFAULT_GRAPH_SIZE_PERCENT fraction otherwise used - there's no
     map-panel-style automatic geography-based sizing here, a synthetic
@@ -795,15 +804,18 @@ def stitch_cameras(
     `gsensor_video` already follow. Only meaningful when both front and
     rear exist, same as `map_mode`.
 
-    `graph_z` (default False), forwarded straight to
+    `graph_x` (default False), forwarded straight to
     gsensor_graph_render.render_base_frame()/render_frame() (see
-    gsensor_graph_video.render_gsensor_graph_video()'s own `show_z`
-    parameter), controls whether the panel plots Z at all. Christer's
-    own reasoning for the default: "Z is just not useful, unless you
-    hit a giant pothole, but then the video probably got that and the
-    reaction of the driver" - the one situation where Z genuinely
-    matters is already captured by the footage itself, so it's opt-in
-    rather than on by default.
+    gsensor_graph_video.render_gsensor_graph_video()'s own `show_x`
+    parameter), controls whether the panel plots X at all - this used
+    to be `graph_z`/raw Z; see gsensor_graph_render.py's own module
+    docstring for why the opt-in axis is X now. Christer's own
+    reasoning for hiding one axis by default in the first place: "Z is
+    just not useful, unless you hit a giant pothole, but then the
+    video probably got that and the reaction of the driver" - the one
+    situation where that axis genuinely matters is already captured by
+    the footage itself, so it's opt-in rather than on by default; that
+    reasoning fits X (Up/down) now, not Z (Acc/brake).
 
     `subtitles_path`, if given, is an already-written trip.srt (see
     trip_export.py, which always writes one whenever the trip has any
@@ -851,7 +863,7 @@ def stitch_cameras(
             graph_samples=graph_samples, graph_side=graph_side,
             graph_size=graph_size,
             graph_video_duration_seconds=graph_video_duration_seconds,
-            graph_z=graph_z,
+            graph_x=graph_x,
             subtitles_path=subtitles_path,
             subtitles_background=subtitles_background,
             audio_path=audio_path,
@@ -1624,7 +1636,7 @@ def _render_graph_panel(
     height: int,
     orientation: str,
     duration_seconds: float | None = None,
-    show_z: bool = False,
+    show_x: bool = False,
 ) -> Path | None:
     """Render --stitch-graph's panel at exactly width x height, so
     combining it with the composite via a plain hstack/vstack doesn't
@@ -1640,16 +1652,16 @@ def _render_graph_panel(
     running left to right - see gsensor_graph_render.py's own module
     docstring for what each orientation looks like).
 
-    `show_z` (default False) is forwarded straight to
+    `show_x` (default False) is forwarded straight to
     render_gsensor_graph_video() - see stitch_cameras()'s own
-    docstring for `graph_z` and gsensor_graph_render.py's module
-    docstring for Christer's reasoning (Z hidden by default, opt-in
+    docstring for `graph_x` and gsensor_graph_render.py's module
+    docstring for Christer's reasoning (X hidden by default, opt-in
     for a specific look at a bump/vibration event).
 
     Always renders as a rolling GRAPH_PANEL_WINDOW_SECONDS (10-minute)
     window rather than one static whole-trip chart - see that
     constant's own comment and render_gsensor_graph_video()'s
-    `window_seconds` docstring. Unlike `show_z`, this isn't a
+    `window_seconds` docstring. Unlike `show_x`, this isn't a
     parameter here: it's this panel's own new default, not something
     stitch_cameras() callers opt into, and the standalone
     --gsensor-graph-video output (render_gsensor_graph_video() called
@@ -1668,7 +1680,7 @@ def _render_graph_panel(
     return render_gsensor_graph_video(
         samples, destination,
         orientation=orientation, width=width, height=height,
-        duration_seconds=duration_seconds, show_z=show_z,
+        duration_seconds=duration_seconds, show_x=show_x,
         window_seconds=GRAPH_PANEL_WINDOW_SECONDS,
     )
 
@@ -1954,7 +1966,7 @@ def _stack(
     graph_side: str | None = None,
     graph_size: float | None = None,
     graph_video_duration_seconds: float | None = None,
-    graph_z: bool = False,
+    graph_x: bool = False,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -2736,8 +2748,26 @@ def _stack(
             else:
                 # No map panel actually present (either --stitch-map
                 # wasn't given, or it was but got skipped - e.g. no GPS
-                # data) - Christer: "if no map then bottom".
-                panel_side = "down"
+                # data). Originally a flat "if no map then bottom"
+                # (Christer's own instruction at the time) regardless of
+                # camera `layout` - but a real top_down export (front/
+                # rear already vstacked into a tall composite) with
+                # --stitch-graph and no map showed the graph landing at
+                # the bottom too, stacking a third horizontal strip onto
+                # an already-tall video instead of a side panel
+                # (Christer, looking at the real render: "the gsensor
+                # graph should be vertical in this composition not
+                # horizontal"). Reusing _DEFAULT_MAP_SIDE_FOR_LAYOUT here
+                # - the same "top_down gets a side, side_by_side gets
+                # the bottom" split the map panel already uses, for
+                # exactly the same "stay close to 16:9" reasoning - top_
+                # down now defaults the graph to 'left' (a vertical side
+                # panel) even with no map to be perpendicular to, while
+                # side_by_side (already wide) keeps the old 'down'
+                # default, and rearview_mirror (not in that dict - a
+                # single full-frame video, not a stack) still falls back
+                # to 'down' same as before.
+                panel_side = _DEFAULT_MAP_SIDE_FOR_LAYOUT.get(layout, "down")
 
             # The composite's *current* size, including any map
             # panel already added above - hstack/vstack both
@@ -2767,7 +2797,7 @@ def _stack(
                     width=panel_size[0], height=panel_size[1],
                     orientation=graph_orientation,
                     duration_seconds=graph_video_duration_seconds,
-                    show_z=graph_z,
+                    show_x=graph_x,
                 )
             except MediaToolError as exc:
                 if warnings is not None:

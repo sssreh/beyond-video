@@ -1516,7 +1516,7 @@ def export_trip(
     map_zoom_meters: float | None = None,
     render_gsensor: bool = False,
     render_gsensor_graph: bool = False,
-    gsensor_graph_z: bool = False,
+    gsensor_graph_x: bool = False,
     stitch_layout: str | None = None,
     stitch_resolution: tuple[int, int] | None = None,
     stitch_bitrate: str | None = None,
@@ -1589,8 +1589,8 @@ def export_trip(
 
     `render_gsensor_graph=True` additionally renders
     gsensor_graph.mp4 - a second, alternate g-sensor visualization: a
-    static whole-trip strip chart of the trip's X/Y (and Z, see
-    `gsensor_graph_z` below) g-sensor readings as colored line traces,
+    static whole-trip strip chart of the trip's Y/Z (and X, see
+    `gsensor_graph_x` below) g-sensor readings as colored line traces,
     with a vertical playhead marking the current position, modeled on
     the BlackVue SD Card Viewer app's own g-sensor panel (see
     gsensor_graph_render.py/gsensor_graph_video.py). Independent of
@@ -1598,16 +1598,16 @@ def export_trip(
     is a standalone file alongside gsensor.mp4, not a replacement for
     it. Also off by default for the same reason.
 
-    `gsensor_graph_z` (default False) controls whether that strip
-    chart plots Z at all - forwarded to both `render_gsensor_graph`'s
+    `gsensor_graph_x` (default False) controls whether that strip
+    chart plots X at all - forwarded to both `render_gsensor_graph`'s
     own gsensor_graph.mp4 render and `stitch_graph`'s own panel below,
     one switch for both (see gsensor_graph_render.py's own module
     docstring for Christer's reasoning: "Z is just not useful, unless
     you hit a giant pothole, but then the video probably got that and
-    the reaction of the driver" - the one situation where Z genuinely
-    matters is already captured by the footage itself). Meaningless on
-    its own without one of `render_gsensor_graph`/`stitch_graph` also
-    being set.
+    the reaction of the driver" - originally about Z, moved to X once
+    the axes' own meanings settled; that module's own docstring has
+    the full story). Meaningless on its own without one of
+    `render_gsensor_graph`/`stitch_graph` also being set.
 
     `stitch_layout`, if given ('side_by_side', 'top_down',
     'rearview_mirror', or stitch.AUTO_LAYOUT - see stitch.py),
@@ -1767,9 +1767,9 @@ def export_trip(
     map panel, so the two combine rather than either one overwriting the
     other. Degrades to a `warnings` entry and no panel (never a failed
     stitch) if there's fewer than two g-sensor samples for this trip.
-    Plots Z too when `gsensor_graph_z=True` (see that parameter's own
+    Plots X too when `gsensor_graph_x=True` (see that parameter's own
     docstring above) - same as the standalone gsensor_graph.mp4 case,
-    Z is hidden by default.
+    X is hidden by default.
 
     `stitch_subtitles=True` (also requires `stitch_layout`) burns this
     same call's own trip.srt (see `srt_path` above) into stitch.mp4's
@@ -2365,7 +2365,7 @@ def export_trip(
             gsensor_graph_video_path = render_gsensor_graph_video(
                 samples, destination / "gsensor_graph.mp4",
                 duration_seconds=video_duration_seconds,
-                show_z=gsensor_graph_z,
+                show_x=gsensor_graph_x,
             )
         except MediaToolError as exc:
             warnings.append(f"gsensor graph video: {exc}")
@@ -2556,7 +2556,7 @@ def export_trip(
                 graph_side=stitch_graph_side,
                 graph_size=stitch_graph_size,
                 graph_video_duration_seconds=video_duration_seconds,
-                graph_z=gsensor_graph_z,
+                graph_x=gsensor_graph_x,
                 subtitles_path=stitch_subtitles_source,
                 subtitles_background=stitch_subtitles_background,
                 audio_path=audio,

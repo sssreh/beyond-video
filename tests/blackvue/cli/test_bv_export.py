@@ -2130,10 +2130,13 @@ def test_bv_export_without_gsensor_graph_video_flag_writes_no_video(tmp_path):
     assert not (folder / "gsensor_graph.mp4").exists()
 
 
-def test_main_leaves_gsensor_graph_z_false_by_default(tmp_path, monkeypatch):
+def test_main_leaves_gsensor_graph_x_false_by_default(tmp_path, monkeypatch):
     # Christer: "Z is just not useful, unless you hit a giant pothole,
     # but then the video probably got that and the reaction of the
-    # driver" - see gsensor_graph_render.py's own module docstring.
+    # driver" - originally about Z; the axis that actually fits that
+    # reasoning is X (Up/down) now, not Z (Acc/brake) - see
+    # gsensor_graph_render.py's own module docstring for the full
+    # story.
     captured = {}
 
     def _fake_bv_export(**kwargs):
@@ -2150,10 +2153,10 @@ def test_main_leaves_gsensor_graph_z_false_by_default(tmp_path, monkeypatch):
         "--target", str(target), str(archive), "--gsensor-graph-video",
     ])
 
-    assert captured["gsensor_graph_z"] is False
+    assert captured["gsensor_graph_x"] is False
 
 
-def test_main_parses_gsensor_graph_z_flag(tmp_path, monkeypatch):
+def test_main_parses_gsensor_graph_x_flag(tmp_path, monkeypatch):
     captured = {}
 
     def _fake_bv_export(**kwargs):
@@ -2168,17 +2171,17 @@ def test_main_parses_gsensor_graph_z_flag(tmp_path, monkeypatch):
 
     main([
         "--target", str(target), str(archive),
-        "--gsensor-graph-video", "--gsensor-graph-z",
+        "--gsensor-graph-video", "--gsensor-graph-x",
     ])
 
-    assert captured["gsensor_graph_z"] is True
+    assert captured["gsensor_graph_x"] is True
 
 
-def test_bv_export_gsensor_graph_z_flag_plots_z_end_to_end(tmp_path):
+def test_bv_export_gsensor_graph_x_flag_plots_x_end_to_end(tmp_path):
     # Real end-to-end check (not just argument-parsing) that
-    # --gsensor-graph-z actually reaches the render and changes the
-    # output - a much bigger Z scale (visible as a real chart element
-    # only when show_z=True) should make the gsensor_graph.mp4 file
+    # --gsensor-graph-x actually reaches the render and changes the
+    # output - a much bigger X scale (visible as a real chart element
+    # only when show_x=True) should make the gsensor_graph.mp4 file
     # produced with the flag different from the one produced without
     # it, for the exact same input samples.
     from blackvue.telemetry.gsensor_reader import GSensorSample
@@ -2192,35 +2195,35 @@ def test_bv_export_gsensor_graph_z_flag_plots_z_end_to_end(tmp_path):
     write_gsensor(
         (
             GSensorSample(offset=timedelta(seconds=0), x=0, y=0, z=900),
-            GSensorSample(offset=timedelta(seconds=1), x=10, y=-5, z=-900),
+            GSensorSample(offset=timedelta(seconds=1), x=900, y=-5, z=950),
         ),
         archive / "20260720_100000_N.3gf",
     )
 
-    target_without_z = tmp_path / "out_without_z"
+    target_without_x = tmp_path / "out_without_x"
     exit_code = bv_export(
-        str(archive), target=str(target_without_z), render_gsensor_graph=True,
+        str(archive), target=str(target_without_x), render_gsensor_graph=True,
     )
     assert exit_code == 0
 
-    target_with_z = tmp_path / "out_with_z"
+    target_with_x = tmp_path / "out_with_x"
     exit_code = bv_export(
-        str(archive), target=str(target_with_z), render_gsensor_graph=True,
-        gsensor_graph_z=True,
+        str(archive), target=str(target_with_x), render_gsensor_graph=True,
+        gsensor_graph_x=True,
     )
     assert exit_code == 0
 
-    without_z = (
-        target_without_z / "trip_20260720_100000_20260720_100000"
+    without_x = (
+        target_without_x / "trip_20260720_100000_20260720_100000"
         / "gsensor_graph.mp4"
     )
-    with_z = (
-        target_with_z / "trip_20260720_100000_20260720_100000"
+    with_x = (
+        target_with_x / "trip_20260720_100000_20260720_100000"
         / "gsensor_graph.mp4"
     )
-    assert without_z.exists()
-    assert with_z.exists()
-    assert without_z.read_bytes() != with_z.read_bytes()
+    assert without_x.exists()
+    assert with_x.exists()
+    assert without_x.read_bytes() != with_x.read_bytes()
 
 
 def test_main_leaves_stitch_graph_false_when_stitch_flag_is_absent(

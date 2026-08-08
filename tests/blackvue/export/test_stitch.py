@@ -1988,7 +1988,7 @@ def test_stitch_cameras_graph_panel_defaults_to_down_for_side_by_side_without_a_
     assert height > 120
 
 
-def test_stitch_cameras_graph_panel_defaults_to_down_for_top_down_without_a_map(
+def test_stitch_cameras_graph_panel_defaults_to_left_for_top_down_without_a_map(
     tmp_path
 ):
     front = tmp_path / "front.mp4"
@@ -2006,10 +2006,18 @@ def test_stitch_cameras_graph_panel_defaults_to_down_for_top_down_without_a_map(
 
     assert warnings == []
     width, height = _video_size(destination)
-    # top_down alone would be 160x240 - same 'down' no-map default as
-    # side_by_side above, so width is unchanged and height grows.
-    assert width == 160
-    assert height > 240
+    # top_down alone would be 160x240 - task #538/#540 fix: with no map
+    # panel to be perpendicular to, the no-map default is now
+    # layout-aware (reusing _DEFAULT_MAP_SIDE_FOR_LAYOUT, the same table
+    # the map panel itself already uses) instead of a flat 'down'.
+    # Christer, looking at a real top_down + --stitch-graph render with
+    # no map panel: "the gsensor graph should be vertical in this
+    # composition not horizontal" - a horizontal strip stacked below an
+    # already-tall top_down composite made it taller still. top_down now
+    # defaults to 'left' (a vertical side panel) instead, so width grows
+    # and height is unchanged.
+    assert width > 160
+    assert height == 240
 
 
 def test_stitch_cameras_graph_panel_side_can_be_overridden_to_top(tmp_path):

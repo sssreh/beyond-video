@@ -14,7 +14,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-parking-duration MINUTES]
           [--include-parking] [--parking-speed SPEED]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
-          [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-z]
+          [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-x]
           [--stitch] [--stitch-layout LAYOUT]
           [--stitch-mirror-size PERCENT] [--stitch-mirror-radius PERCENT]
           [--stitch-mirror-zoom PERCENT]
@@ -129,8 +129,8 @@ The position marker itself is hidden entirely before the trip's very first real 
 | Option | Description |
 |---|---|
 | `--gsensor-video` | Render `gsensor.mp4`: a dot moving on a gauge tracking lateral (left/right, the raw Y field) vs. longitudinal (forward/back - acceleration/braking, the raw Z field) g-forces, with a fading trail, on chroma-key green - meant for compositing later, or via `--stitch-gsensor`. This Y/Z axis mapping matches what two separate real test recordings have shown (an interim override to raw X/Y was tried and then reverted once a second recording, with labeled acceleration and turning events, reconfirmed the original Y/Z finding); see `gsensor_render.py`'s module docstring for the full story. |
-| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of X/Y (and Z, see `--gsensor-graph-z`) readings as colored line traces, with a playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Independent of `--stitch-graph` too, which renders its own copy fresh at the panel's exact size rather than reusing this file. |
-| `--gsensor-graph-z` | Also plot Z on the g-sensor graph - both `--gsensor-graph-video`'s own file and `--stitch-graph`'s panel share this one switch. Z is hidden by default: the one situation where it genuinely matters (a real bump/pothole) is already captured by the footage itself, so it's opt-in rather than on by default. Meaningless without `--gsensor-graph-video` and/or `--stitch-graph` also given. |
+| `--gsensor-graph-video` | Render `gsensor_graph.mp4`: a second, alternate g-sensor visualization - a static whole-trip strip chart of Y/Z (and X, see `--gsensor-graph-x`) readings as colored line traces, with a playhead marking the current position, on the same chroma-key green background. Independent of `--gsensor-video` - either, both, or neither can be given. Independent of `--stitch-graph` too, which renders its own copy fresh at the panel's exact size rather than reusing this file. |
+| `--gsensor-graph-x` | Also plot X (up/down) on the g-sensor graph - both `--gsensor-graph-video`'s own file and `--stitch-graph`'s panel share this one switch. X is hidden by default: the one situation where it genuinely matters (a real bump/pothole) is already captured by the footage itself, so it's opt-in rather than on by default. Meaningless without `--gsensor-graph-video` and/or `--stitch-graph` also given. |
 
 ### Stitch (combined camera video)
 
@@ -185,7 +185,7 @@ A second, alternate g-sensor visualization alongside `--stitch-gsensor`'s dot-ga
 
 | Option | Description |
 |---|---|
-| `--stitch-graph` | Compose a g-sensor strip-chart panel alongside the cameras. Plots X/Y by default; add `--gsensor-graph-z` to also plot Z. |
+| `--stitch-graph` | Compose a g-sensor strip-chart panel alongside the cameras. Plots Y/Z by default; add `--gsensor-graph-x` to also plot X. |
 | `--stitch-graph-side {left,right,top,down}` | Panel side. Default: whichever side `--stitch-map`'s own panel *didn't* use (a map on the left defaults the graph to the bottom, and vice versa), so the two grow the frame on perpendicular axes and stay closer to a 16:9 shape overall; defaults to the bottom if there's no map panel actually present at all. |
 | `--stitch-graph-size PERCENT` | Panel width/height as a percent of the matching composite dimension (5-80). Default: a fixed 50%, matching the map panel's own size ceiling - there's no `--stitch-map`-style automatic sizing here, a synthetic chart has no real-world shape to derive one from. |
 

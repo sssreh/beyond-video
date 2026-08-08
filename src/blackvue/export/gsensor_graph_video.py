@@ -59,11 +59,11 @@ def render_gsensor_graph_video(
     orientation: str = "horizontal",
     width: int | None = None,
     height: int | None = None,
-    show_z: bool = False,
+    show_x: bool = False,
     window_seconds: float | None = None,
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into a strip-chart
-    overlay video at `destination`: colored X/Y (and Z, when `show_z`)
+    overlay video at `destination`: colored Y/Z (and X, when `show_x`)
     line traces drawn once across the whole trip, with a playhead
     moving as the video plays, on the same flat chroma-key green
     background gsensor.mp4 uses.
@@ -93,12 +93,15 @@ def render_gsensor_graph_video(
     per-orientation defaults) for the standalone --gsensor-graph-video
     case, which has no such constraint.
 
-    `show_z` (default False, also forwarded straight to
-    render_base_frame()/render_frame()) - Z is hidden by default; see
+    `show_x` (default False, also forwarded straight to
+    render_base_frame()/render_frame()) - X is hidden by default; see
     gsensor_graph_render.py's own module docstring for Christer's
     reasoning ("Z is just not useful, unless you hit a giant pothole,
     but then the video probably got that and the reaction of the
-    driver"). Pass True for a specific look at a bump/vibration event.
+    driver" - originally about Z, moved to X once the axes' own
+    meanings settled; see that docstring's "hidden by default"
+    paragraph for the full story). Pass True for a specific look at a
+    bump/vibration event.
 
     `window_seconds` (default None) switches from this function's own
     original "one static chart spanning the whole trip" rendering to a
@@ -179,14 +182,14 @@ def render_gsensor_graph_video(
                 baseline, scales, total_seconds,
                 window_start=chunk_window_start, window_end=chunk_window_end,
                 orientation=orientation, width=width, height=height,
-                show_z=show_z,
+                show_x=show_x,
             )
             for chunk_window_start, chunk_window_end in chunk_boundaries
         ]
     else:
         base_image = render_base_frame(
             samples, baseline, scales, total_seconds,
-            orientation=orientation, width=width, height=height, show_z=show_z,
+            orientation=orientation, width=width, height=height, show_x=show_x,
         )
 
     frame_count = max(2, int(total_seconds * fps) + 1)
@@ -209,12 +212,12 @@ def render_gsensor_graph_video(
                     chunk_images[chunk_index],
                     elapsed_seconds - chunk_window_start,
                     chunk_window_end - chunk_window_start,
-                    orientation=orientation, show_z=show_z,
+                    orientation=orientation, show_x=show_x,
                 )
             else:
                 frame = render_frame(
                     base_image, elapsed_seconds, total_seconds,
-                    orientation=orientation, show_z=show_z,
+                    orientation=orientation, show_x=show_x,
                 )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 
