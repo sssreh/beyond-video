@@ -57,8 +57,10 @@ from .auth import require_owner
 from .jobs import BvExportArgError
 from .jobs import Job
 from .jobs import JobRunner
+from .trips import GPX_FILENAME
 from .trips import TripAssets
 from .trips import TripCache
+from .trips import first_gpx_point
 from .trips import scan_trips
 from .users import User
 from .users import UsersConfig
@@ -249,6 +251,62 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         trip = _find_trip(app.state.trip_cache, target, trip_id)
         return templates.TemplateResponse(
             request, "trip_detail.html", {"user": user, "trip": trip}
+        )
+
+    @app.get("/trips/{trip_id}/location", response_class=HTMLResponse)
+    async def trip_location(
+        request: Request, trip_id: str, user: User = Depends(require_login)
+    ):
+        trip = _find_trip(app.state.trip_cache, target, trip_id)
+
+        coordinates = None
+        google_maps_url = None
+        address = None
+        address_error = None
+        error = None
+
+        if not trip.gpx:
+            error = "This trip has no GPS track."
+        else:
+            point = first_gpx_point(trip.folder / GPX_FILENAME)
+            if point is None:
+                error = (
+                    "No valid GPS fix found in this trip's GPS track "
+                    "(no signal)."
+                )
+            else:
+                latitude, longitude = point
+                coordinates = f"{latitude},{longitude}"
+                google_maps_url = f"https://www.google.com/maps?q={coordinates}"
+
+                # Same reverse-geocode cache dir the archive browser's
+                # own /location route already uses (see
+                # archive_recording_location() below) - one shared
+                # cache under bv-web's own writable scratch space
+                # rather than a second one, since both routes are
+                # geocoding the exact same kind of thing (a single
+                # lat/lon point) and would otherwise cold-miss each
+                # other's already-cached lookups for no reason.
+                geocode_cache_dir = default_config_dir() / ".osm_cache"
+                try:
+                    address = load_or_reverse_geocode(
+                        latitude, longitude, geocode_cache_dir
+                    )
+                except MediaToolError as exc:
+                    address_error = str(exc)
+
+        return templates.TemplateResponse(
+            request,
+            "trip_location.html",
+            {
+                "user": user,
+                "trip_id": trip_id,
+                "coordinates": coordinates,
+                "google_maps_url": google_maps_url,
+                "address": address,
+                "address_error": address_error,
+                "error": error,
+            },
         )
 
     @app.get("/trips/{trip_id}/files/{filename}")

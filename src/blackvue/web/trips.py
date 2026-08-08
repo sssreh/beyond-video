@@ -26,8 +26,15 @@ import time
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 TRIP_LOG_FILENAME = "trip.log"
+
+# Matches gpx_writer.write_gpx()'s own namespace (export/gpx_writer.py)
+# - a module-private constant there, so redefined here rather than
+# imported, to avoid pulling in a whole extra module dependency for
+# one string.
+_GPX_NAMESPACE = "http://www.topografix.com/GPX/1/1"
 
 # Matches TripLog's own header line, e.g.
 # "=== bv-export trip log: trip_20260715_133458_20260715_141235 ==="
@@ -138,6 +145,34 @@ def _read_trip_label(trip_log_path: Path) -> str | None:
 
     match = _TRIP_LABEL_RE.match(first_line)
     return match.group(1) if match else None
+
+
+def first_gpx_point(path: Path) -> tuple[float, float] | None:
+    """Return the (latitude, longitude) of `path`'s first GPX
+    trackpoint, or None if the file is missing, unparseable, or has
+    no trackpoints at all.
+
+    trip.gpx is written by gpx_writer.write_gpx(), which only ever
+    emits a `<trkpt>` for a fix that was already valid with a real
+    position (see that function's own docstring) - unlike a raw .gps
+    sidecar, where archive_browser.first_valid_gps_fix() has to scan
+    past invalid fixes itself, the very first trkpt here already *is*
+    the trip's start location, no further filtering needed.
+    """
+
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+
+    trkpt = root.find(f".//{{{_GPX_NAMESPACE}}}trkpt")
+    if trkpt is None:
+        return None
+
+    try:
+        return float(trkpt.attrib["lat"]), float(trkpt.attrib["lon"])
+    except (KeyError, ValueError):
+        return None
 
 
 def scan_trip(folder: Path) -> TripAssets | None:

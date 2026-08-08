@@ -4,6 +4,10 @@
 <p><a href="/trips">&larr; All trips</a></p>
 <h2>{% if trip.prefix %}<span class="badge">{{ trip.prefix }}</span> {% endif %}{{ trip.label }}</h2>
 
+{% if trip.gpx %}
+<p><a href="/trips/{{ trip.id }}/location">Show start location</a></p>
+{% endif %}
+
 {% if trip.primary_video %}
 <video controls preload="metadata" src="/trips/{{ trip.id }}/files/{{ trip.primary_video }}"></video>
 {% else %}

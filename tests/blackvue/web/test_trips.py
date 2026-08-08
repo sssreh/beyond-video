@@ -1,6 +1,30 @@
 from blackvue.web.trips import TripCache
+from blackvue.web.trips import first_gpx_point
 from blackvue.web.trips import scan_trip
 from blackvue.web.trips import scan_trips
+
+_SAMPLE_GPX = """<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="beyond-video bv-export" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <trkseg>
+      <trkpt lat="59.334591" lon="18.06324">
+        <time>2026-07-15T13:34:58Z</time>
+      </trkpt>
+      <trkpt lat="59.335" lon="18.064">
+        <time>2026-07-15T13:35:08Z</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>
+"""
+
+_EMPTY_GPX = """<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="beyond-video bv-export" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <trkseg></trkseg>
+  </trk>
+</gpx>
+"""
 
 
 def _write_trip_log(folder, label="trip_20260715_133458_20260715_141235"):
@@ -10,6 +34,39 @@ def _write_trip_log(folder, label="trip_20260715_133458_20260715_141235"):
         "Started: 2026-07-15T13:34:58\n"
         "Command: bv-export /archive --target /trips\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# first_gpx_point() - added so trip_detail.html can show a "Show start
+# location" link the same way the archive browser's own /location route
+# already does for a single recording (see app.py's archive_recording_
+# location() and its new trip_location() sibling).
+# ---------------------------------------------------------------------------
+
+
+def test_first_gpx_point_returns_the_first_trackpoint(tmp_path):
+    gpx_path = tmp_path / "trip.gpx"
+    gpx_path.write_text(_SAMPLE_GPX)
+
+    assert first_gpx_point(gpx_path) == (59.334591, 18.06324)
+
+
+def test_first_gpx_point_returns_none_for_a_track_with_no_points(tmp_path):
+    gpx_path = tmp_path / "trip.gpx"
+    gpx_path.write_text(_EMPTY_GPX)
+
+    assert first_gpx_point(gpx_path) is None
+
+
+def test_first_gpx_point_returns_none_for_a_missing_file(tmp_path):
+    assert first_gpx_point(tmp_path / "does_not_exist.gpx") is None
+
+
+def test_first_gpx_point_returns_none_for_malformed_xml(tmp_path):
+    gpx_path = tmp_path / "trip.gpx"
+    gpx_path.write_text("not valid xml at all <<<")
+
+    assert first_gpx_point(gpx_path) is None
 
 
 def test_scan_trip_returns_none_without_a_trip_log(tmp_path):
