@@ -245,12 +245,40 @@ def check_readable(path: Path) -> None:
         ) from exc
 
 
-def concatenate_media(sources: list[Path], destination: Path) -> None:
+def concatenate_media(
+    sources: list[Path], destination: Path, *, video_only: bool = False
+) -> None:
     """Concatenate video or audio files, in order, into `destination`
     via ffmpeg's concat demuxer, copying streams without re-encoding.
 
     Works for a single source too (a plain stream copy). Does nothing
     if `sources` is empty.
+
+    `video_only`, if True, adds `-an` so `destination` carries no
+    audio stream at all, regardless of what any individual source has
+    embedded. trip_export.py's own FRONT-asset concatenation passes
+    this - a BlackVue FRONT recording normally embeds its own audio
+    track alongside video, but a repaired Parking recording (see
+    generate/mp4_repair.py's `repair_parking_container()`) has had its
+    own broken, empty audio track dropped entirely, leaving it video
+    -only while every other FRONT recording in the same trip still
+    carries two streams. ffmpeg's concat demuxer needs a consistent
+    stream layout across every segment for a `-c copy` concat to come
+    out right - mixing a 1-stream segment in among 2-stream ones
+    produces a genuinely corrupted result, not just a missing audio
+    track: confirmed on a real trip, Christer's own concatenated
+    front.mp4 came back with its video stream reporting
+    `time_base=1/16000` (a value that looks like it leaked from an
+    audio sample rate) instead of the `1/1000` every individual source
+    itself reports on its own, and a duration roughly 16x too long,
+    despite the real frame count surviving concatenation correctly.
+    `video_only=True` sidesteps the whole class of bug by never
+    letting inconsistent per-segment audio presence reach the concat
+    demuxer - trip_export.py's own `_concatenate_asset()` then remuxes
+    the trip's separately-built, always-consistent `audio.aac` into
+    the result afterward (see `mux_audio_track()` below), rather than
+    depending on front.mp4's own raw per-recording audio surviving
+    concatenation intact.
     """
 
     if not sources:
@@ -265,14 +293,65 @@ def concatenate_media(sources: list[Path], destination: Path) -> None:
             list_file.write(f"file '{_escape_concat_path(source)}'\n")
         list_path = Path(list_file.name)
 
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(list_path),
+        "-c", "copy",
+    ]
+    if video_only:
+        command.append("-an")
+    command.append(str(destination))
+
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg concat failed for {destination.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc
+    finally:
+        list_path.unlink(missing_ok=True)
+
+
+def mux_audio_track(
+    video_source: Path, audio_source: Path, destination: Path
+) -> None:
+    """Remux `video_source`'s own video stream together with
+    `audio_source`'s own audio stream into `destination`, both as a
+    plain stream copy (no re-encode of either).
+
+    Built for trip_export.py's own front.mp4 pipeline: `video_source`
+    is the video-only concat `concatenate_media(..., video_only=True)`
+    produces (see that function's own docstring for why front.mp4's
+    raw per-recording audio can't be trusted to survive concatenation
+    intact), and `audio_source` is the trip's separately-concatenated
+    `audio.aac` - the same file already muxed into stitch.mp4 (see
+    stitch.py) - giving front.mp4 real, correctly-timed audio again
+    without ever routing it back through the concat demuxer's fragile
+    same-stream-layout requirement.
+
+    `destination` must not be the same file as `video_source` - ffmpeg
+    can't read and write the same file in a single pass. Swapping the
+    result into `video_source`'s own place, if that's the goal, is the
+    caller's job (write to a temp path, then move it into place -
+    trip_export.py does exactly this for front.mp4).
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
     try:
         subprocess.run(
             [
-                "ffmpeg",
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(list_path),
+                "ffmpeg", "-y",
+                "-i", str(video_source),
+                "-i", str(audio_source),
+                "-map", "0:v:0",
+                "-map", "1:a:0",
                 "-c", "copy",
                 str(destination),
             ],
@@ -284,11 +363,9 @@ def concatenate_media(sources: list[Path], destination: Path) -> None:
         raise MediaToolError("ffmpeg not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
         raise MediaToolError(
-            f"ffmpeg concat failed for {destination.name}: "
+            f"ffmpeg audio mux failed for {destination.name}: "
             f"{exc.stderr.strip()}"
         ) from exc
-    finally:
-        list_path.unlink(missing_ok=True)
 
 
 def trim_media(source: Path, destination: Path, duration_seconds: float) -> None:

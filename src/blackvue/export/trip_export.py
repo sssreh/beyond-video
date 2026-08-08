@@ -43,6 +43,7 @@ from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
 from .media import check_readable
 from .media import concatenate_media
+from .media import mux_audio_track
 from .media import trim_media
 from .media import trim_media_head
 from .osm_roads import bounding_box_for_fixes
@@ -821,6 +822,7 @@ def _concatenate_asset(
     *,
     include_parking: bool = True,
     duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
+    video_only: bool = False,
 ) -> Path | None:
     """Build `sources` in trip order, leaving out any Parking-mode
     recording entirely - wherever it falls in the trip - whenever
@@ -857,6 +859,14 @@ def _concatenate_asset(
     asset's total duration in step with its counterpart (FRONT with
     REAR) even when the two sides' own real files ran different
     lengths. See that function's own docstring for why.
+
+    `video_only`, forwarded straight to `concatenate_media()`, is what
+    `export_trip()` passes for FRONT specifically - see that
+    function's own docstring for the real corruption it avoids
+    (mixing a video-only repaired Parking segment in among ordinary
+    video+audio FRONT recordings). `export_trip()` remuxes the trip's
+    own `audio.aac` back into the result afterward, once both are
+    ready.
 
     Every source is probed before being handed to ffmpeg's concat
     demuxer - a single unreadable file (most often one whose moov atom
@@ -918,7 +928,7 @@ def _concatenate_asset(
 
     out = destination / filename
     try:
-        concatenate_media(readable_sources, out)
+        concatenate_media(readable_sources, out, video_only=video_only)
     except MediaToolError as exc:
         warnings.append(str(exc))
         if log is not None:
@@ -1585,6 +1595,7 @@ def export_trip(
             front_future = executor.submit(
                 _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
                 include_parking=include_parking, duration_overrides=duration_overrides,
+                video_only=True,
             )
             rear_future = executor.submit(
                 _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
@@ -1597,6 +1608,39 @@ def export_trip(
             front_video = front_future.result()
             rear_video = rear_future.result()
             audio = audio_future.result()
+
+    # front.mp4 was just concatenated video-only (video_only=True
+    # above - see concatenate_media()'s own docstring for the real
+    # corruption this avoids: mixing a video-only repaired Parking
+    # segment in among ordinary two-stream FRONT recordings used to
+    # produce a front.mp4 whose own video stream reported a garbage
+    # time_base/duration, even though every individual source probed
+    # correctly). Remux the trip's own audio.aac back into it now that
+    # both are ready, so front.mp4 still carries real, correctly
+    # -timed sound for anyone playing it directly - bv-web's trip
+    # -detail page falls back to exactly this file whenever --stitch
+    # wasn't used (see web/trips.py's own VIDEO_FILENAMES order).
+    # Muxed into a throwaway temp file first and swapped into place
+    # only on success, since ffmpeg can't read and write front.mp4 in
+    # the same pass - a mux failure leaves the already-good video-only
+    # front.mp4 in place rather than losing it, the same "don't take
+    # good footage down with a secondary failure" spirit as
+    # _concatenate_asset()'s own per-source readability handling.
+    if front_video is not None and audio is not None:
+        with tempfile.TemporaryDirectory(prefix="bv_export_mux_") as mux_dir:
+            muxed = Path(mux_dir) / "front_with_audio.mp4"
+            try:
+                mux_audio_track(front_video, audio, muxed)
+            except MediaToolError as exc:
+                message = (
+                    f"front.mp4: could not remux audio back in ({exc}) - "
+                    "front.mp4 will have no sound"
+                )
+                warnings.append(message)
+                log.warning(message)
+            else:
+                muxed.replace(front_video)
+                log.step("remuxed audio.aac into front.mp4")
 
     if debug:
         print(

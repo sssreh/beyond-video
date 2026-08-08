@@ -9,9 +9,11 @@ from blackvue.export.media import check_readable
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
+from blackvue.export.media import mux_audio_track
 from blackvue.export.media import trim_media
 from blackvue.export.media import trim_media_head
 from blackvue.generate.media import MediaToolError
+from blackvue.generate.media import probe_audio_codec
 
 
 def _make_silent_audio(path, duration_seconds: float) -> None:
@@ -451,3 +453,89 @@ def test_trim_media_head_shortens_a_real_video_via_stream_copy(tmp_path):
 def test_trim_media_head_raises_when_the_source_does_not_exist(tmp_path):
     with pytest.raises(MediaToolError):
         trim_media_head(tmp_path / "missing.mp4", tmp_path / "out.mp4", 2.0)
+
+
+def _make_video_with_audio(path, duration_seconds: float) -> None:
+    """A real video+audio file - the shape a normal (non-Parking)
+    BlackVue FRONT recording actually has (see concatenate_media()'s
+    own docstring for why that matters: a repaired Parking FRONT
+    recording, unlike this, is video-only)."""
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono",
+            "-t", str(duration_seconds),
+            "-shortest",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_concatenate_media_strips_audio_when_video_only(tmp_path):
+    # The fix for the real bug this whole feature exists for: mixing a
+    # video-only source (a repaired Parking recording - see
+    # concatenate_media()'s own docstring) in among video+audio
+    # sources corrupts the concatenated output's own duration
+    # metadata. video_only=True sidesteps it by never letting any
+    # source's audio - present or not - reach the concat demuxer.
+    first = tmp_path / "first.mp4"
+    second = tmp_path / "second.mp4"
+    _make_video_with_audio(first, 1.0)
+    _make_video_with_audio(second, 1.0)
+
+    destination = tmp_path / "combined.mp4"
+    concatenate_media([first, second], destination, video_only=True)
+
+    assert destination.exists()
+    assert probe_audio_codec(destination) is None
+
+
+def test_concatenate_media_keeps_audio_by_default(tmp_path):
+    # Confirms video_only's default (False) preserves this project's
+    # existing behavior - every other concatenate_media() caller
+    # (REAR, AUDIO, and FRONT before this fix) still gets whatever
+    # audio its sources carry.
+    first = tmp_path / "first.mp4"
+    _make_video_with_audio(first, 1.0)
+
+    destination = tmp_path / "combined.mp4"
+    concatenate_media([first], destination)
+
+    assert destination.exists()
+    assert probe_audio_codec(destination) is not None
+
+
+def test_mux_audio_track_combines_a_video_only_file_with_a_separate_audio_file(
+    tmp_path,
+):
+    video = tmp_path / "video_only.mp4"
+    _make_silent_video(video, 2.0)
+    audio = tmp_path / "standalone.aac"
+    _make_silent_audio(audio, 2.0)
+
+    destination = tmp_path / "muxed.mp4"
+    mux_audio_track(video, audio, destination)
+
+    assert destination.exists()
+    assert probe_audio_codec(destination) is not None
+
+
+def test_mux_audio_track_raises_when_the_video_source_does_not_exist(tmp_path):
+    audio = tmp_path / "standalone.aac"
+    _make_silent_audio(audio, 1.0)
+
+    with pytest.raises(MediaToolError):
+        mux_audio_track(tmp_path / "missing.mp4", audio, tmp_path / "out.mp4")
+
+
+def test_mux_audio_track_raises_when_the_audio_source_does_not_exist(tmp_path):
+    video = tmp_path / "video_only.mp4"
+    _make_silent_video(video, 1.0)
+
+    with pytest.raises(MediaToolError):
+        mux_audio_track(video, tmp_path / "missing.aac", tmp_path / "out.mp4")

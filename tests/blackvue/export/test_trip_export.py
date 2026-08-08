@@ -444,7 +444,7 @@ def test_export_trip_concatenates_front_rear_audio_independently(
     # export_trip()'s comment) - the property that actually matters
     # for correctness, not the threading itself, is that one of them
     # failing doesn't block or lose the other two.
-    def _selective_concat(sources, destination):
+    def _selective_concat(sources, destination, *, video_only=False):
         if destination.name == "front.mp4":
             raise MediaToolError("simulated front failure")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -2833,6 +2833,63 @@ def test_export_trip_map_zoom_matches_video_width_for_east_west_trip(
 
     assert zoom_kwargs["width"] == 64
     assert 0 < zoom_kwargs["height"] < 64
+
+
+def test_export_trip_front_mp4_keeps_audio_despite_a_video_only_source(
+    tmp_path,
+):
+    # Regression test for the real front.mp4 corruption bug: a
+    # BlackVue FRONT recording normally carries its own embedded audio
+    # track, but a repaired Parking recording's own front file is
+    # video-only (its broken audio track gets dropped entirely by
+    # mp4_repair.py - see concatenate_media()'s own docstring for the
+    # full story). Concatenating that video-only segment in among
+    # ordinary video+audio ones via a plain -c copy corrupted the
+    # whole front.mp4's own duration metadata on a real trip, even
+    # though the real frame count survived intact. front.mp4 is now
+    # always concatenated video-only, then has the trip's own
+    # separately-built audio.aac remuxed back in - this confirms that
+    # remux actually lands: front.mp4 ends up with a real audio stream
+    # even though one of its two source recordings' own front video
+    # had none at all.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    audio_a = source_dir / "a.aac"
+    _make_video_with_audio(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+    _make_audio(audio_a, 1.0)
+
+    # Stands in for a repaired Parking recording's own front file:
+    # video-only, no audio track at all.
+    front_p = source_dir / "front_p.mp4"
+    _make_video(front_p, 1.0)
+
+    first_id = RecordingId("20260720_100000_N")
+    parking_id = RecordingId("20260720_100010_P")
+
+    trip = Trip((
+        Recording(
+            id=first_id,
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.AUDIO: AssetFile(Asset.AUDIO, audio_a),
+            },
+        ),
+        Recording(
+            id=parking_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)},
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir, include_parking=True)
+
+    assert result.front_video is not None
+    assert _has_audio_stream(result.front_video)
 
 
 def test_export_trip_video_duration_uses_summed_sources_not_corrupted_concat_probe(
