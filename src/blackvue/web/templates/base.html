@@ -311,6 +311,39 @@
       color: var(--muted); font-weight: 600; margin: 0 0 0.6rem;
       border-bottom: 1px solid var(--panel-border); padding-bottom: 0.3rem;
     }
+    /* Collapsible option-groups (native <details>/<summary>, no JS
+       needed just to open/close) - added so a long job form like
+       bv-export's can show a first-time user 8-10 core controls
+       instead of every flag bv-export itself has no choice but to
+       expose. Christer's own framing: "checking Create stitched
+       video can reveal the stitch options automatically... the web
+       UI can be much more conversational." <summary> reuses the same
+       visual treatment as a plain .option-group h3 (see above) so a
+       collapsed section looks identical to an always-open one, plus
+       a small rotating disclosure triangle. Forced open only ever
+       happens via JS (see job_new_bv_export.html) in response to a
+       related checkbox being checked - a section is never force-
+       closed, so a user's own manual expand/collapse or already-
+       entered advanced values are never fought or hidden again. */
+    .option-group > summary {
+      text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.06em;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.6rem;
+      border-bottom: 1px solid var(--panel-border); padding-bottom: 0.3rem;
+      cursor: pointer; list-style: none;
+    }
+    .option-group > summary::-webkit-details-marker { display: none; }
+    .option-group > summary::before {
+      content: "\25B8"; display: inline-block; width: 0.9em;
+      transition: transform 0.15s ease;
+    }
+    .option-group[open] > summary::before { transform: rotate(90deg); }
+    .option-group > summary:hover { color: var(--text); }
+    /* First real field right under a <summary> needs its own top
+       margin back - h3's sibling fields already get this for free
+       from normal document flow/existing field margins, but a
+       <details> element's default UA styling can otherwise leave the
+       first child hugging the summary. */
+    .option-group > summary + * { margin-top: 0; }
     .field-label {
       display: flex; align-items: center; gap: 0.4rem;
     }

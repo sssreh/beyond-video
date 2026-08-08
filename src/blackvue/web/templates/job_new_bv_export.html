@@ -9,7 +9,11 @@
   line, with full parity for every flag it supports. Exported trips
   show up on the Trips tab as soon as this job finishes. The
   destination folder isn't configurable here - it's always this
-  server's own trips directory.</p>
+  server's own trips directory. The Advanced sections below hold the
+  same options <code>bv-export --help</code> lists up front - the CLI
+  has no choice but to show everything at once, but here they stay
+  out of the way until you actually want them, and open on their own
+  the moment a related checkbox above them is checked.</p>
 </div>
 {% if error %}
 <p class="error">{{ error }}</p>
@@ -57,10 +61,138 @@
   </div>
 
   <div class="option-group">
-    <h3>Defaults</h3>
+    <h3>Options</h3>
+
+    <label class="field-label" for="prefix">
+      Trip folder name prefix
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Prepend PREFIX_ to each trip's folder name, e.g. Holiday -> Holiday_trip_20260715_133458_20260715_141235.</span></span>
+    </label>
+    <input type="text" id="prefix" name="prefix" placeholder="none">
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="stitch" name="stitch" value="true" style="width: auto; margin: 0;">
+        Create stitched video (front and rear cameras combined into one video)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="render_map" name="render_map" value="true" style="width: auto; margin: 0;">
+        Include map (whole-trip route overview, map.mp4)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="include_parking" name="include_parking" value="true" style="width: auto; margin: 0;">
+        Include Parking-mode recordings in the exported video/audio
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
+        Wipe and rebuild each trip folder from scratch
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
+        Dry run (show what would be exported, write nothing)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="debug" name="debug" value="true" style="width: auto; margin: 0;">
+        Print per-trip render timing to the job log
+      </label>
+    </div>
+  </div>
+
+  <details class="option-group" id="advanced-trip">
+    <summary>Advanced trip detection</summary>
+    <p class="hint">How recordings are grouped into trips and how long a Parking-mode gap is tolerated.</p>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="max_gap_minutes">
+          Max gap between recordings (minutes)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Largest gap between two recordings that still counts as the same trip. Default: derived from the camera's own RecordTime if known, else 5.</span></span>
+        </label>
+        <input type="number" id="max_gap_minutes" name="max_gap_minutes" min="1" step="1" placeholder="auto">
+      </div>
+      <div class="field">
+        <label class="field-label" for="gap_tolerance_seconds">
+          Gap tolerance (seconds)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Small fixed margin added on top of the max gap before a gap counts as a split. Default: 10.</span></span>
+        </label>
+        <input type="number" id="gap_tolerance_seconds" name="gap_tolerance_seconds" min="0" step="1" placeholder="10">
+      </div>
+      <div class="field">
+        <label class="field-label" for="max_parking_duration_minutes">
+          Max continuous parking duration (minutes)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">How long a continuous run of Parking-mode footage can span in real elapsed time before it's kept out of the trip it would otherwise end. Default: 60.</span></span>
+        </label>
+        <input type="number" id="max_parking_duration_minutes" name="max_parking_duration_minutes" min="1" step="1" placeholder="60">
+      </div>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="movement" name="movement" value="true" style="width: auto; margin: 0;">
+        Use GPS/g-sensor movement to bridge gaps over the max gap
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;">
+        Ignore recording duration, measure gaps from start timestamps only (--no-duration)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="duration_heal_archive" name="duration_heal_archive" value="true" style="width: auto; margin: 0;">
+        Self-heal missing duration data for the whole archive up front
+      </label>
+    </div>
+  </details>
+
+  <details class="option-group" id="advanced-map">
+    <summary>Advanced map</summary>
+    <p class="hint">Opens automatically once "Include map" above is checked.</p>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="map_icon">
+          Map marker image
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Custom image for the position marker on map.mp4/map_zoom. Default: a bundled red car icon - type "none" for a plain rotating arrow instead, or a path to use your own image.</span></span>
+        </label>
+        <input type="text" id="map_icon" name="map_icon" placeholder="bundled red car icon">
+      </div>
+      <div class="field">
+        <label class="field-label" for="map_zoom_meters">
+          Map follow-camera radius (meters)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also render a scrolling follow-camera map view of this real-world half-width in meters, independent of Include map above. Leave blank to skip. Default when enabled with no value: 120.</span></span>
+        </label>
+        <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" placeholder="skip">
+      </div>
+    </div>
+  </details>
+
+  <details class="option-group" id="advanced-gsensor">
+    <summary>Advanced g-sensor</summary>
+    <p class="hint">Standalone g-sensor overlay videos, separate from the front/rear/stitch footage itself.</p>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="render_gsensor" name="render_gsensor" value="true" style="width: auto; margin: 0;">
+        Render gsensor.mp4 (dot-gauge overlay video)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="render_gsensor_graph" name="render_gsensor_graph" value="true" style="width: auto; margin: 0;">
+        Render gsensor_graph.mp4 (strip-chart overlay video)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="gsensor_graph_z" name="gsensor_graph_z" value="true" style="width: auto; margin: 0;">
+        Also plot Z on the g-sensor graph
+      </label>
+    </div>
+  </details>
+
+  <details class="option-group" id="advanced-stitch">
+    <summary>Advanced stitching</summary>
+    <p class="hint">Opens automatically once "Create stitched video" above is checked. Everything here only affects stitch.mp4.</p>
+
     <label class="field-label" for="stitch_layout">
       Stitch layout
-      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Camera arrangement for --stitch (below): side by side, stacked, or rearview-mirror inset. Auto picks side-by-side or top-down from the trip's own GPS extent; rearview_mirror is never auto-picked. Only used together with Render combined stitch video.</span></span>
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Camera arrangement for stitch.mp4: side by side, stacked, or rearview-mirror inset. Auto picks side-by-side or top-down from the trip's own GPS extent; rearview_mirror is never auto-picked.</span></span>
     </label>
     <select id="stitch_layout" name="stitch_layout">
       <option value="auto" selected>auto</option>
@@ -109,128 +241,26 @@
         <input type="number" id="stitch_mirror_pan_y" name="stitch_mirror_pan_y" value="-30" min="-100" max="100" step="0.1">
       </div>
       <div class="field">
-        <label class="field-label" for="stitch_gsensor_size">
-          G-sensor overlay size (%)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Overlay size as a percentage of the camera composite's width (5-40). Only used together with Overlay g-sensor gauge below.</span></span>
+        <label class="field-label" for="stitch_mirror_icon">
+          Mirror inset frame photo
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Composite the mirror inset into a photo of a real rearview mirror instead of a plain rounded rectangle. Default: a bundled reference photo - type "none" for the plain procedural inset, or a path for your own photo. Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" value="15" min="5" max="40" step="0.1">
+        <input type="text" id="stitch_mirror_icon" name="stitch_mirror_icon" placeholder="bundled reference photo">
       </div>
     </div>
-  </div>
-
-  <div class="option-group">
-    <h3>Optional</h3>
-
-    <label class="field-label" for="prefix">
-      Trip folder name prefix
-      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Prepend PREFIX_ to each trip's folder name, e.g. Holiday -> Holiday_trip_20260715_133458_20260715_141235.</span></span>
-    </label>
-    <input type="text" id="prefix" name="prefix" placeholder="none">
-
-    <div class="field-row">
-      <div class="field">
-        <label class="field-label" for="max_gap_minutes">
-          Max gap between recordings (minutes)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Largest gap between two recordings that still counts as the same trip. Default: derived from the camera's own RecordTime if known, else 5.</span></span>
-        </label>
-        <input type="number" id="max_gap_minutes" name="max_gap_minutes" min="1" step="1" placeholder="auto">
-      </div>
-      <div class="field">
-        <label class="field-label" for="gap_tolerance_seconds">
-          Gap tolerance (seconds)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Small fixed margin added on top of the max gap before a gap counts as a split. Default: 10.</span></span>
-        </label>
-        <input type="number" id="gap_tolerance_seconds" name="gap_tolerance_seconds" min="0" step="1" placeholder="10">
-      </div>
-      <div class="field">
-        <label class="field-label" for="max_parking_duration_minutes">
-          Max continuous parking duration (minutes)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">How long a continuous run of Parking-mode footage can span in real elapsed time before it's kept out of the trip it would otherwise end. Default: 60.</span></span>
-        </label>
-        <input type="number" id="max_parking_duration_minutes" name="max_parking_duration_minutes" min="1" step="1" placeholder="60">
-      </div>
-    </div>
-
-    <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="movement" name="movement" value="true" style="width: auto; margin: 0;">
-        Use GPS/g-sensor movement to bridge gaps over the max gap
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;">
-        Ignore recording duration, measure gaps from start timestamps only (--no-duration)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="duration_heal_archive" name="duration_heal_archive" value="true" style="width: auto; margin: 0;">
-        Self-heal missing duration data for the whole archive up front
-      </label>
-    </div>
-
-    <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="render_map" name="render_map" value="true" style="width: auto; margin: 0;">
-        Render map.mp4 (whole-trip route overview)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="render_gsensor" name="render_gsensor" value="true" style="width: auto; margin: 0;">
-        Render gsensor.mp4 (dot-gauge overlay video)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="render_gsensor_graph" name="render_gsensor_graph" value="true" style="width: auto; margin: 0;">
-        Render gsensor_graph.mp4 (strip-chart overlay video)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="gsensor_graph_z" name="gsensor_graph_z" value="true" style="width: auto; margin: 0;">
-        Also plot Z on the g-sensor graph
-      </label>
-    </div>
-
-    <div class="field-row">
-      <div class="field">
-        <label class="field-label" for="map_icon">
-          Map marker image
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Custom image for the position marker on map.mp4/map_zoom. Default: a bundled red car icon - type "none" for a plain rotating arrow instead, or a path to use your own image.</span></span>
-        </label>
-        <input type="text" id="map_icon" name="map_icon" placeholder="bundled red car icon">
-      </div>
-      <div class="field">
-        <label class="field-label" for="map_zoom_meters">
-          Map follow-camera radius (meters)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also render a scrolling follow-camera map view of this real-world half-width in meters, independent of Render map.mp4. Leave blank to skip. Default when enabled with no value: 120.</span></span>
-        </label>
-        <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" placeholder="skip">
-      </div>
-    </div>
-
-    <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="stitch" name="stitch" value="true" style="width: auto; margin: 0;">
-        Render stitch.mp4 (front and rear cameras combined into one video)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="include_parking" name="include_parking" value="true" style="width: auto; margin: 0;">
-        Include Parking-mode recordings in the exported video/audio
-      </label>
-    </div>
-
-    <label class="field-label" for="stitch_mirror_icon">
-      Mirror inset frame photo
-      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Composite the mirror inset into a photo of a real rearview mirror instead of a plain rounded rectangle. Default: a bundled reference photo - type "none" for the plain procedural inset, or a path for your own photo. Only meaningful with stitch layout rearview_mirror.</span></span>
-    </label>
-    <input type="text" id="stitch_mirror_icon" name="stitch_mirror_icon" placeholder="bundled reference photo">
 
     <div class="field-row">
       <div class="field">
         <label class="field-label" for="stitch_resolution">
           Stitch resolution override
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Scale stitch.mp4 to this exact resolution (e.g. 320x240) instead of front's own resolution - useful for a fast test render. Only used together with Render combined stitch video.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Scale stitch.mp4 to this exact resolution (e.g. 320x240) instead of front's own resolution - useful for a fast test render.</span></span>
         </label>
         <input type="text" id="stitch_resolution" name="stitch_resolution" placeholder="e.g. 1920x1080">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_bitrate">
           Stitch bitrate
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Target video bitrate for stitch.mp4 (e.g. 256k, 2M). Default: matches the original footage's own bitrate. Only used together with Render combined stitch video.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Target video bitrate for stitch.mp4 (e.g. 256k, 2M). Default: matches the original footage's own bitrate.</span></span>
         </label>
         <input type="text" id="stitch_bitrate" name="stitch_bitrate" placeholder="e.g. 2M">
       </div>
@@ -264,7 +294,7 @@
       <div class="field">
         <label class="field-label" for="stitch_map">
           Stitch map panel
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also compose a map panel alongside the camera composite in stitch.mp4 - a whole-trip overview, or a follow-camera view (needs the map follow-camera radius above too). Only used together with Render combined stitch video.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also compose a map panel alongside the camera composite in stitch.mp4 - a whole-trip overview, or a follow-camera view (needs the map follow-camera radius in Advanced map too).</span></span>
         </label>
         <select id="stitch_map" name="stitch_map">
           <option value="" selected>(none)</option>
@@ -306,6 +336,13 @@
     </div>
 
     <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="stitch_gsensor_size">
+          G-sensor overlay size (%)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Overlay size as a percentage of the camera composite's width (5-40). Only used together with Overlay g-sensor gauge above.</span></span>
+        </label>
+        <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" value="15" min="5" max="40" step="0.1">
+      </div>
       <div class="field">
         <label class="field-label" for="stitch_gsensor_pos">
           G-sensor overlay position
@@ -355,25 +392,34 @@
         Disable the dark background bar behind burned-in subtitles
       </label>
     </div>
-
-    <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
-        Wipe and rebuild each trip folder from scratch
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
-        Dry run (show what would be exported, write nothing)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="debug" name="debug" value="true" style="width: auto; margin: 0;">
-        Print per-trip render timing to the job log
-      </label>
-    </div>
-  </div>
+  </details>
 
   <button type="submit">Start</button>
 </form>
+<script>
+  // Progressive disclosure: checking one of these core checkboxes
+  // opens its matching Advanced <details> section automatically, so
+  // a first-time user sees ~10 controls and a power user still gets
+  // to everything (Christer's own framing - see the command-help
+  // note above). Deliberately one-directional: unchecking the
+  // trigger never force-closes the section again, so a manually-
+  // opened section or already-entered advanced values are never
+  // hidden or lost out from under the user.
+  (function () {
+    var triggers = [
+      ["stitch", "advanced-stitch"],
+      ["render_map", "advanced-map"],
+    ];
+    triggers.forEach(function (pair) {
+      var checkbox = document.getElementById(pair[0]);
+      var details = document.getElementById(pair[1]);
+      if (!checkbox || !details) return;
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked) details.open = true;
+      });
+    });
+  })();
+</script>
 {% else %}
 <p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
 with bv-config</a> first.</p>
