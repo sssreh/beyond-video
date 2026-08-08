@@ -2,6 +2,305 @@
 {% block title %}Welcome - Beyond Video{% endblock %}
 {% block page_bg_class %} page-bg--sharp{% endblock %}
 {% block page_tint_class %} page-tint--none{% endblock %}
+{% block page_overlay %}
+<canvas id="page-overlay-canvas" aria-hidden="true"></canvas>
+<script>
+  // Harbor submarine easter egg, take 2. The original version (see
+  // WORKING_CONTEXT.md, "Easter egg: hide a submarine in the welcome
+  // page's water") was a static shape baked directly into bg-light.jpg/
+  // bg-dark.jpg with Pillow - deliberately NOT a CSS overlay, because a
+  // separately-positioned element would drift out of alignment with the
+  // photo at different viewport sizes (the background uses
+  // `background-size: cover`, which crops a different slice of the
+  // 1920x1084 photo depending on the viewport's own aspect ratio).
+  // Christer later asked for it to actually move - drift across the
+  // harbor, dive leaving a wake, resurface somewhere else - which a
+  // static baked-in shape can't do. This solves the original alignment
+  // problem properly instead of sidestepping it: replicate
+  // `background-size: cover`'s own math every frame, so the canvas
+  // draws at the same scale/offset the CSS background image is
+  // currently cropped to, however the viewport is sized.
+  (function () {
+    var canvas = document.getElementById("page-overlay-canvas");
+    if (!canvas) return;
+
+    // Skip the whole thing for anyone who's asked for less motion -
+    // an idle harbor photo is a fine fallback, no code path needed
+    // beyond just never starting.
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    // Event-driven, not continuous: Christer's refinement after seeing
+    // the first pass - rather than a background timer that keeps
+    // re-triggering every few minutes for as long as a tab stays open,
+    // each page load independently rolls a 1-in-5 chance of the sub
+    // showing up at all. Most loads (80%) do nothing whatsoever below
+    // this point - no timers, no canvas draws, no rAF loop - which is
+    // both simpler than a recurring scheduler and a closer match to
+    // "most users will never notice it on their first visit" (most
+    // *visits*, not just most of a single long-lived one).
+    if (Math.random() > 0.20) return;
+
+    var ctx = canvas.getContext("2d");
+
+    // Real pixel size shared by both bg-light.jpg and bg-dark.jpg (see
+    // base.html's --bg-image vars) - background-size: cover always
+    // scales *this* size up to cover the viewport, never the other way
+    // around, so every position below is expressed as a fraction of
+    // this rather than of the viewport.
+    var IMG_W = 1920, IMG_H = 1084;
+
+    // A confirmed-clear patch of open water on the photo's own left
+    // side, well clear of the coastline curve and the small marina
+    // tucked into the bottom-left (picked by inspecting the actual
+    // bg-light.jpg at full resolution) - fractions of IMG_W/IMG_H, not
+    // pixels, so this stays correct regardless of viewport/crop. The
+    // sub only ever roams inside this one small box - "a small overlay
+    // on the water to the left," not the whole photo.
+    var ROAM = { xMin: 0.045, xMax: 0.135, yMin: 0.22, yMax: 0.54 };
+    // Christer: "it will be more north south bound" - a fixed patrol
+    // column (small jitter only) rather than picking both x and y
+    // freely, so the path reads as up/down through the harbor instead
+    // of a diagonal cut across it.
+    var PATROL_X = ROAM.xMin + (ROAM.xMax - ROAM.xMin) * (0.3 + Math.random() * 0.4);
+
+    var isDark = document.documentElement.getAttribute("data-theme") === "dark";
+    // Same per-theme reasoning as the original baked-in version: the
+    // dark theme's water is already close to pure black, so its hull
+    // needs to be a lighter, more visible steel-blue to read as
+    // anything at all, while the light theme's water has more natural
+    // contrast to work with already.
+    var HULL = isDark ? "rgb(94, 118, 148)" : "rgb(20, 24, 30)";
+    var HULL_TOWER = isDark ? "rgb(120, 145, 176)" : "rgb(46, 50, 56)";
+    var RIPPLE = isDark ? "rgba(150, 180, 205, ALPHA)" : "rgba(170, 195, 215, ALPHA)";
+    var PERISCOPE = isDark ? "rgba(210, 214, 200, ALPHA)" : "rgba(230, 230, 210, ALPHA)";
+
+    function ripple(alpha) { return RIPPLE.replace("ALPHA", alpha); }
+    function periscope(alpha) { return PERISCOPE.replace("ALPHA", alpha); }
+
+    // background-size: cover's own math: scale the photo up just
+    // enough that both dimensions cover the viewport (the larger of
+    // the two ratios), then center the overflow - exactly what the CSS
+    // engine does for .page-bg, replicated here so this canvas's
+    // coordinate system always matches it.
+    function coverRect() {
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var scale = Math.max(vw / IMG_W, vh / IMG_H);
+      var rw = IMG_W * scale, rh = IMG_H * scale;
+      return { scale: scale, ox: (vw - rw) / 2, oy: (vh - rh) / 2 };
+    }
+
+    function toScreen(fracX, fracY) {
+      var r = coverRect();
+      return {
+        x: r.ox + fracX * IMG_W * r.scale,
+        y: r.oy + fracY * IMG_H * r.scale,
+        scale: r.scale,
+      };
+    }
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    function randomRoamPoint() {
+      // x only jitters a little around PATROL_X (still clamped inside
+      // ROAM) - the actual movement is in y, north-south along the
+      // harbor rather than across it.
+      var jitter = (ROAM.xMax - ROAM.xMin) * 0.15;
+      var x = Math.min(ROAM.xMax, Math.max(ROAM.xMin,
+        PATROL_X + (Math.random() - 0.5) * jitter));
+      return {
+        x: x,
+        y: ROAM.yMin + Math.random() * (ROAM.yMax - ROAM.yMin),
+      };
+    }
+
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function ease(t) { return t * t * (3 - 2 * t); }
+
+    function drawRipple(cx, cy, radiusPx, alpha, lineWidth) {
+      if (radiusPx <= 0 || alpha <= 0) return;
+      var ry = Math.max(1, radiusPx * 0.42); // flattened for the aerial angle
+      ctx.strokeStyle = ripple(alpha);
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, radiusPx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    function drawHull(cx, cy, headingRad, scale, alpha, blurPx) {
+      if (alpha <= 0) return;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(headingRad);
+      if (blurPx > 0.15) ctx.filter = "blur(" + blurPx + "px)";
+      ctx.globalAlpha = alpha;
+      var hullLen = 34 * scale, hullW = 9 * scale;
+      ctx.fillStyle = HULL;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, hullLen / 2, hullW / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      var towerW = 7 * scale, towerH = 5 * scale;
+      ctx.fillStyle = HULL_TOWER;
+      ctx.beginPath();
+      ctx.ellipse(-2 * scale, 0, towerW / 2, towerH / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawPeriscope(cx, cy, scale, alpha) {
+      if (alpha <= 0) return;
+      ctx.strokeStyle = periscope(alpha);
+      ctx.lineWidth = Math.max(1, scale);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 3 * scale);
+      ctx.lineTo(cx, cy - 10 * scale);
+      ctx.stroke();
+      ctx.fillStyle = periscope(alpha);
+      ctx.beginPath();
+      ctx.ellipse(cx, cy - 10 * scale, 1.5 * scale, 1 * scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // --- Timing, per Christer's own spec: "Surface. Drift very slowly
+    // for 20-30 seconds. Dive. Nothing for a minute or two. Surface
+    // somewhere else." Randomized within each range rather than a fixed
+    // number, so two different sightings never look identical. ---
+    function randomMs(minMs, maxMs) { return minMs + Math.random() * (maxMs - minMs); }
+    var INITIAL_DELAY_MS = randomMs(2000, 15000); // don't always appear the instant the page loads
+    var TRANSIT_MS = randomMs(20000, 30000); // "drift very slowly for 20-30 seconds"
+    var DIVE_MS = 3000;
+    var HIDDEN_MS = randomMs(60000, 120000); // "nothing for a minute or two"
+    var SURFACE_MS = 3000;
+    var HOLD_MS = 4000;
+
+    var current = randomRoamPoint();
+    var rafId = null;
+
+    function animatePhase(durationMs, onFrame, onDone) {
+      var start = null;
+      function frame(ts) {
+        if (start === null) start = ts;
+        var t = Math.min(1, (ts - start) / durationMs);
+        onFrame(t);
+        if (t < 1) {
+          rafId = requestAnimationFrame(frame);
+        } else {
+          onDone();
+        }
+      }
+      rafId = requestAnimationFrame(frame);
+    }
+
+    function clear() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function runCycle() {
+      var from = current;
+      var to = randomRoamPoint();
+      var heading = Math.atan2(to.y - from.y, to.x - from.x);
+      var wakeSpawnedAt = -1;
+      var wakePoints = [];
+
+      animatePhase(TRANSIT_MS, function (t) {
+        var et = ease(t);
+        var fx = lerp(from.x, to.x, et), fy = lerp(from.y, to.y, et);
+        var p = toScreen(fx, fy);
+
+        if (Math.floor(t * 6) !== wakeSpawnedAt) {
+          wakeSpawnedAt = Math.floor(t * 6);
+          wakePoints.push({ x: p.x, y: p.y, born: t });
+        }
+
+        clear();
+        wakePoints.forEach(function (w) {
+          var age = t - w.born;
+          drawRipple(w.x, w.y, 3 + age * 140, Math.max(0, 55 - age * 220), 1);
+        });
+        drawHull(p.x, p.y, heading, p.scale, 0.92, 0);
+        drawPeriscope(p.x, p.y, p.scale, 0.92);
+      }, function () {
+        diveAt(to, heading);
+      });
+    }
+
+    function diveAt(point, heading) {
+      var p0 = toScreen(point.x, point.y);
+      animatePhase(DIVE_MS, function (t) {
+        var et = ease(t);
+        clear();
+        var ringR = 4 + et * 46;
+        drawRipple(p0.x, p0.y, ringR * p0.scale, Math.max(0, 200 * (1 - t)), 2);
+        drawHull(p0.x, p0.y, heading, p0.scale, 0.92 * (1 - et), 7 * et);
+      }, function () {
+        hiddenDrift(point);
+      });
+    }
+
+    function hiddenDrift(from) {
+      var to = randomRoamPoint();
+      animatePhase(HIDDEN_MS, function (t) {
+        var et = ease(t);
+        var fx = lerp(from.x, to.x, et), fy = lerp(from.y, to.y, et);
+        var p = toScreen(fx, fy);
+        clear();
+        // A near-invisible hint that it's still down there - heavily
+        // blurred and faint, matching "most users will never notice."
+        drawHull(p.x, p.y, 0, p.scale, 0.09, 9);
+      }, function () {
+        surfaceAt(to);
+      });
+    }
+
+    function surfaceAt(point) {
+      var p0 = toScreen(point.x, point.y);
+      animatePhase(SURFACE_MS, function (t) {
+        var et = ease(t);
+        clear();
+        var ringR = 4 + (1 - et) * 46;
+        var ringA = t < 0.5 ? 180 * t : 180 * (1 - t) * 2;
+        drawRipple(p0.x, p0.y, ringR * p0.scale, Math.max(0, ringA), 2);
+        drawHull(p0.x, p0.y, 0.4, p0.scale, 0.92 * et, 7 * (1 - et));
+        drawPeriscope(p0.x, p0.y, p0.scale, Math.max(0, 0.92 * et - 0.15));
+      }, function () {
+        holdAt(point);
+      });
+    }
+
+    function holdAt(point) {
+      var p0 = toScreen(point.x, point.y);
+      animatePhase(HOLD_MS, function (t) {
+        clear();
+        var bob = Math.sin(t * Math.PI * 2) * 1.2;
+        drawRipple(p0.x, p0.y + bob, 6 * p0.scale, 40, 1);
+        drawHull(p0.x, p0.y + bob, 0.4, p0.scale, 0.92, 0);
+        drawPeriscope(p0.x, p0.y + bob, p0.scale, 0.92);
+      }, function () {
+        // One-shot, not a repeating cycle: fades out and stops here.
+        // The next sighting is a different page load's own fresh
+        // 20% roll, not a continuation of this one.
+        clear();
+      });
+    }
+
+    // No explicit visibilitychange handling needed: browsers already
+    // throttle requestAnimationFrame to near-zero in a hidden/background
+    // tab on their own, and animatePhase()'s own `t = min(1, (ts-start)
+    // /durationMs)` clamp means a huge elapsed-time jump on tab-return
+    // just finishes that one phase instantly and moves on to the next,
+    // rather than hanging - no risk of the phase chain getting stuck
+    // partway through and never calling its onDone().
+
+    setTimeout(runCycle, INITIAL_DELAY_MS);
+  })();
+</script>
+{% endblock %}
 {% block content %}
 <div class="welcome-hero">
   <img class="welcome-hero-logo" src="/static/logo/beyond-video-logo.png" alt="Beyond Video">

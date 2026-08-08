@@ -151,6 +151,19 @@
        by welcome.html, since "untinted" alone still looked washed out
        from the blur. */
     .page-tint--none { opacity: 0; }
+    /* Opt-in per-page slot for a full-viewport canvas overlay, sat
+       above .page-bg/.page-tint (z-index 0/1) but below .page-shell's
+       real content (z-index 2) - same layering idea as those two,
+       just for anything that needs to draw/animate rather than sit as
+       a flat CSS layer. Currently only welcome.html uses this (see its
+       own page_overlay block), for the harbor submarine easter egg -
+       see WORKING_CONTEXT.md ("Turn the hidden submarine into a live
+       animation"). pointer-events: none so it never intercepts clicks
+       meant for the real page underneath. */
+    #page-overlay-canvas {
+      position: fixed; inset: 0; z-index: 1;
+      pointer-events: none;
+    }
     /* Text-shadow alone (two rounds of it, tuned progressively harder)
        turned out not to be a reliable fix here - Christer's screenshot
        after the second attempt still showed the header/nav/hero text
@@ -547,6 +560,7 @@
 <body>
   <div class="page-bg{% block page_bg_class %}{% endblock %}" aria-hidden="true"></div>
   <div class="page-tint{% block page_tint_class %}{% endblock %}" aria-hidden="true"></div>
+  {% block page_overlay %}{% endblock %}
   <div class="page-shell">
   <header>
     <h1><a href="/"><img class="site-logo" src="/static/logo/beyond-video-logo-small.png" alt="Beyond Video"></a></h1>
