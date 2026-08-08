@@ -497,6 +497,87 @@ def test_render_map_video_passes_all_roads_unfiltered_when_not_zoomed(
     assert all(roads == all_roads for roads in captured_roads)
 
 
+def test_render_map_video_caps_route_trail_when_zoomed(tmp_path, monkeypatch):
+    from blackvue.export.map_video import MAX_ZOOM_ROUTE_TRAIL_FIXES
+
+    captured_routes = []
+
+    def fake_render_frame(_bbox, _roads, route_points, *_args, **_kwargs):
+        captured_routes.append(route_points)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    # Many more real fixes than MAX_ZOOM_ROUTE_TRAIL_FIXES - simulates a
+    # Parking recording sitting at one spot logging fixes for a long
+    # real span (see MAX_ZOOM_ROUTE_TRAIL_FIXES's own comment: this used
+    # to mean every one of those fixes got re-projected and redrawn on
+    # every single output frame for the rest of the trip).
+    fix_count = MAX_ZOOM_ROUTE_TRAIL_FIXES + 50
+    fixes = tuple(
+        _fix(offset, 59.300 + offset * 0.0001, 18.000 + offset * 0.0001)
+        for offset in range(fix_count)
+    )
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.33, max_lon=18.05
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=1, zoom_meters=50.0,
+    )
+
+    assert len(captured_routes) >= 2
+    # +1 for the current interpolated position appended after the
+    # capped trailing window.
+    assert all(
+        len(route) <= MAX_ZOOM_ROUTE_TRAIL_FIXES + 1 for route in captured_routes
+    )
+    # By the final frame (well past MAX_ZOOM_ROUTE_TRAIL_FIXES real
+    # fixes accumulated), the cap should actually be biting, not just
+    # never triggered.
+    assert len(captured_routes[-1]) == MAX_ZOOM_ROUTE_TRAIL_FIXES + 1
+
+
+def test_render_map_video_does_not_cap_route_trail_when_not_zoomed(
+    tmp_path, monkeypatch
+):
+    from blackvue.export.map_video import MAX_ZOOM_ROUTE_TRAIL_FIXES
+
+    captured_routes = []
+
+    def fake_render_frame(_bbox, _roads, route_points, *_args, **_kwargs):
+        captured_routes.append(route_points)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fix_count = MAX_ZOOM_ROUTE_TRAIL_FIXES + 50
+    fixes = tuple(
+        _fix(offset, 59.300 + offset * 0.0001, 18.000 + offset * 0.0001)
+        for offset in range(fix_count)
+    )
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.33, max_lon=18.05
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=1,
+    )
+
+    assert len(captured_routes) >= 2
+    # Static (whole-trip overview) mode is unaffected by the cap - the
+    # full route accumulated so far is still passed every frame.
+    assert len(captured_routes[-1]) > MAX_ZOOM_ROUTE_TRAIL_FIXES + 1
+
+
 def test_render_map_video_passes_width_and_height_to_render_frame(
     tmp_path, monkeypatch
 ):

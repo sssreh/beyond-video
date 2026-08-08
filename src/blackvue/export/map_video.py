@@ -43,6 +43,41 @@ from .osm_roads import roads_within_bbox
 # need to match the front/rear video's own frame rate.
 DEFAULT_FPS = 5
 
+# In `--map-zoom` (follow-camera) mode, how many of the most recent
+# fixes' worth of "route driven so far" get projected/drawn each
+# frame - unlike the static overview map, a follow-camera view only
+# ever needs the trailing few seconds/minutes of the route (whatever's
+# actually near the current position), not the whole trip's path.
+# Fixes land roughly every second (~1Hz - see MAX_LIVE_FIX_GAP_SECONDS'
+# own comment for real-world gap measurements), so 300 is a generous
+# ~5 minutes of trailing trail at typical speeds - far more than a
+# reasonable `--map-zoom` radius could ever actually show on screen,
+# but small and constant regardless of the trip's own total fix count.
+#
+# Christer, on a real export with a Parking recording included: "the
+# map phase took vvery long time" - 946.5s, wildly disproportionate to
+# every other phase (gsensor.mp4: 131.2s, the entire --stitch encode:
+# 189.3s). Root cause: every zoom frame passed the *entire* growing
+# `route_so_far` (every real fix accumulated up to that frame) to
+# render_frame(), which re-projects and redraws every single point of
+# it from scratch, every frame - roads/areas already got exactly this
+# same per-frame bbox-filtering treatment (see index_roads()/
+# roads_within_bbox()), but the route polyline never did. A GPS fix
+# stream that always includes every Parking-mode recording's own data
+# regardless of --include-parking (see _merge_gps()) made this
+# concretely worse: a Parking recording sitting at one spot for tens
+# of minutes can log hundreds to thousands of nearly-identical fixes,
+# every one of which used to get re-projected and redrawn on every
+# single frame of the render for the rest of the trip - true O(frames
+# x total fixes) cost, the exact bug class already fixed once for
+# position interpolation (see _advance_fix_index()'s own docstring)
+# but never applied to the route line itself. Capping the trailing
+# window here fixes both: it was always wasteful even without Parking
+# footage (a whole trip's worth of fixes redrawn every zoom frame,
+# most of it permanently off-canvas), Parking-mode GPS logging just
+# made the waste dramatically larger.
+MAX_ZOOM_ROUTE_TRAIL_FIXES = 300
+
 # bv-export's own bundled default --map-icon: a top-down red car,
 # pointing "up" in its own file (see render_frame()'s marker_image
 # docstring), rotated per frame to the GPS course over ground just
@@ -603,10 +638,23 @@ def render_map_video(
                 else areas
             )
 
+            # Zoom mode only ever shows a small area around the current
+            # position, so only the most recent MAX_ZOOM_ROUTE_TRAIL_FIXES
+            # points of route_so_far can possibly be on-screen - see that
+            # constant's own comment for the full story (946.5s map phase
+            # on a trip with a stationary Parking recording). Static
+            # (whole-trip overview) mode keeps the full route: showing
+            # the entire path is the point there.
+            route_points = (
+                route_so_far[-MAX_ZOOM_ROUTE_TRAIL_FIXES:]
+                if zoom_meters is not None
+                else route_so_far
+            )
+
             frame = render_frame(
                 frame_bbox,
                 frame_roads,
-                tuple(route_so_far) + (position,),
+                tuple(route_points) + (position,),
                 position,
                 areas=frame_areas,
                 speed_kmh=speed,
