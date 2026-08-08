@@ -339,9 +339,17 @@ def concatenate_media(
     with contextlib.ExitStack() as stack:
         concat_sources = sources
         if video_only:
+            # ignore_cleanup_errors=True: a leftover lock on one of
+            # these per-source stripped copies (e.g. antivirus - see
+            # trip_export.py's own front.mp4 mux temp dir for the real
+            # case Christer hit) would otherwise raise out of this
+            # function on the way out, even after the concat itself
+            # already succeeded and destination is already good.
             strip_dir = Path(
                 stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix="bv_export_strip_")
+                    tempfile.TemporaryDirectory(
+                        prefix="bv_export_strip_", ignore_cleanup_errors=True
+                    )
                 )
             )
             concat_sources = []

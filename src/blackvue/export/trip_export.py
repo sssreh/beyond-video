@@ -1692,9 +1692,21 @@ def export_trip(
     # Building the temp file on the same drive as the destination up
     # front keeps the final swap a same-volume rename, which always
     # succeeds.
+    # ignore_cleanup_errors=True: Christer hit a real leftover-lock
+    # case (some other process - antivirus is the usual suspect -
+    # still had front_with_audio.mp4 open by the time this `with`
+    # block tried to tear the temp dir down), which would otherwise
+    # raise out of this block's own cleanup and take the whole export
+    # down even after _replace_with_retry() above already succeeded
+    # or already recovered gracefully. A directory tempfile itself
+    # can't fully delete is a stale leftover, not lost footage - the
+    # same "don't let a secondary failure take good output down with
+    # it" spirit as everywhere else in this function.
     if front_video is not None and audio is not None:
         with tempfile.TemporaryDirectory(
-            prefix=".bv_export_mux_", dir=front_video.parent
+            prefix=".bv_export_mux_",
+            dir=front_video.parent,
+            ignore_cleanup_errors=True,
         ) as mux_dir:
             muxed = Path(mux_dir) / "front_with_audio.mp4"
             try:
