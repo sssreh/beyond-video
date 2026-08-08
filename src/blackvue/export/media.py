@@ -12,6 +12,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import tempfile
 from pathlib import Path
@@ -245,6 +246,39 @@ def check_readable(path: Path) -> None:
         ) from exc
 
 
+def _strip_audio_stream_copy(source: Path, destination: Path) -> None:
+    """Stream-copy `source` into `destination` with any audio track
+    dropped (`-an`) - a per-file normalization step used by
+    concatenate_media()'s `video_only=True` path, see that function's
+    own docstring for why this has to happen to *each source*
+    individually rather than just being a flag on the final concat
+    output.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(source),
+                "-an",
+                "-c", "copy",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg audio-strip failed for {source.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc
+
+
 def concatenate_media(
     sources: list[Path], destination: Path, *, video_only: bool = False
 ) -> None:
@@ -254,31 +288,47 @@ def concatenate_media(
     Works for a single source too (a plain stream copy). Does nothing
     if `sources` is empty.
 
-    `video_only`, if True, adds `-an` so `destination` carries no
-    audio stream at all, regardless of what any individual source has
+    `video_only`, if True, guarantees `destination` carries no audio
+    stream at all, regardless of what any individual source has
     embedded. trip_export.py's own FRONT-asset concatenation passes
     this - a BlackVue FRONT recording normally embeds its own audio
     track alongside video, but a repaired Parking recording (see
     generate/mp4_repair.py's `repair_parking_container()`) has had its
     own broken, empty audio track dropped entirely, leaving it video
     -only while every other FRONT recording in the same trip still
-    carries two streams. ffmpeg's concat demuxer needs a consistent
-    stream layout across every segment for a `-c copy` concat to come
-    out right - mixing a 1-stream segment in among 2-stream ones
-    produces a genuinely corrupted result, not just a missing audio
-    track: confirmed on a real trip, Christer's own concatenated
-    front.mp4 came back with its video stream reporting
-    `time_base=1/16000` (a value that looks like it leaked from an
-    audio sample rate) instead of the `1/1000` every individual source
-    itself reports on its own, and a duration roughly 16x too long,
-    despite the real frame count surviving concatenation correctly.
-    `video_only=True` sidesteps the whole class of bug by never
-    letting inconsistent per-segment audio presence reach the concat
-    demuxer - trip_export.py's own `_concatenate_asset()` then remuxes
-    the trip's separately-built, always-consistent `audio.aac` into
-    the result afterward (see `mux_audio_track()` below), rather than
-    depending on front.mp4's own raw per-recording audio surviving
-    concatenation intact.
+    carries two streams.
+
+    The first attempt at this fix just appended `-an` to the final
+    concat command, relying on ffmpeg's concat demuxer to tolerate a
+    mix of 1-stream and 2-stream segments (something its own docs
+    claim is supported, as long as the streams that *are* present
+    line up in the same order across files). In practice, on a real
+    trip, that didn't fix anything: front.mp4 came back with the exact
+    same corruption as before the `-an` was added - video stream
+    reporting `time_base=1/16000` (a value that looks like it leaked
+    from an audio sample rate) instead of the `1/1000` every
+    individual source itself reports, and a duration ~16x too long
+    (3682.512s reported vs. the ~230s every other camera/source agrees
+    the trip actually runs), despite the real frame count surviving
+    concatenation almost exactly right (6822 vs. rear's 6829). Since
+    `-an` there only restricts what the *output* mapping selects, not
+    what the concat demuxer itself has to reconcile while reading a
+    virtual single stream out of files with different per-segment
+    stream layouts, the corruption was happening upstream of that
+    flag entirely.
+
+    `video_only=True` now normalizes every source into its own
+    video-only temp copy (`-an` applied per file, individually, before
+    any of them reach the concat list) rather than trusting the concat
+    demuxer to reconcile mixed layouts itself. This makes every listed
+    file's own stream layout identical (exactly one video stream)
+    before ffmpeg ever has to combine them, sidestepping the whole
+    class of bug rather than depending on a specific ffmpeg version's
+    handling of the mixed-layout case. trip_export.py's own
+    `_concatenate_asset()` then remuxes the trip's separately-built,
+    always-consistent `audio.aac` into the result afterward (see
+    `mux_audio_track()` below), rather than depending on front.mp4's
+    own raw per-recording audio surviving concatenation intact.
     """
 
     if not sources:
@@ -286,36 +336,50 @@ def concatenate_media(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False, encoding="utf-8"
-    ) as list_file:
-        for source in sources:
-            list_file.write(f"file '{_escape_concat_path(source)}'\n")
-        list_path = Path(list_file.name)
+    with contextlib.ExitStack() as stack:
+        concat_sources = sources
+        if video_only:
+            strip_dir = Path(
+                stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="bv_export_strip_")
+                )
+            )
+            concat_sources = []
+            for index, source in enumerate(sources):
+                stripped = strip_dir / f"{index:04d}_{source.name}"
+                _strip_audio_stream_copy(source, stripped)
+                concat_sources.append(stripped)
 
-    command = [
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_path),
-        "-c", "copy",
-    ]
-    if video_only:
-        command.append("-an")
-    command.append(str(destination))
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as list_file:
+            for source in concat_sources:
+                list_file.write(f"file '{_escape_concat_path(source)}'\n")
+            list_path = Path(list_file.name)
 
-    try:
-        subprocess.run(command, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise MediaToolError("ffmpeg not found on PATH") from exc
-    except subprocess.CalledProcessError as exc:
-        raise MediaToolError(
-            f"ffmpeg concat failed for {destination.name}: "
-            f"{exc.stderr.strip()}"
-        ) from exc
-    finally:
-        list_path.unlink(missing_ok=True)
+        command = [
+            "ffmpeg",
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(list_path),
+            "-c", "copy",
+        ]
+        if video_only:
+            command.append("-an")
+        command.append(str(destination))
+
+        try:
+            subprocess.run(command, capture_output=True, text=True, check=True)
+        except FileNotFoundError as exc:
+            raise MediaToolError("ffmpeg not found on PATH") from exc
+        except subprocess.CalledProcessError as exc:
+            raise MediaToolError(
+                f"ffmpeg concat failed for {destination.name}: "
+                f"{exc.stderr.strip()}"
+            ) from exc
+        finally:
+            list_path.unlink(missing_ok=True)
 
 
 def mux_audio_track(

@@ -495,6 +495,42 @@ def test_concatenate_media_strips_audio_when_video_only(tmp_path):
     assert probe_audio_codec(destination) is None
 
 
+def test_concatenate_media_video_only_normalizes_each_source_before_concat(
+    tmp_path,
+):
+    # Regression test for the second, deeper fix: the first attempt at
+    # video_only just appended -an to the final concat command, which
+    # left every source's own file untouched (still 2 streams for an
+    # ordinary video+audio source) - only the *output selection* was
+    # restricted. On a real trip that didn't fix anything: front.mp4
+    # came back with the exact same corrupted duration as before the
+    # -an was ever added (see concatenate_media()'s own docstring for
+    # the real numbers). video_only=True now strips audio from each
+    # source individually first, so every file the concat demuxer ever
+    # sees already has an identical, single-stream layout - the same
+    # shape a video-only source (like a repaired Parking recording)
+    # already has on its own. This can't reproduce the exact real
+    # -world corruption (this sandbox's ffmpeg doesn't exhibit it even
+    # against the pre-fix code), but it does confirm the mixed-layout
+    # case - one video-only source sandwiched between two video+audio
+    # ones - still concatenates to the correct total duration and
+    # frame layout, not just "no audio in the output".
+    first = tmp_path / "first.mp4"
+    middle = tmp_path / "middle.mp4"
+    last = tmp_path / "last.mp4"
+    _make_video_with_audio(first, 1.0)
+    _make_silent_video(middle, 1.0)
+    _make_video_with_audio(last, 1.0)
+
+    destination = tmp_path / "combined.mp4"
+    concatenate_media([first, middle, last], destination, video_only=True)
+
+    assert destination.exists()
+    assert probe_audio_codec(destination) is None
+    combined_duration = _audio_duration_seconds(destination)
+    assert 2.5 < combined_duration < 3.5
+
+
 def test_concatenate_media_keeps_audio_by_default(tmp_path):
     # Confirms video_only's default (False) preserves this project's
     # existing behavior - every other concatenate_media() caller
