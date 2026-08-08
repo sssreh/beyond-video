@@ -4,6 +4,7 @@
 <h2>Browse archive</h2>
 <p class="hint">The raw archive - every recording bv-download has saved for a
 camera, before bv-export groups anything into trips.</p>
+<div class="content-panel">
 {% if cameras %}
 <table>
   <thead>
@@ -18,4 +19,5 @@ camera, before bv-export groups anything into trips.</p>
 {% else %}
 <p class="empty">No cameras set up yet.</p>
 {% endif %}
+</div>
 {% endblock %}

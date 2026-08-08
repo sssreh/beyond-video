@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Trips - Beyond Video{% endblock %}
 {% block content %}
+<div class="content-panel">
 {% if trips %}
 <table>
   <thead>
@@ -27,4 +28,5 @@
 {% else %}
 <p class="empty">No trips found yet.</p>
 {% endif %}
+</div>
 {% endblock %}

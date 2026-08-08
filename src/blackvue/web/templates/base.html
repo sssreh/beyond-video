@@ -472,6 +472,33 @@
       padding: 0.4rem 1rem; font-size: 0.9rem;
     }
     .filter-actions a { font-size: 0.85rem; }
+    /* Trip list / archive browser readability fix (task #500). Christer:
+       "bv-web in light mode makes it hard to see trips and browse
+       archive." Root cause: trip_list.html's <table> and
+       archive_camera_list.html/archive_recording_list.html's headings
+       and day-groupings rendered as bare text directly on .page-tint -
+       and .page-tint is deliberately faint (tuned down across five
+       rounds of Christer's own feedback, see the .page-tint comment
+       above) over a busy, high-detail blurred photo. That's the exact
+       failure mode already diagnosed for welcome.html/login.html's
+       header/nav/login-box: a shadow or a near-transparent wash can't
+       reliably win contrast against unpredictable photo detail behind
+       it - see the "Text-shadow alone..." comment above for the fuller
+       explanation. Those pages fixed it with a translucent frosted-
+       glass panel because the point there was letting the photo still
+       show through; list pages have no such requirement, so a fully
+       opaque --panel-bg card (the same solid background .filter-bar/
+       .thumb-card/.command-help already use, no backdrop-filter
+       needed) is simpler and guarantees text always sits on a flat,
+       known-contrast surface regardless of what's in the photo behind
+       it. */
+    .content-panel {
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 6px; padding: 1.1rem 1.25rem 1.35rem;
+    }
+    .content-panel table { margin: 0; }
+    .content-panel > *:first-child { margin-top: 0; }
+    .content-panel > *:last-child { margin-bottom: 0; }
     /* welcome.html - the post-login landing page. First tried with no
        background at all (relying purely on text-shadow, see the header/
        nav comment above for why that stopped being enough) - now a

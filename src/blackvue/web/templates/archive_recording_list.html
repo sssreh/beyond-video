@@ -51,6 +51,7 @@
 <p class="error">{{ error }}</p>
 {% endif %}
 
+<div class="content-panel">
 {% if days %}
 {% for day, recordings in days %}
 <h3 class="day-heading">{{ day.strftime("%A, %B %d, %Y") }}</h3>
@@ -89,4 +90,5 @@
 <p class="empty">No recordings found in this camera's archive yet.</p>
 {% endif %}
 {% endif %}
+</div>
 {% endblock %}
