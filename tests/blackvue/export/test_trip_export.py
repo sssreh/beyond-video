@@ -7,6 +7,8 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
@@ -19,6 +21,7 @@ from blackvue.export.trip_export import _ensure_recording_audio
 from blackvue.export.trip_export import _merge_gsensor
 from blackvue.export.trip_export import _recording_video_offsets
 from blackvue.export.trip_export import _repair_parking_sources
+from blackvue.export.trip_export import _replace_with_retry
 from blackvue.export.trip_export import _trim_prebuffers
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
@@ -3899,3 +3902,100 @@ def test_export_trip_pads_srt_lrc_to_match_the_real_video_length(tmp_path):
     assert lines[0] == "[00:00.00] hello"
     assert len(lines) == 2
     assert lines[1].startswith("[00:0")  # padding line near the 5s mark
+
+
+# _replace_with_retry() - front.mp4's audio-remux swap. Christer hit a
+# real "Access is denied" swapping the remuxed temp file into place on
+# a real export, even after the earlier cross-drive fix (same volume,
+# but something else - most likely antivirus briefly scanning the
+# just-written file - held a lock). These use monkeypatched
+# Path.replace()/shutil.copyfile() rather than real OS-level locking,
+# since a genuine transient Windows file lock isn't reproducible on
+# demand here - they exist to pin down _replace_with_retry()'s own
+# retry-then-fallback-then-give-up decision logic.
+
+
+def test_replace_with_retry_succeeds_immediately_when_nothing_is_locked(tmp_path):
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new")
+    destination.write_text("old")
+
+    _replace_with_retry(source, destination, attempts=3, delay_seconds=0)
+
+    assert not source.exists()
+    assert destination.read_text() == "new"
+
+
+def test_replace_with_retry_retries_past_a_transient_permission_error(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new")
+    destination.write_text("old")
+
+    real_replace = Path.replace
+    calls = {"count": 0}
+
+    def flaky_replace(self, target):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise PermissionError("Access is denied")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    _replace_with_retry(source, destination, attempts=5, delay_seconds=0)
+
+    assert calls["count"] == 3
+    assert destination.read_text() == "new"
+
+
+def test_replace_with_retry_falls_back_to_copy_when_replace_never_succeeds(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new")
+    destination.write_text("old")
+
+    def always_denied(self, target):
+        raise PermissionError("Access is denied")
+
+    monkeypatch.setattr(Path, "replace", always_denied)
+
+    _replace_with_retry(source, destination, attempts=2, delay_seconds=0)
+
+    # The copy fallback doesn't require deleting the destination first
+    # (a plain overwrite, not a rename) - it's what lets this succeed
+    # even though every replace() attempt above was denied.
+    assert destination.read_text() == "new"
+    assert not source.exists()
+
+
+def test_replace_with_retry_raises_the_original_error_if_even_the_copy_fails(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new")
+    destination.write_text("old")
+
+    def always_denied(self, target):
+        raise PermissionError("Access is denied")
+
+    def copy_also_denied(src, dst):
+        raise PermissionError("Access is denied (copy)")
+
+    monkeypatch.setattr(Path, "replace", always_denied)
+    monkeypatch.setattr(trip_export_module.shutil, "copyfile", copy_also_denied)
+
+    with pytest.raises(PermissionError):
+        _replace_with_retry(source, destination, attempts=2, delay_seconds=0)
+
+    # Neither side was touched by the failed attempt - the caller's
+    # own exception handling decides what to do with the still-intact
+    # source and the still-intact original destination.
+    assert source.exists()
+    assert destination.read_text() == "old"

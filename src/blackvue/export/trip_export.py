@@ -12,6 +12,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import concurrent.futures
+import shutil
 import sys
 import tempfile
 import time
@@ -1155,6 +1156,58 @@ def _render_map_variant(
     return result
 
 
+def _replace_with_retry(
+    source: Path,
+    destination: Path,
+    *,
+    attempts: int = 5,
+    delay_seconds: float = 0.5,
+) -> None:
+    """Swap `source` into `destination`'s place (`Path.replace()`),
+    retrying a few times on a transient permission error before giving
+    up.
+
+    Built for export_trip()'s own front.mp4 audio-remux swap, after
+    Christer hit exactly this on a real export: "Access is denied:
+    z:\\...\\.bv_export_mux_.../front_with_audio.mp4" - the drive
+    -crossing bug from the entry above this one was already fixed
+    (the temp dir is on the same volume as `destination`), so this is
+    a different failure: something else (most often real-time
+    antivirus scanning a large media file the instant ffmpeg finishes
+    writing it, sometimes a network share's own locking semantics)
+    can briefly hold `destination` open right when the swap wants to
+    replace it. A single immediate attempt isn't reliable for that;
+    a short retry loop is - the lock is almost always gone within a
+    second or two.
+
+    Falls back to a plain overwrite copy (`shutil.copyfile`, a
+    different Windows API path than `MoveFileExW`, which sometimes
+    succeeds where a rename doesn't - e.g. some SMB share
+    configurations restrict rename-over-existing more strictly than a
+    plain write) if every replace attempt still fails, before finally
+    re-raising the last real error and letting the caller's own
+    exception handling decide what happens to `source` - the same
+    "leave the already-good file in place rather than lose it" spirit
+    as every other failure path in this function.
+    """
+
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            source.replace(destination)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt < attempts - 1:
+                time.sleep(delay_seconds)
+
+    try:
+        shutil.copyfile(source, destination)
+    except OSError:
+        raise last_error from None
+    source.unlink(missing_ok=True)
+
+
 def export_trip(
     trip: Trip,
     destination: Path,
@@ -1654,8 +1707,18 @@ def export_trip(
                 warnings.append(message)
                 log.warning(message)
             else:
-                muxed.replace(front_video)
-                log.step("remuxed audio.aac into front.mp4")
+                try:
+                    _replace_with_retry(muxed, front_video)
+                except OSError as exc:
+                    message = (
+                        "front.mp4: remuxed audio successfully but "
+                        f"couldn't swap it into place ({exc}) - "
+                        "front.mp4 will have no sound"
+                    )
+                    warnings.append(message)
+                    log.warning(message)
+                else:
+                    log.step("remuxed audio.aac into front.mp4")
 
     if debug:
         print(
