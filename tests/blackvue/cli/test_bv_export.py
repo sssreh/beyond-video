@@ -289,6 +289,30 @@ def test_default_max_gap_falls_back_when_archive_has_no_snapshots(tmp_path):
     assert bv_export_module._default_max_gap(archive, front, interval) == DEFAULT_MAX_GAP
 
 
+def test_default_max_gap_does_not_warn_when_archive_has_no_snapshots(tmp_path, capsys):
+    # Christer, after already being told this warning was harmless:
+    # "I still get Warning: archive contains no configuration
+    # snapshot... Both recordings have a duration file." Root cause:
+    # _default_max_gap()'s ranged-export branch (any real --timestamp/
+    # --from/--until run - i.e. most real usage) fell through to
+    # Archive.configuration()'s own warn-and-fallback path even when
+    # archive.configurations was completely empty, printing the
+    # warning on *every* export from an archive that never got a
+    # RecordTime snapshot, not just once. Fixed by checking "no
+    # snapshots at all" up front, for both branches, same as the
+    # already-existing test above confirms the return value for.
+    (tmp_path / "20260101_000000_NF.mp4").write_bytes(b"x")
+
+    archive = Archive(tmp_path)
+    front = recordings_with_front_video(archive.recordings)
+
+    interval = LexicalTimeParser(timestamp="20260101_000000").parse()
+
+    bv_export_module._default_max_gap(archive, front, interval)
+
+    assert "no configuration snapshot" not in capsys.readouterr().out
+
+
 def test_bv_export_end_to_end_uses_record_time_derived_max_gap(tmp_path):
     """A 90s real gap should split the trip when RecordTime=1 (a
     1-minute segment's own dropped-segment tolerance is 70s), but stay

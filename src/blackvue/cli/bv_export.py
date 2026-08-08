@@ -379,16 +379,34 @@ def _default_max_gap(
     `interval` (nothing to key a lookup to) or the archive has no
     RecordTime snapshots at all yet (an archive never downloaded with
     this feature's bv-download build, or bv-download simply never
-    connected to the camera successfully) - Archive.configuration()'s
-    own fallback already returns exactly 300s (5 minutes, the same
-    value as DEFAULT_MAX_GAP) with its own one-time printed warning in
-    that second case, so this only needs to special-case the first.
+    connected to the camera successfully).
+
+    The "no snapshots at all" case is checked once, up front, for
+    *both* branches below - not just the full-archive one - and
+    returns DEFAULT_MAX_GAP directly without ever calling
+    Archive.configuration(). An earlier version only special-cased the
+    full-archive branch, letting the far more common ranged-export
+    branch (any real `--timestamp`/`--from`/`--until` run) fall
+    through to Archive.configuration()'s own fallback instead -
+    functionally identical (that fallback is exactly 300s, the same
+    value as DEFAULT_MAX_GAP) but printing "Warning: archive contains
+    no configuration snapshot" on *every* export from an archive that
+    never got one, not just once - Christer, after already being told
+    the warning was harmless: "I still get Warning: archive contains
+    no configuration snapshot... Both recordings have a duration
+    file." A warning that fires on every run for a fact about the
+    archive that isn't going to change run-to-run, and doesn't affect
+    the result, isn't earning its keep. Archive.configuration()'s own
+    warning is kept for the genuinely different case it still covers -
+    an archive *with* some snapshots, just none old enough to cover a
+    particular recording - which is real, useful information a flat
+    "no snapshots at all" isn't.
     """
 
-    if interval.first == "00000000_000000" and interval.last == "99999999_999999":
-        if not archive.configurations:
-            return DEFAULT_MAX_GAP
+    if not archive.configurations:
+        return DEFAULT_MAX_GAP
 
+    if interval.first == "00000000_000000" and interval.last == "99999999_999999":
         return timedelta(seconds=archive.configurations[-1].record_time)
 
     reference = next(
