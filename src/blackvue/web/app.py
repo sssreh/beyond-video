@@ -70,6 +70,7 @@ from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
 from ..export.geocoding import load_or_reverse_geocode
 from ..generate.media import MediaToolError
+from ..generate.mp4_repair import load_or_repair_parking_video
 from ..lexicaltimeparser import LexicalTimeParser
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -502,6 +503,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
             )
+
+        # Parking-mode recordings' own video files fail ffmpeg's/
+        # browsers' strict MP4 container validation outright (a known
+        # BlackVue quirk - see WORKING_CONTEXT.md, "Correction: the
+        # ffprobe failures aren't per-file corruption, they're a known
+        # BlackVue container quirk" and the follow-up entry confirming
+        # the fix against one of Christer's own real recordings), which
+        # silently breaks playback here even though the file itself is
+        # fine. Transparently swap in a repaired, cached copy for just
+        # this one case - load_or_repair_parking_video() falls back to
+        # `path` itself unchanged for anything outside the one narrow,
+        # confirmed pattern it knows how to fix, so this is always safe
+        # to try. Only for a Parking (P) recording's own video files,
+        # never its GPS/g-sensor sidecars or another kind's video,
+        # which were never affected by this quirk in the first place.
+        if recording.recording.id.kind == "P" and filename in {
+            video_filename for _, video_filename in recording.videos
+        }:
+            cache_dir = default_config_dir() / ".parking_repair_cache"
+            path = load_or_repair_parking_video(path, cache_dir)
 
         return FileResponse(path)
 
