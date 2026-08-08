@@ -80,6 +80,18 @@ _DEFAULT_CLI_MIRROR_SIZE_PERCENT = 40.0
 _DEFAULT_CLI_MIRROR_ZOOM_PERCENT = 40.0
 _DEFAULT_CLI_MIRROR_PAN_Y_PERCENT = -30.0
 
+# --parking-speed's own valid range - Christer's own requested window
+# (0.10x-5x) when asking for the feature. Kept local to this CLI
+# module rather than alongside stitch.py's MIN_/MAX_STITCH_SCALE
+# _PERCENT and friends: unlike those, nothing about this range is
+# shared with a non-CLI caller - trip_export.py's export_trip() and
+# media.py's change_playback_speed() both take a plain float and
+# leave range-checking entirely to whoever's calling them (see
+# change_playback_speed()'s own docstring for why), so there's no
+# lower-level constant to reuse here the way the stitch ones are.
+MIN_PARKING_SPEED = 0.10
+MAX_PARKING_SPEED = 5.0
+
 
 def _resolve_icon_path(
     value: str | Path | None, default_path: Path
@@ -156,6 +168,23 @@ def _parse_stitch_scale(value: str) -> float:
         )
 
     return scale
+
+
+def _parse_parking_speed(value: str) -> float:
+    try:
+        speed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid speed {value!r} (expected a number)"
+        )
+
+    if not (MIN_PARKING_SPEED <= speed <= MAX_PARKING_SPEED):
+        raise argparse.ArgumentTypeError(
+            f"speed {value!r} out of range "
+            f"({MIN_PARKING_SPEED:g}-{MAX_PARKING_SPEED:g})"
+        )
+
+    return speed
 
 
 def _parse_positive_pixels(value: str) -> int:
@@ -418,6 +447,7 @@ def bv_export(
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
+    parking_speed: float = 1.0,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -542,6 +572,19 @@ def bv_export(
     something great back. Just skip it altogether" - so a Parking
     recording is now simply left out, matching the treatment
     leading/trailing Parking recordings already had.
+
+    `parking_speed` (bv-export's own `--parking-speed`, default 1.0,
+    range 0.10-5.0) re-encodes every included Parking recording's
+    video at that playback speed before it's concatenated into the
+    rest of the trip - 2.0 plays it twice as fast, 0.5 half as fast.
+    Parking-mode footage is motion-triggered and sparse, so a long
+    real-world span can otherwise compress into a slow, uneventful
+    stretch of the final export; this lets it play back faster (or
+    slower) without touching the pace of the rest of the trip. Has no
+    effect when `include_parking=False` - there's no Parking footage
+    in the video to speed up in that case. Left at 1.0 (a strict
+    no-op, zero extra ffmpeg work), this behaves exactly as before
+    `--parking-speed` existed.
     """
 
     if duration_heal_archive and not duration:
@@ -748,6 +791,7 @@ def bv_export(
                 stitch_subtitles=stitch_subtitles,
                 stitch_subtitles_background=stitch_subtitles_background,
                 include_parking=include_parking,
+                parking_speed=parking_speed,
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
@@ -1517,6 +1561,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--parking-speed",
+        dest="parking_speed",
+        type=_parse_parking_speed,
+        default=1.0,
+        metavar="SPEED",
+        help=(
+            "Play back included Parking-mode footage at SPEED times its "
+            f"own natural pace ({MIN_PARKING_SPEED:g}-{MAX_PARKING_SPEED:g} "
+            "- e.g. 2 plays it twice as fast, 0.5 half as fast). Parking "
+            "footage is motion-triggered and sparse, so a long real-world "
+            "span can compress into a slow, uneventful stretch of the "
+            "final export; this speeds it up (or slows it down) without "
+            "touching the pace of the rest of the trip. Has no effect "
+            "without --include-parking. Default: 1 (no change)."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -1647,6 +1709,7 @@ def _run(
             stitch_subtitles=args.stitch_subtitles if args.stitch else False,
             stitch_subtitles_background=args.subtitles_bg,
             include_parking=args.include_parking,
+            parking_speed=args.parking_speed,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
             debug=args.debug,

@@ -12,7 +12,7 @@ bv-export --target DIR [--prefix PREFIX]
           [--max-gap MINUTES] [--movement] [--no-duration] [--duration-heal-archive]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
-          [--include-parking]
+          [--include-parking] [--parking-speed SPEED]
           [--map] [--map-icon PATH] [--map-zoom [METERS]]
           [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-z]
           [--stitch] [--stitch-layout LAYOUT]
@@ -88,6 +88,7 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 | Option | Description |
 |---|---|
 | `--include-parking` | Include every Parking-mode recording as-is in `front.mp4`/`rear.mp4`/`audio.aac`. **Off by default**: a Parking recording is left out entirely instead - wherever it falls in the trip (leading, trailing, or mid-trip) - with nothing substituted in its place. |
+| `--parking-speed SPEED` | Play back every included Parking-mode recording at `SPEED` times its own natural pace (0.10-5.0 - e.g. `2` plays it twice as fast, `0.5` half as fast). Parking footage is motion-triggered and sparse, so a long real-world span can compress into a slow, uneventful stretch of the final export; this speeds it up (or slows it down) without touching the pace of the rest of the trip. Has no effect without `--include-parking`, and is a no-op at its default of `1` (no change). Every downstream consumer - `map.mp4`, `gsensor.mp4`/`gsensor_graph.mp4`, `--stitch-subtitles`, and `audio.aac`'s silence padding - is repositioned to stay in sync automatically, the same way they already are for prebuffer trimming and front/rear alignment. |
 
 A Parking recording's own raw video also gets an automatic, transparent repair before being probed or concatenated: BlackVue's own Parking-mode container has a known quirk (an empty, unused audio track that still trips ffmpeg's strict validation) that otherwise makes `ffprobe` fail outright on every Parking recording - `--include-parking` would then leave every single one of them out again, unrepaired, defeating the flag. The repair only ever drops that one confirmed-broken, empty audio track from a copy of the file's `moov` box; the real video content is never touched. See `generate/mp4_repair.py`'s own docstring for the full technical detail - this is the same fix already used to make Parking recordings playable in bv-web's archive browser.
 

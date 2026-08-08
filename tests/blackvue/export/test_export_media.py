@@ -5,6 +5,7 @@ import pytest
 from PIL import Image
 
 from blackvue.export import media as media_module
+from blackvue.export.media import change_playback_speed
 from blackvue.export.media import check_readable
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
@@ -455,6 +456,73 @@ def test_trim_media_head_shortens_a_real_video_via_stream_copy(tmp_path):
 def test_trim_media_head_raises_when_the_source_does_not_exist(tmp_path):
     with pytest.raises(MediaToolError):
         trim_media_head(tmp_path / "missing.mp4", tmp_path / "out.mp4", 2.0)
+
+
+def test_change_playback_speed_shortens_video_when_sped_up(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_silent_video(source, 4.0)
+
+    destination = tmp_path / "fast.mp4"
+    change_playback_speed(source, destination, 2.0)
+
+    assert destination.exists()
+    sped_up_duration = _audio_duration_seconds(destination)
+    # Real encode, not a stream copy, so this won't be exactly 2.0s -
+    # just close to it and clearly shorter than the 4.0s source.
+    assert 1.5 < sped_up_duration < 2.5
+
+
+def test_change_playback_speed_lengthens_video_when_slowed_down(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_silent_video(source, 2.0)
+
+    destination = tmp_path / "slow.mp4"
+    change_playback_speed(source, destination, 0.5)
+
+    assert destination.exists()
+    slowed_duration = _audio_duration_seconds(destination)
+    assert 3.5 < slowed_duration < 4.5
+
+
+def test_change_playback_speed_drops_any_audio_track(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_video_with_audio(source, 2.0)
+
+    destination = tmp_path / "fast.mp4"
+    change_playback_speed(source, destination, 2.0)
+
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=index",
+            "-of", "json",
+            str(destination),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    assert json.loads(result.stdout)["streams"] == []
+
+
+def test_change_playback_speed_raises_for_zero_speed(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_silent_video(source, 1.0)
+
+    with pytest.raises(ValueError):
+        change_playback_speed(source, tmp_path / "out.mp4", 0.0)
+
+
+def test_change_playback_speed_raises_for_negative_speed(tmp_path):
+    source = tmp_path / "source.mp4"
+    _make_silent_video(source, 1.0)
+
+    with pytest.raises(ValueError):
+        change_playback_speed(source, tmp_path / "out.mp4", -1.0)
+
+
+def test_change_playback_speed_raises_when_the_source_does_not_exist(tmp_path):
+    with pytest.raises(MediaToolError):
+        change_playback_speed(tmp_path / "missing.mp4", tmp_path / "out.mp4", 2.0)
 
 
 def _make_video_with_audio(path, duration_seconds: float) -> None:

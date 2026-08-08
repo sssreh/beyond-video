@@ -390,6 +390,67 @@ def concatenate_media(
             list_path.unlink(missing_ok=True)
 
 
+def change_playback_speed(source: Path, destination: Path, speed: float) -> None:
+    """Re-encode `source`'s video at `speed`x its own natural pace
+    (2.0 plays twice as fast/half as long, 0.5 plays half as fast/
+    twice as long), via ffmpeg's `setpts` filter, dropping any audio
+    track (`-an`).
+
+    Built for `trip_export.py`'s `--parking-speed` (Christer's own
+    request: Parking-mode footage is motion-triggered and sparse, so
+    a long real-world span often compresses into a short, slow-to-
+    watch clip - a speed control lets it play back faster without
+    touching the rest of the trip). `-an` matches
+    `concatenate_media(video_only=True)`'s own reasoning for FRONT
+    (see that function's docstring): whether or not a Parking
+    recording has its own real audio, this function's own caller
+    (`_apply_parking_speed()` in trip_export.py) also drops
+    `Asset.AUDIO` from any recording it speeds up here, so
+    `_pad_missing_audio_with_silence()` fills the gap afterward with
+    correctly-*sped-up*-duration silence (it reads the recording's own
+    post-speed-change video duration via the same `duration_overrides`
+    mechanism this function's own caller registers its output under) -
+    so there's nothing this function itself needs to preserve or speed
+    up on the audio side. Without that drop, a recording whose own
+    audio survived would leave it at its original, now-longer length -
+    muxing that stale audio against the shorter sped-up video later
+    (`mux_audio_track()`, no `-shortest`) makes the muxed file's own
+    reported duration follow the *longer* (audio) stream instead of
+    the genuinely shorter video.
+
+    Unlike every other per-source operation in this module
+    (`trim_media()`, `trim_media_head()`, `_strip_audio_stream_copy()`),
+    this can't be a stream copy: `setpts` rewrites presentation
+    timestamps, which only makes sense on decoded frames, not raw
+    packets. Reuses `encode_with_nvenc_fallback()` for the actual
+    encode, so this gets the same NVENC-with-CPU-fallback behavior and
+    default quality target (`_DEFAULT_NVENC_QUALITY_ARGS`/
+    `_DEFAULT_LIBX264_QUALITY_ARGS`) every other real encode in this
+    codebase already uses, rather than a bespoke re-encode path with
+    its own quality quirks.
+
+    Raises `ValueError` for a non-positive `speed` - `setpts=PTS/0` (or
+    a negative divisor) has no sane meaning and would otherwise just
+    surface as an opaque ffmpeg failure instead of a clear one. Range
+    -checking the value against Christer's requested 0.10-5.0 window is
+    the CLI layer's own job (`cli/bv_export.py`'s `_parse_parking_speed`),
+    not this function's - a library function shouldn't bake in a UI
+    -level policy choice about how extreme a speed is "reasonable."
+    """
+
+    if speed <= 0:
+        raise ValueError(f"speed must be greater than 0, got {speed!r}")
+
+    encode_with_nvenc_fallback(
+        [
+            "-i", str(source),
+            "-filter:v", f"setpts=PTS/{speed}",
+            "-an",
+        ],
+        destination,
+    )
+
+
 def generate_silence(
     destination: Path,
     duration_seconds: float,

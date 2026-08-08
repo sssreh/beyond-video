@@ -1809,6 +1809,96 @@ def test_export_trip_include_parking_keeps_the_real_parking_footage(tmp_path):
     assert abs(_video_duration(result.front_video) - 8.0) < 0.5
 
 
+def test_export_trip_parking_speed_is_a_no_op_at_default(tmp_path):
+    # parking_speed's default (1.0) must reproduce the exact same
+    # output as not passing it at all - task #510, Christer: "i hope
+    # it doesnt screw everything up". This is the base case that
+    # protects everyone who never touches the new flag.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    result = export_trip(
+        trip, dest_dir, include_parking=True, parking_speed=1.0,
+    )
+
+    assert result.warnings == ()
+    assert abs(_video_duration(result.front_video) - 8.0) < 0.5
+
+
+def test_export_trip_parking_speed_shortens_only_the_parking_span(tmp_path):
+    # 2x speed on the 6s Parking-mode middle recording should shrink
+    # it to ~3s, while the flanking 1s+1s real-drive recordings are
+    # left at their own natural pace - 1 + 3 + 1 = 5s total, not a
+    # uniform 4s (which is what 2x on the whole 8s trip would give).
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    result = export_trip(
+        trip, dest_dir, include_parking=True, parking_speed=2.0,
+    )
+
+    assert result.warnings == ()
+    assert abs(_video_duration(result.front_video) - 5.0) < 0.5
+
+
+def test_export_trip_parking_speed_has_no_effect_without_include_parking(
+    tmp_path,
+):
+    # Without --include-parking the Parking recording is dropped
+    # entirely, same as always - parking_speed has nothing to act on.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir)
+
+    result = export_trip(
+        trip, dest_dir, include_parking=False, parking_speed=2.0,
+    )
+
+    assert result.warnings == ()
+    # 1s + 1s, the real (6s) Parking footage left out entirely -
+    # identical to the plain drop-parking behavior with no speed set.
+    assert abs(_video_duration(result.front_video) - 2.0) < 0.5
+
+
+def test_export_trip_parking_speed_keeps_audio_in_sync(tmp_path):
+    # Regression check on task #524's audio/video desync fix, from the
+    # other direction: a sped-up Parking recording's own *real* audio
+    # (unlike its video, change_playback_speed() never speeds audio
+    # up - see that function's own docstring) must not be left in
+    # front.mp4's audio at its stale, now-too-long original length,
+    # or muxing it against the genuinely shorter sped-up video makes
+    # the muxed file's own reported duration follow the longer (audio)
+    # stream instead - front.mp4 would claim 8s while its video stream
+    # is really only 5s. _apply_parking_speed() instead drops that
+    # recording's own real audio so silence of the correct, sped-up
+    # length gets padded in for it instead (see its own docstring).
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _parking_trip(source_dir, with_audio=True)
+
+    result = export_trip(
+        trip, dest_dir, include_parking=True, parking_speed=2.0,
+    )
+
+    assert result.warnings == ()
+    assert result.audio is not None
+    decoded = dest_dir / "audio_decoded.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(result.audio), str(decoded)],
+        capture_output=True, text=True, check=True,
+    )
+    # 1s + 3s (silence, sped-up length) + 1s = 5s - audio.aac stays
+    # exactly as long as the sped-up video, not the original 8s.
+    assert abs(_video_duration(decoded) - 5.0) < 0.5
+    assert abs(_video_duration(result.front_video) - 5.0) < 0.5
+
+
 def test_export_trip_drops_a_parking_recording_at_the_trip_start(tmp_path):
     # Replaces an earlier version of this test, which asserted a
     # leading Parking recording was always left untouched regardless

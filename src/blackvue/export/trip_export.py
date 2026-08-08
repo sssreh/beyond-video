@@ -43,6 +43,7 @@ from .gpx_writer import write_gpx
 from .gsensor_graph_video import render_gsensor_graph_video
 from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
+from .media import change_playback_speed
 from .media import check_readable
 from .media import concatenate_media
 from .media import generate_silence
@@ -246,6 +247,148 @@ def _repair_parking_sources(
             repaired = load_or_repair_parking_video(source, cache_dir)
             if repaired != source:
                 overrides[(recording.id, asset)] = repaired
+
+    return overrides
+
+
+def _apply_parking_speed(
+    trip: Trip,
+    work_dir: Path,
+    warnings: list[str],
+    log: TripLog | None,
+    *,
+    speed: float,
+    include_parking: bool,
+    source_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
+) -> dict[tuple[RecordingId, Asset], Path]:
+    """Return a `{(recording id, FRONT/REAR): sped-up path}` map, one
+    entry per Parking-mode recording in this trip whose video got
+    re-encoded at `speed`x via `change_playback_speed()`
+    (`export/media.py`).
+
+    Christer's own framing for why this exists: Parking-mode footage
+    is motion-triggered and sparse, so a long real-world span often
+    compresses into a short, slow-to-watch clip in the final export -
+    `--parking-speed` lets it play back faster (or, for `speed < 1.0`,
+    slower) without touching the rest of the trip's own pace.
+
+    Does no work at all - not even probing a single file - and
+    returns an empty dict immediately whenever `speed == 1.0` (the
+    default) or `include_parking` is False: a Parking recording left
+    out of the video entirely has nothing here worth re-encoding, and
+    1.0x is a strict no-op by definition, so this stays fully inert
+    for every trip that never asked for the flag. This matters beyond
+    just "don't waste time" - every override this function *does*
+    produce triggers a real re-encode (see `change_playback_speed()`'s
+    own docstring for why a stream copy can't do this), the slowest
+    kind of operation anywhere in this per-recording override chain,
+    so callers who never opted in should never pay for it.
+
+    `source_overrides`, if given, is consulted first for each
+    recording/asset - the same `{(recording id, asset): path}` shape
+    every other override producer in this chain uses (see
+    `_repair_parking_sources()`/`_trim_prebuffers()`'s own docstrings),
+    so this speeds up whatever the *repaired* Parking source actually
+    is, not the camera's original (frequently unreadable, see
+    `_repair_parking_sources()`) container.
+
+    Deliberately runs *after* `_repair_parking_sources()` in
+    `export_trip()`'s own pipeline (see that call site) for exactly
+    that reason - `change_playback_speed()` re-encodes via ffmpeg,
+    which needs a container ffprobe can actually open, and a raw
+    unrepaired Parking recording fails that outright. Runs *before*
+    `_align_front_rear_durations()`: FRONT and REAR are each sped up
+    independently here by the same factor, so their already-close
+    durations (see that function's own docstring for why they can
+    still differ slightly) simply scale down together rather than
+    diverging - alignment then trims whichever of the two sped-up
+    files is longer, exactly as it already does for any other
+    recording, with no special case needed for this one.
+
+    The returned map feeds into the same `duration_overrides` dict
+    `_recording_video_offsets()`/`_concatenate_asset()` already
+    consume - once a Parking recording's own FRONT/REAR here is
+    registered under its sped-up path, every downstream consumer of
+    real video duration (map.mp4/gsensor.mp4 sync via
+    `_video_position_breakpoints()`, subtitle rebasing, and
+    `_pad_missing_audio_with_silence()`'s own silence-fill length)
+    automatically sees the *sped-up* duration instead of the
+    original, with zero code changes of their own needed - this is
+    the exact same architecture `_repair_parking_sources()`/
+    `_trim_prebuffers()`/`_align_front_rear_durations()` already
+    established for Parking's other duration-changing operations, see
+    `_recording_video_offsets()`'s own docstring for the full
+    reasoning behind why probing each override's own real file,
+    rather than trusting any wall-clock assumption, is what keeps
+    everything in sync.
+
+    Also drops `Asset.AUDIO` (if present) from any recording actually
+    sped up here, mutating `recording.assets` in place - the same
+    self-healing convention `_ensure_recording_audio()`/
+    `_pad_missing_audio_with_silence()` already use elsewhere in this
+    module. Most Parking recordings have no audio at all, in which
+    case this is a no-op; but a recording that *does* carry real audio
+    (typically because it doubles as an Event/Manual-triggered clip)
+    would otherwise leave that audio at its original, now-mismatched
+    length in the trip's `audio.aac` - `change_playback_speed()` only
+    speeds up video (`-an`, see its own docstring), so a Parking
+    recording's own real audio is never itself sped up to match.
+    Discovered the hard way: muxing a shorter (sped-up) front.mp4
+    against a longer, unsped audio.aac via `mux_audio_track()` (no
+    `-shortest`) doesn't trim or desync gracefully - the muxed
+    container's own reported duration follows the *longer* stream, so
+    front.mp4 comes back claiming the audio's stale, unsped length
+    even though its video stream itself is genuinely shorter.
+    Dropping the audio here instead lets `_pad_missing_audio_with_
+    silence()` (which runs later, from this recording's own post-
+    speed-change `video_offsets`) fill the gap with correctly *sped-
+    up*-duration silence, the same treatment a Parking recording with
+    no audio at all already gets.
+    """
+
+    if speed == 1.0 or not include_parking:
+        return {}
+
+    overrides: dict[tuple[RecordingId, Asset], Path] = {}
+
+    for recording in trip.recordings:
+        if not recording.id.is_parking:
+            continue
+
+        sped_up = False
+        for asset in (Asset.FRONT, Asset.REAR):
+            if not recording.has(asset):
+                continue
+
+            override_path = (
+                source_overrides.get((recording.id, asset))
+                if source_overrides is not None
+                else None
+            )
+            source = override_path or recording.file(asset).path
+
+            destination = (
+                work_dir
+                / f"{recording.id}_{asset.name.lower()}_speed{speed:g}{source.suffix}"
+            )
+            try:
+                change_playback_speed(source, destination, speed)
+            except MediaToolError as exc:
+                message = (
+                    f"{recording.id}: could not apply --parking-speed "
+                    f"{speed:g}x to {asset.name.lower()}: {exc} - kept "
+                    "at its original speed"
+                )
+                warnings.append(message)
+                if log is not None:
+                    log.warning(message)
+                continue
+
+            overrides[(recording.id, asset)] = destination
+            sped_up = True
+
+        if sped_up:
+            recording.assets.pop(Asset.AUDIO, None)
 
     return overrides
 
@@ -1380,6 +1523,7 @@ def export_trip(
     stitch_subtitles: bool = False,
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
+    parking_speed: float = 1.0,
     command_line: str | None = None,
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
@@ -1630,6 +1774,20 @@ def export_trip(
     include every Parking recording's own footage/audio
     unconditionally instead, the original behavior.
 
+    `parking_speed` (default 1.0, a strict no-op) re-encodes every
+    included Parking recording's own FRONT/REAR at that playback
+    speed - 2.0 plays it twice as fast (half the real-world
+    duration), 0.5 half as fast - before it's ever concatenated,
+    aligned, or offset-calculated (see `_apply_parking_speed()`'s own
+    docstring). Christer's own reasoning for wanting this: Parking
+    footage is motion-triggered and sparse, so a long real-world span
+    can compress into a slow-to-watch clip in the final export; a
+    speed control lets it play back faster without touching the rest
+    of the trip's own pace. Has no effect at all when
+    `include_parking=False` - there's nothing in the video to speed
+    up in that case. Range-validated by the CLI layer
+    (`cli/bv_export.py`'s `--parking-speed`, 0.10-5.0), not here.
+
     An earlier version of this feature spliced in a short synthetic
     "PARKING FOOTAGE SKIPPED" clip for mid-trip Parking recordings
     (leaving recordings at the very start/end of the trip untouched
@@ -1737,23 +1895,45 @@ def export_trip(
         # path to probe successfully rather than treating it as
         # unreadable the way _concatenate_asset() otherwise would.
         parking_repair_overrides = _repair_parking_sources(trip)
+        # --parking-speed runs right after repair, before prebuffer
+        # trim/alignment - it needs the repaired container to
+        # re-encode (change_playback_speed() shells out to ffmpeg,
+        # same requirement as repair's own consumers below), and both
+        # of FRONT/REAR need to already be at their final speed before
+        # alignment compares their durations (see
+        # _apply_parking_speed()'s own docstring for why running it
+        # any later would fight this ordering). A strict no-op - zero
+        # ffmpeg calls, empty dict back - whenever parking_speed is
+        # left at its 1.0 default or include_parking is False, so a
+        # trip that never asked for this flag pays nothing extra here.
+        parking_speed_overrides = _apply_parking_speed(
+            trip, Path(align_dir), warnings, log,
+            speed=parking_speed, include_parking=include_parking,
+            source_overrides=parking_repair_overrides,
+        )
         prebuffer_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
             trip, Path(align_dir), warnings, log,
         )
         alignment_overrides = _align_front_rear_durations(
             trip, Path(align_dir), warnings, log, include_parking=include_parking,
-            source_overrides={**parking_repair_overrides, **prebuffer_overrides},
+            source_overrides={
+                **parking_repair_overrides,
+                **parking_speed_overrides,
+                **prebuffer_overrides,
+            },
         )
         # alignment_overrides wins per-(recording, asset) pair where it
         # touched one (its own trimmed file was itself built from
-        # whatever parking_repair_overrides/prebuffer_overrides
-        # supplied, so it already carries that repair/trim forward);
-        # the earlier maps' own entries are kept as-is for anything
-        # alignment didn't need to touch further - e.g. AUDIO, which
-        # alignment never looks at at all, or a FRONT/REAR pair that
-        # already matched post-repair/post-prebuffer-trim.
+        # whatever parking_repair_overrides/parking_speed_overrides/
+        # prebuffer_overrides supplied, so it already carries that
+        # repair/speed-change/trim forward); the earlier maps' own
+        # entries are kept as-is for anything alignment didn't need to
+        # touch further - e.g. AUDIO, which alignment never looks at
+        # at all, or a FRONT/REAR pair that already matched post
+        # -repair/post-speed-change/post-prebuffer-trim.
         duration_overrides = {
             **parking_repair_overrides,
+            **parking_speed_overrides,
             **prebuffer_overrides,
             **alignment_overrides,
         }
