@@ -23,6 +23,7 @@ from blackvue.export.trip_export import _trim_prebuffers
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
+from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeechSegment
 from blackvue.generate.subtitles import format_lrc
@@ -1443,12 +1444,18 @@ def test_recording_video_offsets_uses_real_video_duration_not_id_gap(tmp_path):
         Recording(id=second_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)}),
     ))
 
-    offsets = _recording_video_offsets(trip, include_parking=True)
+    offsets, total = _recording_video_offsets(trip, include_parking=True)
 
     assert offsets[first_id] == 0.0
     # Real front_a duration, not the 60s ID-timestamp gap.
     assert abs(offsets[second_id] - _video_duration(front_a)) < 0.2
     assert offsets[second_id] < 2.0
+    # The trip's own real total video duration - see this function's
+    # own docstring for why it's a plain sum of each recording's own
+    # individually-probed duration (front_a + front_b here), not
+    # anything read off a concatenated file's own container metadata
+    # (there is no concatenated file in this test at all).
+    assert abs(total - (_video_duration(front_a) + _video_duration(front_b))) < 0.2
 
 
 def test_recording_video_offsets_uses_trimmed_duration_override(tmp_path):
@@ -1473,12 +1480,15 @@ def test_recording_video_offsets_uses_trimmed_duration_override(tmp_path):
         Recording(id=second_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)}),
     ))
 
-    offsets = _recording_video_offsets(
+    offsets, total = _recording_video_offsets(
         trip, include_parking=True,
         duration_overrides={(first_id, Asset.FRONT): trimmed_a},
     )
 
     assert abs(offsets[second_id] - 2.0) < 0.2
+    # Total also reflects the trimmed (2.0s) duration for first_id,
+    # not front_a's own untrimmed 5.0s.
+    assert abs(total - 3.0) < 0.2
 
 
 def test_recording_video_offsets_skips_parking_when_not_included(tmp_path):
@@ -1500,12 +1510,14 @@ def test_recording_video_offsets_skips_parking_when_not_included(tmp_path):
         Recording(id=second_id, assets={Asset.FRONT: AssetFile(Asset.FRONT, front_b)}),
     ))
 
-    offsets = _recording_video_offsets(trip, include_parking=False)
+    offsets, total = _recording_video_offsets(trip, include_parking=False)
 
     assert parking_id not in offsets
     # second_id's offset skips right over the parking recording's own
     # 3s duration, since it never reaches front.mp4 at all.
     assert abs(offsets[second_id] - _video_duration(front_a)) < 0.2
+    # Total also excludes the excluded parking recording's 3s.
+    assert abs(total - (_video_duration(front_a) + _video_duration(front_b))) < 0.2
 
 
 def test_recording_video_offsets_skips_a_recording_with_no_video(tmp_path):
@@ -1521,10 +1533,12 @@ def test_recording_video_offsets_skips_a_recording_with_no_video(tmp_path):
         Recording(id=gps_only_id, assets={}),
     ))
 
-    offsets = _recording_video_offsets(trip, include_parking=True)
+    offsets, total = _recording_video_offsets(trip, include_parking=True)
 
     assert first_id in offsets
     assert gps_only_id not in offsets
+    # Total reflects only the one recording with a real video.
+    assert abs(total - _video_duration(front_a)) < 0.2
 
 
 def test_video_position_breakpoints_sorted_by_position():
@@ -2819,6 +2833,77 @@ def test_export_trip_map_zoom_matches_video_width_for_east_west_trip(
 
     assert zoom_kwargs["width"] == 64
     assert 0 < zoom_kwargs["height"] < 64
+
+
+def test_export_trip_video_duration_uses_summed_sources_not_corrupted_concat_probe(
+    tmp_path, monkeypatch
+):
+    # Christer, on a real trip: front.mp4 reported avg_frame_rate
+    # 47375/25573 (~1.85fps) and duration=3682s after concatenating a
+    # repaired Parking recording, while rear.mp4 - built from the same
+    # underlying footage, confirmed by real frame counts matching
+    # almost exactly (6822 vs 6829) - correctly reported ~29.66fps and
+    # 230s for the same content. ffmpeg's `-c copy` concat demuxer
+    # doesn't harmonize timescales across inputs, so the concatenated
+    # file's own container-level duration metadata can end up wrong
+    # even though every individual source probes correctly. See
+    # _recording_video_offsets()'s own docstring for the full story.
+    #
+    # This test simulates that corruption directly - real ffmpeg
+    # concat of this fixture's own tiny clips is fine, the bug only
+    # reproduces with a genuine timescale mismatch not worth
+    # manufacturing here - by monkeypatching probe() to return a
+    # wildly inflated duration specifically for the concatenated
+    # front.mp4, and confirms video_duration_seconds (what feeds
+    # map.mp4's own frame_count, and trip.srt/.lrc padding) comes from
+    # the reliable per-source sum instead of that corrupted number.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_reverse_geocode", _fake_geocode
+    )
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _fake_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=False
+    )
+
+    real_probe = trip_export_module.probe
+
+    def _fake_probe(path):
+        info = real_probe(path)
+        if Path(path).name == "front.mp4":
+            # Same shape as the real bug: same content, container
+            # metadata describing something ~16x longer.
+            return MediaInfo(
+                duration_seconds=info.duration_seconds * 16,
+                frame_rate=info.frame_rate / 16,
+            )
+        return info
+
+    monkeypatch.setattr(trip_export_module, "probe", _fake_probe)
+
+    calls = []
+
+    def _capture(fixes, roads, bbox, destination, **kwargs):
+        calls.append((destination, kwargs))
+        return destination
+
+    monkeypatch.setattr(trip_export_module, "render_map_video", _capture)
+
+    export_trip(trip, dest_dir, render_map=True)
+
+    map_kwargs = next(
+        kwargs for destination, kwargs in calls
+        if destination == dest_dir / "map.mp4"
+    )
+
+    # Real front_a duration (~1.0s, per _trip_with_front_rear_and_gps_
+    # shape()'s own _make_video(front_a, 1.0)), not the ~16s a naive
+    # probe-the-concatenated-file approach would have produced.
+    assert map_kwargs["video_duration_seconds"] < 2.0
 
 
 def test_export_trip_stitch_auto_layout_falls_back_without_gps_data(

@@ -651,12 +651,45 @@ def _recording_video_offsets(
     *,
     include_parking: bool,
     duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
-) -> dict[RecordingId, float]:
+) -> tuple[dict[RecordingId, float], float | None]:
     """Return each recording's own real start position, in seconds,
     within the concatenated video `_concatenate_asset()` actually
     produces - the sum of every earlier included recording's own
     (possibly front/rear-trimmed) duration, NOT the gap between
-    recording ID timestamps.
+    recording ID timestamps - alongside the trip's own real total
+    video duration (the same running sum, carried one recording
+    further, or `None` if no recording's video could be probed at
+    all).
+
+    That second value exists because Christer hit a real case where
+    probing the *concatenated* front.mp4 for its own total duration -
+    what this function's callers used to do separately, on the
+    reasonable-sounding assumption that "ask the actual output file"
+    beats re-deriving the number from its ingredients - was wrong by
+    roughly 16x. A trip whose Parking recording (repaired via
+    `_repair_parking_sources()`) got `-c copy` concatenated onto the
+    front side only produced a front.mp4 whose own container metadata
+    reported `avg_frame_rate=47375/25573` (~1.85fps) and
+    `duration=3682s`, while the *same* underlying footage on the rear
+    side - 6822 vs 6829 real frames, matching almost exactly - reported
+    `avg_frame_rate=3414500/115109` (~29.66fps) and `duration=230s` for
+    what both real frame counts agree is the same real ~230s of
+    footage. ffmpeg's concat demuxer's own `-c copy` stream copy
+    doesn't harmonize timescales across inputs that don't share one
+    (plausibly the Parking recording's own repaired container, built
+    by `mp4_repair.py` from a from-scratch rewritten `moov`, carrying a
+    different timescale than the camera's normal recording pipeline
+    produces) - the real packets and real frame count survive the
+    concatenation fine, but the container-level *summary*
+    duration/average-frame-rate metadata ffprobe reports for the whole
+    file can end up describing something that never actually happened.
+    Summing each source's own individually-probed duration - exactly
+    what this function was already doing internally to build its
+    offsets, just not exposing the running total - sidesteps the bad
+    concatenated-container metadata entirely by never reading it, and
+    was independently confirmed correct against Christer's real files
+    (both front and rear repaired Parking sources probed identically:
+    1530 frames, ~30.3fps, 50.457s each).
 
     This matters because `_concatenate_asset()` builds front.mp4/
     rear.mp4 by gluing each included recording's own video file
@@ -726,7 +759,7 @@ def _recording_video_offsets(
         offsets[recording.id] = elapsed
         elapsed += duration
 
-    return offsets
+    return offsets, (elapsed if offsets else None)
 
 
 def _video_position_breakpoints(
@@ -1530,15 +1563,17 @@ def export_trip(
         # _recording_video_offsets() probes each recording's own
         # (possibly trimmed) video file, and duration_overrides' own
         # trimmed paths live in align_dir, which is gone the moment
-        # this `with` block exits. video_offsets/recording_breakpoints
-        # themselves are plain data (RecordingId -> float, and (float,
-        # datetime) pairs) with no dependency on any file still
+        # this `with` block exits. video_offsets/recording_breakpoints/
+        # summed_video_duration_seconds themselves are plain data
+        # (RecordingId -> float, (float, datetime) pairs, and a bare
+        # float respectively) with no dependency on any file still
         # existing, so they're safe to keep using well past this
         # block - see _merge_gsensor()/_render_map_variant()/
-        # stitch_cameras() below. gsensor_overrides is likewise plain
-        # in-memory data (see _merge_gsensor()'s own docstring), safe
-        # to keep past this block too.
-        video_offsets = _recording_video_offsets(
+        # stitch_cameras() below, and the video_duration_seconds
+        # computation right after this block exits. gsensor_overrides
+        # is likewise plain in-memory data (see _merge_gsensor()'s own
+        # docstring), safe to keep past this block too.
+        video_offsets, summed_video_duration_seconds = _recording_video_offsets(
             trip, include_parking=include_parking,
             duration_overrides=duration_overrides,
         )
@@ -1588,18 +1623,38 @@ def export_trip(
     # Whisper only emits segments for actual speech, so a trip with a
     # quiet stretch at the end (nobody talking for the last couple of
     # minutes, say) produces a merged subtitle file that stops well
-    # before the video does. Probing the actual concatenated video
-    # bv-export just wrote - not summing recordings' own .duration.txt
-    # files, which may not all exist - gives merge_srt()/merge_lrc()
-    # the real length to pad the trailing cue out to.
-    video_duration_seconds = None
-    video_for_duration = front_video or rear_video
-    if video_for_duration is not None:
-        try:
-            video_duration_seconds = probe(video_for_duration).duration_seconds
-        except MediaToolError as exc:
-            warnings.append(f"subtitle padding: {exc}")
-            log.warning(f"subtitle padding: {exc}")
+    # before the video does. This also feeds map.mp4/map_zoom's own
+    # frame_count math and the --stitch map/graph panel durations
+    # below - the trip's own real video length, not just subtitle
+    # padding, so getting it right matters well beyond trip.srt/.lrc.
+    #
+    # Preferring summed_video_duration_seconds (computed above, while
+    # duration_overrides' own trimmed paths were still valid) over
+    # probing the concatenated video file itself - the reverse of this
+    # function's own history - because Christer hit a real case where
+    # the concatenated file's own container metadata was wrong by
+    # roughly 16x: see _recording_video_offsets()'s own docstring for
+    # the full story (a repaired Parking recording's timescale
+    # surviving `-c copy` concatenation into a front.mp4 whose reported
+    # avg_frame_rate/duration described footage that never happened,
+    # while the identical real frame count on the rear side reported
+    # correctly). Summing each source's own individually-probed
+    # duration was already proven reliable elsewhere in this file
+    # (_align_front_rear_durations(), _recording_video_offsets()'s own
+    # per-recording offsets) - falling back to the old probe-the-
+    # concatenated-file behavior only if the summed approach found
+    # nothing at all (no recording's video could be probed), which by
+    # construction should coincide with front_video/rear_video both
+    # being None anyway.
+    video_duration_seconds = summed_video_duration_seconds
+    if video_duration_seconds is None:
+        video_for_duration = front_video or rear_video
+        if video_for_duration is not None:
+            try:
+                video_duration_seconds = probe(video_for_duration).duration_seconds
+            except MediaToolError as exc:
+                warnings.append(f"subtitle padding: {exc}")
+                log.warning(f"subtitle padding: {exc}")
 
     srt_path = None
     merged_srt = merge_srt(trip, total_duration_seconds=video_duration_seconds)
