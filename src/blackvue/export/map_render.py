@@ -471,6 +471,130 @@ def render_base_map(
     return image
 
 
+def render_frame_visual(
+    bbox: BoundingBox,
+    roads: tuple[Road, ...],
+    route_points: tuple[tuple[float, float], ...],
+    position: tuple[float, float] | None,
+    *,
+    areas: tuple[Area, ...] = (),
+    heading: float | None = None,
+    marker_image: Image.Image | None = None,
+    show_marker: bool = True,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    margin: int = DEFAULT_MARGIN_PX,
+    base_image: Image.Image | None = None,
+) -> Image.Image:
+    """Render everything in a map-overlay frame that depends only on
+    position/route/roads - background, roads, areas, the route driven
+    so far, and the position marker - but *not* the timestamp/speed
+    text or the live-GPS badge (see compose_frame_overlay() for those).
+
+    Split out of what used to be all of render_frame() so
+    render_map_video() can cache and reuse this (expensive: background
+    +roads+areas+route projection and redraw) part of a frame across
+    several output frames whenever the underlying position/route/bbox
+    genuinely hasn't changed - e.g. a Parking recording sitting still
+    for a long real span, see MAX_ZOOM_ROUTE_TRAIL_FIXES's own comment
+    for the "946.5s map phase" report this addresses the other half of.
+    The timestamp/speed text and GPS badge stay cheap enough (a couple
+    of small text/shape draws) to redraw on every single frame
+    regardless, in compose_frame_overlay() - keeping the on-screen
+    clock/speed readout always current even while the visual underneath
+    is being reused, rather than letting it visibly freeze for however
+    long a reused visual spans.
+
+    See render_frame()'s own docstring (still the combined convenience
+    wrapper most callers should use) for what each parameter means -
+    this function accepts the same ones, just without `speed_kmh`,
+    `timestamp_text`, and `show_gps_badge`, which belong to the overlay
+    step instead.
+    """
+
+    if base_image is not None:
+        image = base_image.copy()
+    else:
+        image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
+    draw = ImageDraw.Draw(image)
+
+    def proj(lat: float, lon: float) -> tuple[float, float]:
+        return _project(lat, lon, bbox, width, height, margin)
+
+    if base_image is None:
+        for area in areas:
+            pixels = [proj(lat, lon) for lat, lon in area.points]
+            if len(pixels) >= 3:
+                fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
+                draw.polygon(pixels, fill=fill)
+
+        _draw_roads(draw, proj, roads)
+
+    if len(route_points) >= 2:
+        pixels = [proj(lat, lon) for lat, lon in route_points]
+        draw.line(pixels, fill=ROUTE_COLOR, width=4, joint="curve")
+
+    if position is not None and show_marker:
+        point = proj(*position)
+
+        if marker_image is not None:
+            _paste_marker_image(image, marker_image, point, heading)
+        elif heading is not None:
+            draw.polygon(
+                _arrow_points(point, heading),
+                fill=MARKER_FILL_COLOR,
+                outline=MARKER_OUTLINE_COLOR,
+                width=2,
+            )
+        else:
+            x, y = point
+            radius = 7
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill=POSITION_DOT_COLOR,
+                outline=POSITION_DOT_OUTLINE,
+                width=2,
+            )
+
+    return image
+
+
+def compose_frame_overlay(
+    visual: Image.Image,
+    *,
+    speed_kmh: float | None = None,
+    timestamp_text: str | None = None,
+    show_gps_badge: bool = False,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    margin: int = DEFAULT_MARGIN_PX,
+) -> Image.Image:
+    """Draw the timestamp/speed text and live-GPS badge onto a copy of
+    `visual` (see render_frame_visual()) - the cheap, always-redrawn-
+    every-frame half of what used to be all of render_frame().
+    """
+
+    image = visual.copy()
+    draw = ImageDraw.Draw(image)
+
+    lines = [line for line in (timestamp_text, _speed_text(speed_kmh)) if line]
+    if lines:
+        text = "\n".join(lines)
+        font = _load_font()
+        draw.multiline_text(
+            (TEXT_MARGIN_PX, height - margin - 24 * len(lines)),
+            text,
+            fill=TEXT_COLOR,
+            font=font,
+            spacing=6,
+        )
+
+    if show_gps_badge:
+        _draw_gps_badge(image, width)
+
+    return image
+
+
 def render_frame(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
@@ -528,68 +652,25 @@ def render_frame(
     it's the caller's responsibility to keep those in sync
     (render_map_video() only does this in its static, non-`--map-zoom`
     mode, where `bbox` is the same object on every call).
+
+    A thin convenience wrapper around render_frame_visual() +
+    compose_frame_overlay() (see those for why the work is split) -
+    kept as a single call for existing callers (this project's own
+    tests, and anyone rendering a one-off frame) that don't need
+    render_map_video()'s own frame-to-frame visual caching.
     """
 
-    if base_image is not None:
-        image = base_image.copy()
-    else:
-        image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
-    draw = ImageDraw.Draw(image)
-
-    def proj(lat: float, lon: float) -> tuple[float, float]:
-        return _project(lat, lon, bbox, width, height, margin)
-
-    if base_image is None:
-        for area in areas:
-            pixels = [proj(lat, lon) for lat, lon in area.points]
-            if len(pixels) >= 3:
-                fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
-                draw.polygon(pixels, fill=fill)
-
-        _draw_roads(draw, proj, roads)
-
-    if len(route_points) >= 2:
-        pixels = [proj(lat, lon) for lat, lon in route_points]
-        draw.line(pixels, fill=ROUTE_COLOR, width=4, joint="curve")
-
-    if position is not None and show_marker:
-        point = proj(*position)
-
-        if marker_image is not None:
-            _paste_marker_image(image, marker_image, point, heading)
-        elif heading is not None:
-            draw.polygon(
-                _arrow_points(point, heading),
-                fill=MARKER_FILL_COLOR,
-                outline=MARKER_OUTLINE_COLOR,
-                width=2,
-            )
-        else:
-            x, y = point
-            radius = 7
-            draw.ellipse(
-                (x - radius, y - radius, x + radius, y + radius),
-                fill=POSITION_DOT_COLOR,
-                outline=POSITION_DOT_OUTLINE,
-                width=2,
-            )
-
-    lines = [line for line in (timestamp_text, _speed_text(speed_kmh)) if line]
-    if lines:
-        text = "\n".join(lines)
-        font = _load_font()
-        draw.multiline_text(
-            (TEXT_MARGIN_PX, height - margin - 24 * len(lines)),
-            text,
-            fill=TEXT_COLOR,
-            font=font,
-            spacing=6,
-        )
-
-    if show_gps_badge:
-        _draw_gps_badge(image, width)
-
-    return image
+    visual = render_frame_visual(
+        bbox, roads, route_points, position,
+        areas=areas, heading=heading, marker_image=marker_image,
+        show_marker=show_marker, width=width, height=height,
+        margin=margin, base_image=base_image,
+    )
+    return compose_frame_overlay(
+        visual,
+        speed_kmh=speed_kmh, timestamp_text=timestamp_text,
+        show_gps_badge=show_gps_badge, width=width, height=height, margin=margin,
+    )
 
 
 def _speed_text(speed_kmh: float | None) -> str | None:

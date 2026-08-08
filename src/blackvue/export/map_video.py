@@ -24,8 +24,9 @@ from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
 from .map_render import DEFAULT_HEIGHT
 from .map_render import DEFAULT_WIDTH
+from .map_render import compose_frame_overlay
 from .map_render import render_base_map
-from .map_render import render_frame
+from .map_render import render_frame_visual
 from .media import encode_frame_sequence
 from .osm_roads import Area
 from .osm_roads import BoundingBox
@@ -77,6 +78,40 @@ DEFAULT_FPS = 5
 # most of it permanently off-canvas), Parking-mode GPS logging just
 # made the waste dramatically larger.
 MAX_ZOOM_ROUTE_TRAIL_FIXES = 300
+
+# How many decimal degrees of latitude/longitude precision matter when
+# deciding whether consecutive frames' *visual* (background/roads/
+# areas/route/marker - see map_render.render_frame_visual()) can be
+# reused rather than redrawn from scratch. 5 decimal places is roughly
+# 1.1m at the equator - well under a single GPS receiver's own normal
+# jitter, so a genuinely parked car's tiny fix-to-fix wobble still
+# counts as "the same place" here, while any real movement (even a
+# slow crawl) still gets its own fresh frame.
+#
+# Christer, following up on the MAX_ZOOM_ROUTE_TRAIL_FIXES fix above
+# with the real numbers behind why that render was still so slow: "the
+# overall time of the video was over 1 hour and the fps on stitch is
+# 6.84" - the Parking recording wasn't a fast, compressed timelapse (as
+# this project had generally assumed - see trip_builder.py's own
+# "1fps timelapse" comment), it was a real hour-plus of continuous,
+# sparsely-captured (low native fps) parked footage. That means
+# frame_count itself (total_seconds * fps below) was already enormous
+# for that one recording's span - roughly 18,000 frames at this
+# module's own 5fps - independent of the route-trail cost the constant
+# above addresses. Nearly every one of those frames shows an
+# essentially identical map view (the car hasn't moved), yet each used
+# to trigger a full background+roads+areas+route+marker redraw anyway.
+#
+# Caching the last-rendered visual and reusing it whenever the
+# rounded position, bbox, heading, marker-visibility, and route length
+# all match the last redrawn frame's turns that redundant work into a
+# single render_frame_visual() call reused for the whole stationary
+# span - the timestamp/speed text and GPS badge (see
+# map_render.compose_frame_overlay()) are cheap enough to still redraw
+# on every single frame regardless, so the on-screen clock/speed
+# readout never visibly freezes even while the map underneath is
+# being reused.
+STATIONARY_VISUAL_ROUND_DECIMALS = 5
 
 # bv-export's own bundled default --map-icon: a top-down red car,
 # pointing "up" in its own file (see render_frame()'s marker_image
@@ -574,6 +609,16 @@ def render_map_video(
         # time.
         position_index = 0
 
+        # Frame-to-frame visual reuse (see STATIONARY_VISUAL_ROUND_
+        # DECIMALS' own comment) - `cached_visual` holds the last
+        # render_frame_visual() output, `cached_signature` the inputs
+        # it was rendered from. A later frame whose own signature
+        # matches skips render_frame_visual() entirely and reuses the
+        # cached image (still copied fresh per frame, since
+        # compose_frame_overlay() mutates its own copy, not this one).
+        cached_visual = None
+        cached_signature = None
+
         for frame_number in range(frame_count):
             elapsed = min(frame_number / fps, total_seconds)
             timestamp = _wallclock_for_elapsed(
@@ -651,21 +696,66 @@ def render_map_video(
                 else route_so_far
             )
 
-            frame = render_frame(
+            show_marker = not before_first_fix
+            # See STATIONARY_VISUAL_ROUND_DECIMALS' own comment. Only
+            # the inputs render_frame_visual() actually draws with need
+            # to match. `route_tip` stands in for the route's own
+            # content: route_so_far only ever grows, so its rounded
+            # last point is enough to tell whether the drawn line
+            # itself could have visibly changed since the last render -
+            # deliberately NOT len(route_points), which would keep
+            # invalidating the cache every time a new (but
+            # rounds-to-the-same-spot) fix gets folded in during a
+            # truly stationary span, exactly the case this cache exists
+            # for (a parked car logging a fix every ~1s for the better
+            # part of an hour). `frame_bbox` already captures zoom
+            # mode's own per-frame recentering, so a signature match
+            # there is sufficient without separately checking
+            # frame_roads/frame_areas (both pure functions of
+            # frame_bbox given the same indexed_roads/indexed_areas).
+            route_tip = (
+                (
+                    round(route_so_far[-1][0], STATIONARY_VISUAL_ROUND_DECIMALS),
+                    round(route_so_far[-1][1], STATIONARY_VISUAL_ROUND_DECIMALS),
+                )
+                if route_so_far
+                else None
+            )
+            signature = (
                 frame_bbox,
-                frame_roads,
-                tuple(route_points) + (position,),
-                position,
-                areas=frame_areas,
+                round(lat, STATIONARY_VISUAL_ROUND_DECIMALS),
+                round(lon, STATIONARY_VISUAL_ROUND_DECIMALS),
+                course,
+                show_marker,
+                route_tip,
+            )
+
+            if cached_visual is not None and signature == cached_signature:
+                visual = cached_visual
+            else:
+                visual = render_frame_visual(
+                    frame_bbox,
+                    frame_roads,
+                    tuple(route_points) + (position,),
+                    position,
+                    areas=frame_areas,
+                    heading=course,
+                    marker_image=marker_image,
+                    show_marker=show_marker,
+                    width=width,
+                    height=height,
+                    base_image=base_image,
+                )
+                cached_visual = visual
+                cached_signature = signature
+
+            frame = compose_frame_overlay(
+                visual,
                 speed_kmh=speed,
-                heading=course,
-                marker_image=marker_image,
                 timestamp_text=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                 show_gps_badge=live_fix,
-                show_marker=not before_first_fix,
                 width=width,
                 height=height,
-                base_image=base_image,
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
 

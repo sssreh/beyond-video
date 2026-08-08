@@ -261,12 +261,17 @@ def test_render_map_video_computes_the_base_image_once_and_reuses_it(
 
     captured_base_images = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured_base_images.append(kwargs.get("base_image"))
         return _FakeFrameImage()
 
     monkeypatch.setattr(map_video_module, "render_base_map", fake_render_base_map)
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -298,12 +303,17 @@ def test_render_map_video_skips_the_base_image_when_zoomed(tmp_path, monkeypatch
 
     captured_base_images = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured_base_images.append(kwargs.get("base_image"))
         return _FakeFrameImage()
 
     monkeypatch.setattr(map_video_module, "render_base_map", fail_render_base_map)
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -362,16 +372,33 @@ class _FakeFrameImage:
         pass
 
 
+def _passthrough_compose_frame_overlay(visual, **_kwargs):
+    # render_map_video()'s per-frame loop always calls
+    # compose_frame_overlay() on whatever render_frame_visual() (real
+    # or, in these tests, faked) returned - a test that's only
+    # interested in what reaches render_frame_visual() stubs this out
+    # as a no-op passthrough so `visual` (typically a _FakeFrameImage(),
+    # which has no real .copy()/draw surface) reaches frame.save()
+    # unchanged instead of a real compose_frame_overlay() call failing
+    # on it.
+    return visual
+
+
 def test_render_map_video_uses_the_static_bbox_for_every_frame_by_default(
     tmp_path, monkeypatch
 ):
     captured = []
 
-    def fake_render_frame(bbox, *_args, **_kwargs):
+    def fake_render_frame_visual(bbox, *_args, **_kwargs):
         captured.append(bbox)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -395,11 +422,16 @@ def test_render_map_video_recenters_the_bbox_on_each_frame_when_zoomed(
 ):
     captured = []
 
-    def fake_render_frame(bbox, *_args, **_kwargs):
+    def fake_render_frame_visual(bbox, *_args, **_kwargs):
         captured.append(bbox)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -433,11 +465,16 @@ def test_render_map_video_filters_roads_to_each_frames_bbox_when_zoomed(
 ):
     captured_roads = []
 
-    def fake_render_frame(_bbox, roads, *_args, **_kwargs):
+    def fake_render_frame_visual(_bbox, roads, *_args, **_kwargs):
         captured_roads.append(roads)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -471,11 +508,16 @@ def test_render_map_video_passes_all_roads_unfiltered_when_not_zoomed(
 ):
     captured_roads = []
 
-    def fake_render_frame(_bbox, roads, *_args, **_kwargs):
+    def fake_render_frame_visual(_bbox, roads, *_args, **_kwargs):
         captured_roads.append(roads)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -502,11 +544,16 @@ def test_render_map_video_caps_route_trail_when_zoomed(tmp_path, monkeypatch):
 
     captured_routes = []
 
-    def fake_render_frame(_bbox, _roads, route_points, *_args, **_kwargs):
+    def fake_render_frame_visual(_bbox, _roads, route_points, *_args, **_kwargs):
         captured_routes.append(route_points)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -549,11 +596,16 @@ def test_render_map_video_does_not_cap_route_trail_when_not_zoomed(
 
     captured_routes = []
 
-    def fake_render_frame(_bbox, _roads, route_points, *_args, **_kwargs):
+    def fake_render_frame_visual(_bbox, _roads, route_points, *_args, **_kwargs):
         captured_routes.append(route_points)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -578,16 +630,125 @@ def test_render_map_video_does_not_cap_route_trail_when_not_zoomed(
     assert len(captured_routes[-1]) > MAX_ZOOM_ROUTE_TRAIL_FIXES + 1
 
 
-def test_render_map_video_passes_width_and_height_to_render_frame(
+def test_render_map_video_reuses_the_cached_visual_during_a_stationary_span(
+    tmp_path, monkeypatch
+):
+    # Christer, following up on the route-trail-cap fix above with the
+    # real numbers behind why the render was still so slow: "the
+    # overall time of the video was over 1 hour and the fps on stitch
+    # is 6.84" - a Parking recording's own real (not compressed)
+    # duration, independent of route-trail cost, meant frame_count
+    # itself (see STATIONARY_VISUAL_ROUND_DECIMALS' own comment) was
+    # already huge, and nearly every one of those frames shows an
+    # unchanging map view since the car hasn't moved. This confirms
+    # render_frame_visual() - the expensive background/roads/route/
+    # marker redraw - gets called far fewer times than frame_count for
+    # a genuinely stationary span, while compose_frame_overlay() (the
+    # cheap timestamp/speed text + badge) still gets called once per
+    # frame so the on-screen clock keeps advancing.
+    visual_calls = []
+    overlay_calls = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        visual_calls.append(kwargs)
+        return _FakeFrameImage()
+
+    def fake_compose_frame_overlay(visual, **kwargs):
+        overlay_calls.append(kwargs)
+        return visual
+
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", fake_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    # 20 fixes, all at the exact same coordinate (a parked car logging
+    # fixes every second) - a real stationary Parking span.
+    fixes = tuple(_fix(offset, 59.300, 18.000) for offset in range(20))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    # frame_count here is 39 (19s * 2fps + 1) - the whole point is that
+    # render_frame_visual() is called dramatically fewer times than
+    # that (just once, since every frame's position/route/bbox is
+    # identical throughout), while compose_frame_overlay() still runs
+    # once per frame.
+    assert len(overlay_calls) >= 30
+    assert len(visual_calls) == 1
+    assert len(overlay_calls) > len(visual_calls)
+
+
+def test_render_map_video_does_not_reuse_the_visual_while_moving(
+    tmp_path, monkeypatch
+):
+    # Sanity counterpart to the stationary test above - a real driving
+    # trip (position genuinely changing every frame) must not trigger
+    # the cache; render_frame_visual() should still be called once per
+    # frame, same as compose_frame_overlay().
+    visual_calls = []
+    overlay_calls = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        visual_calls.append(kwargs)
+        return _FakeFrameImage()
+
+    def fake_compose_frame_overlay(visual, **kwargs):
+        overlay_calls.append(kwargs)
+        return visual
+
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", fake_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = tuple(
+        _fix(offset, 59.300 + offset * 0.0005, 18.000 + offset * 0.0005)
+        for offset in range(20)
+    )
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.40, max_lon=18.10
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert len(visual_calls) == len(overlay_calls)
+    assert len(visual_calls) >= 30
+
+
+def test_render_map_video_passes_width_and_height_to_render_frame_visual(
     tmp_path, monkeypatch
 ):
     captured_kwargs = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured_kwargs.append(kwargs)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -615,11 +776,16 @@ def test_render_map_video_defaults_width_and_height_to_map_render_defaults(
 ):
     captured_kwargs = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured_kwargs.append(kwargs)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -654,7 +820,10 @@ def test_render_map_video_derives_zoom_aspect_ratio_from_width_and_height(
         map_video_module, "bounding_box_around_point", fake_bounding_box_around_point
     )
     monkeypatch.setattr(
-        map_video_module, "render_frame", lambda *_a, **_k: _FakeFrameImage()
+        map_video_module, "render_frame_visual", lambda *_a, **_k: _FakeFrameImage()
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
     )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
@@ -884,11 +1053,16 @@ def test_render_map_video_video_start_clamps_position_during_the_leading_gap(
 ):
     captured = []
 
-    def fake_render_frame(_bbox, _roads, _route, position, **_kwargs):
+    def fake_render_frame_visual(_bbox, _roads, _route, position, **_kwargs):
         captured.append(position)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -923,11 +1097,13 @@ def test_render_map_video_uses_recording_breakpoints_over_a_single_anchor(
     # they arrive at 2s in - matching the real (short) video.
     captured_timestamps = []
 
-    def fake_render_frame(_bbox, _roads, _route, _position, *, timestamp_text, **_kw):
+    def fake_compose_frame_overlay(_visual, *, timestamp_text, **_kw):
         captured_timestamps.append(timestamp_text)
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", fake_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -949,9 +1125,10 @@ def test_render_map_video_uses_recording_breakpoints_over_a_single_anchor(
 
     # Frame at video-elapsed=2s should be timestamped rec_b_start (real
     # video position), not rec_a_start+2s (what a single anchor would
-    # give) - both are captured via render_frame's timestamp_text, so
-    # confirm the frame at elapsed=2 (frame index 2 at fps=1) reflects
-    # rec_b_start rather than the un-rebased anchor.
+    # give) - both are captured via compose_frame_overlay's own
+    # timestamp_text kwarg, so confirm the frame at elapsed=2 (frame
+    # index 2 at fps=1) reflects rec_b_start rather than the un-rebased
+    # anchor.
     assert captured_timestamps[2] == rec_b_start.strftime("%Y-%m-%d %H:%M:%S")
     assert captured_timestamps[0] == rec_a_start.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -964,11 +1141,16 @@ def test_render_map_video_scales_the_marker_image_to_half_size(tmp_path, monkeyp
 
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured.append(kwargs.get("marker_image"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -994,11 +1176,16 @@ def test_render_map_video_hides_the_marker_before_the_first_real_fix(
     # marker.
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured.append(kwargs.get("show_marker"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -1029,11 +1216,16 @@ def test_render_map_video_still_shows_the_marker_during_a_trailing_gap(
     # itself goes dark for.
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured.append(kwargs.get("show_marker"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -1055,11 +1247,16 @@ def test_render_map_video_still_shows_the_marker_during_a_mid_trip_signal_loss_g
 ):
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_render_frame_visual(*_args, **kwargs):
         captured.append(kwargs.get("show_marker"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -1135,11 +1332,13 @@ def test_render_map_video_omits_the_gps_badge_during_a_mid_trip_signal_loss_gap(
 ):
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_compose_frame_overlay(_visual, **kwargs):
         captured.append(kwargs.get("show_gps_badge"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", fake_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -1178,11 +1377,13 @@ def test_render_map_video_omits_the_gps_badge_during_the_leading_gap(
     # satellite badge shouldn't claim that's a live fix.
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_compose_frame_overlay(_visual, **kwargs):
         captured.append(kwargs.get("show_gps_badge"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", fake_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )
@@ -1211,11 +1412,13 @@ def test_render_map_video_shows_the_gps_badge_for_every_frame_without_a_gap(
     # the badge should be on for every single frame.
     captured = []
 
-    def fake_render_frame(*_args, **kwargs):
+    def fake_compose_frame_overlay(_visual, **kwargs):
         captured.append(kwargs.get("show_gps_badge"))
         return _FakeFrameImage()
 
-    monkeypatch.setattr(map_video_module, "render_frame", fake_render_frame)
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", fake_compose_frame_overlay
+    )
     monkeypatch.setattr(
         map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
     )

@@ -9,9 +9,11 @@ from blackvue.export.map_render import _arrow_points
 from blackvue.export.map_render import _FONT_CANDIDATES
 from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
+from blackvue.export.map_render import compose_frame_overlay
 from blackvue.export.map_render import DEFAULT_MARGIN_PX
 from blackvue.export.map_render import render_base_map
 from blackvue.export.map_render import render_frame
+from blackvue.export.map_render import render_frame_visual
 from blackvue.export.map_render import TEXT_MARGIN_PX
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
@@ -317,6 +319,90 @@ def test_render_frame_draws_the_gps_badge_in_the_top_right_corner():
     assert diameter > 0  # sanity: badge has a real size to center within
     assert blank.getpixel(badge_center) != with_badge.getpixel(badge_center)
     assert blank.getpixel(far_corner_pixel) == with_badge.getpixel(far_corner_pixel)
+
+
+def test_render_frame_equals_visual_plus_overlay_composed_together():
+    # render_frame() is documented as a thin wrapper around
+    # render_frame_visual() + compose_frame_overlay() - this confirms
+    # the split didn't change its combined output for a real frame with
+    # roads, a route, a marker, timestamp/speed text, and the GPS
+    # badge all present at once.
+    roads = (Road(points=((59.30, 18.00), (59.34, 18.08))),)
+    route = ((59.31, 18.02), (59.33, 18.06))
+
+    combined = render_frame(
+        _BBOX, roads=roads, route_points=route, position=route[-1],
+        heading=45.0, speed_kmh=42.0, timestamp_text="2026-08-08 12:00:00",
+        show_gps_badge=True,
+    )
+
+    visual = render_frame_visual(
+        _BBOX, roads=roads, route_points=route, position=route[-1],
+        heading=45.0,
+    )
+    split = compose_frame_overlay(
+        visual, speed_kmh=42.0, timestamp_text="2026-08-08 12:00:00",
+        show_gps_badge=True,
+    )
+
+    assert list(combined.getdata()) == list(split.getdata())
+
+
+def test_render_frame_visual_omits_timestamp_and_speed_text():
+    # The whole point of the split - render_frame_visual() alone should
+    # never draw the timestamp/speed text or GPS badge, even when a
+    # position/route is present (those come from compose_frame_overlay()
+    # only, called separately by render_map_video()'s per-frame loop).
+    route = ((59.31, 18.02), (59.33, 18.06))
+
+    visual_only = render_frame_visual(
+        _BBOX, roads=(), route_points=route, position=route[-1],
+    )
+    visual_then_blank_overlay = compose_frame_overlay(visual_only)
+
+    # compose_frame_overlay() with no text/badge args should be a
+    # no-op copy - confirms render_frame_visual()'s own output already
+    # has nothing in the text/badge corners to begin with.
+    assert list(visual_only.getdata()) == list(visual_then_blank_overlay.getdata())
+
+
+def test_compose_frame_overlay_does_not_mutate_the_visual():
+    route = ((59.31, 18.02), (59.33, 18.06))
+    visual = render_frame_visual(
+        _BBOX, roads=(), route_points=route, position=route[-1],
+    )
+    visual_pixels_before = list(visual.getdata())
+
+    compose_frame_overlay(
+        visual, speed_kmh=50.0, timestamp_text="2026-08-08 12:00:00",
+        show_gps_badge=True,
+    )
+
+    # compose_frame_overlay() must copy its `visual` argument, not draw
+    # onto it directly - render_map_video()'s own frame-holding cache
+    # (see map_video.py's STATIONARY_VISUAL_ROUND_DECIMALS) depends on
+    # reusing the exact same visual object across many frames, each
+    # getting its own fresh text/badge overlay - a mutating
+    # compose_frame_overlay() would permanently scar that shared object
+    # after its first use.
+    assert list(visual.getdata()) == visual_pixels_before
+
+
+def test_compose_frame_overlay_draws_different_text_on_each_call():
+    # Directly exercises the reason render_map_video() redraws the
+    # overlay every frame even when it reuses a cached visual: two
+    # different timestamp_text values on the same visual must produce
+    # visibly different images, so the on-screen clock never appears
+    # frozen during a held-frame span.
+    route = ((59.31, 18.02), (59.33, 18.06))
+    visual = render_frame_visual(
+        _BBOX, roads=(), route_points=route, position=route[-1],
+    )
+
+    first = compose_frame_overlay(visual, timestamp_text="2026-08-08 12:00:00")
+    second = compose_frame_overlay(visual, timestamp_text="2026-08-08 12:00:05")
+
+    assert list(first.getdata()) != list(second.getdata())
 
 
 def test_load_font_only_opens_the_font_file_once(monkeypatch):
