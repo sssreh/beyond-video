@@ -390,6 +390,67 @@ def concatenate_media(
             list_path.unlink(missing_ok=True)
 
 
+def generate_silence(
+    destination: Path,
+    duration_seconds: float,
+    *,
+    sample_rate: int = 48000,
+    channels: int = 2,
+) -> None:
+    """Generate a silent AAC/ADTS clip exactly `duration_seconds` long,
+    at `sample_rate`/`channels`.
+
+    Built for trip_export.py's own audio/video sync fix: a Parking
+    recording (or any other recording missing its own `.aac`) still
+    takes up real time in front.mp4's video timeline, but contributes
+    nothing to audio.aac, which simply leaves recordings without an
+    audio asset out entirely (see `_ensure_recording_audio()`'s own
+    docstring - Parking recordings never get one). Concatenated as-is,
+    audio.aac ends up shorter than the video by exactly the skipped
+    recordings' own durations - every recording *after* the first gap
+    plays back against audio recorded for a different moment in the
+    trip. Christer, on a real export: "audio it not in sync width
+    front, its synching with the parking file." Filling the gap with
+    real silence of the *exact* right duration keeps audio.aac's own
+    timeline the same length as the video's, so everything after it
+    stays lined up.
+
+    `sample_rate`/`channels` default to a reasonable common format,
+    but a caller filling a gap alongside *real* `.aac` files should
+    always pass the real ones' own probed values (`generate/media.py`'s
+    `probe_audio_format()`) instead of relying on these defaults -
+    ffmpeg's concat demuxer doesn't harmonize mismatched parameters
+    across `-c copy` segments, it just produces a corrupted result,
+    exactly the class of bug `concatenate_media()`'s own docstring
+    already covers in detail for video.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    channel_layout = "mono" if channels == 1 else "stereo"
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi",
+                "-i", f"anullsrc=r={sample_rate}:cl={channel_layout}",
+                "-t", str(duration_seconds),
+                "-c:a", "aac",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg silence generation failed for {destination.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc
+
+
 def mux_audio_track(
     video_source: Path, audio_source: Path, destination: Path
 ) -> None:

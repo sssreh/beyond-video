@@ -9,11 +9,13 @@ from blackvue.export.media import check_readable
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
+from blackvue.export.media import generate_silence
 from blackvue.export.media import mux_audio_track
 from blackvue.export.media import trim_media
 from blackvue.export.media import trim_media_head
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import probe_audio_codec
+from blackvue.generate.media import probe_audio_format
 
 
 def _make_silent_audio(path, duration_seconds: float) -> None:
@@ -575,3 +577,52 @@ def test_mux_audio_track_raises_when_the_audio_source_does_not_exist(tmp_path):
 
     with pytest.raises(MediaToolError):
         mux_audio_track(video, tmp_path / "missing.aac", tmp_path / "out.mp4")
+
+
+def test_generate_silence_produces_a_clip_of_the_exact_requested_duration(
+    tmp_path,
+):
+    destination = tmp_path / "silence.aac"
+
+    generate_silence(destination, 3.0, sample_rate=8000, channels=1)
+
+    assert destination.exists()
+    assert probe_audio_codec(destination) == "aac"
+    duration = _audio_duration_seconds(destination)
+    # ffmpeg's own encoder framing means this won't be exact to the
+    # millisecond - same tolerance trim_media()'s own duration test
+    # already uses for the same reason.
+    assert 2.9 < duration < 3.2
+
+
+def test_generate_silence_matches_a_given_sample_rate_and_channel_count(
+    tmp_path,
+):
+    destination = tmp_path / "silence.aac"
+
+    generate_silence(destination, 1.0, sample_rate=16000, channels=2)
+
+    assert probe_audio_format(destination) == (16000, 2)
+
+
+def test_generate_silence_defaults_to_stereo_for_any_channel_count_other_than_one(
+    tmp_path,
+):
+    # channels=1 -> mono is the only special case; anything else
+    # (including an unexpected value) falls back to stereo rather than
+    # erroring - see generate_silence()'s own docstring.
+    destination = tmp_path / "silence.aac"
+
+    generate_silence(destination, 1.0, sample_rate=8000, channels=3)
+
+    assert probe_audio_format(destination) == (8000, 2)
+
+
+def test_generate_silence_raises_when_ffmpeg_itself_is_missing(tmp_path, monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("no ffmpeg")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        generate_silence(tmp_path / "silence.aac", 1.0)

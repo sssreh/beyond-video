@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..archive.asset import Asset
+from ..archive.recording_id import RecordingId
 from ..generate.speech import SpeechSegment
 from ..generate.subtitles import format_lrc
 from ..generate.subtitles import format_srt
@@ -38,7 +39,33 @@ def _merge_subtitle_segments(
     trip: Trip,
     asset: Asset,
     parser: Callable[[str], tuple[SpeechSegment, ...]],
+    video_offsets: dict[RecordingId, float] | None = None,
 ) -> tuple[SpeechSegment, ...]:
+    """Merge every recording's own `asset` (SUBTITLES or LYRICS) into
+    one trip-relative sequence of SpeechSegments.
+
+    `video_offsets`, if given (see trip_export.py's
+    `_recording_video_offsets()`), rebases a recording present in it
+    by its own real position in the concatenated video - the same
+    fix `_merge_gsensor()` already applies, for the same reason: a
+    recording's ID-timestamp gap from the trip's first recording only
+    matches its real video position when every earlier recording's
+    own video duration exactly equals its own ID-timestamp gap, which
+    a mid-trip Parking recording violates by a lot (its own wall
+    -clock span is commonly far longer than the real video seconds it
+    contributes - the entire premise `_recording_video_offsets()`'s
+    own docstring covers). Confirmed on a real trip: with
+    `--include-parking`, every subtitle cue for a recording *after*
+    the Parking recording landed offset by the Parking segment's
+    *wall-clock* duration rather than its much shorter real video
+    duration - often placing them well past the actual video's end,
+    which looks indistinguishable from "no subtitles at all" during
+    playback. A recording absent from `video_offsets` (no
+    `video_offsets` given at all, or the recording's own video
+    couldn't be probed) falls back to the old ID-timestamp-gap
+    rebase, same as `_merge_gsensor()`.
+    """
+
     trip_start = trip.start_timestamp
     segments: list[SpeechSegment] = []
 
@@ -47,7 +74,11 @@ def _merge_subtitle_segments(
         if subtitle_file is None:
             continue
 
-        offset_seconds = (recording.id.timestamp - trip_start).total_seconds()
+        if video_offsets is not None and recording.id in video_offsets:
+            offset_seconds = video_offsets[recording.id]
+        else:
+            offset_seconds = (recording.id.timestamp - trip_start).total_seconds()
+
         text = subtitle_file.path.read_text(encoding="utf-8")
 
         segments.extend(
@@ -93,7 +124,10 @@ def _pad_to_duration(
 
 
 def merge_srt(
-    trip: Trip, *, total_duration_seconds: float | None = None
+    trip: Trip,
+    *,
+    total_duration_seconds: float | None = None,
+    video_offsets: dict[RecordingId, float] | None = None,
 ) -> str | None:
     """Merge every recording's .srt in the trip into one trip-relative
     SRT string, cues renumbered and sorted by start time. Returns None
@@ -102,9 +136,17 @@ def merge_srt(
     If total_duration_seconds is given and the merged cues end before
     it, an empty trailing cue is appended so the subtitle file's
     length matches the actual video (see _pad_to_duration).
+
+    `video_offsets`, if given, positions each recording's cues by its
+    own real position in the concatenated video rather than its ID
+    -timestamp gap from the trip's start - see
+    `_merge_subtitle_segments()`'s own docstring for why that matters
+    whenever a Parking recording sits mid-trip.
     """
 
-    segments = _merge_subtitle_segments(trip, Asset.SUBTITLES, parse_srt)
+    segments = _merge_subtitle_segments(
+        trip, Asset.SUBTITLES, parse_srt, video_offsets
+    )
     if not segments:
         return None
     segments = _pad_to_duration(segments, total_duration_seconds)
@@ -112,7 +154,10 @@ def merge_srt(
 
 
 def merge_lrc(
-    trip: Trip, *, total_duration_seconds: float | None = None
+    trip: Trip,
+    *,
+    total_duration_seconds: float | None = None,
+    video_offsets: dict[RecordingId, float] | None = None,
 ) -> str | None:
     """Merge every recording's .lrc in the trip into one trip-relative
     LRC string, sorted by start time. Returns None if no recording in
@@ -121,9 +166,17 @@ def merge_lrc(
     If total_duration_seconds is given and the merged cues end before
     it, an empty trailing line is appended near the end of the video
     (see _pad_to_duration).
+
+    `video_offsets`, if given, positions each recording's cues by its
+    own real position in the concatenated video rather than its ID
+    -timestamp gap from the trip's start - see
+    `_merge_subtitle_segments()`'s own docstring for why that matters
+    whenever a Parking recording sits mid-trip.
     """
 
-    segments = _merge_subtitle_segments(trip, Asset.LYRICS, parse_lrc)
+    segments = _merge_subtitle_segments(
+        trip, Asset.LYRICS, parse_lrc, video_offsets
+    )
     if not segments:
         return None
     segments = _pad_to_duration(segments, total_duration_seconds)

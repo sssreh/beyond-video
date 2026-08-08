@@ -29,6 +29,7 @@ from ..generate.media import MediaToolError
 from ..generate.media import extract_audio
 from ..generate.media import probe
 from ..generate.media import probe_audio_codec
+from ..generate.media import probe_audio_format
 from ..generate.media import select_source
 from ..generate.mp4_repair import load_or_repair_parking_video
 from ..telemetry.gps_reader import read_gps
@@ -44,6 +45,7 @@ from .gsensor_video import render_gsensor_video
 from .map_video import render_map_video
 from .media import check_readable
 from .media import concatenate_media
+from .media import generate_silence
 from .media import mux_audio_track
 from .media import trim_media
 from .media import trim_media_head
@@ -811,6 +813,140 @@ def _video_position_breakpoints(
         if recording.id in video_offsets
     ]
     return tuple(sorted(breakpoints, key=lambda item: item[0]))
+
+
+def _pad_missing_audio_with_silence(
+    trip: Trip,
+    video_offsets: dict[RecordingId, float],
+    total_video_duration_seconds: float | None,
+    silence_dir: Path,
+    warnings: list[str],
+    log: TripLog | None,
+    *,
+    debug: bool = False,
+) -> None:
+    """Generate a silent `.aac` for any recording that's part of the
+    actual video timeline (present in `video_offsets`) but has no
+    `Asset.AUDIO` of its own - most commonly a Parking recording (see
+    `_ensure_recording_audio()`'s own docstring: it always skips
+    extracting audio for Parking recordings, on purpose), but also any
+    other recording whose own video genuinely has no audio stream.
+
+    Mutates each padded recording's `assets[Asset.AUDIO]` in place,
+    the same self-healing convention `_ensure_recording_audio()`
+    already established - `_concatenate_asset(trip, Asset.AUDIO, ...)`
+    right after this call picks the new silent file up automatically,
+    no separate wiring needed.
+
+    Why this matters: front.mp4's video keeps every included
+    recording's own real duration - Parking included, once
+    concatenate_media()'s video_only fix stopped dropping the segment
+    itself, only its audio. `_concatenate_asset(trip, Asset.AUDIO,
+    ...)` builds audio.aac by simply leaving out any recording with no
+    `Asset.AUDIO` - correct for audio.aac's own standalone timeline,
+    but the moment it's muxed straight onto front.mp4 (`mux_audio_track()`)
+    or into stitch.mp4 (`stitch.py`), a skipped recording's real video
+    seconds have nothing under them - audio.aac is shorter than the
+    video by exactly that recording's duration, and everything *after*
+    the gap plays back against audio recorded for an entirely
+    different moment in the trip. Christer, on a real export: "audio
+    it not in sync width front, its synching with the parking file."
+    Filling the gap with real silence of the *exact* right duration
+    keeps audio.aac the same length as the video, so everything after
+    it stays lined up - the same "pad rather than leave a hole" idea
+    `_pad_to_duration()` (subtitles.py) already uses for a trip whose
+    transcript runs out early, just applied to keeping two *tracks* in
+    sync instead of one track reaching the video's own length.
+
+    A recording's own duration is derived from `video_offsets` itself
+    (the difference between its own start position and the next
+    recording's, or the trip's own total for the last one) rather than
+    reprobed - `video_offsets` already reflects the exact
+    (possibly front/rear-trimmed) length each recording actually
+    contributes to the concatenated video, the same number
+    `_concatenate_asset()` itself built the video from.
+
+    The generated silence matches an existing real `.aac`'s own
+    sample rate/channel layout (probed via `probe_audio_format()`),
+    not a hardcoded default - ffmpeg's concat demuxer doesn't
+    harmonize mismatched audio parameters across a `-c copy` list any
+    more than it does for video (see `concatenate_media()`'s own
+    docstring for the video-side version of this exact class of bug).
+    If no recording in the trip has any real audio at all, there is no
+    reference format to match and nothing downstream would use the
+    silence for anyway (`_concatenate_asset(trip, Asset.AUDIO, ...)`
+    returns None when its sources are empty, same as always) - this
+    function is a no-op in that case.
+    """
+
+    reference_format: tuple[int, int] | None = None
+    for recording in trip.recordings:
+        audio_file = recording.file(Asset.AUDIO)
+        if audio_file is None:
+            continue
+        try:
+            reference_format = probe_audio_format(audio_file.path)
+        except MediaToolError:
+            reference_format = None
+        if reference_format is not None:
+            break
+
+    if reference_format is None:
+        return
+
+    sample_rate, channels = reference_format
+
+    ordered = sorted(
+        (
+            (recording, video_offsets[recording.id])
+            for recording in trip.recordings
+            if recording.id in video_offsets
+        ),
+        key=lambda pair: pair[1],
+    )
+
+    for index, (recording, start_offset) in enumerate(ordered):
+        if recording.has(Asset.AUDIO):
+            continue
+
+        if index + 1 < len(ordered):
+            end_offset = ordered[index + 1][1]
+        elif total_video_duration_seconds is not None:
+            end_offset = total_video_duration_seconds
+        else:
+            continue
+
+        duration_seconds = end_offset - start_offset
+        if duration_seconds <= 0:
+            continue
+
+        destination = silence_dir / f"{recording.id}_silence.aac"
+        try:
+            generate_silence(
+                destination,
+                duration_seconds,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+        except MediaToolError as exc:
+            message = (
+                f"{recording.id}: could not generate silent audio to keep "
+                f"audio.aac in sync ({exc}) - audio may drift out of sync "
+                "from here on"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        recording.assets[Asset.AUDIO] = AssetFile(Asset.AUDIO, destination)
+        if debug:
+            print(
+                f"bv-export: {recording.id}: generated "
+                f"{destination.name} ({duration_seconds:.1f}s silence, "
+                "keeps audio.aac in sync with the video)",
+                file=sys.stderr,
+            )
 
 
 def _concatenate_asset(
@@ -1644,6 +1780,17 @@ def export_trip(
             trip, video_offsets, prebuffer_offsets,
         )
 
+        # Must also finish before the ThreadPoolExecutor block starts,
+        # same reasoning as _ensure_recording_audio() above - the
+        # audio worker reads recording.assets synchronously the
+        # moment it starts. Silent files are written into align_dir,
+        # already open for the rest of this block's own lifetime (see
+        # its own comment above).
+        _pad_missing_audio_with_silence(
+            trip, video_offsets, summed_video_duration_seconds,
+            Path(align_dir), warnings, log, debug=debug,
+        )
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             front_future = executor.submit(
                 _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
@@ -1791,7 +1938,11 @@ def export_trip(
                 log.warning(f"subtitle padding: {exc}")
 
     srt_path = None
-    merged_srt = merge_srt(trip, total_duration_seconds=video_duration_seconds)
+    merged_srt = merge_srt(
+        trip,
+        total_duration_seconds=video_duration_seconds,
+        video_offsets=video_offsets,
+    )
     if merged_srt is not None:
         srt_path = destination / "trip.srt"
         srt_path.write_text(merged_srt + "\n", encoding="utf-8")
@@ -1800,7 +1951,11 @@ def export_trip(
         log.step("no transcript data for this trip - trip.srt skipped")
 
     lrc_path = None
-    merged_lrc = merge_lrc(trip, total_duration_seconds=video_duration_seconds)
+    merged_lrc = merge_lrc(
+        trip,
+        total_duration_seconds=video_duration_seconds,
+        video_offsets=video_offsets,
+    )
     if merged_lrc is not None:
         lrc_path = destination / "trip.lrc"
         lrc_path.write_text(merged_lrc + "\n", encoding="utf-8")

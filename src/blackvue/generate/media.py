@@ -264,6 +264,55 @@ def probe_audio_codec(path: Path) -> str | None:
     return codec_name or None
 
 
+def probe_audio_format(path: Path) -> tuple[int, int] | None:
+    """Return the source's first audio stream's (sample_rate, channel
+    count), or None if it has no audio stream at all.
+
+    Built for export/media.py's `generate_silence()`: a synthesized
+    silent clip that's going to sit in a `-c copy` concat list
+    alongside real `.aac` files needs to match their own sample rate/
+    channel layout, or it risks the exact class of mixed-stream
+    -parameter corruption this project already had to fix for video
+    (see `concatenate_media()`'s own docstring) - ffmpeg's concat
+    demuxer doesn't harmonize differing parameters across segments on
+    `-c copy`, it just produces a bad result.
+
+    Raises MediaToolError if ffprobe itself is missing or fails
+    outright, same as `probe_audio_codec()`.
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=sample_rate,channels",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffprobe not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffprobe failed for {path.name}: {exc.stderr.strip()}"
+        ) from exc
+
+    line = result.stdout.strip()
+    if not line:
+        return None
+
+    sample_rate_str, _, channels_str = line.partition(",")
+    try:
+        return int(sample_rate_str), int(channels_str)
+    except ValueError:
+        return None
+
+
 def extract_audio(source: Path, destination: Path) -> None:
     """Extract the audio track from source into destination (always
     written as AAC/ADTS, per the archive's own `.aac` convention -

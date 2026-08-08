@@ -134,6 +134,28 @@ def _has_audio_stream(path) -> bool:
     return bool(json.loads(result.stdout)["streams"])
 
 
+def _audio_stream_duration(path) -> float:
+    # Unlike _video_duration() (format-level, which for a mixed-
+    # duration container just reports the longest stream), this asks
+    # specifically for the audio stream's own duration - the number
+    # that actually reveals an audio/video sync gap, since a shorter
+    # audio track hiding inside a longer-duration container doesn't
+    # change the container's own reported total.
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=duration",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(json.loads(result.stdout)["streams"][0]["duration"])
+
+
 def _gsensor_bytes(*records) -> bytes:
     return b"".join(struct.pack(">Ihhh", ms, x, y, z) for ms, x, y, z in records)
 
@@ -2893,6 +2915,86 @@ def test_export_trip_front_mp4_keeps_audio_despite_a_video_only_source(
 
     assert result.front_video is not None
     assert _has_audio_stream(result.front_video)
+
+
+def test_export_trip_audio_stays_in_sync_when_a_middle_recording_has_no_audio(
+    tmp_path,
+):
+    # Regression test for the real desync Christer hit once front.mp4
+    # itself was fixed: "audio it not in sync width front, its
+    # synching with the parking file." A Parking recording never gets
+    # its own Asset.AUDIO (see _ensure_recording_audio()'s own
+    # docstring - by design), but its real video still takes up real
+    # time in front.mp4's timeline. Left as-is, audio.aac - and
+    # therefore front.mp4's remuxed audio track - ends up shorter than
+    # the video by exactly that recording's own duration, so
+    # everything *after* it plays back against audio recorded for a
+    # different moment entirely. A silent recording sits in the
+    # middle here, between two real video+audio recordings, standing
+    # in for that mid-trip Parking gap.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front_a = source_dir / "front_a.mp4"
+    rear_a = source_dir / "rear_a.mp4"
+    audio_a = source_dir / "a.aac"
+    _make_video_with_audio(front_a, 1.0)
+    _make_video(rear_a, 1.0)
+    _make_audio(audio_a, 1.0)
+
+    # Stands in for a repaired Parking recording's own front file:
+    # video-only, no Asset.AUDIO at all - and, being Parking, never
+    # gets one self-healed either.
+    front_p = source_dir / "front_p.mp4"
+    _make_video(front_p, 1.0)
+
+    front_b = source_dir / "front_b.mp4"
+    rear_b = source_dir / "rear_b.mp4"
+    audio_b = source_dir / "b.aac"
+    _make_video_with_audio(front_b, 1.0)
+    _make_video(rear_b, 1.0)
+    _make_audio(audio_b, 1.0)
+
+    first_id = RecordingId("20260720_100000_N")
+    parking_id = RecordingId("20260720_100010_P")
+    last_id = RecordingId("20260720_100020_N")
+
+    trip = Trip((
+        Recording(
+            id=first_id,
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_a),
+                Asset.REAR: AssetFile(Asset.REAR, rear_a),
+                Asset.AUDIO: AssetFile(Asset.AUDIO, audio_a),
+            },
+        ),
+        Recording(
+            id=parking_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front_p)},
+        ),
+        Recording(
+            id=last_id,
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front_b),
+                Asset.REAR: AssetFile(Asset.REAR, rear_b),
+                Asset.AUDIO: AssetFile(Asset.AUDIO, audio_b),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir, include_parking=True)
+
+    assert result.front_video is not None
+    video_duration = _video_duration(result.front_video)
+    audio_duration = _audio_stream_duration(result.front_video)
+    # Before the fix, the remuxed audio track would only span the two
+    # real recordings' own audio (~2s) while the video spans all three
+    # recordings including the silent gap (~3s) - a full recording's
+    # worth of drift for anything after it. Real ffmpeg encoder
+    # framing means this won't land on an exact match, but it should
+    # be close, not off by an entire extra recording's duration.
+    assert abs(video_duration - audio_duration) < 0.5
 
 
 def test_export_trip_video_duration_uses_summed_sources_not_corrupted_concat_probe(

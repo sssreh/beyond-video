@@ -78,6 +78,81 @@ def test_merge_srt_sorts_cues_by_start_time_across_recordings(tmp_path):
     assert earlier_pos < later_pos
 
 
+def test_merge_srt_uses_video_offsets_instead_of_id_timestamp_gap_when_given(
+    tmp_path,
+):
+    # Regression test for the real desync Christer hit: with a
+    # Parking recording mid-trip, its wall-clock span (ID-timestamp
+    # gap to the next recording) can be far longer than the real
+    # video seconds it contributes - a repaired Parking recording
+    # confirmed elsewhere in this codebase at just ~50s of real video
+    # despite spanning much more wall-clock time. Rebasing the
+    # *second* recording's cues by the ID-timestamp gap (3600s here,
+    # standing in for that kind of gap) instead of its real video
+    # position (60s, standing in for the trip's own
+    # _recording_video_offsets() result) would place its subtitles an
+    # hour into a video that's nowhere near that long - effectively
+    # invisible. video_offsets fixes that.
+    srt_a = tmp_path / "a.srt"
+    srt_a.write_text(format_srt((_segment(0.0, 2.0, "before parking"),)))
+    srt_b = tmp_path / "b.srt"
+    srt_b.write_text(format_srt((_segment(0.0, 1.0, "after parking"),)))
+
+    first = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_a)},
+    )
+    # ID timestamp claims a full hour later - a Parking recording's
+    # real wall-clock span - but the real video position (below) is
+    # only 60s in.
+    second = Recording(
+        id=RecordingId("20260720_110000_N"),
+        assets={Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_b)},
+    )
+    trip = Trip((first, second))
+
+    video_offsets = {first.id: 0.0, second.id: 60.0}
+
+    result = merge_srt(trip, video_offsets=video_offsets)
+
+    assert "00:00:00,000 --> 00:00:02,000" in result
+    assert "before parking" in result
+    # Rebased to the real 60s video position, not the 3600s ID gap.
+    assert "00:01:00,000 --> 00:01:01,000" in result
+    assert "01:00:00,000" not in result
+    assert "after parking" in result
+
+
+def test_merge_srt_falls_back_to_id_timestamp_gap_for_a_recording_missing_from_video_offsets(
+    tmp_path,
+):
+    # A recording whose video couldn't be probed at all (so it's
+    # absent from video_offsets) still gets *some* reasonable
+    # position rather than being dropped - same fallback
+    # _merge_gsensor() already uses.
+    srt_a = tmp_path / "a.srt"
+    srt_a.write_text(format_srt((_segment(0.0, 2.0, "first"),)))
+    srt_b = tmp_path / "b.srt"
+    srt_b.write_text(format_srt((_segment(0.0, 1.0, "second"),)))
+
+    first = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_a)},
+    )
+    second = Recording(
+        id=RecordingId("20260720_100100_N"),
+        assets={Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_b)},
+    )
+    trip = Trip((first, second))
+
+    # Only "first" has a video_offsets entry - "second" falls back to
+    # its ID-timestamp gap (60s after the first).
+    result = merge_srt(trip, video_offsets={first.id: 0.0})
+
+    assert "00:01:00,000 --> 00:01:01,000" in result
+    assert "second" in result
+
+
 def test_merge_srt_returns_none_when_no_recording_has_subtitles():
     trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))
 
