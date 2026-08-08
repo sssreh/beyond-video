@@ -56,6 +56,7 @@ from .stitch import DEFAULT_MIRROR_SIZE_PERCENT
 from .stitch import DEFAULT_MIRROR_PAN_X_PERCENT
 from .stitch import DEFAULT_MIRROR_PAN_Y_PERCENT
 from .stitch import DEFAULT_MIRROR_ZOOM_PERCENT
+from .stitch import map_zoom_dimensions
 from .stitch import pick_stitch_layout
 from .stitch import stitch_cameras
 from .subtitles import merge_lrc
@@ -398,15 +399,27 @@ def _align_front_rear_durations(
         # differences turned out to add up across a whole trip
         # without any single one being large enough to look
         # suspicious on its own: "Log every trim, any size."
+        #
+        # Not a warning: a front/rear duration difference here is the
+        # expected, routine case (every camera's own clock/frame timer
+        # drifts a little independently) and this trim handles it
+        # completely - nothing is degraded or left unresolved, unlike
+        # the "could not be aligned" branch above, which stays a real
+        # warning since the mismatch there is left unfixed. Christer:
+        # "front/rear duration differs shouldn't be a warning, just an
+        # info" - so this is only a trip.log step (via log.step(), not
+        # log.warning()) and never added to `warnings`, so it neither
+        # prints as a CLI "warning:" line (see bv_export.py's own
+        # `result.warnings` loop) nor counts toward the export's
+        # warning total.
         message = (
             f"{recording.id}: front/rear duration differs by "
             f"{abs(diff):.2f}s (front={front_duration:.2f}s, "
             f"rear={rear_duration:.2f}s) - trimmed {longer_label} to "
             f"match {shorter_label}"
         )
-        warnings.append(message)
         if log is not None:
-            log.warning(message)
+            log.step(message)
 
     return overrides
 
@@ -906,6 +919,8 @@ def _render_map_variant(
     areas: tuple = (),
     map_icon: Path | None = None,
     zoom_meters: float | None = None,
+    width: int | None = None,
+    height: int | None = None,
     video_start: datetime | None = None,
     video_duration_seconds: float | None = None,
     recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
@@ -916,6 +931,15 @@ def _render_map_variant(
     failed export) on any image-loading or ffmpeg problem - the rest
     of the trip's export is still worth having even if this one
     output couldn't be built.
+
+    `width`/`height`, if given, are forwarded straight to
+    render_map_video() in place of its own square 640x640 default -
+    see stitch.map_zoom_dimensions() for where a caller derives these
+    to match the trip's real front/rear video instead of a fixed
+    square (used for map_zoom_*.mp4 only; the static map.mp4 call
+    below still leaves these as None, i.e. the old square default,
+    since Christer's own request was specifically about "Map zoom
+    layout").
 
     `video_start`/`video_duration_seconds`, if given, are forwarded
     straight to render_map_video() - see its own docstring for why
@@ -936,6 +960,12 @@ def _render_map_variant(
     if log is not None:
         log.step(f"starting {destination.name} render")
 
+    render_kwargs = {}
+    if width is not None:
+        render_kwargs["width"] = width
+    if height is not None:
+        render_kwargs["height"] = height
+
     try:
         result = render_map_video(
             fixes, roads, bbox, destination,
@@ -945,6 +975,7 @@ def _render_map_variant(
             video_start=video_start,
             video_duration_seconds=video_duration_seconds,
             recording_breakpoints=recording_breakpoints,
+            **render_kwargs,
         )
     except MediaToolError as exc:
         warnings.append(f"{warning_label}: {exc}")
@@ -1543,10 +1574,39 @@ def export_trip(
 
             if map_zoom_meters is not None:
                 zoom_filename = f"map_zoom_{map_zoom_meters:g}m.mp4"
+                # Christer: "Map zoom layout shouldn't be square, it
+                # should match the videos height or width depending on
+                # layout... just as the other map" - "the other map"
+                # being --stitch-map's embedded panel. Reuses that
+                # panel's exact sizing rule via
+                # stitch.map_zoom_dimensions(), probing whichever of
+                # front/rear video actually exists (front preferred,
+                # same "video_for_duration" preference used just above
+                # for subtitle padding). Degrades to the old fixed
+                # square default (leaving width/height as None) rather
+                # than failing the export if the probe itself fails -
+                # a mis-shaped map_zoom.mp4 is still worth having.
+                zoom_width = zoom_height = None
+                video_for_zoom_shape = front_video or rear_video
+                if video_for_zoom_shape is not None:
+                    try:
+                        zoom_width, zoom_height = map_zoom_dimensions(
+                            video_for_zoom_shape, fixes
+                        )
+                    except MediaToolError as exc:
+                        warnings.append(
+                            f"map_zoom: could not size panel to match "
+                            f"video, using square default: {exc}"
+                        )
+                        log.warning(
+                            f"map_zoom: could not size panel to match "
+                            f"video: {exc}"
+                        )
                 map_zoom_path = _render_map_variant(
                     fixes, bbox, roads, destination / zoom_filename, warnings,
                     warning_label="map_zoom", areas=areas, map_icon=map_icon,
                     zoom_meters=map_zoom_meters,
+                    width=zoom_width, height=zoom_height,
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
                     recording_breakpoints=recording_breakpoints,

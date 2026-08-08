@@ -1424,6 +1424,50 @@ def _map_panel_dimensions(
     return max(2, round(width / 2) * 2), max(2, round(height / 2) * 2)
 
 
+def map_zoom_dimensions(
+    video_path: Path,
+    fixes: tuple[GpsFix, ...],
+) -> tuple[int, int]:
+    """The (width, height) trip_export.py's standalone map_zoom_*.mp4
+    (the follow-camera map, independent of --stitch - see
+    export_trip()'s own map_zoom_meters handling) should render at, so
+    it's shaped like a real map panel instead of a fixed 640x640
+    square unrelated to the trip's own footage. Christer: "Map zoom
+    layout shouldn't be square, it should match the videos height or
+    width depending on layout... just as the other map" - "the other
+    map" being --stitch-map's embedded panel, so this reuses that
+    panel's exact sizing rule (_map_panel_dimensions()) rather than
+    inventing a second one: the shared axis is matched exactly to
+    `video_path`'s own real dimensions (probed via
+    _video_dimensions()), the free axis is derived from the trip's own
+    real-world aspect ratio.
+
+    Unlike --stitch-map, there's no --stitch-map-side flag here to say
+    which axis is "shared" - map_zoom_*.mp4 is a standalone file, not
+    composited onto any particular side of anything. So the side is
+    picked the same automatic way _default_rearview_mirror_map_side()
+    already picks a map panel's side from trip geometry alone (a
+    north-south trip -> "left" -> match video height; an east-west
+    trip -> "down" -> match video width) - the exact same
+    bounding_box_for_fixes()/aspect_ratio_of() check, just aimed at
+    map_zoom instead of a rearview-mirror panel.
+
+    Falls back to `video_path`'s own raw dimensions unchanged if there
+    isn't enough GPS data to compute a bounding box (mirrors
+    _map_panel_dimensions()'s own "nothing to bound" None return) -
+    render_map_video() still renders fine at any width/height, it just
+    won't come out trip-shaped. Raises MediaToolError if `video_path`
+    can't be probed (missing file, no ffprobe on PATH, etc.) - the
+    caller should catch this the same "warn, don't fail the whole
+    export" way _render_map_variant() already treats a render problem.
+    """
+
+    video_width, video_height = _video_dimensions(video_path)
+    side = _default_rearview_mirror_map_side(fixes)
+    dimensions = _map_panel_dimensions(video_width, video_height, side=side, fixes=fixes)
+    return dimensions if dimensions is not None else (video_width, video_height)
+
+
 def _render_map_panel(
     mode: str,
     fixes: tuple[GpsFix, ...],

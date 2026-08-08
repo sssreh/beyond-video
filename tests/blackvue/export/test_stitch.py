@@ -16,6 +16,7 @@ from blackvue.export.stitch import _default_rearview_mirror_map_side
 from blackvue.export.stitch import _escape_subtitles_filename
 from blackvue.export.stitch import _graph_panel_dimensions
 from blackvue.export.stitch import _map_panel_dimensions
+from blackvue.export.stitch import map_zoom_dimensions
 from blackvue.export.stitch import parse_gsensor_position
 from blackvue.export.stitch import pick_stitch_layout
 from blackvue.export.stitch import stitch_cameras
@@ -1545,6 +1546,56 @@ def test_map_panel_dimensions_size_fraction_still_requires_gps_data():
     assert _map_panel_dimensions(
         1000, 400, side="left", fixes=(), size_fraction=0.7,
     ) is None
+
+
+# --- map_zoom_dimensions() tests ---
+# Christer: "Map zoom layout shouldn't be square, it should match the
+# videos height or width depending on layout... just as the other map" -
+# reuses _map_panel_dimensions()'s exact sizing rule, side picked the same
+# automatic way _default_rearview_mirror_map_side() already picks one from
+# trip geometry alone.
+
+
+def test_map_zoom_dimensions_matches_video_height_for_north_south_trip(tmp_path):
+    # A north-south (portrait bbox) trip -> _default_rearview_mirror_map_side()
+    # returns "left" -> the shared axis is height, matched exactly to the
+    # source video's own height.
+    video = tmp_path / "front.mp4"
+    _make_video(video, 640, 480)
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))
+
+    width, height = map_zoom_dimensions(video, fixes)
+
+    assert height == 480
+    assert 0 < width <= 640
+
+
+def test_map_zoom_dimensions_matches_video_width_for_east_west_trip(tmp_path):
+    # An east-west (landscape bbox) trip -> "down" -> the shared axis is
+    # width, matched exactly to the source video's own width.
+    video = tmp_path / "front.mp4"
+    _make_video(video, 640, 480)
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.30, 18.050))
+
+    width, height = map_zoom_dimensions(video, fixes)
+
+    assert width == 640
+    assert 0 < height <= 480
+
+
+def test_map_zoom_dimensions_falls_back_to_raw_video_size_with_no_gps_data(tmp_path):
+    video = tmp_path / "front.mp4"
+    _make_video(video, 320, 240)
+
+    assert map_zoom_dimensions(video, ()) == (320, 240)
+
+
+def test_map_zoom_dimensions_raises_for_unprobeable_video(tmp_path):
+    missing = tmp_path / "does_not_exist.mp4"
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))
+
+    with pytest.raises(MediaToolError):
+        map_zoom_dimensions(missing, fixes)
 
 
 def test_stitch_cameras_map_panel_defaults_to_down_for_side_by_side(tmp_path):

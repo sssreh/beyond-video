@@ -494,7 +494,30 @@ def test_export_trip_self_heals_a_recordings_missing_audio(tmp_path):
     assert result.warnings == ()
 
 
-def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
+class _StepLog:
+    """Minimal TripLog stand-in that just records step()/warning()
+    calls in order, for tests that need to check *what* got logged
+    (and at what severity) without a real trip.log file on disk. A
+    message that reaches warning() is recorded here with the same
+    "WARNING: " prefix TripLog.warning() itself adds (see
+    trip_log.py), so a test can tell the two apart."""
+
+    def __init__(self):
+        self.steps: list[str] = []
+
+    def step(self, message: str, *, elapsed_seconds: float | None = None) -> None:
+        self.steps.append(message)
+
+    def warning(self, message: str) -> None:
+        self.step(f"WARNING: {message}")
+
+
+def test_align_front_rear_durations_trims_the_longer_side_and_logs_info(tmp_path):
+    # Christer: "front/rear duration differs shouldn't be a warning,
+    # just an info" - a successful trim is the expected, routine case
+    # (per-camera clock drift), not a problem left unresolved, so it
+    # should land in trip.log as a plain step and never surface as a
+    # CLI/export-level warning.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     front = source_dir / "front.mp4"
@@ -514,8 +537,9 @@ def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
     ))
 
     warnings: list[str] = []
+    log = _StepLog()
     overrides = _align_front_rear_durations(
-        trip, tmp_path / "work", warnings, log=None, include_parking=True
+        trip, tmp_path / "work", warnings, log=log, include_parking=True
     )
 
     assert list(overrides.keys()) == [(recording_id, Asset.FRONT)]
@@ -523,8 +547,12 @@ def test_align_front_rear_durations_trims_the_longer_side_and_warns(tmp_path):
     assert trimmed.exists()
     assert _video_duration(trimmed) < 10.0
     assert _video_duration(trimmed) < 3.0
-    assert len(warnings) == 1
-    assert "trimmed front to match rear" in warnings[0]
+    # Not a warning: nothing added to `warnings`, and the trip.log line
+    # went through step(), not warning() (no "WARNING: " prefix).
+    assert warnings == []
+    assert len(log.steps) == 1
+    assert "trimmed front to match rear" in log.steps[0]
+    assert not log.steps[0].startswith("WARNING:")
 
 
 def _truncate_moov_atom(path) -> None:
@@ -628,13 +656,17 @@ def test_align_front_rear_durations_trims_even_a_small_real_difference(tmp_path)
     ))
 
     warnings: list[str] = []
+    log = _StepLog()
     overrides = _align_front_rear_durations(
-        trip, tmp_path / "work", warnings, log=None, include_parking=True
+        trip, tmp_path / "work", warnings, log=log, include_parking=True
     )
 
     assert list(overrides.keys()) == [(RecordingId("20260720_100000_N"), Asset.REAR)]
-    assert len(warnings) == 1
-    assert "trimmed rear to match front" in warnings[0]
+    # Not a warning (see test_align_front_rear_durations_trims_the_longer_side_and_logs_info) -
+    # just a trip.log step.
+    assert warnings == []
+    assert len(log.steps) == 1
+    assert "trimmed rear to match front" in log.steps[0]
 
 
 def test_align_front_rear_durations_ignores_sub_epsilon_float_noise(tmp_path):
@@ -1060,13 +1092,16 @@ def test_align_front_rear_durations_uses_source_overrides(tmp_path):
     ))
 
     warnings: list[str] = []
+    log = _StepLog()
     overrides = _align_front_rear_durations(
-        trip, tmp_path / "work", warnings, log=None, include_parking=True,
+        trip, tmp_path / "work", warnings, log=log, include_parking=True,
         source_overrides={(recording_id, Asset.FRONT): front_override},
     )
 
     assert list(overrides.keys()) == [(recording_id, Asset.REAR)]
-    assert "trimmed rear to match front" in warnings[0]
+    # Not a warning (see test_align_front_rear_durations_trims_the_longer_side_and_logs_info).
+    assert warnings == []
+    assert "trimmed rear to match front" in log.steps[0]
     trimmed_rear_duration = _video_duration(overrides[(recording_id, Asset.REAR)])
     assert trimmed_rear_duration < 3.0
 
@@ -1325,10 +1360,13 @@ def test_merge_gsensor_falls_back_to_id_timestamp_gap_without_video_offsets(tmp_
 def test_export_trip_aligns_a_mismatched_front_rear_recording(tmp_path):
     # End-to-end: a corrupted/truncated download (Christer's real
     # case - see WORKING_CONTEXT.md) left one recording's front video
-    # much shorter than its rear. export_trip() should warn and trim
-    # rear down to match, keeping front.mp4/rear.mp4 in sync for the
-    # rest of the trip, rather than silently drifting out of sync from
-    # this recording onward.
+    # much shorter than its rear. export_trip() should trim rear down
+    # to match, keeping front.mp4/rear.mp4 in sync for the rest of the
+    # trip, rather than silently drifting out of sync from this
+    # recording onward. Not a warning, though - Christer: "front/rear
+    # duration differs shouldn't be a warning, just an info" - this is
+    # the routine, expected, fully-handled case, so it's recorded in
+    # trip.log only, never surfaced via result.warnings.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -1349,10 +1387,13 @@ def test_export_trip_aligns_a_mismatched_front_rear_recording(tmp_path):
 
     result = export_trip(trip, dest_dir)
 
-    assert len(result.warnings) == 1
-    assert "trimmed rear to match front" in result.warnings[0]
+    assert result.warnings == ()
     assert abs(_video_duration(result.front_video) - 2.0) < 0.5
     assert _video_duration(result.rear_video) < 3.0
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "trimmed rear to match front" in log_text
+    assert "WARNING" not in log_text
 
 
 def _parking_trip(source_dir, *, with_audio: bool = False):
@@ -2396,6 +2437,93 @@ def test_export_trip_stitch_auto_layout_picks_top_down_for_north_south(
     assert result.warnings == ()
     # top_down vstacks - combined height doubles, width unchanged.
     assert _video_size(result.stitch) == (64, 128)
+
+
+def test_export_trip_map_zoom_matches_video_height_for_north_south_trip(
+    tmp_path, monkeypatch
+):
+    # Christer: "Map zoom layout shouldn't be square, it should match
+    # the videos height or width depending on layout... just as the
+    # other map" - "the other map" being --stitch-map's own panel,
+    # which this reuses the exact sizing rule of (see
+    # stitch.map_zoom_dimensions()). A north-south trip's shared axis
+    # is height, matched exactly to the real front video's own height;
+    # the free axis (width) is derived from the trip's shape instead
+    # of defaulting to a fixed square.
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _fake_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    calls = []
+
+    def _capture(fixes, roads, bbox, destination, **kwargs):
+        calls.append((destination, kwargs))
+        return destination
+
+    monkeypatch.setattr(trip_export_module, "render_map_video", _capture)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=False
+    )
+
+    export_trip(trip, dest_dir, render_map=True, map_zoom_meters=50.0)
+
+    zoom_kwargs = next(
+        kwargs for destination, kwargs in calls
+        if destination == dest_dir / "map_zoom_50m.mp4"
+    )
+    static_kwargs = next(
+        kwargs for destination, kwargs in calls
+        if destination == dest_dir / "map.mp4"
+    )
+
+    # front.mp4 is a 64x64 testsrc clip (see _make_video()) - the
+    # shared axis (height, for this north-south trip) must match that
+    # exactly; the free axis (width) is derived from trip geography
+    # and clamped to a fraction of it, so it comes out smaller than
+    # 64, not equal to it - proof the panel isn't just square-by-
+    # coincidence.
+    assert zoom_kwargs["height"] == 64
+    assert 0 < zoom_kwargs["width"] < 64
+
+    # The static map.mp4 is untouched - Christer's request was
+    # specifically about "Map zoom", not the static overview.
+    assert "width" not in static_kwargs
+    assert "height" not in static_kwargs
+
+
+def test_export_trip_map_zoom_matches_video_width_for_east_west_trip(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _fake_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    calls = []
+
+    def _capture(fixes, roads, bbox, destination, **kwargs):
+        calls.append((destination, kwargs))
+        return destination
+
+    monkeypatch.setattr(trip_export_module, "render_map_video", _capture)
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=True
+    )
+
+    export_trip(trip, dest_dir, render_map=True, map_zoom_meters=50.0)
+
+    zoom_kwargs = next(
+        kwargs for destination, kwargs in calls
+        if destination == dest_dir / "map_zoom_50m.mp4"
+    )
+
+    assert zoom_kwargs["width"] == 64
+    assert 0 < zoom_kwargs["height"] < 64
 
 
 def test_export_trip_stitch_auto_layout_falls_back_without_gps_data(
