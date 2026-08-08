@@ -2719,6 +2719,63 @@ def test_export_trip_stitch_mirror_pan_is_forwarded(tmp_path, monkeypatch):
     assert captured["mirror_pan_y"] == 60.0
 
 
+def test_export_trip_map_track_up_is_forwarded_to_stitch_cameras(
+    tmp_path, monkeypatch
+):
+    # Task #512 follow-up: export_trip()'s own map_track_up param was
+    # already forwarded to _render_map_variant() (the standalone
+    # map.mp4/map_zoom_*m.mp4 path) but never to the stitch_cameras()
+    # call that renders --stitch-map's own embedded panel - the map
+    # most people actually watch, since it's baked directly into
+    # stitch.mp4 rather than a separate file. Christer confirmed this
+    # was a real gap by testing --map-track-up for real and reporting
+    # "dint work". Same capture pattern as the mirror_size/mirror_
+    # radius/etc. forwarding tests just above.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(trip, dest_dir, stitch_layout="side_by_side", map_track_up=True)
+
+    assert captured["map_track_up"] is True
+
+
+def test_export_trip_map_track_up_defaults_to_false_for_stitch_cameras(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert captured["map_track_up"] is False
+
+
 def test_export_trip_stitch_mirror_icon_is_forwarded(tmp_path, monkeypatch):
     from PIL import Image
     from PIL import ImageDraw

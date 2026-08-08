@@ -1588,9 +1588,14 @@ def export_trip(
     `track_up` - see that function's docstring for what it actually
     does (rotates the whole projected scene, not just the marker) and
     the real render-time cost it adds specifically to map.mp4's
-    otherwise-cached static overview. No effect on --stitch-map's own
-    embedded panel (`stitch_map` below) - that's a separate render
-    Christer's request didn't ask about.
+    otherwise-cached static overview. Also forwarded to --stitch-map's
+    own embedded panel (`stitch_map` below, via `stitch_cameras()`'s own
+    `map_track_up` param) - an earlier pass at this feature stopped at
+    map.mp4/map_zoom_*m.mp4 and left this call site out, which meant the
+    flag had no visible effect at all for anyone using `--stitch-map`
+    (the panel most people actually watch, embedded directly in
+    stitch.mp4) rather than the separate standalone files - caught by
+    Christer testing it for real: "--map-track-up dint work".
 
     `map_cache_dir` is where fetched OSM road data is cached between
     trips/runs (defaults to a `.osm_cache`
@@ -2571,6 +2576,7 @@ def export_trip(
                 map_video_start=trip.start_timestamp,
                 map_video_duration_seconds=video_duration_seconds,
                 map_recording_breakpoints=recording_breakpoints,
+                map_track_up=map_track_up,
                 gsensor_video=stitch_gsensor_source,
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,

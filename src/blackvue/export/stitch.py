@@ -490,6 +490,7 @@ def stitch_cameras(
     map_video_start=None,
     map_video_duration_seconds: float | None = None,
     map_recording_breakpoints=None,
+    map_track_up: bool = False,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -858,6 +859,7 @@ def stitch_cameras(
             map_video_start=map_video_start,
             map_video_duration_seconds=map_video_duration_seconds,
             map_recording_breakpoints=map_recording_breakpoints,
+            map_track_up=map_track_up,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
             graph_samples=graph_samples, graph_side=graph_side,
@@ -1494,6 +1496,7 @@ def _render_map_panel(
     video_start=None,
     video_duration_seconds: float | None = None,
     recording_breakpoints=None,
+    track_up: bool = False,
 ) -> Path | None:
     """Render --stitch-map's panel (mode 'map' or 'zoom') at exactly
     width x height, so combining it with the camera composite via a
@@ -1542,6 +1545,15 @@ def _render_map_panel(
     the trip's real start and the composite's own real duration - is
     the exact "map isn't in sync" symptom, not just a standalone
     output that's merely wrong on its own.
+
+    `track_up` (default False, task #512) is forwarded straight to
+    render_map_video() - see its own docstring. This panel is the map
+    most people actually watch (embedded directly in stitch.mp4, not a
+    separate file), so it needs the same track-up wiring the standalone
+    map.mp4/map_zoom_*m.mp4 outputs already have via trip_export.py's
+    _render_map_variant() - an earlier pass at this feature missed this
+    call site entirely (see this project's own WORKING_CONTEXT.md for
+    the real "flag has no effect" report that caught it).
     """
 
     if mode == "zoom":
@@ -1565,6 +1577,7 @@ def _render_map_panel(
             video_start=video_start,
             video_duration_seconds=video_duration_seconds,
             recording_breakpoints=recording_breakpoints,
+            track_up=track_up,
         )
 
     bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
@@ -1579,6 +1592,7 @@ def _render_map_panel(
         video_start=video_start,
         video_duration_seconds=video_duration_seconds,
         recording_breakpoints=recording_breakpoints,
+        track_up=track_up,
     )
 
 
@@ -1958,6 +1972,7 @@ def _stack(
     map_video_start=None,
     map_video_duration_seconds: float | None = None,
     map_recording_breakpoints=None,
+    map_track_up: bool = False,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -2673,6 +2688,7 @@ def _stack(
                         video_start=map_video_start,
                         video_duration_seconds=map_video_duration_seconds,
                         recording_breakpoints=map_recording_breakpoints,
+                        track_up=map_track_up,
                     ) if panel_size is not None else None
                 except MediaToolError as exc:
                     if warnings is not None:

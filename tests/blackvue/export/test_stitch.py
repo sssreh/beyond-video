@@ -517,6 +517,77 @@ def test_stitch_cameras_forwards_map_recording_breakpoints_to_the_map_panel(
     assert captured == [breakpoints]
 
 
+def test_stitch_cameras_forwards_map_track_up_to_the_map_panel(
+    tmp_path, monkeypatch
+):
+    # Task #512 follow-up: Christer confirmed --map-track-up "dint
+    # work" on a real export using --stitch-map (the panel embedded
+    # directly in stitch.mp4, which is what he actually watches) - the
+    # original implementation only wired track_up through
+    # trip_export.py's own map.mp4/map_zoom_*m.mp4 path
+    # (_render_map_variant()) and never reached this call site at all,
+    # so the flag had no effect whenever --stitch-map was in play. Same
+    # capture pattern as the recording_breakpoints test just above:
+    # confirms stitch_cameras() -> _stack() -> _render_map_panel() ->
+    # render_map_video() carries map_track_up through unchanged (the
+    # actual rotation math is map_render._rotate_point()'s job, already
+    # covered by test_map_render.py).
+    captured = []
+    original_render_map_panel = stitch_module._render_map_panel
+
+    def _capture_render_map_panel(*args, **kwargs):
+        captured.append(kwargs.get("track_up"))
+        return original_render_map_panel(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stitch_module, "_render_map_panel", _capture_render_map_panel
+    )
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(1, 59.31, 18.005))
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+        map_track_up=True,
+    )
+
+    assert captured == [True]
+
+
+def test_stitch_cameras_map_track_up_defaults_to_false(tmp_path, monkeypatch):
+    captured = []
+    original_render_map_panel = stitch_module._render_map_panel
+
+    def _capture_render_map_panel(*args, **kwargs):
+        captured.append(kwargs.get("track_up"))
+        return original_render_map_panel(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stitch_module, "_render_map_panel", _capture_render_map_panel
+    )
+
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video(front, 320, 240)
+    _make_video(rear, 320, 240)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(1, 59.31, 18.005))
+
+    stitch_cameras(
+        front, rear, tmp_path / "stitch.mp4",
+        layout="side_by_side",
+        map_mode="map", map_fixes=fixes, map_roads=(),
+    )
+
+    assert captured == [False]
+
+
 def test_stitch_cameras_scale_shrinks_decode_time_scaling_not_just_the_final_pass(
     tmp_path, monkeypatch
 ):
