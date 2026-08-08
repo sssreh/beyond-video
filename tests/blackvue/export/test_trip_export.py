@@ -18,6 +18,7 @@ from blackvue.export.trip_export import _concatenate_asset
 from blackvue.export.trip_export import _ensure_recording_audio
 from blackvue.export.trip_export import _merge_gsensor
 from blackvue.export.trip_export import _recording_video_offsets
+from blackvue.export.trip_export import _repair_parking_sources
 from blackvue.export.trip_export import _trim_prebuffers
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
@@ -131,6 +132,85 @@ def _has_audio_stream(path) -> bool:
 
 def _gsensor_bytes(*records) -> bytes:
     return b"".join(struct.pack(">Ihhh", ms, x, y, z) for ms, x, y, z in records)
+
+
+def _ffprobe_can_open(path) -> bool:
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", str(path)],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def _mp4_box(box_type: bytes, payload: bytes) -> bytes:
+    return (8 + len(payload)).to_bytes(4, "big") + box_type + payload
+
+
+def _broken_empty_audio_trak() -> bytes:
+    # The confirmed real-world shape (see generate/mp4_repair.py's own
+    # docstring, and tests/blackvue/generate/test_mp4_repair.py): zero
+    # samples, zero chunks, but a stray stsc entry pointing at chunk 0
+    # anyway - exactly what trips ffmpeg's "contradictionary STSC and
+    # STCO" check.
+    empty_stsz = bytes(12)
+    empty_stsc = bytearray(8)
+    empty_stsc[4:8] = (1).to_bytes(4, "big")
+    empty_stsc += (0).to_bytes(4, "big") + (0).to_bytes(4, "big") + (1).to_bytes(4, "big")
+    empty_stco = bytes(8)
+    empty_stts = bytearray(8)
+    empty_stts[4:8] = (1).to_bytes(4, "big")
+    empty_stts += (0).to_bytes(4, "big") + (0).to_bytes(4, "big")
+    audio_stbl = (
+        _mp4_box(b"stsz", empty_stsz)
+        + _mp4_box(b"stsc", bytes(empty_stsc))
+        + _mp4_box(b"stco", empty_stco)
+        + _mp4_box(b"stts", bytes(empty_stts))
+    )
+    audio_hdlr = bytearray(12)
+    audio_hdlr[8:12] = b"soun"
+    return _mp4_box(
+        b"trak",
+        _mp4_box(
+            b"mdia",
+            _mp4_box(b"hdlr", bytes(audio_hdlr))
+            + _mp4_box(b"minf", _mp4_box(b"stbl", audio_stbl)),
+        ),
+    )
+
+
+def _find_top_level_box(data: bytes, box_type: bytes) -> tuple[int, int]:
+    idx = 0
+    while idx < len(data):
+        size = int.from_bytes(data[idx:idx + 4], "big")
+        if data[idx + 4:idx + 8] == box_type:
+            return idx, idx + size
+        if size == 0:
+            break
+        idx += size
+    raise ValueError(f"no {box_type!r} box found")
+
+
+def _write_broken_parking_video(path: Path, duration_seconds: float = 1.0) -> None:
+    """Write a *real*, playable video (via ffmpeg, same as
+    `_make_video()`) and then splice in a broken, empty audio track
+    matching the confirmed real-world Parking-mode container quirk
+    (see `_broken_empty_audio_trak()`) - reproducing the actual bug
+    end to end: ffprobe/ffmpeg refuse to open the file at all until
+    `load_or_repair_parking_video()` drops the bad trak, but the real
+    video content underneath (and any further processing of it, e.g.
+    concatenation) is completely unaffected by the repair.
+
+    Real ffmpeg output places 'moov' last, after 'mdat' - confirmed
+    directly in this sandbox - so appending a trak to it never moves
+    'mdat' and never invalidates the real video trak's own 'stco'
+    offsets, the easy case `mp4_repair.py` itself already handles.
+    """
+
+    _make_video(path, duration_seconds)
+    data = path.read_bytes()
+    moov_start, moov_end = _find_top_level_box(data, b"moov")
+    new_moov = _mp4_box(b"moov", data[moov_start + 8:moov_end] + _broken_empty_audio_trak())
+    path.write_bytes(data[:moov_start] + new_moov + data[moov_end:])
 
 
 def test_folder_name_for_trip_with_and_without_prefix():
@@ -626,6 +706,104 @@ def test_concatenate_asset_returns_none_when_every_source_is_corrupted(tmp_path)
     assert result is None
     assert not (dest_dir / "front.mp4").exists()
     assert len(warnings) == 1
+
+
+def test_repair_parking_sources_returns_repaired_paths_for_broken_containers(
+    tmp_path, monkeypatch,
+):
+    # Christer, on a real export with --include-parking: front.mp4/
+    # rear.mp4 concatenation silently dropped 20230728_105305_PF.mp4/
+    # _PR.mp4 with "contradictionary STSC and STCO" - the exact same
+    # broken-empty-audio-track container quirk already fixed for
+    # bv-web's archive browser (see generate/mp4_repair.py).
+    # _repair_parking_sources() is the fix's export-side counterpart:
+    # it must find and repair a Parking recording's own broken FRONT/
+    # REAR files up front, before anything tries to probe them.
+    monkeypatch.setenv("BEYOND_VIDEO_CONFIG_DIR", str(tmp_path / "config"))
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "20260726_144116_PF.mp4"
+    rear = source_dir / "20260726_144116_PR.mp4"
+    _write_broken_parking_video(front)
+    _write_broken_parking_video(rear)
+    assert not _ffprobe_can_open(front)
+    assert not _ffprobe_can_open(rear)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260726_144116_P"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    overrides = _repair_parking_sources(trip)
+
+    front_key = (RecordingId("20260726_144116_P"), Asset.FRONT)
+    rear_key = (RecordingId("20260726_144116_P"), Asset.REAR)
+    assert front_key in overrides
+    assert rear_key in overrides
+    assert overrides[front_key] != front
+    assert overrides[rear_key] != rear
+    assert _ffprobe_can_open(overrides[front_key])
+    assert _ffprobe_can_open(overrides[rear_key])
+
+
+def test_repair_parking_sources_skips_non_parking_recordings(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_CONFIG_DIR", str(tmp_path / "config"))
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "20260726_144116_NF.mp4"
+    _make_video(front, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260726_144116_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    assert _repair_parking_sources(trip) == {}
+
+
+def test_concatenate_asset_uses_repaired_parking_source_instead_of_dropping_it(
+    tmp_path, monkeypatch,
+):
+    # End-to-end version of the bug: a broken Parking source, once
+    # repaired by _repair_parking_sources() and threaded through as a
+    # duration_override, must actually get concatenated rather than
+    # skipped by _concatenate_asset()'s own check_readable() step.
+    monkeypatch.setenv("BEYOND_VIDEO_CONFIG_DIR", str(tmp_path / "config"))
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "20260726_144116_PF.mp4"
+    _write_broken_parking_video(front)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260726_144116_P"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    duration_overrides = _repair_parking_sources(trip)
+
+    warnings: list[str] = []
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+    result = _concatenate_asset(
+        trip, Asset.FRONT, "front.mp4", dest_dir, warnings,
+        duration_overrides=duration_overrides,
+    )
+
+    assert result == dest_dir / "front.mp4"
+    assert result.exists()
+    assert warnings == []
 
 
 def test_align_front_rear_durations_trims_even_a_small_real_difference(tmp_path):

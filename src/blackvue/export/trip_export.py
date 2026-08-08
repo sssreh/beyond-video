@@ -23,11 +23,13 @@ from pathlib import Path
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
 from ..archive.recording_id import RecordingId
+from ..core.camera_config import default_config_dir
 from ..generate.media import MediaToolError
 from ..generate.media import extract_audio
 from ..generate.media import probe
 from ..generate.media import probe_audio_codec
 from ..generate.media import select_source
+from ..generate.mp4_repair import load_or_repair_parking_video
 from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
 from ..telemetry.gsensor_reader import read_gsensor
@@ -121,6 +123,61 @@ def folder_name_for_trip(trip: Trip, prefix: str | None) -> str:
 # every recording's own front/rear pair is now aligned exactly,
 # every export, with no headroom for drift to accumulate through.
 FRONT_REAR_DURATION_EPSILON_SECONDS = 0.01
+
+
+def _repair_parking_sources(
+    trip: Trip,
+) -> dict[tuple[RecordingId, Asset], Path]:
+    """Return a `{(recording id, FRONT/REAR): repaired path}` map for
+    every Parking-mode recording in this trip whose own video file
+    matches the broken-empty-audio-track container pattern documented
+    in `generate/mp4_repair.py` - every Parking (P) recording fails
+    ffprobe/ffmpeg outright with "contradictionary STSC and STCO" /
+    "error reading header" otherwise, which is exactly what made a
+    real export of Christer's silently drop 20230728_105305_PF.mp4/
+    _PR.mp4 entirely (`_concatenate_asset()`'s own check_readable()
+    step, further down this file, treats an unreadable source no
+    differently than a genuinely corrupted one - "could not be read
+    and was left out ... likely an incomplete recording").
+
+    This is the exact same repair already wired into bv-web's archive
+    browser (`web/app.py`'s `/archive/.../files/{filename}` route) -
+    reused here rather than re-derived, and cached in the same shared
+    `default_config_dir() / ".parking_repair_cache"`, so a recording
+    already repaired for browser playback doesn't need repairing again
+    for an export, and vice versa.
+
+    Only ever touches FRONT/REAR - a Parking recording's own raw video
+    file - never AUDIO (`.aac`, not an MP4 container at all;
+    `_has_empty_audio_track()`'s box-walk isn't meaningful there and
+    Parking recordings have no real audio to extract regardless, see
+    bv-generate's own `--extract-audio` skip for Parking) and never a
+    non-Parking recording's video, matching `mp4_repair.py`'s own
+    narrow, confirmed-pattern-only scope.
+
+    Returns an empty dict, doing no work at all, for a trip with no
+    Parking recordings. A recording whose video doesn't match the
+    known broken pattern is simply absent from the returned map -
+    `load_or_repair_parking_video()` itself returns the source path
+    unchanged in that case (see its own docstring), so there's nothing
+    useful to override with.
+    """
+
+    cache_dir = default_config_dir() / ".parking_repair_cache"
+    overrides: dict[tuple[RecordingId, Asset], Path] = {}
+
+    for recording in trip.recordings:
+        if not recording.id.is_parking:
+            continue
+        for asset in (Asset.FRONT, Asset.REAR):
+            if not recording.has(asset):
+                continue
+            source = recording.file(asset).path
+            repaired = load_or_repair_parking_video(source, cache_dir)
+            if repaired != source:
+                overrides[(recording.id, asset)] = repaired
+
+    return overrides
 
 
 def _trim_prebuffers(
@@ -1373,21 +1430,35 @@ def export_trip(
         # that still have this duplicate content sitting at their
         # head. See _trim_prebuffers()'s own docstring for the full
         # reasoning and what gets trimmed.
+        # Parking-container repair runs first of all: a Parking
+        # recording's own raw video otherwise fails ffprobe outright
+        # (see _repair_parking_sources()'s own docstring), so both
+        # _trim_prebuffers() (which never touches Parking recordings,
+        # but shares this tempdir) and _align_front_rear_durations()
+        # (which does, when include_parking=True) need the repaired
+        # path to probe successfully rather than treating it as
+        # unreadable the way _concatenate_asset() otherwise would.
+        parking_repair_overrides = _repair_parking_sources(trip)
         prebuffer_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
             trip, Path(align_dir), warnings, log,
         )
         alignment_overrides = _align_front_rear_durations(
             trip, Path(align_dir), warnings, log, include_parking=include_parking,
-            source_overrides=prebuffer_overrides,
+            source_overrides={**parking_repair_overrides, **prebuffer_overrides},
         )
         # alignment_overrides wins per-(recording, asset) pair where it
         # touched one (its own trimmed file was itself built from
-        # whatever prebuffer_overrides supplied, so it already carries
-        # that trim forward); prebuffer_overrides' own entries are kept
-        # as-is for anything alignment didn't need to touch further -
-        # e.g. AUDIO, which alignment never looks at at all, or a
-        # FRONT/REAR pair that already matched post-prebuffer-trim.
-        duration_overrides = {**prebuffer_overrides, **alignment_overrides}
+        # whatever parking_repair_overrides/prebuffer_overrides
+        # supplied, so it already carries that repair/trim forward);
+        # the earlier maps' own entries are kept as-is for anything
+        # alignment didn't need to touch further - e.g. AUDIO, which
+        # alignment never looks at at all, or a FRONT/REAR pair that
+        # already matched post-repair/post-prebuffer-trim.
+        duration_overrides = {
+            **parking_repair_overrides,
+            **prebuffer_overrides,
+            **alignment_overrides,
+        }
 
         # Computed here, still inside this tempdir's own lifetime -
         # _recording_video_offsets() probes each recording's own
