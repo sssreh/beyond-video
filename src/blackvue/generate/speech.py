@@ -220,20 +220,29 @@ def _load_npu_whisper_pipeline(model_dir: Path):
 
         optimum-cli export openvino --trust-remote-code \\
             --model openai/whisper-large-v3-turbo \\
-            --weight-format int4 --disable-stateful <model_dir>
+            --weight-format int4 <model_dir>
 
-    (--disable-stateful specifically is required for NPU's KV-cache
-    decoder - not needed for CPU/GPU - see docs/man/bv-generate.md for
-    the full one-time setup, including pre-converted models available
-    on Hugging Face as an alternative to converting one yourself.)
+    Do NOT add --disable-stateful. That flag was this project's
+    original guidance and is correct for OpenVINO versions before
+    2025.1, but is actively wrong for current (2025.1+) OpenVINO GenAI
+    installs, which handle stateful Whisper models on NPU natively.
+    Christer hit this directly on real hardware: converting with
+    --disable-stateful and loading the result raised "Stateful models
+    without `beam_idx` input are not supported in StatefulToStateless
+    transformation" - OpenVINO's NPU plugin now expects to do its own
+    stateful->beam_idx handling internally, and a pre-stripped
+    stateless export doesn't have what that pass looks for. See
+    docs/man/bv-generate.md for the full one-time setup, including
+    pre-converted models available on Hugging Face as an alternative
+    to converting one yourself, and a driver-version note if this
+    still hangs/fails after dropping the flag.
 
-    NOT independently verified against real Intel NPU hardware as of
-    this writing - built from OpenVINO GenAI's own published API
-    (device string "NPU" swapped in for "CPU"/"GPU", no other call
-    changes documented as needed), but there is no Intel NPU in this
-    project's dev/CI environment to actually test against. Christer:
-    please confirm this works as expected on your Core Ultra desktop
-    and report back if the real API doesn't match what's called here.
+    NOT fully verified against real Intel NPU hardware as of this
+    writing - the load-and-conversion-format issue above was caught
+    on Christer's real Core Ultra desktop, but a full transcribe()
+    call with the corrected (stateful) export hasn't been confirmed
+    working yet. There is no Intel NPU in this project's own dev/CI
+    environment to test against directly.
     """
 
     import openvino_genai

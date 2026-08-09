@@ -78,7 +78,7 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 
 `--npu-model-dir` transcribes using an Intel NPU (Neural Processing Unit, e.g. the ones built into Core Ultra-series CPUs) via OpenVINO GenAI's `WhisperPipeline`, instead of the default faster-whisper/CTranslate2 backend, which has no NPU support at all. This is a completely separate code path (`blackvue.generate.speech._npu_whisper_transcribe`), not a device switch on the default one.
 
-**Not verified against real Intel NPU hardware as of this writing.** It was built from OpenVINO GenAI's own published API (the device string swaps from `"CPU"`/`"GPU"` to `"NPU"`; no other call changes are documented as needed), but there's no Intel NPU available in this project's dev/test environment to confirm it against. If you try it on real hardware and something doesn't match what's described here, that's useful to know.
+**Not fully verified against real Intel NPU hardware as of this writing.** Christer tried it on a real Core Ultra desktop and it surfaced a real conversion-format issue (see Troubleshooting below), now fixed in the setup instructions below - but a full end-to-end `--transcribe` run with the corrected export hasn't been confirmed working yet.
 
 Setup:
 
@@ -86,17 +86,22 @@ Setup:
 2. Convert a Whisper model to OpenVINO's IR format once, ahead of time - `--npu-model-dir` expects an already-converted model directory, not a model name:
 
    ```
-   pip install optimum[openvino] --break-system-packages
+   pip install optimum[openvino]
    optimum-cli export openvino --trust-remote-code \
        --model openai/whisper-large-v3-turbo \
-       --weight-format int4 --disable-stateful \
+       --weight-format int4 \
        /path/to/npu-model
    ```
 
-   `--disable-stateful` is required specifically for the NPU's KV-cache decoder (not needed for CPU/GPU). Pre-converted models are also available on Hugging Face (e.g. search for `whisper-large-v3-turbo-int4-ov-npu`) as an alternative to converting one yourself.
+   Do **not** add `--disable-stateful` - see Troubleshooting below for why. Pre-converted models are also available on Hugging Face (e.g. search for `whisper-large-v3-turbo-int4-ov-npu`) as an alternative to converting one yourself.
 3. Use it: `bv-generate --transcribe --language en --npu-model-dir /path/to/npu-model`
 
 `--npu-model-dir` always requires `--language` alongside it - unlike the default backend, this path cannot auto-detect the spoken language, so `bv-generate` refuses to start without one rather than fail partway through.
+
+**Troubleshooting.**
+
+- `Stateful models without 'beam_idx' input are not supported in StatefulToStateless transformation`: your model was converted with `--disable-stateful`. That flag was correct guidance for OpenVINO versions before 2025.1, but current (2025.1+) OpenVINO GenAI handles stateful Whisper models on NPU natively and expects a normal (stateful) export instead - drop `--disable-stateful` and re-convert.
+- If `WhisperPipeline` hangs or fails to run on NPU even with a correctly-converted (stateful) model, check your Intel NPU driver version - Intel's own guidance recommends driver 32.0.100.3104 or newer.
 
 ## EXIT STATUS
 
