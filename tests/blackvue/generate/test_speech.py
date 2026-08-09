@@ -122,7 +122,9 @@ def test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration(
     monkeypatch.setattr(
         speech_module,
         "_get_whisper_model",
-        lambda model_size: _FakeWhisperModel(raw_segments, info),
+        lambda model_size, force_cpu=False: _FakeWhisperModel(
+            raw_segments, info
+        ),
     )
 
     transcript = transcribe(Path("/tmp/audio.aac"))
@@ -151,7 +153,9 @@ def test_whisper_transcribe_defaults_to_vad_filter_and_no_condition_on_previous_
     import blackvue.generate.speech as speech_module
 
     monkeypatch.setattr(
-        speech_module, "_get_whisper_model", lambda model_size: fake_model
+        speech_module,
+        "_get_whisper_model",
+        lambda model_size, force_cpu=False: fake_model,
     )
 
     transcribe(Path("/tmp/audio.aac"))
@@ -173,7 +177,9 @@ def test_whisper_transcribe_lets_an_explicit_kwarg_override_the_defaults(
     import blackvue.generate.speech as speech_module
 
     monkeypatch.setattr(
-        speech_module, "_get_whisper_model", lambda model_size: fake_model
+        speech_module,
+        "_get_whisper_model",
+        lambda model_size, force_cpu=False: fake_model,
     )
 
     speech_module._whisper_transcribe(
@@ -245,6 +251,82 @@ def test_load_whisper_model_uses_cuda_when_available(monkeypatch):
     assert model.compute_type == "float16"
     # No CPU fallback attempted - the first (GPU) load already worked.
     assert _FakeCudaAwareWhisperModel.calls == [("small", "cuda", "float16")]
+
+
+def _install_fake_ctranslate2(monkeypatch, *, cuda_device_count=None, raises=None):
+    """Inject a fake ctranslate2 module so gpu_available() can query
+    get_cuda_device_count() without the real (possibly absent) library.
+    """
+
+    calls: list[None] = []
+
+    fake_module = types.ModuleType("ctranslate2")
+
+    def fake_get_cuda_device_count():
+        calls.append(None)
+        if raises is not None:
+            raise raises
+        return cuda_device_count
+
+    fake_module.get_cuda_device_count = fake_get_cuda_device_count
+    monkeypatch.setitem(sys.modules, "ctranslate2", fake_module)
+
+    return calls
+
+
+def test_gpu_available_true_when_cuda_devices_present(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_GPU_AVAILABLE", None)
+    _install_fake_ctranslate2(monkeypatch, cuda_device_count=1)
+
+    assert speech_module.gpu_available() is True
+
+
+def test_gpu_available_false_when_no_cuda_devices(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_GPU_AVAILABLE", None)
+    _install_fake_ctranslate2(monkeypatch, cuda_device_count=0)
+
+    assert speech_module.gpu_available() is False
+
+
+def test_gpu_available_false_when_ctranslate2_not_installed(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_GPU_AVAILABLE", None)
+    # Simulates the [speech] extra not being installed at all - the
+    # import itself fails, not just the device-count call.
+    monkeypatch.setitem(sys.modules, "ctranslate2", None)
+
+    assert speech_module.gpu_available() is False
+
+
+def test_gpu_available_false_when_device_count_raises(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_GPU_AVAILABLE", None)
+    _install_fake_ctranslate2(
+        monkeypatch, raises=RuntimeError("driver too old")
+    )
+
+    # Never blocks startup - any failure just means "no GPU", not a
+    # crash bv-generate has to handle specially.
+    assert speech_module.gpu_available() is False
+
+
+def test_gpu_available_caches_after_first_call(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_GPU_AVAILABLE", None)
+    calls = _install_fake_ctranslate2(monkeypatch, cuda_device_count=1)
+
+    assert speech_module.gpu_available() is True
+    assert speech_module.gpu_available() is True
+    # Only the first call actually queried CUDA - the second was
+    # served from the cached _GPU_AVAILABLE flag.
+    assert len(calls) == 1
 
 
 def test_register_nvidia_dll_directories_noop_on_non_windows(monkeypatch):
@@ -396,6 +478,92 @@ def test_get_whisper_model_reports_missing_faster_whisper_cleanly(monkeypatch):
     assert raised is True
     assert "faster-whisper" in message
     assert "pip install faster-whisper" in message
+
+
+def test_get_whisper_model_force_cpu_uses_a_distinct_cache_key(monkeypatch):
+    # force_cpu is bv-generate's --cpu flag, added specifically so
+    # Christer could compare "small on CPU" against "large on GPU"
+    # (the new GPU-aware default) in the same run without one call
+    # clobbering the other's cached model.
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setitem(speech_module._WHISPER_MODEL_CACHE, "tiny", "gpu-model")
+    monkeypatch.setitem(
+        speech_module._WHISPER_MODEL_CACHE, "tiny:cpu", "cpu-model"
+    )
+
+    assert speech_module._get_whisper_model("tiny") == "gpu-model"
+    assert speech_module._get_whisper_model("tiny", force_cpu=True) == "cpu-model"
+
+
+def test_get_whisper_model_force_cpu_loads_via_load_cpu_whisper_model(
+    monkeypatch,
+):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.delitem(
+        speech_module._WHISPER_MODEL_CACHE, "_force-cpu-check:cpu", raising=False
+    )
+    monkeypatch.delitem(
+        speech_module._WHISPER_MODEL_CACHE, "_force-cpu-check", raising=False
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        speech_module,
+        "_load_cpu_whisper_model",
+        lambda model_size: calls.append(model_size) or "cpu-model",
+    )
+    monkeypatch.setattr(
+        speech_module,
+        "_load_whisper_model",
+        lambda model_size: (_ for _ in ()).throw(
+            AssertionError("should not attempt CUDA-then-CPU auto-detect")
+        ),
+    )
+
+    model = speech_module._get_whisper_model(
+        "_force-cpu-check", force_cpu=True
+    )
+
+    assert model == "cpu-model"
+    assert calls == ["_force-cpu-check"]
+
+
+def test_whisper_transcribe_force_cpu_does_not_retry_on_failure(monkeypatch):
+    # Without force_cpu, a failed .transcribe() call retries once on a
+    # freshly forced-CPU model (the cuBLAS-DLL-lazy-failure recovery -
+    # see _whisper_transcribe's own docstring). A caller that already
+    # asked for CPU explicitly has nothing further to fall back to, so
+    # that failure should propagate directly instead of retrying.
+    import blackvue.generate.speech as speech_module
+
+    class _FailingModel:
+        def transcribe(self, source, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        speech_module,
+        "_get_whisper_model",
+        lambda model_size, force_cpu=False: _FailingModel(),
+    )
+
+    def _refuse_cpu_reload(model_size):
+        raise AssertionError("should not retry when force_cpu is already True")
+
+    monkeypatch.setattr(
+        speech_module, "_load_cpu_whisper_model", _refuse_cpu_reload
+    )
+
+    try:
+        speech_module._whisper_transcribe(
+            "small", Path("/tmp/audio.aac"), force_cpu=True
+        )
+        raised = False
+    except RuntimeError:
+        raised = True
+
+    assert raised is True
 
 
 def _install_fake_pyannote_audio(

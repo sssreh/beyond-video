@@ -10,7 +10,7 @@
 bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--extract-audio] [--get-duration]
             [--transcribe] [--translate LANG] [--language LANG]
-            [--model-size SIZE] [--npu-model-dir PATH]
+            [--model-size SIZE] [--cpu] [--npu-model-dir PATH]
             [--diarize] [--hf-token TOKEN]
             [--srt] [--lrc]
             [--overwrite] [--dry-run] [-v]
@@ -59,7 +59,8 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 | Option | Description |
 |---|---|
 | `--language LANG` | Spoken language hint (e.g. `en`). Auto-detected if omitted - except with `--npu-model-dir`, which requires it (see below). |
-| `--model-size SIZE` | faster-whisper model size. Default: `small`. Ignored when `--npu-model-dir` is given. |
+| `--model-size SIZE` | faster-whisper model size. Default: `large` if a CUDA GPU is detected on this machine, otherwise `small` - see `--cpu` to force the small/CPU combination anyway on a GPU machine (e.g. to compare against the GPU default). Ignored when `--npu-model-dir` is given. |
+| `--cpu` | Force faster-whisper onto CPU even if a GPU is available. Useful for comparing e.g. `bv-generate --transcribe --model-size small --cpu` against the GPU-default `bv-generate --transcribe` (`large`, on GPU). Has no effect with `--npu-model-dir`, which has no CPU/GPU choice of its own. |
 | — | Transcription always uses voice-activity-detection filtering and does not condition segments on prior text, to avoid faster-whisper's classic repetition-loop hallucination on non-speech noise (road/wind/engine) common in dashcam audio. |
 | `--npu-model-dir PATH` | Use an Intel NPU (OpenVINO GenAI) instead of faster-whisper, pointed at an already-converted OpenVINO IR Whisper model directory. Requires `--language` - this backend cannot auto-detect the spoken language. See "Intel NPU transcription" below. **Not verified against real Intel NPU hardware** - built from OpenVINO GenAI's own published API docs; there's no Intel NPU in this project's dev/test environment. Try it and report back if it doesn't work as documented. |
 | `--diarize` | Label who is speaking (e.g. `[SPEAKER_00] ...`), using pyannote.audio. Requires a HuggingFace access token. |
@@ -136,6 +137,13 @@ Transcribe using an Intel NPU instead of faster-whisper (see "Intel NPU transcri
 
 ```
 bv-generate --transcribe --language en --npu-model-dir /path/to/npu-model
+```
+
+Compare the `small`/CPU and GPU-default (`large`) models on the same recording:
+
+```
+bv-generate --timestamp 20260715_1430 --transcribe --model-size small --cpu --overwrite
+bv-generate --timestamp 20260715_1430 --transcribe --overwrite
 ```
 
 Regenerate everything from scratch for a specific recording prefix:

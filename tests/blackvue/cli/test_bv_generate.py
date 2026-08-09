@@ -29,6 +29,7 @@ def _base_args(**overrides):
         language=None,
         model_size="small",
         npu_model_dir=None,
+        cpu=False,
         diarize=False,
         hf_token=None,
         srt=False,
@@ -114,6 +115,104 @@ def test_parse_args_npu_model_dir_allowed_with_language():
 
     assert args.npu_model_dir == Path("/tmp/npu-model")
     assert args.language == "en"
+
+
+def test_parse_args_cpu_flag_defaults_to_false():
+    args = parse_args(["/some/path", "--transcribe"])
+
+    assert args.cpu is False
+
+
+def test_parse_args_cpu_flag_can_be_set():
+    args = parse_args(["/some/path", "--transcribe", "--cpu"])
+
+    assert args.cpu is True
+
+
+def test_parse_args_model_size_explicit_value_is_kept_even_on_a_gpu_machine(
+    monkeypatch,
+):
+    # An explicit --model-size always wins - gpu_available() should not
+    # even be consulted once the user has said what they want.
+    monkeypatch.setattr(
+        bv_generate,
+        "gpu_available",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("should not check for a GPU with an explicit --model-size")
+        ),
+    )
+
+    args = parse_args(["/some/path", "--transcribe", "--model-size", "medium"])
+
+    assert args.model_size == "medium"
+
+
+def test_parse_args_model_size_defaults_to_large_on_a_gpu_machine(monkeypatch):
+    # Christer: "I would like medium or large model default if you have
+    # a gpu" - he picked "large" specifically.
+    monkeypatch.setattr(bv_generate, "gpu_available", lambda: True)
+
+    args = parse_args(["/some/path", "--transcribe"])
+
+    assert args.model_size == "large"
+
+
+def test_parse_args_model_size_defaults_to_small_without_a_gpu(monkeypatch):
+    monkeypatch.setattr(bv_generate, "gpu_available", lambda: False)
+
+    args = parse_args(["/some/path", "--transcribe"])
+
+    assert args.model_size == "small"
+
+
+def test_parse_args_model_size_default_resolution_applies_to_translate_too(
+    monkeypatch,
+):
+    monkeypatch.setattr(bv_generate, "gpu_available", lambda: True)
+
+    args = parse_args(["/some/path", "--translate", "es"])
+
+    assert args.model_size == "large"
+
+
+def test_parse_args_model_size_skips_gpu_check_for_extract_audio_only(
+    monkeypatch,
+):
+    # --extract-audio/--get-duration never touch Whisper at all, so
+    # resolving a GPU-aware default for them would just be an
+    # unnecessary ctranslate2 import - gpu_available() should never be
+    # called in that case.
+    monkeypatch.setattr(
+        bv_generate,
+        "gpu_available",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("should not check for a GPU when no Whisper action is requested")
+        ),
+    )
+
+    args = parse_args(["/some/path", "--extract-audio"])
+
+    assert args.model_size == "small"
+
+
+def test_parse_args_model_size_skips_gpu_check_with_npu_model_dir(monkeypatch):
+    # The NPU backend doesn't use model_size at all - --npu-model-dir
+    # bypasses faster-whisper entirely, so there's no reason to probe
+    # for a CUDA GPU either.
+    monkeypatch.setattr(
+        bv_generate,
+        "gpu_available",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("should not check for a GPU when --npu-model-dir is given")
+        ),
+    )
+
+    args = parse_args([
+        "/some/path", "--transcribe",
+        "--npu-model-dir", "/tmp/npu-model", "--language", "en",
+    ])
+
+    assert args.model_size == "small"
 
 
 def test_translate_diarized_preserves_speaker_labels(monkeypatch):
@@ -396,7 +495,12 @@ def _fake_transcribe_factory(calls, language="th"):
     default_language = language
 
     def fake_transcribe(
-        source, *, language=None, model_size="small", npu_model_dir=None
+        source,
+        *,
+        language=None,
+        model_size="small",
+        npu_model_dir=None,
+        force_cpu=False,
     ):
         calls.append(source)
         return Transcript(
@@ -600,7 +704,9 @@ def test_translate_only_with_diarize_bypasses_cached_transcript(
 def test_translate_only_diarize_produces_diarized_filenames(
     tmp_path, monkeypatch
 ):
-    def fake_transcribe(source, *, language, model_size, npu_model_dir=None):
+    def fake_transcribe(
+        source, *, language, model_size, npu_model_dir=None, force_cpu=False
+    ):
         return Transcript(
             text="hello",
             language=language or "th",
@@ -726,7 +832,9 @@ def test_transcribe_extracts_and_persists_audio_when_missing(
         extracted.append((source, destination))
         destination.write_bytes(b"audio")
 
-    def fake_transcribe(source, *, language, model_size, npu_model_dir=None):
+    def fake_transcribe(
+        source, *, language, model_size, npu_model_dir=None, force_cpu=False
+    ):
         transcribed.append(source)
         return Transcript(
             text="hej da",
@@ -737,7 +845,9 @@ def test_transcribe_extracts_and_persists_audio_when_missing(
     monkeypatch.setattr(bv_generate, "extract_audio", fake_extract_audio)
     monkeypatch.setattr(bv_generate, "transcribe", fake_transcribe)
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "sv",
     )
 
     recording = Recording(id=RecordingId("20260715_133255_N"))
@@ -770,7 +880,9 @@ def test_transcribe_threads_npu_model_dir_into_transcribe_call(
     # test_speech.py's own NPU tests.
     received_npu_model_dir = []
 
-    def fake_transcribe(source, *, language, model_size, npu_model_dir=None):
+    def fake_transcribe(
+        source, *, language, model_size, npu_model_dir=None, force_cpu=False
+    ):
         received_npu_model_dir.append(npu_model_dir)
         return Transcript(
             text="hello",
@@ -815,7 +927,9 @@ def test_transcribe_reuses_existing_audio_without_extracting(
         _fake_transcribe_factory([], "sv"),
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "sv",
     )
 
     recording = Recording(id=RecordingId("20260715_140000_N"))
@@ -848,7 +962,9 @@ def test_transcribe_reuses_audio_already_written_this_run(
         bv_generate, "transcribe", _fake_transcribe_factory(transcribed, "sv")
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "sv",
     )
 
     recording = Recording(id=RecordingId("20260715_150000_N"))
@@ -901,7 +1017,9 @@ def test_transcribe_treats_empty_cached_audio_as_absent_for_language_detection(
     monkeypatch.setattr(
         bv_generate,
         "detect_language",
-        lambda source, *, model_size: detected_from.append(source) or "sv",
+        lambda source, *, model_size, force_cpu=False: (
+            detected_from.append(source) or "sv"
+        ),
     )
     monkeypatch.setattr(
         bv_generate, "transcribe", _fake_transcribe_factory([], "sv")
@@ -982,7 +1100,7 @@ def test_transcribe_and_translate_together_still_works(
 
     calls = []
 
-    def fake_detect_language(source, *, model_size):
+    def fake_detect_language(source, *, model_size, force_cpu=False):
         return "sv"
 
     monkeypatch.setattr(bv_generate, "detect_language", fake_detect_language)
@@ -1047,7 +1165,9 @@ def test_transcribe_writes_srt_and_lrc_when_requested(tmp_path, monkeypatch):
         bv_generate, "transcribe", _fake_transcribe_factory([], "sv")
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "sv",
     )
 
     recording = Recording(id=RecordingId("20260715_200000_N"))
@@ -1085,12 +1205,14 @@ def test_transcribe_srt_reflects_translate_language(tmp_path, monkeypatch):
         lambda source, destination: destination.write_bytes(b"audio"),
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "ru"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "ru",
     )
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None, force_cpu=False: Transcript(
             text="Привет мир",
             language="ru",
             segments=(
@@ -1150,12 +1272,14 @@ def test_transcribe_srt_stays_original_language_without_translate(
         lambda source, destination: destination.write_bytes(b"audio"),
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "ru"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "ru",
     )
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None, force_cpu=False: Transcript(
             text="Привет мир",
             language="ru",
             segments=(SpeechSegment(0.0, 1.0, "Привет мир"),),
@@ -1197,12 +1321,14 @@ def test_transcribe_srt_translation_failure_skips_srt_and_reports_error(
         lambda source, destination: destination.write_bytes(b"audio"),
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "ru"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "ru",
     )
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None, force_cpu=False: Transcript(
             text="Привет мир",
             language="ru",
             segments=(SpeechSegment(0.0, 1.0, "Привет мир"),),
@@ -1244,7 +1370,7 @@ def test_translate_only_srt_reflects_translate_language(tmp_path, monkeypatch):
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None, force_cpu=False: Transcript(
             text="Привет мир",
             language="ru",
             segments=(
@@ -1293,7 +1419,9 @@ def test_transcribe_srt_only_still_transcribes_when_transcript_up_to_date(
         bv_generate, "transcribe", _fake_transcribe_factory(transcribed, "sv")
     )
     monkeypatch.setattr(
-        bv_generate, "detect_language", lambda source, *, model_size: "sv"
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "sv",
     )
 
     recording = Recording(id=RecordingId("20260715_210000_N"))

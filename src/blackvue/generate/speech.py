@@ -35,6 +35,8 @@ _WHISPER_MODEL_CACHE: dict[str, object] = {}
 _DIARIZATION_PIPELINE_CACHE: dict[str, object] = {}
 _NPU_PIPELINE_CACHE: dict[str, object] = {}
 
+_GPU_AVAILABLE: bool | None = None
+
 #  pyannote.audio 4.0 (released Sep 2025) replaced the legacy
 # speaker-diarization-3.1 pipeline with this one as its recommended
 # default: better accuracy per pyannote's own benchmarks, and - unlike
@@ -201,6 +203,45 @@ def _register_nvidia_dll_directories() -> None:
         )
 
 
+def gpu_available() -> bool:
+    """Cheaply check whether this machine can run faster-whisper on a
+    CUDA GPU, without loading a full Whisper model just to find out.
+
+    Used to pick bv-generate's --model-size default - Christer: "I
+    would like medium or large model default if you have a gpu" -
+    after confirming on his own real GPU that a `large` model
+    transcribes in about the same time (16s) a `small` one used to
+    take, so defaulting straight to `large` when a GPU is present buys
+    the more accurate model for free rather than making that an
+    opt-in flag.
+
+    Queries CTranslate2's own `get_cuda_device_count()` (the library
+    faster-whisper itself is built on) rather than partially
+    constructing a WhisperModel or shelling out to nvidia-smi - the
+    cheapest check that's actually asking the same library that will
+    do the real inference. Cached after the first call (module-level
+    flag, mirroring `_NVIDIA_DLL_DIRECTORIES_REGISTERED`'s own
+    pattern); returns False for any failure (no NVIDIA GPU, driver too
+    old, ctranslate2/faster-whisper not installed yet, ...) rather than
+    raising - this only ever picks a friendlier default, never
+    something that should block startup.
+    """
+
+    global _GPU_AVAILABLE
+
+    if _GPU_AVAILABLE is None:
+        _register_nvidia_dll_directories()
+
+        try:
+            import ctranslate2
+
+            _GPU_AVAILABLE = ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            _GPU_AVAILABLE = False
+
+    return _GPU_AVAILABLE
+
+
 def _load_whisper_model(model_size: str):
     """Load a faster-whisper model on GPU (CUDA) if this machine can
     actually run it, falling back to CPU otherwise.
@@ -225,19 +266,37 @@ def _load_whisper_model(model_size: str):
         return WhisperModel(model_size, device="cpu", compute_type="int8")
 
 
-def _get_whisper_model(model_size: str):
-    """Return a cached faster-whisper model, loading it if needed."""
+def _get_whisper_model(model_size: str, *, force_cpu: bool = False):
+    """Return a cached faster-whisper model, loading it if needed.
 
-    if model_size not in _WHISPER_MODEL_CACHE:
+    force_cpu (bv-generate's --cpu flag - Christer wanted to "compare
+    transcribe small model on cpu with large model on gpu") skips the
+    CUDA-then-CPU-fallback auto-detection in _load_whisper_model()
+    entirely and loads straight onto CPU, so a machine with a working
+    GPU can still be told to run a specific comparison on CPU instead.
+    Cached under a distinct `f"{model_size}:cpu"` key so a force_cpu
+    call never overwrites (or reuses) the auto-detected model already
+    cached under plain `model_size` for the same size, and vice versa
+    - both may legitimately be wanted within one process (e.g. a
+    --cpu-forced comparison run against the same model_size the normal
+    path already loaded).
+    """
+
+    cache_key = f"{model_size}:cpu" if force_cpu else model_size
+
+    if cache_key not in _WHISPER_MODEL_CACHE:
         try:
-            _WHISPER_MODEL_CACHE[model_size] = _load_whisper_model(model_size)
+            if force_cpu:
+                _WHISPER_MODEL_CACHE[cache_key] = _load_cpu_whisper_model(model_size)
+            else:
+                _WHISPER_MODEL_CACHE[cache_key] = _load_whisper_model(model_size)
         except ImportError as exc:
             raise MediaToolError(
                 "faster-whisper is not installed "
                 "(pip install faster-whisper)"
             ) from exc
 
-    return _WHISPER_MODEL_CACHE[model_size]
+    return _WHISPER_MODEL_CACHE[cache_key]
 
 
 def _load_cpu_whisper_model(model_size: str):
@@ -256,7 +315,9 @@ def _load_cpu_whisper_model(model_size: str):
     return WhisperModel(model_size, device="cpu", compute_type="int8")
 
 
-def _whisper_transcribe(model_size: str, source: Path, **kwargs):
+def _whisper_transcribe(
+    model_size: str, source: Path, *, force_cpu: bool = False, **kwargs
+):
     """Call WhisperModel.transcribe(), recovering with a fresh CPU
     model if the *first real inference* on a cached model fails.
 
@@ -277,7 +338,10 @@ def _whisper_transcribe(model_size: str, source: Path, **kwargs):
     once - so every later call for this model_size skips straight to
     CPU instead of hitting the same DLL failure again. If the CPU
     retry itself fails, that exception propagates to the caller's own
-    MediaToolError wrapping, same as before this existed.
+    MediaToolError wrapping, same as before this existed. This
+    recovery retry only applies when force_cpu is False - a caller
+    that already asked for CPU explicitly has nothing further to fall
+    back to, so a failure there just propagates directly.
 
     Two defaults are forced here (via setdefault, so an explicit
     kwarg from the caller still wins) to stop faster-whisper's classic
@@ -300,11 +364,14 @@ def _whisper_transcribe(model_size: str, source: Path, **kwargs):
     kwargs.setdefault("vad_filter", True)
     kwargs.setdefault("condition_on_previous_text", False)
 
-    model = _get_whisper_model(model_size)
+    model = _get_whisper_model(model_size, force_cpu=force_cpu)
 
     try:
         return model.transcribe(str(source), **kwargs)
     except Exception:
+        if force_cpu:
+            raise
+
         cpu_model = _load_cpu_whisper_model(model_size)
         _WHISPER_MODEL_CACHE[model_size] = cpu_model
         return cpu_model.transcribe(str(source), **kwargs)
@@ -478,7 +545,9 @@ def _npu_whisper_transcribe(
     )
 
 
-def detect_language(source: Path, *, model_size: str = "small") -> str:
+def detect_language(
+    source: Path, *, model_size: str = "small", force_cpu: bool = False
+) -> str:
     """Cheaply detect the spoken language of source.
 
     Whisper detects the language from roughly the first 30 seconds
@@ -489,7 +558,7 @@ def detect_language(source: Path, *, model_size: str = "small") -> str:
     """
 
     try:
-        _, info = _whisper_transcribe(model_size, source)
+        _, info = _whisper_transcribe(model_size, source, force_cpu=force_cpu)
     except Exception as exc:
         raise MediaToolError(
             f"language detection failed for {source.name}: {exc}"
@@ -504,6 +573,7 @@ def transcribe(
     language: str | None = None,
     model_size: str = "small",
     npu_model_dir: Path | None = None,
+    force_cpu: bool = False,
 ) -> Transcript:
     """Transcribe the audio track of source using faster-whisper, or
     an Intel NPU (OpenVINO GenAI's WhisperPipeline) if npu_model_dir
@@ -517,6 +587,12 @@ def transcribe(
     must be given whenever npu_model_dir is; this raises MediaToolError
     up front rather than letting that surface as a confusing failure
     partway through OpenVINO GenAI.
+
+    force_cpu (bv-generate's --cpu flag) forces the faster-whisper path
+    onto CPU even on a machine with a working GPU - see
+    _get_whisper_model()'s own docstring for why. Ignored when
+    npu_model_dir is given (the NPU path has no CPU/GPU choice of its
+    own to force).
 
     The NPU path has not been verified against real Intel NPU hardware
     - see _load_npu_whisper_pipeline()'s docstring for the caveat.
@@ -540,7 +616,7 @@ def transcribe(
 
     try:
         raw_segments, info = _whisper_transcribe(
-            model_size, source, language=language
+            model_size, source, language=language, force_cpu=force_cpu
         )
 
         # faster-whisper decodes in fixed-size chunks internally, so

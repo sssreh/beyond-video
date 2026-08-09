@@ -26,6 +26,7 @@ from ..generate import format_diarized_transcript
 from ..generate import format_lrc
 from ..generate import format_srt
 from ..generate import get_span
+from ..generate import gpu_available
 from ..generate import normalize_language
 from ..generate import select_source
 from ..generate import short_code
@@ -145,8 +146,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--model-size",
-        default="small",
-        help="faster-whisper model size (default: %(default)s).",
+        default=None,
+        help=(
+            "faster-whisper model size. Defaults to 'large' if a GPU "
+            "is detected on this machine, otherwise 'small' - see "
+            "--cpu to force the small/CPU combination on a GPU "
+            "machine anyway (e.g. to compare against the GPU default)."
+        ),
+    )
+
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help=(
+            "Force faster-whisper onto CPU even if a GPU is available "
+            "- e.g. to compare 'bv-generate --transcribe --model-size "
+            "small --cpu' against the GPU-default 'bv-generate "
+            "--transcribe' (large, on GPU). Has no effect with "
+            "--npu-model-dir, which has no CPU/GPU choice of its own."
+        ),
     )
 
     parser.add_argument(
@@ -267,6 +285,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.translate is not None:
         args.translate = normalize_language(args.translate)
+
+    # --model-size defaults to None (rather than a fixed string) so it
+    # can be resolved here, once, against whether this machine actually
+    # has a GPU - Christer: "I would like medium or large model default
+    # if you have a gpu", after confirming on his own hardware that a
+    # `large` model transcribes about as fast as `small` used to (see
+    # WORKING_CONTEXT.md's cuBLAS DLL entries). Only calls
+    # gpu_available() (which imports ctranslate2) when a Whisper action
+    # is actually going to run - --extract-audio/--get-duration-only
+    # invocations never pay for that import at all. The NPU path
+    # doesn't use model_size, but there's no harm leaving it resolved
+    # for that case too.
+    if args.model_size is None:
+        if args.npu_model_dir is None and (
+            args.transcribe or args.translate is not None
+        ):
+            args.model_size = "large" if gpu_available() else "small"
+        else:
+            args.model_size = "small"
 
     return args
 
@@ -752,6 +789,7 @@ def _do_translate_only(
                 language=args.language,
                 model_size=args.model_size,
                 npu_model_dir=args.npu_model_dir,
+                force_cpu=args.cpu,
             )
         except MediaToolError as exc:
             warn(f"bv-generate: {recording.id}: {exc}")
@@ -947,7 +985,9 @@ def _do_transcribe_with_optional_translate(
 
                 try:
                     transcript_language = detect_language(
-                        source_file.path, model_size=args.model_size
+                        source_file.path,
+                        model_size=args.model_size,
+                        force_cpu=args.cpu,
                     )
                 except MediaToolError as exc:
                     warn(f"bv-generate: {recording.id}: {exc}")
@@ -1010,6 +1050,7 @@ def _do_transcribe_with_optional_translate(
             language=transcript_language,
             model_size=args.model_size,
             npu_model_dir=args.npu_model_dir,
+            force_cpu=args.cpu,
         )
     except MediaToolError as exc:
         warn(f"bv-generate: {recording.id}: {exc}")

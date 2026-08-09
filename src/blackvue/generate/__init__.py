@@ -26,6 +26,7 @@ from .speech import Transcript
 from .speech import detect_language
 from .speech import diarize
 from .speech import format_diarized_transcript
+from .speech import gpu_available
 from .speech import speaker_for
 from .speech import transcribe
 from .speech import translate
@@ -52,6 +53,7 @@ __all__ = [
     "format_lrc",
     "format_srt",
     "get_span",
+    "gpu_available",
     "normalize_language",
     "parse_lrc",
     "parse_srt",
