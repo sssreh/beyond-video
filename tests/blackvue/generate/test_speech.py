@@ -555,3 +555,293 @@ def test_load_waveform_via_ffmpeg_reports_missing_torch_cleanly(
 
     assert raised is True
     assert "torch" in message
+
+
+# --- Intel NPU (OpenVINO GenAI) backend --------------------------------
+#
+# openvino_genai is never actually installed in this sandbox (no Intel
+# NPU here to test against - see _load_npu_whisper_pipeline()'s own
+# docstring), so every test below fakes the module via sys.modules,
+# the same way _install_fake_faster_whisper/_install_fake_pyannote_audio
+# above fake their own optional dependencies.
+
+
+def _install_fake_openvino_genai(monkeypatch, pipeline_class):
+    fake_module = types.ModuleType("openvino_genai")
+    fake_module.WhisperPipeline = pipeline_class
+    monkeypatch.setitem(sys.modules, "openvino_genai", fake_module)
+
+
+def test_load_npu_whisper_pipeline_uses_the_npu_device(monkeypatch):
+    calls = []
+
+    class _FakePipeline:
+        def __init__(self, model_dir, device):
+            calls.append((model_dir, device))
+
+    _install_fake_openvino_genai(monkeypatch, _FakePipeline)
+
+    import blackvue.generate.speech as speech_module
+
+    speech_module._load_npu_whisper_pipeline(Path("/tmp/model-dir"))
+
+    assert calls == [(str(Path("/tmp/model-dir")), "NPU")]
+
+
+def test_get_npu_whisper_pipeline_reports_missing_openvino_genai_cleanly(
+    monkeypatch,
+):
+    monkeypatch.setitem(sys.modules, "openvino_genai", None)
+
+    import blackvue.generate.speech as speech_module
+
+    speech_module._NPU_PIPELINE_CACHE.clear()
+
+    try:
+        speech_module._get_npu_whisper_pipeline(
+            Path("/tmp/_real-missing-dependency-check")
+        )
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised is True
+    assert "openvino-genai" in message
+    assert "pip install openvino-genai" in message
+
+
+def test_get_npu_whisper_pipeline_wraps_other_load_failures(monkeypatch):
+    class _FailingPipeline:
+        def __init__(self, model_dir, device):
+            raise RuntimeError("model directory not found")
+
+    _install_fake_openvino_genai(monkeypatch, _FailingPipeline)
+
+    import blackvue.generate.speech as speech_module
+
+    speech_module._NPU_PIPELINE_CACHE.clear()
+    model_dir = Path("/tmp/_bad-npu-model-dir")
+
+    try:
+        speech_module._get_npu_whisper_pipeline(model_dir)
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised is True
+    assert "model directory not found" in message
+    assert str(model_dir) in message
+
+
+def test_get_npu_whisper_pipeline_caches_by_model_dir(monkeypatch):
+    calls = []
+
+    class _FakePipeline:
+        def __init__(self, model_dir, device):
+            calls.append(model_dir)
+
+    _install_fake_openvino_genai(monkeypatch, _FakePipeline)
+
+    import blackvue.generate.speech as speech_module
+
+    speech_module._NPU_PIPELINE_CACHE.clear()
+    model_dir = Path("/tmp/_cache-test-npu-model-dir")
+
+    first = speech_module._get_npu_whisper_pipeline(model_dir)
+    second = speech_module._get_npu_whisper_pipeline(model_dir)
+
+    assert first is second
+    assert calls == [str(model_dir)]
+
+
+def test_decode_for_npu_decodes_real_audio(tmp_path):
+    # Real ffmpeg, real decode, real numpy (numpy - unlike torch above
+    # - is actually installed in this sandbox). Same short real-audio
+    # approach as test_load_waveform_via_ffmpeg_decodes_real_audio.
+    import blackvue.generate.speech as speech_module
+
+    source = tmp_path / "silence.wav"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono",
+            "-t", "0.5",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    waveform = speech_module._decode_for_npu(source)
+
+    # 0.5s @ 16kHz mono float32 = 8000 samples, plain numpy array (no
+    # torch/pyannote-style wrapping needed for WhisperPipeline.generate()).
+    assert len(waveform) == 8000
+    assert waveform.dtype.name == "float32"
+
+
+def test_decode_for_npu_reports_missing_numpy_cleanly(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "numpy", None)
+
+    import blackvue.generate.speech as speech_module
+
+    source = tmp_path / "does-not-need-to-exist.aac"
+
+    try:
+        speech_module._decode_for_npu(source)
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised is True
+    assert "numpy" in message
+
+
+def test_whisper_language_token_wraps_a_plain_code():
+    import blackvue.generate.speech as speech_module
+
+    assert speech_module._whisper_language_token("en") == "<|en|>"
+
+
+def test_whisper_language_token_passes_through_an_already_wrapped_token():
+    import blackvue.generate.speech as speech_module
+
+    assert speech_module._whisper_language_token("<|sv|>") == "<|sv|>"
+
+
+class _FakeNpuChunk:
+    def __init__(self, start_ts, end_ts, text):
+        self.start_ts = start_ts
+        self.end_ts = end_ts
+        self.text = text
+
+
+class _FakeNpuGenerateResult:
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+
+def test_npu_whisper_transcribe_converts_chunks_to_segments(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    received = {}
+
+    class _FakePipeline:
+        def generate(self, waveform, **kwargs):
+            received["waveform"] = waveform
+            received["kwargs"] = kwargs
+            return _FakeNpuGenerateResult(
+                (
+                    _FakeNpuChunk(0.0, 1.5, " hello "),
+                    _FakeNpuChunk(1.5, 3.0, "world"),
+                )
+            )
+
+    monkeypatch.setattr(
+        speech_module,
+        "_get_npu_whisper_pipeline",
+        lambda model_dir: _FakePipeline(),
+    )
+    monkeypatch.setattr(
+        speech_module, "_decode_for_npu", lambda source: "fake-waveform"
+    )
+
+    segments = speech_module._npu_whisper_transcribe(
+        Path("/tmp/model-dir"), Path("/tmp/audio.aac"), language="en"
+    )
+
+    assert segments == (
+        SpeechSegment(start=0.0, end=1.5, text="hello"),
+        SpeechSegment(start=1.5, end=3.0, text="world"),
+    )
+    assert received["waveform"] == "fake-waveform"
+    assert received["kwargs"] == {
+        "return_timestamps": True,
+        "language": "<|en|>",
+        "task": "transcribe",
+    }
+
+
+def test_npu_whisper_transcribe_wraps_generate_failures(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    class _FailingPipeline:
+        def generate(self, waveform, **kwargs):
+            raise RuntimeError("NPU device busy")
+
+    monkeypatch.setattr(
+        speech_module,
+        "_get_npu_whisper_pipeline",
+        lambda model_dir: _FailingPipeline(),
+    )
+    monkeypatch.setattr(
+        speech_module, "_decode_for_npu", lambda source: "fake-waveform"
+    )
+
+    try:
+        speech_module._npu_whisper_transcribe(
+            Path("/tmp/model-dir"), Path("/tmp/audio.aac"), language="en"
+        )
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised is True
+    assert "NPU device busy" in message
+    assert "audio.aac" in message
+
+
+def test_transcribe_with_npu_model_dir_requires_a_language():
+    try:
+        transcribe(
+            Path("/tmp/audio.aac"), npu_model_dir=Path("/tmp/model-dir")
+        )
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised is True
+    assert "--language" in message
+
+
+def test_transcribe_with_npu_model_dir_bypasses_faster_whisper(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError(
+            "the faster-whisper path should not run when npu_model_dir "
+            "is given"
+        )
+
+    monkeypatch.setattr(speech_module, "_whisper_transcribe", _refuse)
+    monkeypatch.setattr(
+        speech_module,
+        "_npu_whisper_transcribe",
+        lambda model_dir, source, *, language: (
+            SpeechSegment(start=0.0, end=1.0, text="hello"),
+            SpeechSegment(start=1.0, end=2.0, text="world"),
+        ),
+    )
+
+    transcript = transcribe(
+        Path("/tmp/audio.aac"),
+        language="en",
+        npu_model_dir=Path("/tmp/model-dir"),
+    )
+
+    assert transcript.text == "hello world"
+    assert transcript.language == "en"
+    assert transcript.segments == (
+        SpeechSegment(start=0.0, end=1.0, text="hello"),
+        SpeechSegment(start=1.0, end=2.0, text="world"),
+    )

@@ -10,7 +10,8 @@
 bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--extract-audio] [--get-duration]
             [--transcribe] [--translate LANG] [--language LANG]
-            [--model-size SIZE] [--diarize] [--hf-token TOKEN]
+            [--model-size SIZE] [--npu-model-dir PATH]
+            [--diarize] [--hf-token TOKEN]
             [--srt] [--lrc]
             [--overwrite] [--dry-run] [-v]
             [PATH]
@@ -57,8 +58,9 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 
 | Option | Description |
 |---|---|
-| `--language LANG` | Spoken language hint (e.g. `en`). Auto-detected if omitted. |
-| `--model-size SIZE` | faster-whisper model size. Default: `small`. |
+| `--language LANG` | Spoken language hint (e.g. `en`). Auto-detected if omitted - except with `--npu-model-dir`, which requires it (see below). |
+| `--model-size SIZE` | faster-whisper model size. Default: `small`. Ignored when `--npu-model-dir` is given. |
+| `--npu-model-dir PATH` | Use an Intel NPU (OpenVINO GenAI) instead of faster-whisper, pointed at an already-converted OpenVINO IR Whisper model directory. Requires `--language` - this backend cannot auto-detect the spoken language. See "Intel NPU transcription" below. **Not verified against real Intel NPU hardware** - built from OpenVINO GenAI's own published API docs; there's no Intel NPU in this project's dev/test environment. Try it and report back if it doesn't work as documented. |
 | `--diarize` | Label who is speaking (e.g. `[SPEAKER_00] ...`), using pyannote.audio. Requires a HuggingFace access token. |
 | `--hf-token TOKEN` | HuggingFace token for `--diarize`. Create one at <https://huggingface.co/settings/tokens>, then accept the model license at <https://huggingface.co/pyannote/speaker-diarization-community-1>. Falls back to the `HF_TOKEN` environment variable if omitted. |
 
@@ -70,6 +72,30 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 | `--dry-run` | Show what would be generated without generating it. |
 | `-v`, `--verbose` | Print each file as it is generated. |
 | `-h`, `--help` | Show help and exit. |
+
+## INTEL NPU TRANSCRIPTION
+
+`--npu-model-dir` transcribes using an Intel NPU (Neural Processing Unit, e.g. the ones built into Core Ultra-series CPUs) via OpenVINO GenAI's `WhisperPipeline`, instead of the default faster-whisper/CTranslate2 backend, which has no NPU support at all. This is a completely separate code path (`blackvue.generate.speech._npu_whisper_transcribe`), not a device switch on the default one.
+
+**Not verified against real Intel NPU hardware as of this writing.** It was built from OpenVINO GenAI's own published API (the device string swaps from `"CPU"`/`"GPU"` to `"NPU"`; no other call changes are documented as needed), but there's no Intel NPU available in this project's dev/test environment to confirm it against. If you try it on real hardware and something doesn't match what's described here, that's useful to know.
+
+Setup:
+
+1. Install the extra: `pip install .[npu]` (or `pip install openvino-genai` directly).
+2. Convert a Whisper model to OpenVINO's IR format once, ahead of time - `--npu-model-dir` expects an already-converted model directory, not a model name:
+
+   ```
+   pip install optimum[openvino] --break-system-packages
+   optimum-cli export openvino --trust-remote-code \
+       --model openai/whisper-large-v3-turbo \
+       --weight-format int4 --disable-stateful \
+       /path/to/npu-model
+   ```
+
+   `--disable-stateful` is required specifically for the NPU's KV-cache decoder (not needed for CPU/GPU). Pre-converted models are also available on Hugging Face (e.g. search for `whisper-large-v3-turbo-int4-ov-npu`) as an alternative to converting one yourself.
+3. Use it: `bv-generate --transcribe --language en --npu-model-dir /path/to/npu-model`
+
+`--npu-model-dir` always requires `--language` alongside it - unlike the default backend, this path cannot auto-detect the spoken language, so `bv-generate` refuses to start without one rather than fail partway through.
 
 ## EXIT STATUS
 
@@ -98,6 +124,12 @@ Transcribe with speaker labels:
 ```
 export HF_TOKEN=hf_...
 bv-generate --transcribe --diarize
+```
+
+Transcribe using an Intel NPU instead of faster-whisper (see "Intel NPU transcription" above for the one-time model setup):
+
+```
+bv-generate --transcribe --language en --npu-model-dir /path/to/npu-model
 ```
 
 Regenerate everything from scratch for a specific recording prefix:

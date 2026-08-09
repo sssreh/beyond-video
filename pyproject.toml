@@ -46,6 +46,18 @@ speech = [
     "faster-whisper>=1.0",
     "pyannote.audio>=4.0",
 ]
+# bv-generate --transcribe/--translate --npu-model-dir: Intel NPU
+# (OpenVINO GenAI) Whisper transcription, an alternative to the
+# faster-whisper/CTranslate2 path above which has no NPU support at
+# all. Its own group rather than folded into `speech` above: it's a
+# large, Windows/Intel-specific dependency nobody without an Intel
+# Core Ultra-class NPU has any reason to install, and `speech` already
+# works standalone without it (see _load_npu_whisper_pipeline()'s own
+# docstring in generate/speech.py). Built but not verified against
+# real Intel NPU hardware - see WORKING_CONTEXT.md.
+npu = [
+    "openvino-genai>=2025.1",
+]
 # bv-generate --translate, bv-lang.
 translate = [
     "argostranslate>=1.9",

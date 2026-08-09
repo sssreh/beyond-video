@@ -28,6 +28,7 @@ def _base_args(**overrides):
         translate=None,
         language=None,
         model_size="small",
+        npu_model_dir=None,
         diarize=False,
         hf_token=None,
         srt=False,
@@ -90,6 +91,29 @@ def test_parse_args_diarize_allowed_with_transcribe():
     args = parse_args(["/some/path", "--transcribe", "--diarize"])
 
     assert args.diarize is True
+
+
+def test_parse_args_npu_model_dir_defaults_to_none():
+    args = parse_args(["/some/path", "--transcribe"])
+
+    assert args.npu_model_dir is None
+
+
+def test_parse_args_npu_model_dir_requires_language():
+    with pytest.raises(SystemExit):
+        parse_args([
+            "/some/path", "--transcribe", "--npu-model-dir", "/tmp/npu-model",
+        ])
+
+
+def test_parse_args_npu_model_dir_allowed_with_language():
+    args = parse_args([
+        "/some/path", "--transcribe",
+        "--npu-model-dir", "/tmp/npu-model", "--language", "en",
+    ])
+
+    assert args.npu_model_dir == Path("/tmp/npu-model")
+    assert args.language == "en"
 
 
 def test_translate_diarized_preserves_speaker_labels(monkeypatch):
@@ -371,7 +395,9 @@ def _fake_transcribe_factory(calls, language="th"):
 
     default_language = language
 
-    def fake_transcribe(source, *, language=None, model_size="small"):
+    def fake_transcribe(
+        source, *, language=None, model_size="small", npu_model_dir=None
+    ):
         calls.append(source)
         return Transcript(
             text="hello world",
@@ -574,7 +600,7 @@ def test_translate_only_with_diarize_bypasses_cached_transcript(
 def test_translate_only_diarize_produces_diarized_filenames(
     tmp_path, monkeypatch
 ):
-    def fake_transcribe(source, *, language, model_size):
+    def fake_transcribe(source, *, language, model_size, npu_model_dir=None):
         return Transcript(
             text="hello",
             language=language or "th",
@@ -700,7 +726,7 @@ def test_transcribe_extracts_and_persists_audio_when_missing(
         extracted.append((source, destination))
         destination.write_bytes(b"audio")
 
-    def fake_transcribe(source, *, language, model_size):
+    def fake_transcribe(source, *, language, model_size, npu_model_dir=None):
         transcribed.append(source)
         return Transcript(
             text="hej da",
@@ -732,6 +758,51 @@ def test_transcribe_extracts_and_persists_audio_when_missing(
     assert extracted == [(video_path, aac_path)]
     assert transcribed == [aac_path]
     assert aac_path.exists()
+
+
+def test_transcribe_threads_npu_model_dir_into_transcribe_call(
+    tmp_path, monkeypatch
+):
+    # --npu-model-dir has to actually reach transcribe() for the NPU
+    # backend (blackvue.generate.speech) to ever get used - this is
+    # the CLI-layer half of that wiring; the backend itself (bypassing
+    # faster-whisper when npu_model_dir is given) is covered by
+    # test_speech.py's own NPU tests.
+    received_npu_model_dir = []
+
+    def fake_transcribe(source, *, language, model_size, npu_model_dir=None):
+        received_npu_model_dir.append(npu_model_dir)
+        return Transcript(
+            text="hello",
+            language=language or "en",
+            segments=(SpeechSegment(0.0, 1.0, "hello"),),
+        )
+
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"audio"),
+    )
+    monkeypatch.setattr(bv_generate, "transcribe", fake_transcribe)
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    video_path = tmp_path / "20260715_133255_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    npu_model_dir = Path("/tmp/npu-model")
+    args = _base_args(
+        transcribe=True, language="en", npu_model_dir=npu_model_dir
+    )
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert received_npu_model_dir == [npu_model_dir]
 
 
 def test_transcribe_reuses_existing_audio_without_extracting(
@@ -1019,7 +1090,7 @@ def test_transcribe_srt_reflects_translate_language(tmp_path, monkeypatch):
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small": Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
             text="Привет мир",
             language="ru",
             segments=(
@@ -1084,7 +1155,7 @@ def test_transcribe_srt_stays_original_language_without_translate(
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small": Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
             text="Привет мир",
             language="ru",
             segments=(SpeechSegment(0.0, 1.0, "Привет мир"),),
@@ -1131,7 +1202,7 @@ def test_transcribe_srt_translation_failure_skips_srt_and_reports_error(
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small": Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
             text="Привет мир",
             language="ru",
             segments=(SpeechSegment(0.0, 1.0, "Привет мир"),),
@@ -1173,7 +1244,7 @@ def test_translate_only_srt_reflects_translate_language(tmp_path, monkeypatch):
     monkeypatch.setattr(
         bv_generate,
         "transcribe",
-        lambda source, *, language=None, model_size="small": Transcript(
+        lambda source, *, language=None, model_size="small", npu_model_dir=None: Transcript(
             text="Привет мир",
             language="ru",
             segments=(

@@ -25,8 +25,15 @@ from .media import MediaToolError
 # either.
 _DIARIZATION_SAMPLE_RATE = 16000
 
+# Whisper models (whichever backend runs them) expect 16kHz mono
+# audio - same rate as _DIARIZATION_SAMPLE_RATE above, kept as its own
+# constant since the NPU path's audio decode (_decode_for_npu) is
+# conceptually independent of diarization's.
+_NPU_SAMPLE_RATE = 16000
+
 _WHISPER_MODEL_CACHE: dict[str, object] = {}
 _DIARIZATION_PIPELINE_CACHE: dict[str, object] = {}
+_NPU_PIPELINE_CACHE: dict[str, object] = {}
 
 #  pyannote.audio 4.0 (released Sep 2025) replaced the legacy
 # speaker-diarization-3.1 pipeline with this one as its recommended
@@ -181,6 +188,165 @@ def _whisper_transcribe(model_size: str, source: Path, **kwargs):
         return cpu_model.transcribe(str(source), **kwargs)
 
 
+def _load_npu_whisper_pipeline(model_dir: Path):
+    """Load an OpenVINO GenAI WhisperPipeline on the Intel NPU.
+
+    This is a completely separate backend from faster-whisper/
+    CTranslate2 above - CTranslate2 has no NPU support at all, so NPU
+    acceleration needs OpenVINO GenAI's own WhisperPipeline instead,
+    pointed at an already-converted OpenVINO IR model directory rather
+    than a faster-whisper model name. model_dir must be produced ahead
+    of time with:
+
+        optimum-cli export openvino --trust-remote-code \\
+            --model openai/whisper-large-v3-turbo \\
+            --weight-format int4 --disable-stateful <model_dir>
+
+    (--disable-stateful specifically is required for NPU's KV-cache
+    decoder - not needed for CPU/GPU - see docs/man/bv-generate.md for
+    the full one-time setup, including pre-converted models available
+    on Hugging Face as an alternative to converting one yourself.)
+
+    NOT independently verified against real Intel NPU hardware as of
+    this writing - built from OpenVINO GenAI's own published API
+    (device string "NPU" swapped in for "CPU"/"GPU", no other call
+    changes documented as needed), but there is no Intel NPU in this
+    project's dev/CI environment to actually test against. Christer:
+    please confirm this works as expected on your Core Ultra desktop
+    and report back if the real API doesn't match what's called here.
+    """
+
+    import openvino_genai
+
+    return openvino_genai.WhisperPipeline(str(model_dir), "NPU")
+
+
+def _get_npu_whisper_pipeline(model_dir: Path):
+    """Return a cached OpenVINO GenAI WhisperPipeline, loading it if
+    needed. Cached per model_dir, the same way _get_whisper_model()
+    caches per faster-whisper model_size - loading is the slow part
+    (compiling the model for the NPU), so this avoids paying that cost
+    on every transcribe() call within one process.
+    """
+
+    cache_key = str(model_dir)
+
+    if cache_key not in _NPU_PIPELINE_CACHE:
+        try:
+            _NPU_PIPELINE_CACHE[cache_key] = _load_npu_whisper_pipeline(
+                model_dir
+            )
+        except ImportError as exc:
+            raise MediaToolError(
+                "openvino-genai is not installed "
+                "(pip install openvino-genai) - see "
+                "docs/man/bv-generate.md for the full NPU setup, "
+                "including the one-time model conversion step"
+            ) from exc
+        except Exception as exc:
+            raise MediaToolError(
+                f"could not load NPU Whisper model from {model_dir}: {exc}"
+            ) from exc
+
+    return _NPU_PIPELINE_CACHE[cache_key]
+
+
+def _decode_for_npu(source: Path):
+    """Decode source to a mono float32 waveform at _NPU_SAMPLE_RATE,
+    for OpenVINO GenAI's WhisperPipeline.generate().
+
+    Same ffmpeg-direct approach as _load_waveform_via_ffmpeg() below
+    (see its docstring for the reasoning: shells out to ffmpeg
+    directly rather than depending on a Python audio-decode library
+    with its own native-DLL story), but returns a plain numpy array
+    instead of a torch tensor wrapped in pyannote's {'waveform',
+    'sample_rate'} dict - WhisperPipeline.generate() takes a raw
+    sample array directly, no such wrapping needed.
+    """
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise MediaToolError(
+            "numpy is not installed (pip install numpy)"
+        ) from exc
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-v", "error",
+                "-i", str(source),
+                "-f", "f32le",
+                "-ac", "1",
+                "-ar", str(_NPU_SAMPLE_RATE),
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffmpeg failed to decode {source.name} for NPU "
+            f"transcription: {exc.stderr.decode(errors='replace').strip()}"
+        ) from exc
+
+    return np.frombuffer(result.stdout, dtype=np.float32).copy()
+
+
+def _whisper_language_token(language: str) -> str:
+    """Normalize a plain language code (e.g. "en") into the
+    "<|en|>"-style token OpenVINO GenAI's WhisperPipeline.generate()
+    expects for its language= argument, matching Whisper's own
+    special-token vocabulary. Passed through unchanged if it's already
+    given in that wrapped form.
+    """
+
+    if language.startswith("<|") and language.endswith("|>"):
+        return language
+
+    return f"<|{language}|>"
+
+
+def _npu_whisper_transcribe(
+    model_dir: Path, source: Path, *, language: str
+) -> tuple[SpeechSegment, ...]:
+    """Transcribe source using OpenVINO GenAI's WhisperPipeline on the
+    Intel NPU, returning segments in the same SpeechSegment shape the
+    faster-whisper path produces.
+
+    Unlike _whisper_transcribe(), this never auto-detects the spoken
+    language - see transcribe()'s own docstring for why --npu-model-
+    dir requires an explicit --language alongside it.
+    """
+
+    pipeline = _get_npu_whisper_pipeline(model_dir)
+    waveform = _decode_for_npu(source)
+
+    try:
+        result = pipeline.generate(
+            waveform,
+            return_timestamps=True,
+            language=_whisper_language_token(language),
+            task="transcribe",
+        )
+    except Exception as exc:
+        raise MediaToolError(
+            f"NPU transcription failed for {source.name}: {exc}"
+        ) from exc
+
+    return tuple(
+        SpeechSegment(
+            start=chunk.start_ts,
+            end=chunk.end_ts,
+            text=chunk.text.strip(),
+        )
+        for chunk in result.chunks
+    )
+
+
 def detect_language(source: Path, *, model_size: str = "small") -> str:
     """Cheaply detect the spoken language of source.
 
@@ -206,13 +372,40 @@ def transcribe(
     *,
     language: str | None = None,
     model_size: str = "small",
+    npu_model_dir: Path | None = None,
 ) -> Transcript:
-    """Transcribe the audio track of source using faster-whisper.
+    """Transcribe the audio track of source using faster-whisper, or
+    an Intel NPU (OpenVINO GenAI's WhisperPipeline) if npu_model_dir
+    is given.
 
     source may be a video file or an already-extracted audio file -
     faster-whisper reads either directly via ffmpeg. If language is
-    None, the spoken language is auto-detected.
+    None, the spoken language is auto-detected - but only on the
+    default faster-whisper path. The NPU path (see
+    _npu_whisper_transcribe()) has no auto-detect support, so language
+    must be given whenever npu_model_dir is; this raises MediaToolError
+    up front rather than letting that surface as a confusing failure
+    partway through OpenVINO GenAI.
+
+    The NPU path has not been verified against real Intel NPU hardware
+    - see _load_npu_whisper_pipeline()'s docstring for the caveat.
     """
+
+    if npu_model_dir is not None:
+        if language is None:
+            raise MediaToolError(
+                "NPU transcription needs an explicit language "
+                "(--language) - it can't auto-detect the spoken "
+                "language the way the default faster-whisper backend "
+                "can"
+            )
+
+        segments = _npu_whisper_transcribe(
+            npu_model_dir, source, language=language
+        )
+        text = " ".join(segment.text for segment in segments).strip()
+
+        return Transcript(text=text, language=language, segments=segments)
 
     try:
         raw_segments, info = _whisper_transcribe(

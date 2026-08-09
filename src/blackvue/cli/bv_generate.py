@@ -150,6 +150,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--npu-model-dir",
+        metavar="PATH",
+        type=Path,
+        default=None,
+        help=(
+            "Use an Intel NPU (OpenVINO GenAI) instead of faster-whisper "
+            "for --transcribe/--translate, pointed at an OpenVINO IR "
+            "Whisper model directory (see docs/man/bv-generate.md for "
+            "the one-time 'optimum-cli export openvino' conversion "
+            "step). Requires --language - this backend cannot "
+            "auto-detect the spoken language. Not verified against "
+            "real Intel NPU hardware; try it and report back if it "
+            "doesn't work as documented."
+        ),
+    )
+
+    parser.add_argument(
         "--diarize",
         action="store_true",
         help=(
@@ -229,6 +246,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.diarize and not (args.transcribe or args.translate is not None):
         parser.error("--diarize requires --transcribe or --translate")
+
+    if args.npu_model_dir is not None and args.language is None:
+        parser.error(
+            "--npu-model-dir requires --language - the Intel NPU "
+            "backend cannot auto-detect the spoken language"
+        )
 
     if (args.srt or args.lrc) and not (
         args.transcribe or args.translate is not None
@@ -728,6 +751,7 @@ def _do_translate_only(
                 audio_source,
                 language=args.language,
                 model_size=args.model_size,
+                npu_model_dir=args.npu_model_dir,
             )
         except MediaToolError as exc:
             warn(f"bv-generate: {recording.id}: {exc}")
@@ -885,7 +909,12 @@ def _do_transcribe_with_optional_translate(
     # --language was given, that's already known. Otherwise it has
     # to be detected first - cheaply, so a recording that's already
     # been transcribed doesn't pay for a full re-transcription just
-    # to find out its own output already exists.
+    # to find out its own output already exists. This detect_language()
+    # call always uses faster-whisper regardless of --npu-model-dir -
+    # but parse_args() already requires --language whenever
+    # --npu-model-dir is given (the NPU backend can't auto-detect), so
+    # transcript_language is never None here in that case and this
+    # branch is naturally never reached.
     transcript_destination = None
     need_transcript_write = False
     transcript_language = args.language
@@ -980,6 +1009,7 @@ def _do_transcribe_with_optional_translate(
             audio_source,
             language=transcript_language,
             model_size=args.model_size,
+            npu_model_dir=args.npu_model_dir,
         )
     except MediaToolError as exc:
         warn(f"bv-generate: {recording.id}: {exc}")
