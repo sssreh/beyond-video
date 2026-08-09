@@ -6,7 +6,11 @@
 <h2>{% if trip.prefix %}<span class="badge">{{ trip.prefix }}</span> {% endif %}{{ trip.label }}</h2>
 
 {% if trip.gpx %}
-<p><a href="/trips/{{ trip.id }}/location">Show start location</a></p>
+<p>
+  <a href="/trips/{{ trip.id }}/location">Show start location</a>
+  &middot;
+  <a href="/trips/{{ trip.id }}/kml">Open in Google Earth (KML)</a>
+</p>
 {% endif %}
 
 {% if trip.primary_video %}

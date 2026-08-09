@@ -38,6 +38,7 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -71,6 +72,7 @@ from ..core.camera_config import default_config_dir
 from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
 from ..export.geocoding import load_or_reverse_geocode
+from ..export.kml_writer import gpx_to_kml
 from ..generate.media import MediaToolError
 from ..generate.mp4_repair import load_or_repair_parking_video
 from ..lexicaltimeparser import LexicalTimeParser
@@ -317,6 +319,41 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "address": address,
                 "address_error": address_error,
                 "error": error,
+            },
+        )
+
+    @app.get("/trips/{trip_id}/kml")
+    async def trip_kml(
+        trip_id: str, user: User = Depends(require_login)
+    ):
+        # A dedicated route rather than an addition to trip_file()
+        # below: trip.kml doesn't exist as a real file in the trip's
+        # folder (unlike trip.gpx, which trip_file() just serves
+        # straight off disk) - it's generated on demand from
+        # trip.gpx, same as trip_location() already generates its own
+        # page from trip.gpx rather than reading a pre-written file.
+        # Google Earth Pro opens trip.gpx directly (File > Open), but
+        # Google Earth Web only accepts KML/KMZ via its own Import
+        # flow - see kml_writer.gpx_to_kml()'s own docstring.
+        trip = _find_trip(app.state.trip_cache, target, trip_id)
+        if not trip.gpx:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="this trip has no GPS track",
+            )
+
+        kml = gpx_to_kml(trip.folder / GPX_FILENAME, name=trip.label)
+        if kml is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no valid GPS fix found in this trip's GPS track",
+            )
+
+        return Response(
+            content=kml,
+            media_type="application/vnd.google-earth.kml+xml",
+            headers={
+                "Content-Disposition": f'attachment; filename="{trip_id}.kml"'
             },
         )
 
