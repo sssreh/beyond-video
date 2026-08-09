@@ -24,6 +24,7 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
+from blackvue.export.map_video import DEFAULT_INTRO_SECONDS
 from blackvue.export.map_video import DEFAULT_MAP_ICON_PATH
 from blackvue.export.mirror_icon import DEFAULT_MIRROR_ICON_PATH
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
@@ -438,6 +439,8 @@ def bv_export(
     map_icon: str | Path | None = None,
     map_zoom_meters: float | None = None,
     map_track_up: bool = False,
+    render_map_intro: bool = False,
+    map_intro_seconds: float = DEFAULT_INTRO_SECONDS,
     render_gsensor: bool = False,
     render_gsensor_graph: bool = False,
     gsensor_graph_x: bool = False,
@@ -783,6 +786,8 @@ def bv_export(
                 map_icon=map_icon_path,
                 map_zoom_meters=map_zoom_meters,
                 map_track_up=map_track_up,
+                render_map_intro=render_map_intro,
+                map_intro_seconds=map_intro_seconds,
                 render_gsensor=render_gsensor,
                 render_gsensor_graph=render_gsensor_graph,
                 gsensor_graph_x=gsensor_graph_x,
@@ -1124,6 +1129,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "reuses it for every frame, but a rotating scene needs a "
             "fresh redraw whenever the heading changes. Doesn't affect "
             "--stitch-map's own embedded panel."
+        ),
+    )
+
+    parser.add_argument(
+        "--map-intro",
+        dest="render_map_intro",
+        action="store_true",
+        help=(
+            "Also render intro.mp4: a short establishing-shot flyover "
+            "of the trip's whole route, zooming from a wide overview "
+            "into the same framing --map's static overview uses. If "
+            "--stitch is also given, intro.mp4 is automatically "
+            "prepended onto the front of stitch.mp4 (sized/timed to "
+            "match it exactly, with its own real audio carried "
+            "through, delayed to stay in sync); without --stitch, "
+            "intro.mp4 is written standalone. See --map-intro-seconds "
+            "to change its length."
+        ),
+    )
+
+    parser.add_argument(
+        "--map-intro-seconds",
+        dest="map_intro_seconds",
+        type=float,
+        default=DEFAULT_INTRO_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "Length of --map-intro's flyover, in seconds. Meaningless "
+            f"without --map-intro. Default: {DEFAULT_INTRO_SECONDS:g}."
         ),
     )
 
@@ -1722,6 +1756,8 @@ def _run(
             map_icon=args.map_icon,
             map_zoom_meters=args.map_zoom_meters,
             map_track_up=args.map_track_up,
+            render_map_intro=args.render_map_intro,
+            map_intro_seconds=args.map_intro_seconds,
             render_gsensor=args.render_gsensor,
             render_gsensor_graph=args.render_gsensor_graph,
             gsensor_graph_x=args.gsensor_graph_x,

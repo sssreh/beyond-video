@@ -32,6 +32,7 @@ from .osm_roads import Area
 from .osm_roads import BoundingBox
 from .osm_roads import Road
 from .osm_roads import bounding_box_around_point
+from .osm_roads import bounding_box_for_fixes
 from .osm_roads import features_within_bbox
 from .osm_roads import index_features
 from .osm_roads import index_roads
@@ -43,6 +44,29 @@ from .osm_roads import roads_within_bbox
 # future --stitch item), ffmpeg can retime it there; map.mp4 doesn't
 # need to match the front/rear video's own frame rate.
 DEFAULT_FPS = 5
+
+# render_intro_flyover()'s own defaults (task: Christer, having just
+# imported a trip's KML into Google Earth to see the route flown
+# through, asked "is it possible to extract that slide show and by an
+# option be the introduction to the trip" - Google Earth Web's own
+# flyover tour has no export API and screen-recording it would be
+# fragile and against OSM/Google's own terms for automated capture, so
+# this renders an equivalent establishing shot natively instead, from
+# the same OSM road data map.mp4 already draws from).
+#
+# 5 seconds reads as a real "arriving at the map" beat without
+# stalling the video open on something nobody asked to watch for long -
+# short enough that even someone who skips intros wouldn't bother.
+DEFAULT_INTRO_SECONDS = 5.0
+
+# How many times wider than the final, "arrived" framing (the same
+# whole-trip bbox map.mp4's own static overview uses) the flyover's
+# very first frame starts at. 8x reads as a genuine "establishing shot"
+# - enough context to place the trip in its surroundings before the
+# camera commits to the route itself - without the starting view being
+# so wide the roads are unrecognizable smudges for the flyover's own
+# first second or two.
+INTRO_ZOOM_START_MULTIPLIER = 8.0
 
 # In `--map-zoom` (follow-camera) mode, how many of the most recent
 # fixes' worth of "route driven so far" get projected/drawn each
@@ -419,6 +443,44 @@ def _is_live_fix(
     return span.total_seconds() <= MAX_LIVE_FIX_GAP_SECONDS
 
 
+def _load_marker_image(marker_image_path: Path | None) -> Image.Image | None:
+    """Load and pre-scale a custom position-marker image, or return
+    None if `marker_image_path` itself is None (the "no custom
+    marker, draw the plain arrow instead" default both
+    render_map_video() and render_intro_flyover() share).
+
+    Raises MediaToolError if the image can't be loaded - same
+    convention as every other external-file load in this module.
+
+    Scaled once here (via MARKER_IMAGE_SCALE), not per frame inside
+    _paste_marker_image()'s own per-frame rotate/paste - the marker
+    image itself never changes mid-render, so resizing it once up
+    front is free compared to redoing it on every single frame. See
+    MARKER_IMAGE_SCALE's own comment for why this applies uniformly to
+    any marker image, bundled or custom.
+
+    Factored out of render_map_video() (where this logic originally
+    lived inline) so render_intro_flyover() can load a marker exactly
+    the same way without duplicating the try/except/resize block.
+    """
+
+    if marker_image_path is None:
+        return None
+
+    try:
+        marker_image = Image.open(marker_image_path).convert("RGBA")
+    except (FileNotFoundError, OSError) as exc:
+        raise MediaToolError(
+            f"could not load marker image {marker_image_path}: {exc}"
+        ) from exc
+
+    scaled_size = (
+        max(1, round(marker_image.width * MARKER_IMAGE_SCALE)),
+        max(1, round(marker_image.height * MARKER_IMAGE_SCALE)),
+    )
+    return marker_image.resize(scaled_size, resample=Image.LANCZOS)
+
+
 def render_map_video(
     fixes: tuple[GpsFix, ...],
     roads: tuple[Road, ...],
@@ -558,26 +620,7 @@ def render_map_video(
     if total_seconds <= 0:
         return None
 
-    marker_image = None
-    if marker_image_path is not None:
-        try:
-            marker_image = Image.open(marker_image_path).convert("RGBA")
-        except (FileNotFoundError, OSError) as exc:
-            raise MediaToolError(
-                f"could not load marker image {marker_image_path}: {exc}"
-            ) from exc
-
-        # Scaled once here, not per frame inside _paste_marker_image()'s
-        # own per-frame rotate/paste - the marker image itself never
-        # changes mid-render, so resizing it once up front is free
-        # compared to redoing it on every single frame. See
-        # MARKER_IMAGE_SCALE's own comment for why this applies
-        # uniformly to any marker image, bundled or custom.
-        scaled_size = (
-            max(1, round(marker_image.width * MARKER_IMAGE_SCALE)),
-            max(1, round(marker_image.height * MARKER_IMAGE_SCALE)),
-        )
-        marker_image = marker_image.resize(scaled_size, resample=Image.LANCZOS)
+    marker_image = _load_marker_image(marker_image_path)
 
     frame_count = max(2, int(total_seconds * fps) + 1)
 
@@ -783,6 +826,157 @@ def render_map_video(
                 height=height,
             )
             frame.save(frame_dir / f"frame_{frame_number:06d}.png")
+
+        encode_frame_sequence(frame_dir, destination, fps)
+
+    return destination
+
+
+def _ease_out_cubic(t: float) -> float:
+    """Standard ease-out cubic easing (0 at t=0, 1 at t=1, decelerating
+    into the landing) - used by render_intro_flyover() so the camera
+    reads as "arriving" at the trip's route and settling into place,
+    rather than zooming in at a constant, mechanical-looking rate."""
+
+    return 1 - (1 - t) ** 3
+
+
+def _lerp_bbox(start: BoundingBox, end: BoundingBox, t: float) -> BoundingBox:
+    """Linearly interpolate each of `start`/`end`'s four corners
+    independently - used to animate render_intro_flyover()'s camera
+    from a wide establishing view down to the trip's own final framing.
+    Plain per-corner interpolation (not a radius/center split) works
+    here because both boxes share the same center and aspect ratio by
+    construction (see render_intro_flyover()'s own `start_bbox`) - the
+    corners alone fully describe the zoom."""
+
+    return BoundingBox(
+        min_lat=start.min_lat + (end.min_lat - start.min_lat) * t,
+        min_lon=start.min_lon + (end.min_lon - start.min_lon) * t,
+        max_lat=start.max_lat + (end.max_lat - start.max_lat) * t,
+        max_lon=start.max_lon + (end.max_lon - start.max_lon) * t,
+    )
+
+
+def render_intro_flyover(
+    fixes: tuple[GpsFix, ...],
+    roads: tuple[Road, ...],
+    destination: Path,
+    *,
+    areas: tuple[Area, ...] = (),
+    duration_seconds: float = DEFAULT_INTRO_SECONDS,
+    fps: int = DEFAULT_FPS,
+    marker_image_path: Path | None = None,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    zoom_start_multiplier: float = INTRO_ZOOM_START_MULTIPLIER,
+) -> Path | None:
+    """Render a short establishing-shot "flyover" of a trip's whole
+    route at `destination`: the camera starts on a wide view of the
+    surrounding area and eases into the same tight framing map.mp4's
+    own static overview uses, with the complete route already drawn
+    (not built up over time the way map.mp4's "so far" line is - this
+    is a scene-setting shot, not a position readout, so the whole path
+    is there to be revealed as the camera arrives).
+
+    Built for bv-export's `--map-intro` (Christer: "is it possible to
+    extract that slide show and by an option be the introduction to
+    the trip", after importing a KML export into Google Earth Web and
+    watching its own flyover tour there - see kml_writer.py and
+    web/app.py's trip_kml() route for that KML export feature). Google
+    Earth's own flyover has no export API to pull a video out of, so
+    this renders an equivalent shot natively, from the same locally-
+    drawn OSM road data (osm_roads.py) map.mp4 already uses - no
+    screen-recording, no dependency on a browser being open, and no
+    question of whether capturing Google's own rendered tour would be
+    consistent with its usage terms.
+
+    Unlike render_map_video(), this isn't driven by real elapsed trip
+    time at all - `duration_seconds` is the flyover's own fixed screen
+    time (a handful of seconds), covering the whole render regardless
+    of how long the actual trip took. The camera's motion is a single
+    zoom (no pan): both the start and end framing share the same
+    real-world center - the trip's own bounding-box center, via
+    bounding_box_for_fixes(fixes, aspect_ratio=width/height), the exact
+    box map.mp4's own static overview already frames itself with - so
+    the flyover's last frame lines up with what a viewer sees next if
+    map.mp4 (or --stitch-map) plays right after it. The starting frame
+    is that same box scaled `zoom_start_multiplier`x wider on both
+    axes, still centered on the same point; every frame in between is
+    a per-corner linear interpolation (_lerp_bbox()) of an eased
+    progress fraction (_ease_out_cubic()) between the two, which
+    reads as a smooth zoom-in that settles rather than one that
+    arrives at a constant, mechanical rate.
+
+    The position marker (the same plain arrow, or a custom
+    `marker_image_path`, render_map_video() itself uses) sits at the
+    trip's own first real fix for the whole shot - there's no
+    "current position" concept here, just a mark of where the trip
+    that's about to play actually begins.
+
+    Returns None (and writes nothing) if there aren't at least two
+    valid, positioned fixes to draw a route from - same "nothing to
+    work with" convention render_map_video() uses.
+    """
+
+    positioned = _valid_positioned_fixes(fixes)
+    if len(positioned) < 2:
+        return None
+
+    aspect_ratio = width / height
+    end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=aspect_ratio)
+    if end_bbox is None:
+        return None
+
+    center_lat = (end_bbox.min_lat + end_bbox.max_lat) / 2
+    center_lon = (end_bbox.min_lon + end_bbox.max_lon) / 2
+    half_lat = (end_bbox.max_lat - end_bbox.min_lat) / 2 * zoom_start_multiplier
+    half_lon = (end_bbox.max_lon - end_bbox.min_lon) / 2 * zoom_start_multiplier
+    start_bbox = BoundingBox(
+        min_lat=center_lat - half_lat,
+        min_lon=center_lon - half_lon,
+        max_lat=center_lat + half_lat,
+        max_lon=center_lon + half_lon,
+    )
+
+    marker_image = _load_marker_image(marker_image_path)
+
+    route_points = tuple((fix.latitude, fix.longitude) for fix in positioned)
+    start_position = route_points[0]
+    start_heading = positioned[0].course
+
+    indexed_roads = index_roads(roads)
+    indexed_areas = index_features(areas)
+
+    frame_count = max(2, int(duration_seconds * fps) + 1)
+    last_frame_index = frame_count - 1
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as frame_dir_name:
+        frame_dir = Path(frame_dir_name)
+
+        for frame_number in range(frame_count):
+            t = frame_number / last_frame_index if last_frame_index else 1.0
+            eased_t = _ease_out_cubic(t)
+            frame_bbox = _lerp_bbox(start_bbox, end_bbox, eased_t)
+
+            frame_roads = roads_within_bbox(indexed_roads, frame_bbox)
+            frame_areas = features_within_bbox(indexed_areas, frame_bbox)
+
+            visual = render_frame_visual(
+                frame_bbox,
+                frame_roads,
+                route_points,
+                start_position,
+                areas=frame_areas,
+                heading=start_heading,
+                marker_image=marker_image,
+                show_marker=True,
+                width=width,
+                height=height,
+            )
+            visual.save(frame_dir / f"frame_{frame_number:06d}.png")
 
         encode_frame_sequence(frame_dir, destination, fps)
 

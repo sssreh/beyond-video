@@ -31,6 +31,7 @@ from ..generate.media import probe
 from ..generate.media import probe_audio_codec
 from ..generate.media import probe_audio_format
 from ..generate.media import select_source
+from ..generate.mp4_box_reader import read_mp4_info
 from ..generate.mp4_repair import load_or_repair_parking_video
 from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
@@ -42,6 +43,9 @@ from .geocoding import load_or_reverse_geocode
 from .gpx_writer import write_gpx
 from .gsensor_graph_video import render_gsensor_graph_video
 from .gsensor_video import render_gsensor_video
+from .map_video import DEFAULT_FPS
+from .map_video import DEFAULT_INTRO_SECONDS
+from .map_video import render_intro_flyover
 from .map_video import render_map_video
 from .media import change_playback_speed
 from .media import check_readable
@@ -94,6 +98,7 @@ class ExportResult:
     gsensor: Path | None = None
     map: Path | None = None
     map_zoom: Path | None = None
+    map_intro: Path | None = None
     gsensor_video: Path | None = None
     gsensor_graph_video: Path | None = None
     stitch: Path | None = None
@@ -1513,6 +1518,97 @@ def _replace_with_retry(
     source.unlink(missing_ok=True)
 
 
+def _prepend_intro_to_stitch(
+    intro_path: Path,
+    stitch_path: Path,
+    audio: Path | None,
+    intro_seconds: float,
+    work_dir: Path,
+    warnings: list[str],
+    log: TripLog,
+) -> None:
+    """Splice `intro_path` onto the front of `stitch_path`, in place,
+    keeping stitch.mp4's own already-muxed audio in sync by padding a
+    copy of the trip's own `audio` track with exactly `intro_seconds`
+    of real silence first - the same "pad rather than leave a hole"
+    approach `_pad_silence_for_missing_audio()` above already uses to
+    keep audio.aac synced with a Parking recording that has no audio
+    of its own, applied here to keep it synced with a new clip spliced
+    onto video that already has real audio muxed in.
+
+    `intro_path` and `stitch_path` don't share compatible encoder
+    settings for a plain stream-copy concat (intro.mp4 is built from
+    PIL-rendered PNG frames, stitch.mp4 from the trip's real camera
+    footage - see concatenate_media()'s own docstring for why that
+    always needs `force_reencode=True`), so the video side is always a
+    real re-encode, video-only (force_reencode never carries audio from
+    either source - same docstring). The audio side never touches that
+    re-encode at all: `audio` (already the exact same file
+    stitch_cameras() itself muxed into `stitch_path`, passed straight
+    through from export_trip()'s own `audio_path=audio` call) is
+    silence-padded and concatenated separately, then remuxed onto the
+    combined video stream, so stitch.mp4's real audio survives this
+    step as a plain stream copy rather than being re-encoded twice.
+
+    Degrades to a warning (leaving `stitch_path` exactly as it was,
+    without the intro) on any failure - one failed post-processing
+    step shouldn't cost the trip its own already-successfully-rendered
+    stitch.mp4. If `audio` is None (no audio track for this trip at
+    all) or its format can't be probed, the intro is still prepended,
+    just without carrying any audio through - `stitch_path` ends up
+    silent for its own real footage too in that case, which is why
+    that path warns explicitly rather than silently downgrading.
+    """
+
+    combined_video = work_dir / ".map_intro_video_only.mp4"
+    silence_path = work_dir / ".map_intro_silence.aac"
+    combined_audio = work_dir / ".map_intro_audio.aac"
+    muxed = work_dir / ".map_intro_stitch_final.mp4"
+
+    try:
+        concatenate_media(
+            [intro_path, stitch_path], combined_video, force_reencode=True
+        )
+
+        reference_format = None
+        if audio is not None:
+            try:
+                reference_format = probe_audio_format(audio)
+            except MediaToolError:
+                reference_format = None
+
+        if reference_format is None:
+            message = (
+                "map intro: could not determine stitch.mp4's audio format - "
+                "prepending intro.mp4 without audio, stitch.mp4 will now be "
+                "silent"
+                if audio is not None
+                else "map intro: stitch.mp4 has no audio track - prepending "
+                "intro.mp4 as-is"
+            )
+            warnings.append(message)
+            log.warning(message)
+            _replace_with_retry(combined_video, stitch_path)
+            return
+
+        sample_rate, channels = reference_format
+        generate_silence(
+            silence_path, intro_seconds,
+            sample_rate=sample_rate, channels=channels,
+        )
+        concatenate_media([silence_path, audio], combined_audio)
+        mux_audio_track(combined_video, combined_audio, muxed)
+        _replace_with_retry(muxed, stitch_path)
+    except MediaToolError as exc:
+        warnings.append(f"map intro: could not prepend to stitch.mp4: {exc}")
+        log.warning(f"map intro: could not prepend to stitch.mp4: {exc}")
+    finally:
+        combined_video.unlink(missing_ok=True)
+        silence_path.unlink(missing_ok=True)
+        combined_audio.unlink(missing_ok=True)
+        muxed.unlink(missing_ok=True)
+
+
 def export_trip(
     trip: Trip,
     destination: Path,
@@ -1522,6 +1618,8 @@ def export_trip(
     map_icon: Path | None = None,
     map_zoom_meters: float | None = None,
     map_track_up: bool = False,
+    render_map_intro: bool = False,
+    map_intro_seconds: float = DEFAULT_INTRO_SECONDS,
     render_gsensor: bool = False,
     render_gsensor_graph: bool = False,
     gsensor_graph_x: bool = False,
@@ -1596,6 +1694,47 @@ def export_trip(
     (the panel most people actually watch, embedded directly in
     stitch.mp4) rather than the separate standalone files - caught by
     Christer testing it for real: "--map-track-up dint work".
+
+    `render_map_intro=True` additionally renders intro.mp4 - a short
+    (`map_intro_seconds`, default map_video.DEFAULT_INTRO_SECONDS)
+    establishing-shot flyover of the trip's whole route, zooming from a
+    wide overview into the same framing map.mp4's own static overview
+    uses (see map_video.render_intro_flyover()). Built for Christer's
+    "is it possible to extract that slide show and by an option be the
+    introduction to the trip", after trying Google Earth Web's own
+    flyover tour on a trip's KML export (see web/trips.py's KML
+    feature) - Google's own tour has no export API, so this renders an
+    equivalent shot natively instead, from the same OSM road data
+    map.mp4 already draws from.
+
+    When `stitch_layout` is also given (see below), intro.mp4 is
+    rendered a second time, sized and frame-rate-matched to stitch.mp4's
+    own real probed output (not front/rear's individual resolution,
+    which the composited stitch.mp4 rarely matches), then automatically
+    prepended onto stitch.mp4 itself: video-concatenated via
+    `concatenate_media(..., force_reencode=True)` (intro.mp4's own
+    low-fps frames and stitch.mp4's real footage don't share compatible
+    encoder settings for a plain stream-copy concat - see that
+    function's own docstring), and audio is kept in sync by padding
+    the trip's already-built `audio` track with exactly
+    `map_intro_seconds` of real silence first (`generate_silence()`,
+    the same "pad rather than leave a hole" approach `_pad_silence_
+    for_missing_audio()` above already uses for a Parking recording
+    with no audio of its own) before muxing it back onto the combined
+    video (`mux_audio_track()`). intro.mp4 itself is left on disk as
+    its own standalone artifact either way, the same "also embedded
+    elsewhere, but still its own file" precedent gsensor.mp4 already
+    set for `--stitch-gsensor`.
+
+    Without `stitch_layout`, intro.mp4 is rendered once, standalone,
+    sized to whichever raw camera video exists (front preferred) - a
+    reasonable stand-in when there's no composited stitch.mp4 to match
+    exactly, and no stitch.mp4 to prepend onto anyway. If stitch.mp4's
+    own render fails, intro.mp4 is skipped entirely for that run rather
+    than falling back to a standalone render that would then need a
+    second, differently-sized copy - a failed stitch already degrades
+    the whole export to a warning; --map-intro follows the same "don't
+    make a failure worse by half-doing something else instead" spirit.
 
     `map_cache_dir` is where fetched OSM road data is cached between
     trips/runs (defaults to a `.osm_cache`
@@ -2272,12 +2411,20 @@ def export_trip(
 
     map_path = None
     map_zoom_path = None
+    map_intro_path = None
     # Also loaded for --stitch-map, not just --map/--map-zoom - the
     # panel it renders needs the same fixes/roads/areas, just at its
-    # own dedicated size (see the stitch_cameras() call below).
+    # own dedicated size (see the stitch_cameras() call below). Also
+    # kept around for --map-intro's own prepend-to-stitch.mp4 step
+    # further down, which needs this exact same roads/areas pair again
+    # once stitch.mp4 itself exists (see that block's own comment for
+    # why it can't just reuse map_intro_path's already-rendered file).
     stitch_map_roads: tuple = ()
     stitch_map_areas: tuple = ()
-    if (render_map or map_zoom_meters is not None or stitch_map is not None) and fixes:
+    if (
+        render_map or map_zoom_meters is not None
+        or stitch_map is not None or render_map_intro
+    ) and fixes:
         log.step("starting map data phase (fetch/cache OSM roads)")
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
@@ -2338,13 +2485,63 @@ def export_trip(
                     track_up=map_track_up,
                     log=log,
                 )
+
+            if render_map_intro and stitch_layout is None:
+                # No stitch requested this run, so there's no
+                # composited stitch.mp4 to size/prepend against later
+                # (see the stitch block further down for that path) -
+                # render intro.mp4 standalone here instead, sized to
+                # whichever raw camera video exists (front preferred,
+                # same fallback order used for map_zoom's own sizing
+                # just above). Best-effort only: there's no "real"
+                # target resolution to match without a stitch output,
+                # so a probe failure just falls back to
+                # render_intro_flyover()'s own square default rather
+                # than skipping the render entirely.
+                intro_width = intro_height = None
+                intro_fps = DEFAULT_FPS
+                video_for_intro_shape = front_video or rear_video
+                if video_for_intro_shape is not None:
+                    try:
+                        intro_width, intro_height = map_zoom_dimensions(
+                            video_for_intro_shape, fixes
+                        )
+                    except MediaToolError:
+                        pass
+                    try:
+                        probed_fps = probe(video_for_intro_shape).frame_rate
+                        if probed_fps > 0:
+                            intro_fps = probed_fps
+                    except MediaToolError:
+                        pass
+
+                log.step("starting intro.mp4 render (standalone)")
+                intro_kwargs = {}
+                if intro_width is not None and intro_height is not None:
+                    intro_kwargs = {"width": intro_width, "height": intro_height}
+                try:
+                    map_intro_path = render_intro_flyover(
+                        fixes, roads, destination / "intro.mp4",
+                        areas=areas, duration_seconds=map_intro_seconds,
+                        fps=intro_fps, marker_image_path=map_icon,
+                        **intro_kwargs,
+                    )
+                except MediaToolError as exc:
+                    warnings.append(f"map intro: {exc}")
+                    log.warning(f"map intro: {exc}")
+                else:
+                    if map_intro_path is not None:
+                        log.step("rendered intro.mp4")
         if debug:
             print(
                 f"bv-export: map phase took {time.monotonic() - map_start:.1f}s",
                 file=sys.stderr,
             )
     else:
-        log.step("no map/map-zoom/stitch-map requested or no GPS data - map phase skipped")
+        log.step(
+            "no map/map-zoom/stitch-map/map-intro requested or no GPS "
+            "data - map phase skipped"
+        )
 
     gsensor_path = None
     samples = _merge_gsensor(trip, video_offsets, gsensor_overrides)
@@ -2605,6 +2802,71 @@ def export_trip(
                 file=sys.stderr,
             )
 
+        if render_map_intro and stitch_path is not None and stitch_map_roads:
+            # Sized/frame-rate-matched to stitch.mp4's own real probed
+            # output (not front/rear's individual resolution, which
+            # the composited layout - side_by_side doubles width,
+            # top_down doubles height - rarely matches), so the
+            # force_reencode concat in _prepend_intro_to_stitch() below
+            # doesn't have to reconcile mismatched dimensions on top of
+            # everything else it's already reconciling. read_mp4_info()
+            # (the pure-Python MP4 box reader, not ffprobe) for width/
+            # height and probe() (ffprobe) for frame rate - same split
+            # every other width/height-needing spot in this codebase
+            # uses since read_mp4_info() doesn't parse frame rate.
+            intro_start = time.monotonic() if debug else None
+            intro_width = intro_height = None
+            try:
+                stitch_info = read_mp4_info(stitch_path)
+                intro_width, intro_height = stitch_info.width, stitch_info.height
+            except MediaToolError as exc:
+                warnings.append(
+                    f"map intro: could not size intro.mp4 to match "
+                    f"stitch.mp4: {exc}"
+                )
+                log.warning(
+                    f"map intro: could not size intro.mp4 to match "
+                    f"stitch.mp4: {exc}"
+                )
+
+            if intro_width and intro_height:
+                intro_fps = DEFAULT_FPS
+                try:
+                    probed_fps = probe(stitch_path).frame_rate
+                    if probed_fps > 0:
+                        intro_fps = probed_fps
+                except MediaToolError:
+                    pass
+
+                log.step("starting intro.mp4 render (sized to stitch.mp4)")
+                try:
+                    map_intro_path = render_intro_flyover(
+                        fixes, stitch_map_roads, destination / "intro.mp4",
+                        areas=stitch_map_areas, duration_seconds=map_intro_seconds,
+                        fps=intro_fps, marker_image_path=map_icon,
+                        width=intro_width, height=intro_height,
+                    )
+                except MediaToolError as exc:
+                    warnings.append(f"map intro: {exc}")
+                    log.warning(f"map intro: {exc}")
+                else:
+                    if map_intro_path is not None:
+                        log.step("rendered intro.mp4")
+                        log.step("prepending intro.mp4 onto stitch.mp4")
+                        warnings_before_prepend = len(warnings)
+                        _prepend_intro_to_stitch(
+                            map_intro_path, stitch_path, audio, map_intro_seconds,
+                            destination, warnings, log,
+                        )
+                        if len(warnings) == warnings_before_prepend:
+                            log.step("prepended intro.mp4 onto stitch.mp4")
+            if debug:
+                print(
+                    f"bv-export: map intro phase took "
+                    f"{time.monotonic() - intro_start:.1f}s",
+                    file=sys.stderr,
+                )
+
     log.close()
 
     return ExportResult(
@@ -2616,6 +2878,7 @@ def export_trip(
         gsensor=gsensor_path,
         map=map_path,
         map_zoom=map_zoom_path,
+        map_intro=map_intro_path,
         gsensor_video=gsensor_video_path,
         gsensor_graph_video=gsensor_graph_video_path,
         stitch=stitch_path,
