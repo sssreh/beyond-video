@@ -15,11 +15,13 @@ from blackvue.export.map_video import _ease_out_cubic
 from blackvue.export.map_video import _interpolate_position_from_index
 from blackvue.export.map_video import _is_live_fix
 from blackvue.export.map_video import _lerp_bbox
+from blackvue.export.map_video import _scale_bbox_from_center
 from blackvue.export.map_video import _wallclock_for_elapsed
 from blackvue.export.map_video import interpolate_position
 from blackvue.export.map_video import intro_start_bbox
 from blackvue.export.map_video import render_intro_flyover
 from blackvue.export.map_video import render_map_video
+from blackvue.export.map_render import bbox_pixel_rect
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
 from blackvue.export.osm_roads import bounding_box_for_fixes
@@ -479,8 +481,26 @@ def test_render_map_video_stays_fast_with_many_roads_in_static_mode(tmp_path):
 
 
 class _FakeFrameImage:
+    """Fake stand-in for a PIL Image, used wherever tests stub out
+    render_frame_visual() so the per-frame loop's own calls have
+    something harmless to call rather than needing a real PIL render.
+    resize() - added for render_intro_flyover()'s Ken-Burns rewrite,
+    which crops/resizes the one raster it renders once rather than
+    redrawing per frame - logs each call's (size, resample, box)
+    instead of actually cropping anything, and returns self so a chain
+    of resize() -> draw_caption() (when mocked) -> save() keeps working
+    against the same fake object.
+    """
+
+    def __init__(self):
+        self.resize_calls = []
+
     def save(self, _path):
         pass
+
+    def resize(self, size, resample=None, box=None):
+        self.resize_calls.append({"size": size, "resample": resample, "box": box})
+        return self
 
 
 def _passthrough_compose_frame_overlay(visual, **_kwargs):
@@ -1687,10 +1707,15 @@ def test_render_intro_flyover_starts_on_the_wide_box_and_ends_on_the_trip_bbox(
     tmp_path, monkeypatch
 ):
     captured_bboxes = []
+    captured_kwargs = []
+    rasters = []
 
-    def fake_render_frame_visual(bbox, *_args, **_kwargs):
+    def fake_render_frame_visual(bbox, *_args, **kwargs):
         captured_bboxes.append(bbox)
-        return _FakeFrameImage()
+        captured_kwargs.append(kwargs)
+        raster = _FakeFrameImage()
+        rasters.append(raster)
+        return raster
 
     monkeypatch.setattr(
         map_video_module, "render_frame_visual", fake_render_frame_visual
@@ -1709,8 +1734,6 @@ def test_render_intro_flyover_starts_on_the_wide_box_and_ends_on_the_trip_bbox(
         fixes, roads=(), destination=tmp_path / "intro.mp4",
         duration_seconds=2.0, fps=2,
     )
-
-    assert len(captured_bboxes) >= 3
 
     width, height = map_video_module.DEFAULT_WIDTH, map_video_module.DEFAULT_HEIGHT
     end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
@@ -1723,22 +1746,41 @@ def test_render_intro_flyover_starts_on_the_wide_box_and_ends_on_the_trip_bbox(
         max_lat=center_lat + half_lat, max_lon=center_lon + half_lon,
     )
 
-    # First frame (t=0, eased to 0) is exactly the wide starting box;
-    # last frame (t=1, eased to 1) is exactly the trip's own bbox - the
-    # same box map.mp4's static overview frames itself with, so the two
-    # videos line up if played back to back.
-    assert captured_bboxes[0] == expected_start_bbox
-    assert captured_bboxes[-1] == end_bbox
+    # Since the Ken-Burns rewrite (see render_intro_flyover's own
+    # docstring), render_frame_visual() itself is only called once, for
+    # the wide starting box - "starts wide, ends tight" now shows up as
+    # the *crop rectangle* moving within that one raster, not as a
+    # different bbox being rendered per frame.
+    assert captured_bboxes == [expected_start_bbox]
+
+    raster_width = captured_kwargs[0]["width"]
+    raster_height = captured_kwargs[0]["height"]
+    resize_calls = rasters[0].resize_calls
+
+    # First frame (t=0, eased to 0) crops the whole raster - exactly
+    # the wide starting box; last frame (t=1, eased to 1) crops down to
+    # the pixel rectangle end_bbox occupies within that same raster -
+    # the same box map.mp4's static overview frames itself with, so the
+    # two videos line up if played back to back.
+    assert resize_calls[0]["box"] == bbox_pixel_rect(
+        expected_start_bbox, expected_start_bbox, raster_width, raster_height
+    )
+    assert resize_calls[-1]["box"] == bbox_pixel_rect(
+        end_bbox, expected_start_bbox, raster_width, raster_height
+    )
 
 
 def test_render_intro_flyover_eases_rather_than_moving_at_a_constant_rate(
     tmp_path, monkeypatch
 ):
-    captured_bboxes = []
+    captured_kwargs = []
+    rasters = []
 
-    def fake_render_frame_visual(bbox, *_args, **_kwargs):
-        captured_bboxes.append(bbox)
-        return _FakeFrameImage()
+    def fake_render_frame_visual(_bbox, *_args, **kwargs):
+        captured_kwargs.append(kwargs)
+        raster = _FakeFrameImage()
+        rasters.append(raster)
+        return raster
 
     monkeypatch.setattr(
         map_video_module, "render_frame_visual", fake_render_frame_visual
@@ -1753,25 +1795,42 @@ def test_render_intro_flyover_eases_rather_than_moving_at_a_constant_rate(
         _fix(2, 59.304, 18.008),
     )
 
+    width, height = map_video_module.DEFAULT_WIDTH, map_video_module.DEFAULT_HEIGHT
+    end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
+    start_bbox = _scale_bbox_from_center(end_bbox, INTRO_ZOOM_START_MULTIPLIER)
+
     # duration_seconds=2, fps=2 -> frame_count=5, so the middle frame
     # (index 2) sits at plain linear progress t=0.5 - eased progress at
     # t=0.5 is 0.875 (see _ease_out_cubic tests above), so the mid
-    # frame's box should already be much closer to the final box than a
-    # linear halfway point would be.
+    # frame's crop box should already be much closer to the final crop
+    # box than a linear halfway point would be. Since the Ken-Burns
+    # rewrite, this now has to be checked via the crop rectangle
+    # (resize()'s `box` kwarg) rather than via a bbox render_frame_visual()
+    # was called with per frame - render_frame_visual() itself is only
+    # called once now, for the wide starting box.
     render_intro_flyover(
         fixes, roads=(), destination=tmp_path / "intro.mp4",
         duration_seconds=2.0, fps=2,
     )
 
-    mid_bbox = captured_bboxes[2]
-    start_bbox, end_bbox = captured_bboxes[0], captured_bboxes[-1]
-    linear_midpoint = _lerp_bbox(start_bbox, end_bbox, 0.5)
+    raster_width = captured_kwargs[0]["width"]
+    raster_height = captured_kwargs[0]["height"]
+    resize_calls = rasters[0].resize_calls
 
-    assert mid_bbox != linear_midpoint
-    # Closer (in min_lat terms) to the end than a linear halfway point
-    # would be, since ease-out spends most of its motion early.
-    assert abs(mid_bbox.min_lat - end_bbox.min_lat) < abs(
-        linear_midpoint.min_lat - end_bbox.min_lat
+    mid_box = resize_calls[2]["box"]
+    end_crop_box = resize_calls[-1]["box"]
+
+    linear_midpoint_bbox = _lerp_bbox(start_bbox, end_bbox, 0.5)
+    linear_midpoint_box = bbox_pixel_rect(
+        linear_midpoint_bbox, start_bbox, raster_width, raster_height
+    )
+
+    assert mid_box != linear_midpoint_box
+    # Closer (in left-edge pixel terms) to the end crop than a linear
+    # halfway point would be, since ease-out spends most of its motion
+    # early.
+    assert abs(mid_box[0] - end_crop_box[0]) < abs(
+        linear_midpoint_box[0] - end_crop_box[0]
     )
 
 
@@ -1802,11 +1861,17 @@ def test_render_intro_flyover_zoom_start_multiplier_widens_the_starting_box(
         duration_seconds=1.0, fps=2, zoom_start_multiplier=20.0,
     )
 
+    # render_frame_visual() is only called once (for the wide starting
+    # box), so captured_bboxes[0] is that box regardless of index -
+    # unlike before the Ken-Burns rewrite, captured_bboxes[-1] is *not*
+    # the trip's own tight end_bbox anymore (there's only one call), so
+    # end_bbox has to be computed independently here instead.
     start_bbox = captured_bboxes[0]
     lat_span = start_bbox.max_lat - start_bbox.min_lat
     lon_span = start_bbox.max_lon - start_bbox.min_lon
 
-    end_bbox = captured_bboxes[-1]
+    width, height = map_video_module.DEFAULT_WIDTH, map_video_module.DEFAULT_HEIGHT
+    end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=width / height)
     default_start_span_lat = (
         (end_bbox.max_lat - end_bbox.min_lat) * INTRO_ZOOM_START_MULTIPLIER
     )
@@ -1848,8 +1913,11 @@ def test_render_intro_flyover_draws_the_whole_route_from_the_first_frame(
         duration_seconds=1.0, fps=2,
     )
 
-    assert len(captured_routes) >= 2
-    assert all(route == full_route for route in captured_routes)
+    # render_frame_visual() is only called once now (the one-time
+    # raster render), so there's exactly one captured route rather than
+    # one per frame - but it's still the complete route, baked into the
+    # single raster every frame crops from.
+    assert captured_routes == [full_route]
 
 
 def test_render_intro_flyover_keeps_the_marker_fixed_at_the_trips_first_fix(
@@ -1884,10 +1952,14 @@ def test_render_intro_flyover_keeps_the_marker_fixed_at_the_trips_first_fix(
     )
 
     # No "current position" concept here - just where the trip that's
-    # about to play actually begins, held for the whole shot.
-    assert len(captured_positions) >= 2
-    assert all(pos == (59.300, 18.000) for pos in captured_positions)
-    assert all(shown is True for shown in captured_show_marker)
+    # about to play actually begins. render_frame_visual() is only
+    # called once now (the one-time raster render, since the Ken-Burns
+    # rewrite bakes the marker into that single raster rather than
+    # redrawing it per frame - see render_intro_flyover's own
+    # docstring), so there's exactly one captured position/show_marker
+    # pair rather than one per frame.
+    assert captured_positions == [(59.300, 18.000)]
+    assert captured_show_marker == [True]
 
 
 def test_render_intro_flyover_never_composes_a_timestamp_speed_overlay(
@@ -1920,11 +1992,12 @@ def test_render_intro_flyover_never_composes_a_timestamp_speed_overlay(
 
 
 def test_render_intro_flyover_defaults_duration_and_fps(tmp_path, monkeypatch):
-    captured_bboxes = []
+    rasters = []
 
-    def fake_render_frame_visual(bbox, *_args, **_kwargs):
-        captured_bboxes.append(bbox)
-        return _FakeFrameImage()
+    def fake_render_frame_visual(_bbox, *_args, **_kwargs):
+        raster = _FakeFrameImage()
+        rasters.append(raster)
+        return raster
 
     monkeypatch.setattr(
         map_video_module, "render_frame_visual", fake_render_frame_visual
@@ -1938,7 +2011,12 @@ def test_render_intro_flyover_defaults_duration_and_fps(tmp_path, monkeypatch):
     render_intro_flyover(fixes, roads=(), destination=tmp_path / "intro.mp4")
 
     expected_frame_count = int(DEFAULT_INTRO_SECONDS * map_video_module.DEFAULT_FPS) + 1
-    assert len(captured_bboxes) == expected_frame_count
+    # render_frame_visual() itself is only called once (the one-time
+    # raster render - see render_intro_flyover's own Ken-Burns
+    # docstring); the per-frame count now shows up as one resize() call
+    # per output frame against that single raster instead.
+    assert len(rasters) == 1
+    assert len(rasters[0].resize_calls) == expected_frame_count
 
 
 def test_render_intro_flyover_produces_a_real_video_at_the_requested_duration_and_size(

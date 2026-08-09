@@ -4309,12 +4309,18 @@ def test_load_trip_roads_fetches_only_the_tight_bbox_by_default(tmp_path, monkey
         _gps_fix(2, 59.304, 18.008),
     )
 
-    bbox, roads, areas = _load_trip_roads(fixes, tmp_path, [])
+    bbox, roads, areas, intro_roads, intro_areas = _load_trip_roads(
+        fixes, tmp_path, []
+    )
 
     # include_intro_bbox defaults to False - unchanged, pre-existing
     # behavior: the fetch is only ever the trip's own tight bbox.
     assert captured_bboxes == [bbox]
     assert roads == _fake_roads()
+    # No widening happened, so intro_roads/areas are just the same
+    # tuples back - no separate filtering pass needed.
+    assert intro_roads == roads
+    assert intro_areas == areas
 
 
 def test_load_trip_roads_widens_the_fetch_when_include_intro_bbox_is_set(
@@ -4335,7 +4341,7 @@ def test_load_trip_roads_widens_the_fetch_when_include_intro_bbox_is_set(
         _gps_fix(2, 59.304, 18.008),
     )
 
-    bbox, roads, areas = _load_trip_roads(
+    bbox, roads, areas, intro_roads, intro_areas = _load_trip_roads(
         fixes, tmp_path, [], include_intro_bbox=True
     )
 
@@ -4349,6 +4355,15 @@ def test_load_trip_roads_widens_the_fetch_when_include_intro_bbox_is_set(
     assert fetched_bbox.min_lon <= expected_wide_bbox.min_lon
     assert fetched_bbox.max_lat >= expected_wide_bbox.max_lat
     assert fetched_bbox.max_lon >= expected_wide_bbox.max_lon
+    # intro_roads/areas carry the full widened fetch untouched, for
+    # render_intro_flyover()'s own exclusive use - roads/areas (the
+    # second/third return values) get narrowed back to the tight bbox
+    # instead, so map.mp4/--stitch-map/--map-zoom don't pay to filter
+    # against the wider pool on every one of their own frames. The
+    # fake road here sits nowhere near either bbox, so narrowing drops
+    # it entirely while the unfiltered intro copy keeps it.
+    assert intro_roads == _fake_roads()
+    assert roads == ()
 
 
 def test_load_trip_roads_still_returns_the_tight_bbox_when_widened(
@@ -4367,8 +4382,10 @@ def test_load_trip_roads_still_returns_the_tight_bbox_when_widened(
         _gps_fix(2, 59.304, 18.008),
     )
 
-    bbox_without, _roads, _areas = _load_trip_roads(fixes, tmp_path, [])
-    bbox_with, _roads, _areas = _load_trip_roads(
+    bbox_without, _roads, _areas, _intro_roads, _intro_areas = _load_trip_roads(
+        fixes, tmp_path, []
+    )
+    bbox_with, _roads, _areas, _intro_roads, _intro_areas = _load_trip_roads(
         fixes, tmp_path, [], include_intro_bbox=True
     )
 
@@ -4383,9 +4400,17 @@ def test_load_trip_roads_ignores_include_intro_bbox_when_there_are_no_fixes(
 
     monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _refuse)
 
-    bbox, roads, areas = _load_trip_roads((), tmp_path, [], include_intro_bbox=True)
+    bbox, roads, areas, intro_roads, intro_areas = _load_trip_roads(
+        (), tmp_path, [], include_intro_bbox=True
+    )
 
-    assert (bbox, roads, areas) == (None, None, None)
+    assert (bbox, roads, areas, intro_roads, intro_areas) == (
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 # --- render_map_intro caption wiring (export_trip) ------------------------

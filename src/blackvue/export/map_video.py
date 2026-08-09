@@ -24,6 +24,7 @@ from ..generate.media import MediaToolError
 from ..telemetry.gps_reader import GpsFix
 from .map_render import DEFAULT_HEIGHT
 from .map_render import DEFAULT_WIDTH
+from .map_render import bbox_pixel_rect
 from .map_render import compose_frame_overlay
 from .map_render import draw_caption
 from .map_render import render_base_map
@@ -68,6 +69,19 @@ DEFAULT_INTRO_SECONDS = 5.0
 # so wide the roads are unrecognizable smudges for the flyover's own
 # first second or two.
 INTRO_ZOOM_START_MULTIPLIER = 8.0
+
+# Cap on how large render_intro_flyover()'s own one-time high-resolution
+# raster is allowed to get (see that function's docstring for why it
+# renders one big raster at all rather than redrawing per frame). At
+# INTRO_ZOOM_START_MULTIPLIER's default (8x), an uncapped raster would
+# be 8x the output's own width/height on each axis - fine at map.mp4's
+# usual few-hundred-pixel panel sizes, but sized to match a full
+# stitch.mp4 output (this project's own most common --map-intro case)
+# that raster could reach tens of thousands of pixels per side. Capping
+# the long edge here trades a little sharpness in the flyover's very
+# widest opening frames (where crops get upscaled slightly beyond 1:1)
+# for a bounded, predictable render cost regardless of output size.
+INTRO_MAX_RASTER_DIMENSION = 4096
 
 # In `--map-zoom` (follow-camera) mode, how many of the most recent
 # fixes' worth of "route driven so far" get projected/drawn each
@@ -987,6 +1001,46 @@ def render_intro_flyover(
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - same "nothing to
     work with" convention render_map_video() uses.
+
+    Renders one high-resolution raster of the whole shot up front (at
+    `start_bbox`, the widest framing) and produces every animated
+    frame from it via a plain crop+resize, instead of redrawing roads/
+    areas from scratch on every frame the way earlier versions of this
+    function did. That's a valid shortcut specifically because of how
+    the zoom is built: every frame_bbox in between is always a smaller,
+    concentric sub-rectangle of start_bbox (both share the same center
+    by construction - see _lerp_bbox()'s own docstring), so a single
+    raster covering start_bbox already contains everything any later,
+    tighter frame needs to show; bbox_pixel_rect() (map_render.py) is
+    what finds the matching crop rectangle for each frame's own bbox.
+
+    This exists because of a real, measured cost: redrawing per frame
+    meant every frame paid roads_within_bbox()'s O(n) linear-scan cost
+    against whatever road/area pool the caller passed in - normally
+    small, but `--map-intro` widens that pool by design (see
+    trip_export.py's _load_trip_roads()), and Christer hit this
+    directly on a real export: "map phase went from 16 seconds to 335
+    seconds" after asking for the wider establishing shot, then "Could
+    we just get the overview intro map and then overlay the zoomed in
+    flyby, then we don't need to render every step of the big map" -
+    this is that idea, implemented as a proper Ken-Burns-style crop
+    zoom (one real photo, panned/scaled) rather than a literal second
+    video layer composited on top, since the existing smooth eased
+    zoom is worth keeping and a crop of one raster reproduces it
+    exactly, just without paying to redraw it every frame.
+
+    The raster itself is oversampled by up to `zoom_start_multiplier`x
+    linearly (capped at INTRO_MAX_RASTER_DIMENSION per side - see that
+    constant's own comment for why) so the *tightest* (last) frame's
+    crop still has enough source pixels to fill `width`x`height`
+    without visibly upscaling; the wide opening frame is the raster
+    itself, at full native resolution. One side effect worth knowing
+    about: the position marker is now baked into the single raster
+    rather than redrawn at a constant on-screen size every frame, so
+    it visibly grows as the camera zooms in instead of staying a fixed
+    pixel size throughout - arguably more cinematically correct for a
+    "camera flying toward a fixed point" shot, and not something
+    Christer has weighed in on either way yet.
     """
 
     positioned = _valid_positioned_fixes(fixes)
@@ -1006,8 +1060,37 @@ def render_intro_flyover(
     start_position = route_points[0]
     start_heading = positioned[0].course
 
-    indexed_roads = index_roads(roads)
-    indexed_areas = index_features(areas)
+    # How much bigger than the output frame size to render the one
+    # raster - up to zoom_start_multiplier (beyond that buys no extra
+    # sharpness, since the tightest crop is already native resolution
+    # at that point), capped so a huge output size (e.g. sized to
+    # match a full stitch.mp4) can't blow up the raster's own memory/
+    # render cost unboundedly.
+    raster_scale = zoom_start_multiplier
+    if width:
+        raster_scale = min(raster_scale, INTRO_MAX_RASTER_DIMENSION / width)
+    if height:
+        raster_scale = min(raster_scale, INTRO_MAX_RASTER_DIMENSION / height)
+    raster_scale = max(raster_scale, 1.0)
+
+    raster_width = max(width, round(width * raster_scale))
+    raster_height = max(height, round(height * raster_scale))
+
+    raster_roads = roads_within_bbox(index_roads(roads), start_bbox)
+    raster_areas = features_within_bbox(index_features(areas), start_bbox)
+
+    raster = render_frame_visual(
+        start_bbox,
+        raster_roads,
+        route_points,
+        start_position,
+        areas=raster_areas,
+        heading=start_heading,
+        marker_image=marker_image,
+        show_marker=True,
+        width=raster_width,
+        height=raster_height,
+    )
 
     frame_count = max(2, int(duration_seconds * fps) + 1)
     last_frame_index = frame_count - 1
@@ -1022,21 +1105,13 @@ def render_intro_flyover(
             eased_t = _ease_out_cubic(t)
             frame_bbox = _lerp_bbox(start_bbox, end_bbox, eased_t)
 
-            frame_roads = roads_within_bbox(indexed_roads, frame_bbox)
-            frame_areas = features_within_bbox(indexed_areas, frame_bbox)
-
-            visual = render_frame_visual(
-                frame_bbox,
-                frame_roads,
-                route_points,
-                start_position,
-                areas=frame_areas,
-                heading=start_heading,
-                marker_image=marker_image,
-                show_marker=True,
-                width=width,
-                height=height,
+            crop_box = bbox_pixel_rect(
+                frame_bbox, start_bbox, raster_width, raster_height
             )
+            visual = raster.resize(
+                (width, height), resample=Image.LANCZOS, box=crop_box
+            )
+
             if caption:
                 visual = draw_caption(visual, caption, width=width, height=height)
             visual.save(frame_dir / f"frame_{frame_number:06d}.png")

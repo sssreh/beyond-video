@@ -243,6 +243,49 @@ def _project(
     return x, y
 
 
+def bbox_pixel_rect(
+    target_bbox: BoundingBox,
+    reference_bbox: BoundingBox,
+    width: int,
+    height: int,
+    margin: int = DEFAULT_MARGIN_PX,
+) -> tuple[float, float, float, float]:
+    """Return the (left, top, right, bottom) pixel rectangle `target_bbox`
+    occupies within a `width`x`height` image that was rendered (via
+    render_frame_visual()) for `reference_bbox` - i.e. the inverse of
+    what `_project()` does for a single point, applied to a whole
+    nested bbox at once.
+
+    Built for map_video.py's render_intro_flyover(): its zoom animates
+    between two bboxes that share the same center by construction (see
+    that function's own `start_bbox`/`_lerp_bbox()`), so every
+    in-between frame's own bbox is always a smaller, concentric
+    sub-rectangle of the widest one - which means a *single* high-
+    resolution render of the widest bbox already contains everything
+    every other frame needs to show, just at a different crop/scale.
+    This function is what finds that crop rectangle, letting the
+    per-frame loop become a cheap `Image.crop().resize()` instead of
+    redrawing roads/areas from scratch on every single frame (the O(n)
+    per-frame cost of roads_within_bbox()/render_frame_visual(),
+    confirmed as the actual cause of a real ~20x render-time blowup
+    Christer hit once `--map-intro`'s own establishing shot widened
+    the frame it needed to draw - see that function's own docstring).
+
+    Not meaningful (and not used) for track-up rendering, where the
+    scene itself rotates per frame around a fixed heading - a plain
+    crop of a single unrotated raster can't reproduce that, so
+    render_intro_flyover() doesn't expose a `track_up` option at all.
+    """
+
+    left, top = _project(
+        target_bbox.max_lat, target_bbox.min_lon, reference_bbox, width, height, margin
+    )
+    right, bottom = _project(
+        target_bbox.min_lat, target_bbox.max_lon, reference_bbox, width, height, margin
+    )
+    return left, top, right, bottom
+
+
 def _rotate_point(
     point: tuple[float, float],
     center: tuple[float, float],

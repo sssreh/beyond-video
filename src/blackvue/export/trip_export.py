@@ -57,8 +57,10 @@ from .media import trim_media
 from .media import trim_media_head
 from .osm_roads import BoundingBox
 from .osm_roads import bounding_box_for_fixes
+from .osm_roads import index_roads
 from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
+from .osm_roads import roads_within_bbox
 from .prebuffer import detect_prebuffer_seconds
 from .trip_info import write_trip_info
 from .trip_stats import compute_trip_stats
@@ -1352,11 +1354,12 @@ def _load_trip_roads(
     for a trip's whole bounding box - shared by both the static
     map.mp4 render and any zoomed map_zoom_*m.mp4 render, so a
     network/cache failure produces one "map" warning rather than one
-    per map output requested. Returns (bbox, roads, areas); bbox and
-    roads are both None if there's no bbox to fetch for (no positioned
-    fixes) or the road fetch itself failed. The returned `bbox` is
-    always the trip's own tight bbox (map.mp4's normal framing),
-    regardless of `include_intro_bbox` - only the *fetch* area widens.
+    per map output requested. Returns (bbox, roads, areas,
+    intro_roads, intro_areas); bbox and roads are both None if there's
+    no bbox to fetch for (no positioned fixes) or the road fetch
+    itself failed. The returned `bbox` is always the trip's own tight
+    bbox (map.mp4's normal framing), regardless of `include_intro_bbox`
+    - only the *fetch* area widens.
 
     Always fetched for the *whole* trip's bounding box, even for a
     zoomed "follow camera" render - the camera only frames a small
@@ -1377,6 +1380,28 @@ def _load_trip_roads(
     export ever fetches - a real, one-time-per-region Overpass/cache
     cost, only paid when `--map-intro` is actually requested.
 
+    `roads`/`areas` (the second and third return values) are always
+    narrowed back down to the trip's own tight `bbox`, even when the
+    *fetch* itself was widened for the intro - `intro_roads`/
+    `intro_areas` (the fourth and fifth) carry the full widened set
+    instead, for render_intro_flyover()'s own exclusive use. Without
+    this split, map.mp4/--stitch-map/--map-zoom - none of which ever
+    draws anything outside the tight bbox - would each pay
+    roads_within_bbox()'s O(n) linear-scan cost, on every one of their
+    own frames, against the intro's up to ~64x-bigger road/area pool
+    too: confirmed by Christer's own numbers on a real trip export
+    with `--map-intro` on, "map phase went from 16 seconds to 335
+    seconds" (and --stitch-map's own panel render: 11.0s to 298.2s) -
+    neither of those renders anything about the intro's wide opening
+    shot, they were just filtering a much bigger shared pool on every
+    frame. The narrowing itself is a single roads_within_bbox() call,
+    done once here rather than repeatedly inside a frame loop, so it's
+    cheap regardless of how wide the fetch was. When `include_intro_bbox`
+    is False (or intro_start_bbox() itself returns nothing to widen
+    against), the fetched set already exactly matches `bbox`, so
+    `intro_roads`/`intro_areas` are just the same tuples back, no
+    extra filtering pass needed.
+
     A failed area fetch degrades separately from a failed road fetch:
     roads are load-bearing for the whole map phase (no roads, no
     point rendering a map at all), but water/green areas are a purely
@@ -1388,7 +1413,7 @@ def _load_trip_roads(
 
     bbox = bounding_box_for_fixes(fixes)
     if bbox is None:
-        return None, None, None
+        return None, None, None, None, None
 
     fetch_bbox = bbox
     if include_intro_bbox:
@@ -1397,7 +1422,7 @@ def _load_trip_roads(
             fetch_bbox = _union_bbox(bbox, wide_bbox)
 
     try:
-        roads = load_or_fetch_roads(fetch_bbox, map_cache_dir)
+        fetched_roads = load_or_fetch_roads(fetch_bbox, map_cache_dir)
     except MediaToolError as exc:
         # Shared by both map.mp4 and any map_zoom_*m.mp4 - "map data"
         # rather than "map" specifically, since this failure isn't
@@ -1405,17 +1430,22 @@ def _load_trip_roads(
         warnings.append(f"map data: {exc}")
         if log is not None:
             log.warning(f"map data: {exc}")
-        return None, None, None
+        return None, None, None, None, None
 
     try:
-        areas = load_or_fetch_areas(fetch_bbox, map_cache_dir)
+        fetched_areas = load_or_fetch_areas(fetch_bbox, map_cache_dir)
     except MediaToolError as exc:
         warnings.append(f"map areas: {exc}")
         if log is not None:
             log.warning(f"map areas: {exc}")
-        areas = ()
+        fetched_areas = ()
 
-    return bbox, roads, areas
+    if fetch_bbox is bbox:
+        return bbox, fetched_roads, fetched_areas, fetched_roads, fetched_areas
+
+    tight_roads = roads_within_bbox(index_roads(fetched_roads), bbox)
+    tight_areas = roads_within_bbox(index_roads(fetched_areas), bbox)
+    return bbox, tight_roads, tight_areas, fetched_roads, fetched_areas
 
 
 def _render_map_variant(
@@ -2454,13 +2484,22 @@ def export_trip(
     map_intro_path = None
     # Also loaded for --stitch-map, not just --map/--map-zoom - the
     # panel it renders needs the same fixes/roads/areas, just at its
-    # own dedicated size (see the stitch_cameras() call below). Also
-    # kept around for --map-intro's own prepend-to-stitch.mp4 step
-    # further down, which needs this exact same roads/areas pair again
-    # once stitch.mp4 itself exists (see that block's own comment for
-    # why it can't just reuse map_intro_path's already-rendered file).
+    # own dedicated size (see the stitch_cameras() call below).
     stitch_map_roads: tuple = ()
     stitch_map_areas: tuple = ()
+    # The intro's own (possibly much wider) road/area pool - kept
+    # separate from stitch_map_roads/areas above so render_intro_
+    # flyover() alone pays for --map-intro's widened OSM fetch; see
+    # _load_trip_roads()'s own docstring for why sharing one pool
+    # between the two used to make map.mp4/--stitch-map/--map-zoom
+    # dramatically slower too (Christer: "map phase went from 16
+    # seconds to 335 seconds"). Kept around (not just used inline)
+    # for --map-intro's own prepend-to-stitch.mp4 step further down,
+    # which needs this exact same pair again once stitch.mp4 itself
+    # exists (see that block's own comment for why it can't just
+    # reuse map_intro_path's already-rendered file).
+    intro_roads: tuple = ()
+    intro_areas: tuple = ()
     if (
         render_map or map_zoom_meters is not None
         or stitch_map is not None or render_map_intro
@@ -2468,7 +2507,7 @@ def export_trip(
         log.step("starting map data phase (fetch/cache OSM roads)")
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
-        bbox, roads, areas = _load_trip_roads(
+        bbox, roads, areas, intro_roads, intro_areas = _load_trip_roads(
             fixes, cache_dir, warnings, log, include_intro_bbox=render_map_intro
         )
 
@@ -2563,8 +2602,8 @@ def export_trip(
                     intro_kwargs = {"width": intro_width, "height": intro_height}
                 try:
                     map_intro_path = render_intro_flyover(
-                        fixes, roads, destination / "intro.mp4",
-                        areas=areas, duration_seconds=map_intro_seconds,
+                        fixes, intro_roads, destination / "intro.mp4",
+                        areas=intro_areas, duration_seconds=map_intro_seconds,
                         fps=intro_fps, marker_image_path=map_icon,
                         caption=destination.name,
                         **intro_kwargs,
@@ -2845,7 +2884,7 @@ def export_trip(
                 file=sys.stderr,
             )
 
-        if render_map_intro and stitch_path is not None and stitch_map_roads:
+        if render_map_intro and stitch_path is not None and intro_roads:
             # Sized/frame-rate-matched to stitch.mp4's own real probed
             # output (not front/rear's individual resolution, which
             # the composited layout - side_by_side doubles width,
@@ -2884,8 +2923,8 @@ def export_trip(
                 log.step("starting intro.mp4 render (sized to stitch.mp4)")
                 try:
                     map_intro_path = render_intro_flyover(
-                        fixes, stitch_map_roads, destination / "intro.mp4",
-                        areas=stitch_map_areas, duration_seconds=map_intro_seconds,
+                        fixes, intro_roads, destination / "intro.mp4",
+                        areas=intro_areas, duration_seconds=map_intro_seconds,
                         fps=intro_fps, marker_image_path=map_icon,
                         width=intro_width, height=intro_height,
                         caption=destination.name,
