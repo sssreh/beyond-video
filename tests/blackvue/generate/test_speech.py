@@ -267,10 +267,12 @@ def test_register_nvidia_dll_directories_noop_when_add_dll_directory_missing(
 
     monkeypatch.setattr(speech_module, "_NVIDIA_DLL_DIRECTORIES_REGISTERED", False)
     monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "nvidia", None)
     # This sandbox runs on Linux, where os.add_dll_directory genuinely
-    # doesn't exist - exercises the hasattr() guard for real rather than
-    # faking it away, which doubles as coverage for any real non-Windows-
-    # -but-claims-nt edge case.
+    # doesn't exist - exercises the hasattr()-gated branch for real
+    # rather than faking it away. nvidia is also forced missing here so
+    # this stays a clean no-op regardless of PATH-prepending (which
+    # doesn't depend on add_dll_directory existing at all).
     assert not hasattr(os, "add_dll_directory")
 
     speech_module._register_nvidia_dll_directories()
@@ -323,6 +325,8 @@ def test_register_nvidia_dll_directories_registers_component_bin_dirs(
 
     class _FakeWindowsOs:
         name = "nt"
+        pathsep = ";"
+        environ = {"PATH": r"C:\Windows\System32"}
 
         @staticmethod
         def add_dll_directory(path):
@@ -341,6 +345,14 @@ def test_register_nvidia_dll_directories_registers_component_bin_dirs(
 
     assert sorted(registered) == sorted([str(cublas_bin), str(cudnn_bin)])
     assert speech_module._NVIDIA_DLL_DIRECTORIES_REGISTERED is True
+    # PATH-prepending is the second, independent mechanism added after
+    # add_dll_directory() alone turned out not to be enough on
+    # Christer's real machine (see the function's own docstring) - both
+    # found bin dirs should be prepended, original PATH preserved after.
+    new_path = _FakeWindowsOs.environ["PATH"]
+    assert new_path.endswith(r";C:\Windows\System32")
+    assert str(cublas_bin) in new_path
+    assert str(cudnn_bin) in new_path
 
 
 def test_register_nvidia_dll_directories_short_circuits_after_first_call(

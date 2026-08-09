@@ -126,10 +126,29 @@ def _register_nvidia_dll_directories() -> None:
     bin as a DLL search directory - a path problem, not a missing-
     package one, as Christer correctly diagnosed.
 
-    Only does anything on Windows - os.add_dll_directory doesn't
-    exist elsewhere, and Linux/macOS resolve shared library
-    dependencies differently (rpath/LD_LIBRARY_PATH), which pip-
-    installed nvidia packages generally handle correctly on their
+    Does both os.add_dll_directory() *and* prepends to the PATH
+    environment variable, not just the former. The first attempt at
+    this fix (add_dll_directory only) did not resolve the error on
+    Christer's real machine - still "Library cublas64_12.dll is not
+    found or cannot be loaded", identical to before, on a fresh
+    process. add_dll_directory should in theory cover this (Python's
+    own docs say it also affects transitively-loaded DLLs), but
+    CTranslate2's Windows binary appears to resolve cuBLAS via a code
+    path that doesn't honor it in practice - plausibly a delay-load
+    stub or a nested LoadLibrary call from a dependency (e.g. a CUDA
+    runtime DLL loading cuBLAS itself) that doesn't request the
+    "extended"/safe search flags add_dll_directory relies on. PATH is
+    part of the DLL search order regardless of those flags, and is
+    the mechanism this project's own upstream (faster-whisper's
+    README, and Purfview's Windows-library bundle instructions) both
+    document for Windows - "place the libraries in a directory
+    included in PATH" - so it's added here as a second, more broadly-
+    compatible mechanism rather than a replacement for
+    add_dll_directory.
+
+    Only does anything on Windows - Linux/macOS resolve shared
+    library dependencies differently (rpath/LD_LIBRARY_PATH), which
+    pip-installed nvidia packages generally handle correctly on their
     own there. Safe to call unconditionally and repeatedly: no-ops
     instantly after the first real call (module-level flag), and
     no-ops entirely if the nvidia package isn't installed at all
@@ -143,13 +162,15 @@ def _register_nvidia_dll_directories() -> None:
 
     _NVIDIA_DLL_DIRECTORIES_REGISTERED = True
 
-    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+    if os.name != "nt":
         return
 
     try:
         import nvidia
     except ImportError:
         return
+
+    bin_dirs: list[Path] = []
 
     for package_dir in nvidia.__path__:
         package_root = Path(package_dir)
@@ -161,12 +182,23 @@ def _register_nvidia_dll_directories() -> None:
         # its own subdirectory under the shared nvidia/ namespace
         # package (e.g. nvidia/cublas/, nvidia/cudnn/), each with its
         # own bin/ holding the actual DLLs on Windows.
-        for bin_dir in package_root.glob("*/bin"):
-            if bin_dir.is_dir():
-                try:
-                    os.add_dll_directory(str(bin_dir))
-                except OSError:
-                    pass
+        bin_dirs.extend(
+            bin_dir for bin_dir in package_root.glob("*/bin") if bin_dir.is_dir()
+        )
+
+    if hasattr(os, "add_dll_directory"):
+        for bin_dir in bin_dirs:
+            try:
+                os.add_dll_directory(str(bin_dir))
+            except OSError:
+                pass
+
+    if bin_dirs:
+        os.environ["PATH"] = (
+            os.pathsep.join(str(bin_dir) for bin_dir in bin_dirs)
+            + os.pathsep
+            + os.environ.get("PATH", "")
+        )
 
 
 def _load_whisper_model(model_size: str):
