@@ -128,6 +128,17 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     app.state.camera_config_cache = CameraConfigCache()
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    # Display-only capitalization for usernames shown in the UI (header
+    # account bar, welcome page greeting) - Christer: "make the first
+    # letter of username uppercase". Usernames themselves are stored and
+    # compared exactly as entered (see users.py) - this only affects how
+    # one is rendered. Deliberately not Jinja's built-in `capitalize`
+    # filter, which also lowercases the rest of the string (e.g. turning
+    # "christerR" into "Christerr") - this only touches the first
+    # character and leaves everything else exactly as stored.
+    templates.env.filters["capitalize_first"] = (
+        lambda s: (s[0].upper() + s[1:]) if s else s
+    )
 
     # Unauthenticated on purpose: just the two theme background
     # images (cosmetic, not trip data), served the same way for

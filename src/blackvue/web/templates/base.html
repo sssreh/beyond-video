@@ -566,7 +566,7 @@
     <h1><a href="/"><img class="site-logo" src="/static/logo/beyond-video-logo-small.png" alt="Beyond Video"></a></h1>
     {% if user %}
     <div class="account-bar">
-      {{ user.username }} <span class="badge">{{ user.role }}</span>
+      {{ user.username | capitalize_first }} <span class="badge">{{ user.role }}</span>
       &middot;
       <form method="post" action="/theme">
         <input type="hidden" name="theme" value="{{ 'light' if current_theme == 'dark' else 'dark' }}">

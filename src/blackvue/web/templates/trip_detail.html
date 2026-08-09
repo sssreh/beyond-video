@@ -2,6 +2,7 @@
 {% block title %}{{ trip.label }} - Beyond Video{% endblock %}
 {% block content %}
 <p><a href="/trips">&larr; All trips</a></p>
+<div class="content-panel">
 <h2>{% if trip.prefix %}<span class="badge">{{ trip.prefix }}</span> {% endif %}{{ trip.label }}</h2>
 
 {% if trip.gpx %}
@@ -37,4 +38,5 @@
   <li><a href="/trips/{{ trip.id }}/files/trip.lrc">trip.lrc</a></li>
   {% endif %}
 </ul>
+</div>
 {% endblock %}
