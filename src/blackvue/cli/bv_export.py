@@ -81,17 +81,19 @@ _DEFAULT_CLI_MIRROR_SIZE_PERCENT = 40.0
 _DEFAULT_CLI_MIRROR_ZOOM_PERCENT = 40.0
 _DEFAULT_CLI_MIRROR_PAN_Y_PERCENT = -30.0
 
-# --parking-speed's own valid range - Christer's own requested window
-# (0.10x-5x) when asking for the feature. Kept local to this CLI
-# module rather than alongside stitch.py's MIN_/MAX_STITCH_SCALE
-# _PERCENT and friends: unlike those, nothing about this range is
-# shared with a non-CLI caller - trip_export.py's export_trip() and
-# media.py's change_playback_speed() both take a plain float and
-# leave range-checking entirely to whoever's calling them (see
-# change_playback_speed()'s own docstring for why), so there's no
-# lower-level constant to reuse here the way the stitch ones are.
+# --parking-speed's own valid range - originally Christer's requested
+# window (0.10x-5x) when asking for the feature, later widened to
+# 0.10x-10x (Christer: "i would like --parking-speed be between 0.1
+# and 10"). Kept local to this CLI module rather than alongside
+# stitch.py's MIN_/MAX_STITCH_SCALE_PERCENT and friends: unlike those,
+# nothing about this range is shared with a non-CLI caller -
+# trip_export.py's export_trip() and media.py's change_playback_speed()
+# both take a plain float and leave range-checking entirely to
+# whoever's calling them (see change_playback_speed()'s own docstring
+# for why), so there's no lower-level constant to reuse here the way
+# the stitch ones are.
 MIN_PARKING_SPEED = 0.10
-MAX_PARKING_SPEED = 5.0
+MAX_PARKING_SPEED = 10.0
 
 
 def _resolve_icon_path(
@@ -596,7 +598,7 @@ def bv_export(
     leading/trailing Parking recordings already had.
 
     `parking_speed` (bv-export's own `--parking-speed`, default 1.0,
-    range 0.10-5.0) re-encodes every included Parking recording's
+    range 0.10-10.0) re-encodes every included Parking recording's
     video at that playback speed before it's concatenated into the
     rest of the trip - 2.0 plays it twice as fast, 0.5 half as fast.
     Parking-mode footage is motion-triggered and sparse, so a long

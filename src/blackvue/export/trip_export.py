@@ -2010,7 +2010,7 @@ def export_trip(
     of the trip's own pace. Has no effect at all when
     `include_parking=False` - there's nothing in the video to speed
     up in that case. Range-validated by the CLI layer
-    (`cli/bv_export.py`'s `--parking-speed`, 0.10-5.0), not here.
+    (`cli/bv_export.py`'s `--parking-speed`, 0.10-10.0), not here.
 
     An earlier version of this feature spliced in a short synthetic
     "PARKING FOOTAGE SKIPPED" clip for mid-trip Parking recordings

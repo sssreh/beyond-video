@@ -632,7 +632,7 @@ def change_playback_speed(source: Path, destination: Path, speed: float) -> None
     Raises `ValueError` for a non-positive `speed` - `setpts=PTS/0` (or
     a negative divisor) has no sane meaning and would otherwise just
     surface as an opaque ffmpeg failure instead of a clear one. Range
-    -checking the value against Christer's requested 0.10-5.0 window is
+    -checking the value against Christer's requested 0.10-10.0 window is
     the CLI layer's own job (`cli/bv_export.py`'s `_parse_parking_speed`),
     not this function's - a library function shouldn't bake in a UI
     -level policy choice about how extreme a speed is "reasonable."

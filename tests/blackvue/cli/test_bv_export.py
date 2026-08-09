@@ -1655,6 +1655,141 @@ def test_main_rejects_a_zero_stitch_max_width(tmp_path):
         ])
 
 
+def test_main_parses_parking_speed(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--include-parking", "--parking-speed", "2.5",
+    ])
+
+    assert captured["parking_speed"] == 2.5
+
+
+def test_main_defaults_parking_speed_to_one(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["parking_speed"] == 1.0
+
+
+def test_main_accepts_the_new_upper_bound_of_parking_speed(tmp_path, monkeypatch):
+    # Christer: "i would like --parking-speed be between 0.1 and 10" -
+    # 10.0 itself (the new MAX_PARKING_SPEED) must be accepted, not
+    # just values strictly below it.
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--include-parking", "--parking-speed", "10",
+    ])
+
+    assert captured["parking_speed"] == 10.0
+
+
+def test_main_accepts_the_lower_bound_of_parking_speed(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--include-parking", "--parking-speed", "0.1",
+    ])
+
+    assert captured["parking_speed"] == 0.1
+
+
+def test_main_rejects_a_parking_speed_above_the_new_upper_bound(tmp_path):
+    # 5.0 (the old MAX_PARKING_SPEED) must now be accepted rather than
+    # rejected, and something genuinely above the new bound (10.0)
+    # must still be rejected - this pins both ends of the widened
+    # range rather than just re-checking the old ceiling.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--include-parking", "--parking-speed", "10.5",
+        ])
+
+
+def test_main_accepts_a_parking_speed_that_used_to_be_out_of_range(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--include-parking", "--parking-speed", "8",
+    ])
+
+    assert captured["parking_speed"] == 8.0
+
+
+def test_main_rejects_a_below_range_parking_speed(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    with pytest.raises(SystemExit):
+        main([
+            "--target", str(target), str(archive),
+            "--include-parking", "--parking-speed", "0.05",
+        ])
+
+
 def test_main_leaves_stitch_map_as_none_when_stitch_flag_is_absent(
     tmp_path, monkeypatch
 ):
