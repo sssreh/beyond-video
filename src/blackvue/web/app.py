@@ -700,7 +700,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         transcribe: bool = Form(False),
         translate: str = Form(""),
         language: str = Form(""),
-        model_size: str = Form("small"),
+        model_size: str = Form(""),
         diarize: bool = Form(False),
         hf_token: str = Form(""),
         srt: bool = Form(False),
@@ -719,6 +719,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # them, rather than passing an empty string through to argv.
         translate = translate.strip() or None
         language = language.strip() or None
+        model_size = model_size.strip() or None
         hf_token = hf_token.strip() or None
         from_ = from_.strip() or None
         until = until.strip() or None

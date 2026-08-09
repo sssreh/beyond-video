@@ -334,7 +334,7 @@ class JobRunner:
         transcribe: bool,
         translate: str | None,
         language: str | None,
-        model_size: str,
+        model_size: str | None,
         diarize: bool,
         hf_token: str | None,
         srt: bool,

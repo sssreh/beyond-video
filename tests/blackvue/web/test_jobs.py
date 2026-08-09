@@ -505,7 +505,7 @@ def _generate_kwargs(**overrides):
         transcribe=False,
         translate=None,
         language=None,
-        model_size="small",
+        model_size=None,
         diarize=False,
         hf_token=None,
         srt=False,
@@ -582,6 +582,57 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
     assert args.dry_run is True
     assert args.from_ == "20260101_000000"
     assert args.until == "20260102_000000"
+
+
+def test_start_bv_generate_auto_model_size_applies_gpu_aware_default(
+    monkeypatch,
+):
+    """model_size=None (the web form's "Auto" option, see
+    job_new_bv_generate.html) must not add an explicit --model-size to
+    argv - otherwise bv_generate.parse_args()'s own GPU-aware default
+    (task #593) never runs for web-triggered jobs, which was exactly
+    Christer's "bv-generate in bv-web does not show default model
+    large for gpu server" bug report. Monkeypatching gpu_available()
+    (rather than relying on this test machine's real GPU-or-not
+    status) makes the assertion deterministic either way."""
+
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return bv_generate_module.EXIT_OK
+
+    monkeypatch.setattr(bv_generate_module, "_run", fake_run)
+    monkeypatch.setattr(bv_generate_module, "gpu_available", lambda: True)
+
+    runner = JobRunner()
+    runner.start_bv_generate(
+        **_generate_kwargs(transcribe=True, model_size=None)
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].model_size == "large"
+
+
+def test_start_bv_generate_auto_model_size_falls_back_to_small_without_gpu(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return bv_generate_module.EXIT_OK
+
+    monkeypatch.setattr(bv_generate_module, "_run", fake_run)
+    monkeypatch.setattr(bv_generate_module, "gpu_available", lambda: False)
+
+    runner = JobRunner()
+    runner.start_bv_generate(
+        **_generate_kwargs(transcribe=True, model_size=None)
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].model_size == "small"
 
 
 def test_start_bv_generate_job_fails_when_run_returns_nonzero(monkeypatch):

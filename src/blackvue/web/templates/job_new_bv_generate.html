@@ -84,12 +84,13 @@
       <div class="field">
         <label class="field-label" for="model_size">
           Whisper model size
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">faster-whisper model size for transcription/translation. Larger models are more accurate but slower.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">faster-whisper model size for transcription/translation. Larger models are more accurate but slower. Auto picks 'large' on a GPU server, 'small' otherwise - the same default bv-generate uses from the command line.</span></span>
         </label>
         <select id="model_size" name="model_size">
+          <option value="" selected>Auto (large on GPU, small otherwise)</option>
           <option value="tiny">tiny</option>
           <option value="base">base</option>
-          <option value="small" selected>small</option>
+          <option value="small">small</option>
           <option value="medium">medium</option>
           <option value="large-v3">large-v3</option>
         </select>
