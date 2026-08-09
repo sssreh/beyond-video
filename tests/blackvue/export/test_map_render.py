@@ -12,6 +12,7 @@ from blackvue.export.map_render import _project
 from blackvue.export.map_render import _rotate_point
 from blackvue.export.map_render import compose_frame_overlay
 from blackvue.export.map_render import DEFAULT_MARGIN_PX
+from blackvue.export.map_render import draw_caption
 from blackvue.export.map_render import render_base_map
 from blackvue.export.map_render import render_frame
 from blackvue.export.map_render import render_frame_visual
@@ -621,3 +622,86 @@ def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
 
     assert (right - left) > 150
     assert (bottom - top) > 15
+
+
+# --- draw_caption() ---------------------------------------------------
+
+
+def test_draw_caption_is_a_no_op_for_none_text():
+    image = Image.new("RGB", (320, 240), (10, 20, 30))
+
+    result = draw_caption(image, None, width=320, height=240)
+
+    assert list(result.getdata()) == list(image.getdata())
+
+
+def test_draw_caption_is_a_no_op_for_empty_text():
+    image = Image.new("RGB", (320, 240), (10, 20, 30))
+
+    result = draw_caption(image, "", width=320, height=240)
+
+    assert list(result.getdata()) == list(image.getdata())
+
+
+def test_draw_caption_does_not_mutate_the_input_image():
+    image = Image.new("RGB", (320, 240), (10, 20, 30))
+    pixels_before = list(image.getdata())
+
+    draw_caption(image, "Holiday trip", width=320, height=240)
+
+    # Like compose_frame_overlay()/render_frame() before it, draw_caption()
+    # must copy its `image` argument rather than draw onto it directly -
+    # render_intro_flyover() calls it once per frame on the same visual
+    # produced by render_frame_visual(), and a mutating draw_caption()
+    # would let each frame's caption bar bleed into the next.
+    draw_caption(image, "Holiday trip", width=320, height=240)
+
+    assert list(image.getdata()) == pixels_before
+
+
+def test_draw_caption_draws_something_when_given_text():
+    image = Image.new("RGB", (320, 240), (10, 20, 30))
+
+    blank = draw_caption(image, None, width=320, height=240)
+    captioned = draw_caption(image, "Holiday trip", width=320, height=240)
+
+    assert list(blank.getdata()) != list(captioned.getdata())
+
+
+def test_draw_caption_draws_different_pixels_for_different_text():
+    image = Image.new("RGB", (320, 240), (10, 20, 30))
+
+    short = draw_caption(image, "Trip", width=320, height=240)
+    long = draw_caption(
+        image, "Holiday_trip_20260715_133458_20260715_141235",
+        width=320, height=240,
+    )
+
+    assert list(short.getdata()) != list(long.getdata())
+
+
+def test_draw_caption_bar_sits_above_the_bottom_margin():
+    # Subtitle-style placement, matching stitch.py's own burned-in
+    # subtitles - top rows should stay untouched. The bar itself is
+    # inset CAPTION_MARGIN_PX from the very bottom edge (not flush
+    # against it), so the last row of the bar (not the frame's own
+    # last row) is the reliable place to check it actually drew.
+    from blackvue.export.map_render import CAPTION_MARGIN_PX
+
+    width, height = 320, 240
+    image = Image.new("RGB", (width, height), (10, 20, 30))
+
+    captioned = draw_caption(image, "Holiday trip", width=width, height=height)
+
+    top_row_changed = any(
+        image.getpixel((x, 0)) != captioned.getpixel((x, 0))
+        for x in range(width)
+    )
+    bar_bottom_row_changed = any(
+        image.getpixel((x, height - CAPTION_MARGIN_PX)) !=
+        captioned.getpixel((x, height - CAPTION_MARGIN_PX))
+        for x in range(width)
+    )
+
+    assert not top_row_changed
+    assert bar_bottom_row_changed

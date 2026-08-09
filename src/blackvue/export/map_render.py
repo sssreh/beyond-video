@@ -136,6 +136,22 @@ GPS_BADGE_ICON_COLOR = (99, 187, 108, 255)
 GPS_BADGE_RADIUS_PX = 22
 GPS_BADGE_MARGIN_PX = 10
 
+# render_intro_flyover()'s own bottom-centered title caption (see
+# draw_caption() below) - Christer: "with the prefix and trip name on
+# like subtitles", after the flyover feature itself was already built.
+# Styled to echo --stitch-subtitles' own burned-in look (white text on
+# a translucent black bar - see stitch.py's _SUBTITLES_BG_COLOR) rather
+# than this module's usual small dark-on-light corner text
+# (TEXT_COLOR/compose_frame_overlay()), since a bottom-centered white
+# -on-black bar is what reads as "subtitles" to begin with; TEXT_COLOR
+# would be close to invisible against BACKGROUND_COLOR's own light
+# basemap tone anyway with no bar behind it.
+CAPTION_BG_COLOR = (0, 0, 0, 140)
+CAPTION_TEXT_COLOR = (255, 255, 255)
+CAPTION_FONT_SIZE = 22
+CAPTION_MARGIN_PX = 18
+CAPTION_PADDING_PX = 10
+
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 640
 DEFAULT_MARGIN_PX = 24
@@ -661,6 +677,55 @@ def compose_frame_overlay(
 
     if show_gps_badge:
         _draw_gps_badge(image, width)
+
+    return image
+
+
+def draw_caption(
+    image: Image.Image,
+    text: str | None,
+    *,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+) -> Image.Image:
+    """Draw `text` as a bottom-centered, subtitle-style caption (white
+    text on a translucent black bar spanning the full frame width) onto
+    a copy of `image` - render_intro_flyover()'s own opening title (see
+    map_video.py), showing the trip's own folder name (prefix + trip
+    label baked together, e.g. "Holiday_trip_20260715_133458_..." - see
+    trip_export.py's folder_name_for_trip()) so the flyover reads as a
+    real title card rather than an unlabeled establishing shot.
+
+    Deliberately its own small helper rather than reusing
+    compose_frame_overlay() (that one draws the small top-left
+    timestamp/speed text this shot doesn't want at all) or stitch.py's
+    ffmpeg-level `subtitles=` filter (that one burns an .srt file into
+    already-encoded video via libass - not reachable from here, since
+    intro.mp4 is built from a still-image sequence like every other
+    map_video.py output, not a real subtitle track). Returns a plain,
+    undrawn copy for a falsy `text` (`None` or empty string) - the same
+    "nothing to draw" convention compose_frame_overlay() follows when
+    given no text/badge args at all.
+    """
+
+    image = image.copy()
+    if not text:
+        return image
+
+    draw = ImageDraw.Draw(image, "RGBA")
+    font = _load_font(CAPTION_FONT_SIZE)
+
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+
+    bar_height = text_height + CAPTION_PADDING_PX * 2
+    bar_top = height - CAPTION_MARGIN_PX - bar_height
+    draw.rectangle((0, bar_top, width, bar_top + bar_height), fill=CAPTION_BG_COLOR)
+
+    text_x = (width - text_width) / 2 - text_bbox[0]
+    text_y = bar_top + CAPTION_PADDING_PX - text_bbox[1]
+    draw.text((text_x, text_y), text, font=font, fill=CAPTION_TEXT_COLOR)
 
     return image
 

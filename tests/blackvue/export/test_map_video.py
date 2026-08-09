@@ -17,6 +17,7 @@ from blackvue.export.map_video import _is_live_fix
 from blackvue.export.map_video import _lerp_bbox
 from blackvue.export.map_video import _wallclock_for_elapsed
 from blackvue.export.map_video import interpolate_position
+from blackvue.export.map_video import intro_start_bbox
 from blackvue.export.map_video import render_intro_flyover
 from blackvue.export.map_video import render_map_video
 from blackvue.export.osm_roads import BoundingBox
@@ -1971,3 +1972,193 @@ def test_render_intro_flyover_raises_for_a_missing_marker_image(tmp_path):
             destination=tmp_path / "intro.mp4",
             marker_image_path=tmp_path / "does-not-exist.png",
         )
+
+
+# --- intro_start_bbox() ------------------------------------------------
+
+
+def test_intro_start_bbox_returns_none_for_no_fixes():
+    assert intro_start_bbox(()) is None
+
+
+def test_intro_start_bbox_returns_a_degenerate_box_for_a_single_fix():
+    # Unlike render_intro_flyover() itself (which separately requires
+    # at least two positioned fixes to have a route worth drawing),
+    # intro_start_bbox() is a thin wrapper around
+    # bounding_box_for_fixes() alone - a single valid fix still yields
+    # a real (zero-size before scaling) box, not None.
+    bbox = intro_start_bbox((_fix(0, 59.300, 18.000),), width=640, height=640)
+
+    assert bbox is not None
+
+
+def test_intro_start_bbox_returns_none_when_all_fixes_are_invalid():
+    fixes = (
+        _fix(0, 59.300, 18.000, valid=False),
+        _fix(1, 59.302, 18.004, valid=False),
+    )
+
+    assert intro_start_bbox(fixes) is None
+
+
+def test_intro_start_bbox_widens_the_trips_own_bbox_by_the_multiplier():
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(1, 59.302, 18.004),
+        _fix(2, 59.304, 18.008),
+    )
+
+    end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=1.0)
+    wide_bbox = intro_start_bbox(fixes, width=640, height=640)
+
+    # Same center, INTRO_ZOOM_START_MULTIPLIER-x wider on both axes -
+    # exactly what trip_export.py's _load_trip_roads() needs its OSM
+    # fetch to actually cover (see intro_start_bbox()'s own docstring:
+    # Christer's "started with the whole map showing").
+    assert round((wide_bbox.max_lat - wide_bbox.min_lat), 6) == round(
+        (end_bbox.max_lat - end_bbox.min_lat) * INTRO_ZOOM_START_MULTIPLIER, 6
+    )
+    assert round((wide_bbox.max_lon - wide_bbox.min_lon), 6) == round(
+        (end_bbox.max_lon - end_bbox.min_lon) * INTRO_ZOOM_START_MULTIPLIER, 6
+    )
+    assert round((wide_bbox.min_lat + wide_bbox.max_lat) / 2, 6) == round(
+        (end_bbox.min_lat + end_bbox.max_lat) / 2, 6
+    )
+    assert round((wide_bbox.min_lon + wide_bbox.max_lon) / 2, 6) == round(
+        (end_bbox.min_lon + end_bbox.max_lon) / 2, 6
+    )
+
+
+def test_intro_start_bbox_respects_a_custom_zoom_start_multiplier():
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+
+    end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=1.0)
+    wide_bbox = intro_start_bbox(fixes, width=640, height=640, zoom_start_multiplier=2.0)
+
+    assert round((wide_bbox.max_lat - wide_bbox.min_lat), 6) == round(
+        (end_bbox.max_lat - end_bbox.min_lat) * 2.0, 6
+    )
+
+
+def test_intro_start_bbox_matches_render_intro_flyovers_own_starting_box(
+    tmp_path, monkeypatch
+):
+    # The whole reason intro_start_bbox() was factored out of
+    # render_intro_flyover() rather than staying inline: trip_export.py
+    # widens its OSM fetch against intro_start_bbox()'s own return
+    # value, so the two have to agree exactly, or the widened fetch
+    # wouldn't actually cover what render_intro_flyover() draws.
+    captured_bboxes = []
+
+    def fake_render_frame_visual(bbox, *_args, **_kwargs):
+        captured_bboxes.append(bbox)
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(1, 59.302, 18.004),
+        _fix(2, 59.304, 18.008),
+    )
+
+    render_intro_flyover(
+        fixes, roads=(), destination=tmp_path / "intro.mp4",
+        duration_seconds=1.0, fps=2, width=320, height=240,
+    )
+
+    expected_start_bbox = intro_start_bbox(fixes, width=320, height=240)
+
+    # The very first frame (t=0) is rendered on the unmodified starting
+    # box, before any easing/interpolation moves it toward end_bbox.
+    assert captured_bboxes[0] == expected_start_bbox
+
+
+# --- render_intro_flyover() caption param -------------------------------
+
+
+def test_render_intro_flyover_draws_no_caption_by_default(tmp_path, monkeypatch):
+    def fail_draw_caption(*_args, **_kwargs):
+        raise AssertionError(
+            "draw_caption() should not be called when caption=None"
+        )
+
+    monkeypatch.setattr(map_video_module, "draw_caption", fail_draw_caption)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", lambda *_a, **_k: _FakeFrameImage()
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+
+    render_intro_flyover(
+        fixes, roads=(), destination=tmp_path / "intro.mp4",
+        duration_seconds=1.0, fps=2,
+    )
+
+
+def test_render_intro_flyover_draws_the_caption_on_every_frame_when_given(
+    tmp_path, monkeypatch
+):
+    captured_captions = []
+
+    def fake_draw_caption(visual, text, **_kwargs):
+        captured_captions.append(text)
+        return visual
+
+    monkeypatch.setattr(map_video_module, "draw_caption", fake_draw_caption)
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", lambda *_a, **_k: _FakeFrameImage()
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(1, 59.302, 18.004),
+        _fix(2, 59.304, 18.008),
+    )
+
+    render_intro_flyover(
+        fixes, roads=(), destination=tmp_path / "intro.mp4",
+        duration_seconds=1.0, fps=2, caption="Holiday_trip_20260715_133458",
+    )
+
+    assert len(captured_captions) >= 2
+    assert all(text == "Holiday_trip_20260715_133458" for text in captured_captions)
+
+
+def test_render_intro_flyover_burns_a_real_caption_bar_into_the_encoded_video(
+    tmp_path
+):
+    # End-to-end check (no monkeypatching) that a real caption actually
+    # changes the rendered pixels, matching Christer's ask: "with the
+    # prefix and trip name on like subtitles".
+    fixes = (
+        _fix(0, 59.300, 18.000),
+        _fix(1, 59.302, 18.004),
+        _fix(2, 59.304, 18.008),
+    )
+
+    plain = tmp_path / "intro_plain.mp4"
+    captioned = tmp_path / "intro_captioned.mp4"
+
+    render_intro_flyover(
+        fixes, roads=(), destination=plain,
+        duration_seconds=1.0, fps=2, width=320, height=240,
+    )
+    render_intro_flyover(
+        fixes, roads=(), destination=captioned,
+        duration_seconds=1.0, fps=2, width=320, height=240,
+        caption="Holiday_trip_20260715_133458",
+    )
+
+    assert plain.stat().st_size != captioned.stat().st_size

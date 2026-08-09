@@ -45,6 +45,7 @@ from .gsensor_graph_video import render_gsensor_graph_video
 from .gsensor_video import render_gsensor_video
 from .map_video import DEFAULT_FPS
 from .map_video import DEFAULT_INTRO_SECONDS
+from .map_video import intro_start_bbox
 from .map_video import render_intro_flyover
 from .map_video import render_map_video
 from .media import change_playback_speed
@@ -54,6 +55,7 @@ from .media import generate_silence
 from .media import mux_audio_track
 from .media import trim_media
 from .media import trim_media_head
+from .osm_roads import BoundingBox
 from .osm_roads import bounding_box_for_fixes
 from .osm_roads import load_or_fetch_areas
 from .osm_roads import load_or_fetch_roads
@@ -1324,11 +1326,27 @@ def _merge_gsensor(
     return tuple(sorted(samples, key=lambda sample: sample.offset))
 
 
+def _union_bbox(a: BoundingBox, b: BoundingBox) -> BoundingBox:
+    """The smallest bounding box containing both `a` and `b` - used by
+    _load_trip_roads() below to widen its OSM fetch area without
+    changing the tight trip bbox it still returns for map.mp4's own
+    normal framing."""
+
+    return BoundingBox(
+        min_lat=min(a.min_lat, b.min_lat),
+        min_lon=min(a.min_lon, b.min_lon),
+        max_lat=max(a.max_lat, b.max_lat),
+        max_lon=max(a.max_lon, b.max_lon),
+    )
+
+
 def _load_trip_roads(
     fixes: tuple,
     map_cache_dir: Path,
     warnings: list[str],
     log: TripLog | None = None,
+    *,
+    include_intro_bbox: bool = False,
 ) -> tuple:
     """Fetch/cache OSM road geometry (and water/green-area geometry)
     for a trip's whole bounding box - shared by both the static
@@ -1336,12 +1354,28 @@ def _load_trip_roads(
     network/cache failure produces one "map" warning rather than one
     per map output requested. Returns (bbox, roads, areas); bbox and
     roads are both None if there's no bbox to fetch for (no positioned
-    fixes) or the road fetch itself failed.
+    fixes) or the road fetch itself failed. The returned `bbox` is
+    always the trip's own tight bbox (map.mp4's normal framing),
+    regardless of `include_intro_bbox` - only the *fetch* area widens.
 
     Always fetched for the *whole* trip's bounding box, even for a
     zoomed "follow camera" render - the camera only frames a small
     area at once, but which small area varies every frame, so road/
     area data has to be available anywhere along the route.
+
+    `include_intro_bbox` (set when `--map-intro` is requested) widens
+    the fetch area to also cover render_intro_flyover()'s own wide
+    establishing-shot framing (see map_video.py's intro_start_bbox()) -
+    without this, that flyover's widest, most "establishing" frame
+    would render mostly blank, since the trip's own bbox plus its
+    small fixed margin (osm_roads.DEFAULT_MARGIN_DEGREES) is normally
+    all that's ever fetched, and the flyover's opening view is
+    several times wider than that. Christer: "It would be nice if the
+    intro.mp4 started with the whole map showing." A real tradeoff
+    worth naming: `zoom_start_multiplier`'s default (8x) means up to
+    ~64x more query area (8x on each axis) than a plain map.mp4-only
+    export ever fetches - a real, one-time-per-region Overpass/cache
+    cost, only paid when `--map-intro` is actually requested.
 
     A failed area fetch degrades separately from a failed road fetch:
     roads are load-bearing for the whole map phase (no roads, no
@@ -1356,8 +1390,14 @@ def _load_trip_roads(
     if bbox is None:
         return None, None, None
 
+    fetch_bbox = bbox
+    if include_intro_bbox:
+        wide_bbox = intro_start_bbox(fixes)
+        if wide_bbox is not None:
+            fetch_bbox = _union_bbox(bbox, wide_bbox)
+
     try:
-        roads = load_or_fetch_roads(bbox, map_cache_dir)
+        roads = load_or_fetch_roads(fetch_bbox, map_cache_dir)
     except MediaToolError as exc:
         # Shared by both map.mp4 and any map_zoom_*m.mp4 - "map data"
         # rather than "map" specifically, since this failure isn't
@@ -1368,7 +1408,7 @@ def _load_trip_roads(
         return None, None, None
 
     try:
-        areas = load_or_fetch_areas(bbox, map_cache_dir)
+        areas = load_or_fetch_areas(fetch_bbox, map_cache_dir)
     except MediaToolError as exc:
         warnings.append(f"map areas: {exc}")
         if log is not None:
@@ -2428,7 +2468,9 @@ def export_trip(
         log.step("starting map data phase (fetch/cache OSM roads)")
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
-        bbox, roads, areas = _load_trip_roads(fixes, cache_dir, warnings, log)
+        bbox, roads, areas = _load_trip_roads(
+            fixes, cache_dir, warnings, log, include_intro_bbox=render_map_intro
+        )
 
         if bbox is not None and roads is not None:
             stitch_map_roads = roads
@@ -2524,6 +2566,7 @@ def export_trip(
                         fixes, roads, destination / "intro.mp4",
                         areas=areas, duration_seconds=map_intro_seconds,
                         fps=intro_fps, marker_image_path=map_icon,
+                        caption=destination.name,
                         **intro_kwargs,
                     )
                 except MediaToolError as exc:
@@ -2845,6 +2888,7 @@ def export_trip(
                         areas=stitch_map_areas, duration_seconds=map_intro_seconds,
                         fps=intro_fps, marker_image_path=map_icon,
                         width=intro_width, height=intro_height,
+                        caption=destination.name,
                     )
                 except MediaToolError as exc:
                     warnings.append(f"map intro: {exc}")

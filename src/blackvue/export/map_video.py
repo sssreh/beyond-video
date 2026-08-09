@@ -25,6 +25,7 @@ from ..telemetry.gps_reader import GpsFix
 from .map_render import DEFAULT_HEIGHT
 from .map_render import DEFAULT_WIDTH
 from .map_render import compose_frame_overlay
+from .map_render import draw_caption
 from .map_render import render_base_map
 from .map_render import render_frame_visual
 from .media import encode_frame_sequence
@@ -858,6 +859,60 @@ def _lerp_bbox(start: BoundingBox, end: BoundingBox, t: float) -> BoundingBox:
     )
 
 
+def _scale_bbox_from_center(bbox: BoundingBox, multiplier: float) -> BoundingBox:
+    """Scale `bbox` by `multiplier` on both axes, keeping its own
+    center fixed - the wide-establishing-shot math render_intro_
+    flyover()'s `start_bbox` and intro_start_bbox() (below) both need,
+    factored out once so the two stay in exact agreement rather than
+    two independently-typed copies of the same four lines drifting
+    apart under a future edit."""
+
+    center_lat = (bbox.min_lat + bbox.max_lat) / 2
+    center_lon = (bbox.min_lon + bbox.max_lon) / 2
+    half_lat = (bbox.max_lat - bbox.min_lat) / 2 * multiplier
+    half_lon = (bbox.max_lon - bbox.min_lon) / 2 * multiplier
+    return BoundingBox(
+        min_lat=center_lat - half_lat,
+        min_lon=center_lon - half_lon,
+        max_lat=center_lat + half_lat,
+        max_lon=center_lon + half_lon,
+    )
+
+
+def intro_start_bbox(
+    fixes: tuple[GpsFix, ...],
+    *,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    zoom_start_multiplier: float = INTRO_ZOOM_START_MULTIPLIER,
+) -> BoundingBox | None:
+    """The wide establishing-shot bounding box render_intro_flyover()'s
+    very first frame opens on - exposed as its own function (rather
+    than staying inline in render_intro_flyover() alone) so
+    trip_export.py's OSM road/area fetch can be widened to actually
+    cover it ahead of time.
+
+    That widening matters because of a real gap otherwise: roads/areas
+    are normally only fetched for a trip's own bounding box plus a
+    ~1km margin (see osm_roads.DEFAULT_MARGIN_DEGREES) - map.mp4's
+    static overview never needs more than that, but this box is
+    `zoom_start_multiplier`x wider on both axes, so without widening
+    the fetch too, the flyover's own widest, most "establishing" frame
+    would render as mostly blank map - the opposite of Christer's own
+    ask ("started with the whole map showing"). See trip_export.py's
+    _load_trip_roads() for where this gets used that way.
+
+    Returns None under the same "nothing to bound" conditions
+    bounding_box_for_fixes() does.
+    """
+
+    aspect_ratio = width / height
+    end_bbox = bounding_box_for_fixes(fixes, aspect_ratio=aspect_ratio)
+    if end_bbox is None:
+        return None
+    return _scale_bbox_from_center(end_bbox, zoom_start_multiplier)
+
+
 def render_intro_flyover(
     fixes: tuple[GpsFix, ...],
     roads: tuple[Road, ...],
@@ -870,6 +925,7 @@ def render_intro_flyover(
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     zoom_start_multiplier: float = INTRO_ZOOM_START_MULTIPLIER,
+    caption: str | None = None,
 ) -> Path | None:
     """Render a short establishing-shot "flyover" of a trip's whole
     route at `destination`: the camera starts on a wide view of the
@@ -902,10 +958,14 @@ def render_intro_flyover(
     the flyover's last frame lines up with what a viewer sees next if
     map.mp4 (or --stitch-map) plays right after it. The starting frame
     is that same box scaled `zoom_start_multiplier`x wider on both
-    axes, still centered on the same point; every frame in between is
-    a per-corner linear interpolation (_lerp_bbox()) of an eased
-    progress fraction (_ease_out_cubic()) between the two, which
-    reads as a smooth zoom-in that settles rather than one that
+    axes (see intro_start_bbox(), which computes this same box - and
+    is what trip_export.py widens its own OSM road/area fetch against,
+    so this wide opening frame actually has real map data to show
+    rather than rendering mostly blank - Christer: "started with the
+    whole map showing"), still centered on the same point; every frame
+    in between is a per-corner linear interpolation (_lerp_bbox()) of
+    an eased progress fraction (_ease_out_cubic()) between the two,
+    which reads as a smooth zoom-in that settles rather than one that
     arrives at a constant, mechanical rate.
 
     The position marker (the same plain arrow, or a custom
@@ -913,6 +973,16 @@ def render_intro_flyover(
     trip's own first real fix for the whole shot - there's no
     "current position" concept here, just a mark of where the trip
     that's about to play actually begins.
+
+    `caption`, if given, is drawn on every frame as a bottom-centered,
+    subtitle-style title card (see map_render.py's draw_caption()) -
+    Christer, in the same request that asked for the wide opening
+    view above: "with the prefix and trip name on like subtitles".
+    trip_export.py passes its own `destination.name` (the exported
+    trip folder's own name, which already bakes prefix + trip label
+    together - see folder_name_for_trip()) for this. `None` (the
+    default) draws no caption at all, unchanged from before this
+    parameter existed.
 
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - same "nothing to
@@ -928,16 +998,7 @@ def render_intro_flyover(
     if end_bbox is None:
         return None
 
-    center_lat = (end_bbox.min_lat + end_bbox.max_lat) / 2
-    center_lon = (end_bbox.min_lon + end_bbox.max_lon) / 2
-    half_lat = (end_bbox.max_lat - end_bbox.min_lat) / 2 * zoom_start_multiplier
-    half_lon = (end_bbox.max_lon - end_bbox.min_lon) / 2 * zoom_start_multiplier
-    start_bbox = BoundingBox(
-        min_lat=center_lat - half_lat,
-        min_lon=center_lon - half_lon,
-        max_lat=center_lat + half_lat,
-        max_lon=center_lon + half_lon,
-    )
+    start_bbox = _scale_bbox_from_center(end_bbox, zoom_start_multiplier)
 
     marker_image = _load_marker_image(marker_image_path)
 
@@ -976,6 +1037,8 @@ def render_intro_flyover(
                 width=width,
                 height=height,
             )
+            if caption:
+                visual = draw_caption(visual, caption, width=width, height=height)
             visual.save(frame_dir / f"frame_{frame_number:06d}.png")
 
         encode_frame_sequence(frame_dir, destination, fps)

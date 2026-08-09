@@ -14,15 +14,19 @@ from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.export import trip_export as trip_export_module
+from blackvue.export.map_video import intro_start_bbox
+from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
 from blackvue.export.trip_export import _align_front_rear_durations
 from blackvue.export.trip_export import _concatenate_asset
 from blackvue.export.trip_export import _ensure_recording_audio
+from blackvue.export.trip_export import _load_trip_roads
 from blackvue.export.trip_export import _merge_gsensor
 from blackvue.export.trip_export import _recording_video_offsets
 from blackvue.export.trip_export import _repair_parking_sources
 from blackvue.export.trip_export import _replace_with_retry
 from blackvue.export.trip_export import _trim_prebuffers
+from blackvue.export.trip_export import _union_bbox
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
@@ -31,6 +35,7 @@ from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeechSegment
 from blackvue.generate.subtitles import format_lrc
 from blackvue.generate.subtitles import format_srt
+from blackvue.telemetry.gps_reader import GpsFix
 from blackvue.telemetry.gsensor_reader import read_gsensor
 from blackvue.trip.trip import Trip
 
@@ -4250,3 +4255,238 @@ def test_replace_with_retry_raises_the_original_error_if_even_the_copy_fails(
     # source and the still-intact original destination.
     assert source.exists()
     assert destination.read_text() == "old"
+
+
+# --- _union_bbox() -------------------------------------------------------
+
+
+def test_union_bbox_returns_the_smallest_box_containing_both():
+    a = BoundingBox(min_lat=59.30, min_lon=18.00, max_lat=59.32, max_lon=18.04)
+    b = BoundingBox(min_lat=59.31, min_lon=18.03, max_lat=59.34, max_lon=18.08)
+
+    result = _union_bbox(a, b)
+
+    assert result == BoundingBox(
+        min_lat=59.30, min_lon=18.00, max_lat=59.34, max_lon=18.08
+    )
+
+
+def test_union_bbox_is_a_no_op_when_one_box_already_contains_the_other():
+    outer = BoundingBox(min_lat=59.00, min_lon=17.00, max_lat=60.00, max_lon=19.00)
+    inner = BoundingBox(min_lat=59.30, min_lon=18.00, max_lat=59.32, max_lon=18.04)
+
+    assert _union_bbox(outer, inner) == outer
+    assert _union_bbox(inner, outer) == outer
+
+
+# --- _load_trip_roads() ---------------------------------------------------
+
+
+def _gps_fix(offset_seconds, lat, lon):
+    return GpsFix(
+        timestamp=datetime(2026, 7, 15, 13, 0, 0) + timedelta(seconds=offset_seconds),
+        valid=True,
+        latitude=lat,
+        longitude=lon,
+        speed_kmh=50.0,
+        course=0.0,
+    )
+
+
+def test_load_trip_roads_fetches_only_the_tight_bbox_by_default(tmp_path, monkeypatch):
+    captured_bboxes = []
+
+    def _capture_roads(bbox, _cache_dir):
+        captured_bboxes.append(bbox)
+        return _fake_roads()
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _capture_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    fixes = (
+        _gps_fix(0, 59.300, 18.000),
+        _gps_fix(1, 59.302, 18.004),
+        _gps_fix(2, 59.304, 18.008),
+    )
+
+    bbox, roads, areas = _load_trip_roads(fixes, tmp_path, [])
+
+    # include_intro_bbox defaults to False - unchanged, pre-existing
+    # behavior: the fetch is only ever the trip's own tight bbox.
+    assert captured_bboxes == [bbox]
+    assert roads == _fake_roads()
+
+
+def test_load_trip_roads_widens_the_fetch_when_include_intro_bbox_is_set(
+    tmp_path, monkeypatch
+):
+    captured_bboxes = []
+
+    def _capture_roads(bbox, _cache_dir):
+        captured_bboxes.append(bbox)
+        return _fake_roads()
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _capture_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    fixes = (
+        _gps_fix(0, 59.300, 18.000),
+        _gps_fix(1, 59.302, 18.004),
+        _gps_fix(2, 59.304, 18.008),
+    )
+
+    bbox, roads, areas = _load_trip_roads(
+        fixes, tmp_path, [], include_intro_bbox=True
+    )
+
+    fetched_bbox = captured_bboxes[0]
+    # Christer: "It would be nice if the intro.mp4 started with the
+    # whole map showing" - the fetch area has to be at least as wide as
+    # render_intro_flyover()'s own wide establishing shot, or that
+    # opening frame would render mostly blank.
+    expected_wide_bbox = intro_start_bbox(fixes)
+    assert fetched_bbox.min_lat <= expected_wide_bbox.min_lat
+    assert fetched_bbox.min_lon <= expected_wide_bbox.min_lon
+    assert fetched_bbox.max_lat >= expected_wide_bbox.max_lat
+    assert fetched_bbox.max_lon >= expected_wide_bbox.max_lon
+
+
+def test_load_trip_roads_still_returns_the_tight_bbox_when_widened(
+    tmp_path, monkeypatch
+):
+    # The widening only affects what gets *fetched* - map.mp4's own
+    # normal (non-intro) framing must stay exactly as tight as before,
+    # or every other map output would suddenly show a much wider view
+    # than Christer ever asked for.
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _fake_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    fixes = (
+        _gps_fix(0, 59.300, 18.000),
+        _gps_fix(1, 59.302, 18.004),
+        _gps_fix(2, 59.304, 18.008),
+    )
+
+    bbox_without, _roads, _areas = _load_trip_roads(fixes, tmp_path, [])
+    bbox_with, _roads, _areas = _load_trip_roads(
+        fixes, tmp_path, [], include_intro_bbox=True
+    )
+
+    assert bbox_with == bbox_without
+
+
+def test_load_trip_roads_ignores_include_intro_bbox_when_there_are_no_fixes(
+    tmp_path, monkeypatch
+):
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("should not fetch roads with no fixes to bound")
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _refuse)
+
+    bbox, roads, areas = _load_trip_roads((), tmp_path, [], include_intro_bbox=True)
+
+    assert (bbox, roads, areas) == (None, None, None)
+
+
+# --- render_map_intro caption wiring (export_trip) ------------------------
+
+
+def test_export_trip_map_intro_widens_the_map_data_fetch(tmp_path, monkeypatch):
+    captured_bboxes = []
+
+    def _capture_roads(bbox, _cache_dir):
+        captured_bboxes.append(bbox)
+        return _fake_roads()
+
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _capture_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+    monkeypatch.setattr(
+        trip_export_module, "render_intro_flyover", lambda *_a, **_k: None
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    export_trip(trip, dest_dir, render_map_intro=True)
+
+    assert len(captured_bboxes) == 1
+    fetched = captured_bboxes[0]
+    # A real, positioned two-fix trip always has a nonzero bbox, so a
+    # widened fetch must be strictly larger on at least one axis - not
+    # just "not smaller".
+    assert (
+        (fetched.max_lat - fetched.min_lat) > 0
+        or (fetched.max_lon - fetched.min_lon) > 0
+    )
+
+
+def test_export_trip_map_intro_standalone_passes_the_trip_caption(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _fake_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    captured = []
+
+    def _capture_intro(fixes, roads, destination, **kwargs):
+        captured.append((destination, kwargs))
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_intro_flyover", _capture_intro
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export" / "Holiday_trip_20260720_100000_20260720_100010"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    export_trip(trip, dest_dir, render_map_intro=True)
+
+    assert len(captured) == 1
+    destination, kwargs = captured[0]
+    assert destination == dest_dir / "intro.mp4"
+    # Christer: "with the prefix and trip name on like subtitles" -
+    # destination.name already bakes prefix + trip label together (see
+    # folder_name_for_trip()), so no separate plumbing is needed for
+    # this to reach render_intro_flyover()'s caption param.
+    assert kwargs["caption"] == dest_dir.name
+
+
+def test_export_trip_map_intro_sized_to_stitch_passes_the_trip_caption(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_roads", _fake_roads)
+    monkeypatch.setattr(trip_export_module, "load_or_fetch_areas", _fake_areas)
+
+    captured = []
+
+    def _capture_intro(fixes, roads, destination, **kwargs):
+        captured.append((destination, kwargs))
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_intro_flyover", _capture_intro
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export" / "Holiday_trip_20260720_100000_20260720_100010"
+    # Needs real front/rear video (not just GPS) so a real stitch.mp4
+    # actually gets produced - only then does render_map_intro's
+    # second, stitch-sized call site (as opposed to the standalone one
+    # above) fire at all.
+    trip = _trip_with_front_rear_and_gps_shape(
+        source_dir, monkeypatch, east_west=True
+    )
+
+    export_trip(
+        trip, dest_dir, render_map_intro=True, stitch_layout="side_by_side",
+    )
+
+    assert len(captured) == 1
+    destination, kwargs = captured[0]
+    assert destination == dest_dir / "intro.mp4"
+    assert kwargs["caption"] == dest_dir.name
