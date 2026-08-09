@@ -2547,7 +2547,16 @@ def test_bv_export_merges_srt_across_a_trip(tmp_path):
     archive.mkdir()
     target = tmp_path / "out"
 
-    _make_video(archive / "20260720_100000_NF.mp4")
+    # Subtitle rebasing across a trip is keyed off each recording's own
+    # real, probed video duration (video-position offsets - see
+    # _recording_video_offsets()'s docstring for why this replaced the
+    # older "rebase by ID-timestamp gap" behavior), not the gap between
+    # the two recordings' ID timestamps - so the first recording's
+    # video is given an explicit 10-second duration here specifically
+    # to make the second recording's real rebase land on a clean,
+    # assertable 10s, regardless of the (unrelated) 10-second gap in
+    # the two recordings' filenames.
+    _make_video(archive / "20260720_100000_NF.mp4", duration_seconds=10.0)
     (archive / "20260720_100000_N.srt").write_text(
         format_srt((SpeechSegment(0.0, 1.0, "hello"),))
     )

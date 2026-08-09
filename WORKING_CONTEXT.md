@@ -76,6 +76,10 @@ When modifying code:
 - Do not redesign the architecture unless asked.
 - Asking questions in discussion is fine - Christer prefers that over
   guessing on a meaningfully-sized design decision.
+- Christer prefers a correct transcribe over a fast incorrect one -
+  when tuning bv-generate's Whisper settings (model size, beam_size,
+  etc.), default toward accuracy rather than speed, especially now
+  that his GPU has plenty of headroom either way.
 
 ---
 
