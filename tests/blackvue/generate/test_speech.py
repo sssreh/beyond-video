@@ -247,6 +247,116 @@ def test_load_whisper_model_uses_cuda_when_available(monkeypatch):
     assert _FakeCudaAwareWhisperModel.calls == [("small", "cuda", "float16")]
 
 
+def test_register_nvidia_dll_directories_noop_on_non_windows(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_NVIDIA_DLL_DIRECTORIES_REGISTERED", False)
+    monkeypatch.setattr(os, "name", "posix")
+
+    # Should return cleanly without ever touching os.add_dll_directory or
+    # trying to import nvidia - the os.name check short-circuits first.
+    speech_module._register_nvidia_dll_directories()
+
+    assert speech_module._NVIDIA_DLL_DIRECTORIES_REGISTERED is True
+
+
+def test_register_nvidia_dll_directories_noop_when_add_dll_directory_missing(
+    monkeypatch,
+):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_NVIDIA_DLL_DIRECTORIES_REGISTERED", False)
+    monkeypatch.setattr(os, "name", "nt")
+    # This sandbox runs on Linux, where os.add_dll_directory genuinely
+    # doesn't exist - exercises the hasattr() guard for real rather than
+    # faking it away, which doubles as coverage for any real non-Windows-
+    # -but-claims-nt edge case.
+    assert not hasattr(os, "add_dll_directory")
+
+    speech_module._register_nvidia_dll_directories()
+
+    assert speech_module._NVIDIA_DLL_DIRECTORIES_REGISTERED is True
+
+
+def test_register_nvidia_dll_directories_noop_when_nvidia_not_installed(
+    monkeypatch,
+):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_NVIDIA_DLL_DIRECTORIES_REGISTERED", False)
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "nvidia", None)
+
+    registered: list[str] = []
+    # os.add_dll_directory doesn't exist on this (Linux) sandbox, so the
+    # fake harness's setattr (which requires the attribute to already
+    # exist) can't be used here - set/restore it by hand instead.
+    os.add_dll_directory = lambda path: registered.append(path)
+    try:
+        speech_module._register_nvidia_dll_directories()
+    finally:
+        del os.add_dll_directory
+
+    assert registered == []
+
+
+def test_register_nvidia_dll_directories_registers_component_bin_dirs(
+    monkeypatch, tmp_path
+):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_NVIDIA_DLL_DIRECTORIES_REGISTERED", False)
+
+    nvidia_root = tmp_path / "nvidia"
+    cublas_bin = nvidia_root / "cublas" / "bin"
+    cudnn_bin = nvidia_root / "cudnn" / "bin"
+    cublas_bin.mkdir(parents=True)
+    cudnn_bin.mkdir(parents=True)
+    # A component with no bin/ subdir should just be skipped, not error.
+    (nvidia_root / "cuda_nvrtc").mkdir()
+
+    fake_nvidia = types.ModuleType("nvidia")
+    fake_nvidia.__path__ = [str(nvidia_root)]
+    monkeypatch.setitem(sys.modules, "nvidia", fake_nvidia)
+
+    registered: list[str] = []
+
+    class _FakeWindowsOs:
+        name = "nt"
+
+        @staticmethod
+        def add_dll_directory(path):
+            registered.append(path)
+
+    # Patches speech.py's own `os` name binding, not the real os module.
+    # The function under test calls Path(package_dir), and pathlib
+    # consults the *real* os module to decide PosixPath vs WindowsPath -
+    # faking the real os.name to "nt" on this (Linux) sandbox would make
+    # Path() try to build a WindowsPath and blow up. Swapping only
+    # speech.py's reference exercises the "Windows, with
+    # add_dll_directory available" branch without that side effect.
+    monkeypatch.setattr(speech_module, "os", _FakeWindowsOs)
+
+    speech_module._register_nvidia_dll_directories()
+
+    assert sorted(registered) == sorted([str(cublas_bin), str(cudnn_bin)])
+    assert speech_module._NVIDIA_DLL_DIRECTORIES_REGISTERED is True
+
+
+def test_register_nvidia_dll_directories_short_circuits_after_first_call(
+    monkeypatch,
+):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "_NVIDIA_DLL_DIRECTORIES_REGISTERED", True)
+
+    # If this didn't return immediately, it would blow up trying to check
+    # os.name/os.add_dll_directory or import nvidia, none of which is
+    # faked in this test - proves the module-level flag actually skips
+    # all of that work on repeat calls (e.g. one per bv-generate run).
+    speech_module._register_nvidia_dll_directories()
+
+
 def test_get_whisper_model_reports_missing_faster_whisper_cleanly(monkeypatch):
     # This used to rely on faster-whisper genuinely not being installed
     # in the test environment - true in this project's dev sandbox

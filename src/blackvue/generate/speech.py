@@ -103,6 +103,72 @@ class SpeakerTurn:
     speaker: str
 
 
+_NVIDIA_DLL_DIRECTORIES_REGISTERED = False
+
+
+def _register_nvidia_dll_directories() -> None:
+    """Register pip-installed NVIDIA DLL directories (cuBLAS, cuDNN,
+    ...) with Windows' DLL search path, before faster-whisper/
+    CTranslate2 ever gets imported.
+
+    Since Python 3.8, Windows no longer implicitly searches PATH for
+    a loaded native extension's own dependent DLLs -
+    os.add_dll_directory() (or editing PATH before the process
+    starts) is required instead. pip-installed packages like
+    nvidia-cublas-cu12/nvidia-cudnn-cu12 put their real .dll files
+    under site-packages/nvidia/<component>/bin/, but installing them
+    via pip does nothing to register that directory for DLL search -
+    exactly the failure Christer hit: `pip install nvidia-cublas-
+    cu12` reported "Requirement already satisfied" (the DLL was
+    genuinely present on disk), but CTranslate2 still couldn't find
+    it ("Library cublas64_12.dll is not found or cannot be loaded"),
+    because nothing had ever registered site-packages/nvidia/cublas/
+    bin as a DLL search directory - a path problem, not a missing-
+    package one, as Christer correctly diagnosed.
+
+    Only does anything on Windows - os.add_dll_directory doesn't
+    exist elsewhere, and Linux/macOS resolve shared library
+    dependencies differently (rpath/LD_LIBRARY_PATH), which pip-
+    installed nvidia packages generally handle correctly on their
+    own there. Safe to call unconditionally and repeatedly: no-ops
+    instantly after the first real call (module-level flag), and
+    no-ops entirely if the nvidia package isn't installed at all
+    (e.g. a CPU-only machine).
+    """
+
+    global _NVIDIA_DLL_DIRECTORIES_REGISTERED
+
+    if _NVIDIA_DLL_DIRECTORIES_REGISTERED:
+        return
+
+    _NVIDIA_DLL_DIRECTORIES_REGISTERED = True
+
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return
+
+    try:
+        import nvidia
+    except ImportError:
+        return
+
+    for package_dir in nvidia.__path__:
+        package_root = Path(package_dir)
+
+        if not package_root.is_dir():
+            continue
+
+        # Each pip-installed nvidia-<component>-cuNN package lands as
+        # its own subdirectory under the shared nvidia/ namespace
+        # package (e.g. nvidia/cublas/, nvidia/cudnn/), each with its
+        # own bin/ holding the actual DLLs on Windows.
+        for bin_dir in package_root.glob("*/bin"):
+            if bin_dir.is_dir():
+                try:
+                    os.add_dll_directory(str(bin_dir))
+                except OSError:
+                    pass
+
+
 def _load_whisper_model(model_size: str):
     """Load a faster-whisper model on GPU (CUDA) if this machine can
     actually run it, falling back to CPU otherwise.
@@ -116,6 +182,8 @@ def _load_whisper_model(model_size: str):
     type for GPU; int8 (quantized) is the equivalent recommendation
     for CPU.
     """
+
+    _register_nvidia_dll_directories()
 
     from faster_whisper import WhisperModel
 
@@ -148,6 +216,8 @@ def _load_cpu_whisper_model(model_size: str):
     again (that would retry CUDA first, uselessly repeating the same
     failure it's recovering from).
     """
+
+    _register_nvidia_dll_directories()
 
     from faster_whisper import WhisperModel
 
