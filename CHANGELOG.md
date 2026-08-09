@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+## [0.4.0] - 2026-08-09
+
+Most of this release is `bv-generate`'s transcription path getting faster and
+more reliable on real GPU hardware, plus a Ken-Burns rewrite that fixed a
+20x render-time regression in `--map-intro`. A few smaller Whisper/CI fixes
+round it out.
+
+### Added
+
+- `bv-generate`: opt-in Intel NPU (OpenVINO GenAI) Whisper backend
+  (`--npu-model-dir`) for machines with an Intel Core Ultra-class NPU, as an
+  alternative to the default faster-whisper/CTranslate2 path. Not yet
+  confirmed working end-to-end on real NPU hardware.
+- `bv-generate --model-size` now defaults to `large` automatically when a
+  CUDA GPU is detected, `small` otherwise - a `large` model transcribes in
+  about the same time a `small` one used to take on a real GPU, so the
+  more accurate model is now the default for free. New `--cpu` flag forces
+  CPU even on a GPU machine, e.g. to compare `--model-size small --cpu`
+  against the GPU-default `large` run.
+- `bv-export --map-intro`: opt-in flyover-intro clip before the main map
+  video, with a widened OSM fetch so the wide establishing shot has real
+  map data, and an optional title-card caption.
+- `bv-export`: KML export for trip GPS tracks, so a trip opens directly in
+  Google Earth without a format conversion step.
+- `STORY.md`: the narrative history behind why this project exists.
+
+### Changed
+
+- `bv-export --parking-speed` range widened from 0.10x-5x to 0.10x-10x.
+- GitHub Actions CI bumped off `actions/checkout@v4`/`actions/setup-python@v5`
+  (both pinned to a now-forced, deprecation-warned Node 20 runtime) to `@v6`.
+
+### Fixed
+
+- `--map-intro`'s map-render phase was up to 20x slower than before its own
+  wide-fetch feature shipped (16s -> 335s on a real trip). Root cause: the
+  wider road/area pool the intro needed was being reused by every other map
+  render on the export, not just the intro itself, and the intro redrew
+  every frame from scratch instead of cropping one raster. Fixed by scoping
+  the widened fetch to the intro only and rewriting the intro as a single
+  high-res raster cropped per frame (a proper Ken-Burns zoom).
+- faster-whisper's classic repetition-loop hallucination on dashcam audio
+  (a garbled phrase repeating itself indefinitely) - non-speech road/wind/
+  engine noise was being transcribed as speech and then feeding back into
+  later segments. Fixed with voice-activity-detection filtering and
+  disabling prior-text conditioning by default.
+- A cuBLAS DLL search-path gap on Windows that could make faster-whisper's
+  CUDA path fail with "Library cublas64_12.dll is not found or cannot be
+  loaded" even with the right NVIDIA packages installed - pip installing
+  them doesn't register their DLL directory anywhere Windows will look.
+  Fixed by registering both `os.add_dll_directory()` and a `PATH` prepend
+  for every found NVIDIA component directory.
+- Intel NPU model-conversion instructions dropped an outdated
+  `--disable-stateful` flag that's wrong for current (2025.1+) OpenVINO
+  GenAI and caused a hard load-time failure.
+- Trip-detail page light-theme readability (header, tabs, back-links, page
+  headings) against the background photo.
+- Username display now capitalized consistently in `bv-web`.
+
 ## [0.3.0] - 2026-08-08
 
 `bv-web` grew from a read-only trip browser into a control panel for the
