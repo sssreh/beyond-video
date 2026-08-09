@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Archive: {{ camera_id }} - Beyond Video{% endblock %}
 {% block content %}
-<p><a href="/archive">&larr; All cameras</a></p>
+<p class="back-link"><a href="/archive">&larr; All cameras</a></p>
 <h2>Archive: {{ camera_id }}</h2>
 
 <form method="get" action="/archive/{{ camera_id }}" class="filter-bar">

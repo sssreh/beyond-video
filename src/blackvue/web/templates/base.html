@@ -179,33 +179,64 @@
        sit on - a frosted-glass panel (partial-opacity --bg fill plus
        backdrop-filter blur), the same idea a native app's floating
        toolbar uses over content. This is deliberately NOT the same
-       thing as the page-wide .page-tint Christer asked to remove: the
-       tint washed the *entire* photo everywhere, all the time; these
-       panels cover only the handful of small regions that actually
-       hold text, leaving the rest of the photo (which is most of the
-       page) fully exposed at full clarity. The ~ combinator still
-       scopes all of this to pages that opted into .page-tint--none
-       (welcome.html, login.html) - every other page's header/nav is
-       completely untouched. */
-    .page-tint--none ~ .page-shell header,
-    .page-tint--none ~ .page-shell .tabs,
+       thing as the page-wide .page-tint Christer asked to remove on
+       welcome.html: the tint washed the *entire* photo everywhere, all
+       the time; these panels cover only the handful of small regions
+       that actually hold text, leaving the rest of the photo fully
+       exposed at full clarity.
+
+       header/.tabs themselves get this treatment unconditionally
+       further down (see their own rules) - originally this whole
+       block was scoped to just .page-tint--none pages (welcome.html/
+       login.html) on the assumption other pages' .page-tint wash was
+       already enough, but Christer's own follow-up ("most text is
+       hard to read, the tabs, return text etc.") confirmed every
+       other page's header/nav sitting bare on the faint tint had the
+       exact same problem - .page-tint's own opacity was tuned down
+       five separate times for the *body* content behind panels/
+       tables, never high enough on its own to carry header/nav text
+       with no backing at all. Only .login-box (present solely on
+       login.html, which already opts into .page-tint--none) stays
+       scoped here. */
     .page-tint--none ~ .page-shell .login-box {
       background: rgba(var(--bg-rgb), 0.78);
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
       border-radius: 10px;
       box-sizing: border-box;
-    }
-    .page-tint--none ~ .page-shell header {
-      padding: 0.6rem 1rem;
-      margin: 0 0 1rem;
-    }
-    .page-tint--none ~ .page-shell .tabs {
-      padding: 0.4rem 1rem 0;
-      border-bottom: none;
-    }
-    .page-tint--none ~ .page-shell .login-box {
       padding: 1.75rem 1.75rem 2rem;
+    }
+    /* Small frosted chip for the "&larr; back to X" link most detail/
+       sub-pages open with (trip_detail.html, archive_recording_
+       detail.html, trip_location.html, etc.) - same bare-text-on-
+       faint-tint problem as header/.tabs above, just for a single
+       link instead of a whole bar. Not folded into .content-panel -
+       most of these pages already wrap their main content in one, and
+       the back-link intentionally sits just outside/above it, same
+       position it's always had. */
+    .back-link {
+      display: inline-block;
+      background: rgba(var(--bg-rgb), 0.78);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 6px;
+      padding: 0.3rem 0.7rem;
+      margin: 0 0 1rem;
+      font-size: 0.9rem;
+    }
+    /* Same idea, sized for the single <h2> title job_detail.html and
+       every job_new_bv_*.html form opens with - those pages' actual
+       body content already sits in its own backed panel
+       (.command-help, .job-output, etc.), but the title line itself
+       was still bare text directly on the faint tint. */
+    .page-heading {
+      display: inline-block;
+      background: rgba(var(--bg-rgb), 0.78);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 8px;
+      padding: 0.5rem 0.9rem;
+      margin: 0 0 1rem;
     }
     /* welcome.html's own section labels get a small matching chip
        rather than the full-width bar above, since they're inline
@@ -233,8 +264,13 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 0.75rem;
-      margin-bottom: 0;
+      padding: 0.6rem 1rem;
+      margin: 0 0 1rem;
+      background: rgba(var(--bg-rgb), 0.78);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-radius: 10px;
+      box-sizing: border-box;
     }
     header h1 { font-size: 1.25rem; margin: 0; }
     header h1 a { color: inherit; text-decoration: none; display: block; }
@@ -257,8 +293,13 @@
        default link color to show where you are. */
     .tabs {
       display: flex; flex-wrap: wrap; gap: 0.25rem;
-      border-bottom: 1px solid var(--panel-border);
       margin-bottom: 1.5rem;
+      padding: 0.4rem 1rem 0;
+      background: rgba(var(--bg-rgb), 0.78);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-radius: 10px;
+      box-sizing: border-box;
     }
     .tab {
       display: inline-block; padding: 0.6rem 1rem;

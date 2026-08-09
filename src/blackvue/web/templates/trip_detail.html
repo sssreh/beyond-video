@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ trip.label }} - Beyond Video{% endblock %}
 {% block content %}
-<p><a href="/trips">&larr; All trips</a></p>
+<p class="back-link"><a href="/trips">&larr; All trips</a></p>
 <div class="content-panel">
 <h2>{% if trip.prefix %}<span class="badge">{{ trip.prefix }}</span> {% endif %}{{ trip.label }}</h2>
 

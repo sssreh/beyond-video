@@ -5,7 +5,8 @@
    forwarded onto the link that led here - handing it straight back
    returns to the exact filtered/scrolled-to view instead of resetting
    Mode/Date/"only with videos" filters. #}
-<p><a href="/archive/{{ camera_id }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">&larr; {{ camera_id }} archive</a></p>
+<p class="back-link"><a href="/archive/{{ camera_id }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">&larr; {{ camera_id }} archive</a></p>
+<div class="content-panel">
 <h2>{{ recording.id }} <span class="badge">{{ recording.kind_label }}</span></h2>
 <p class="hint">{{ recording.timestamp.strftime("%A, %B %d, %Y %H:%M:%S") }} &middot; {{ recording.size_label }}</p>
 
@@ -25,4 +26,5 @@
 {% if recording.has_gps %}
 <p><a href="/archive/{{ camera_id }}/{{ recording.id }}/location">Show start location</a></p>
 {% endif %}
+</div>
 {% endblock %}

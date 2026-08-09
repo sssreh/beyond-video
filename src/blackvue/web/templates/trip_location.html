@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ trip_id }} start location - Beyond Video{% endblock %}
 {% block content %}
-<p><a href="/trips/{{ trip_id }}">&larr; {{ trip_id }}</a></p>
+<p class="back-link"><a href="/trips/{{ trip_id }}">&larr; {{ trip_id }}</a></p>
 <h2>Start location</h2>
 
 {% if error %}
