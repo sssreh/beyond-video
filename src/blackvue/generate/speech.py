@@ -176,7 +176,27 @@ def _whisper_transcribe(model_size: str, source: Path, **kwargs):
     CPU instead of hitting the same DLL failure again. If the CPU
     retry itself fails, that exception propagates to the caller's own
     MediaToolError wrapping, same as before this existed.
+
+    Two defaults are forced here (via setdefault, so an explicit
+    kwarg from the caller still wins) to stop faster-whisper's classic
+    repetition-loop hallucination failure mode - confirmed by a real
+    report from Christer ("small model" output that degenerated into
+    "He said it's for people laying outside there." repeated nine
+    times in a row): dashcam audio has a lot of non-speech noise
+    (road/wind/engine), which faster-whisper - with no VAD filtering
+    by default (vad_filter=False) - happily transcribes as if it were
+    speech; once one stretch of that comes out garbled,
+    condition_on_previous_text's default of True feeds that garbled
+    text back in as context for the next segment, and the model tends
+    to latch onto a phrase and repeat it rather than recovering.
+    vad_filter=True (Silero VAD, bundled with faster-whisper) skips
+    genuine non-speech stretches instead of transcribing them, and
+    condition_on_previous_text=False stops one bad segment from
+    cascading into a repeat loop across the rest of the file.
     """
+
+    kwargs.setdefault("vad_filter", True)
+    kwargs.setdefault("condition_on_previous_text", False)
 
     model = _get_whisper_model(model_size)
 

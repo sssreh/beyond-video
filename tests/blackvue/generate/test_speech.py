@@ -94,8 +94,10 @@ class _FakeWhisperModel:
     def __init__(self, raw_segments, info):
         self._raw_segments = raw_segments
         self._info = info
+        self.received_kwargs = None
 
-    def transcribe(self, source, language=None):
+    def transcribe(self, source, **kwargs):
+        self.received_kwargs = kwargs
         return self._raw_segments, self._info
 
 
@@ -129,6 +131,60 @@ def test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration(
         SpeechSegment(start=0.0, end=5.0, text="hello"),
         SpeechSegment(start=118.0, end=120.0, text="goodbye"),
     )
+
+
+def test_whisper_transcribe_defaults_to_vad_filter_and_no_condition_on_previous_text(
+    monkeypatch,
+):
+    # Christer's real report: --model-size small on dashcam audio
+    # degenerated into "He said it's for people laying outside there."
+    # repeated nine times in a row - faster-whisper's classic
+    # repetition-loop hallucination failure mode, triggered by non-
+    # speech noise (road/wind/engine) getting transcribed as if it
+    # were speech (no VAD filtering) and then that garbled text
+    # cascading into later segments (condition_on_previous_text).
+    # These two defaults are the standard fix.
+    raw_segments = (_FakeRawSegment(0.0, 1.0, "hello"),)
+    info = _FakeTranscriptionInfo(language="en", duration=1.0)
+    fake_model = _FakeWhisperModel(raw_segments, info)
+
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(
+        speech_module, "_get_whisper_model", lambda model_size: fake_model
+    )
+
+    transcribe(Path("/tmp/audio.aac"))
+
+    assert fake_model.received_kwargs["vad_filter"] is True
+    assert fake_model.received_kwargs["condition_on_previous_text"] is False
+
+
+def test_whisper_transcribe_lets_an_explicit_kwarg_override_the_defaults(
+    monkeypatch,
+):
+    # setdefault(), not an unconditional override - a caller that
+    # explicitly wants the old behavior (or a different vad_filter
+    # configuration) back can still get it.
+    raw_segments = (_FakeRawSegment(0.0, 1.0, "hello"),)
+    info = _FakeTranscriptionInfo(language="en", duration=1.0)
+    fake_model = _FakeWhisperModel(raw_segments, info)
+
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(
+        speech_module, "_get_whisper_model", lambda model_size: fake_model
+    )
+
+    speech_module._whisper_transcribe(
+        "small",
+        Path("/tmp/audio.aac"),
+        vad_filter=False,
+        condition_on_previous_text=True,
+    )
+
+    assert fake_model.received_kwargs["vad_filter"] is False
+    assert fake_model.received_kwargs["condition_on_previous_text"] is True
 
 
 class _FakeCudaAwareWhisperModel:

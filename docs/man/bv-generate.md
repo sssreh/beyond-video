@@ -60,6 +60,7 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 |---|---|
 | `--language LANG` | Spoken language hint (e.g. `en`). Auto-detected if omitted - except with `--npu-model-dir`, which requires it (see below). |
 | `--model-size SIZE` | faster-whisper model size. Default: `small`. Ignored when `--npu-model-dir` is given. |
+| — | Transcription always uses voice-activity-detection filtering and does not condition segments on prior text, to avoid faster-whisper's classic repetition-loop hallucination on non-speech noise (road/wind/engine) common in dashcam audio. |
 | `--npu-model-dir PATH` | Use an Intel NPU (OpenVINO GenAI) instead of faster-whisper, pointed at an already-converted OpenVINO IR Whisper model directory. Requires `--language` - this backend cannot auto-detect the spoken language. See "Intel NPU transcription" below. **Not verified against real Intel NPU hardware** - built from OpenVINO GenAI's own published API docs; there's no Intel NPU in this project's dev/test environment. Try it and report back if it doesn't work as documented. |
 | `--diarize` | Label who is speaking (e.g. `[SPEAKER_00] ...`), using pyannote.audio. Requires a HuggingFace access token. |
 | `--hf-token TOKEN` | HuggingFace token for `--diarize`. Create one at <https://huggingface.co/settings/tokens>, then accept the model license at <https://huggingface.co/pyannote/speaker-diarization-community-1>. Falls back to the `HF_TOKEN` environment variable if omitted. |
