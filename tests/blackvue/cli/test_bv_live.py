@@ -53,6 +53,7 @@ def test_parse_args_rejects_an_unknown_browser_choice():
 class _FakeConfig:
     name = "MyCar"
     endpoints = [Endpoint(name="home", address="10.99.77.1")]
+    archive = Path("/tmp/archive")
     target = Path("/tmp/whatever")
 
 

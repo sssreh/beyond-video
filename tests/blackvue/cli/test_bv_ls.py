@@ -65,7 +65,7 @@ def test_full_display_order_group_spans_are_well_formed():
 
     grouped = {label: members for label, members in spans if label}
 
-    assert set(grouped) == {"Transcript", "Translate"}
+    assert set(grouped) == {"Scene", "Transcript", "Translate"}
 
     for label, members in grouped.items():
         span_width = sum(widths[a] for a in members) + (len(members) - 1)
