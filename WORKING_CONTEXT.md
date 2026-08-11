@@ -8697,3 +8697,9 @@ Current state: only `bv-search` has this. `bv-generate`/`bv-scribe`/`bv-download
 Discussed recommendation: `bv-generate` and `bv-scribe` are the strongest candidates (long batch runs, no timing today, exactly what prompted this question after the 902-recording Kirby_2019 run). Lean toward keeping it always-on/no-flag like `bv-search`, for consistency, unless a real use case for suppressing it shows up (e.g. `bv-generate` in scripted/cron use wanting stable minimal output).
 
 **Not implemented.** Christer wants to wait for the current bv-scribe run (expected half a day or more) to finish before deciding whether to build this - noted here so the discussion isn't lost.
+
+## Note: surface scene/OCR text on the archive recording detail page (future improvement)
+
+Christer, after testing `bv-search --text` against scene descriptions and getting a real hit (`20190122_112908_E.scene.txt:7: Kungsgatan`): asked whether there's a link/path to the scene content itself, not just the video. There isn't - `job_detail.html`'s recording-id links (task #659) go to `/archive/{camera_id}/{recording_id}`, and `archive_recording_detail.html` shows video/GPS but never renders `.scene.txt`/`.rear.scene.txt` content anywhere. Today the only way to actually read a scene description is opening the file directly on disk.
+
+Christer's call: leave it as-is for now, noted here as a real future addition - surface the scene/OCR text itself on the recording detail page, so following a bv-search hit through actually shows the described content instead of just the video. Not implemented.
