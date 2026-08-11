@@ -8721,3 +8721,17 @@ Christer's 902-recording Kirby_2019 bv-scribe web job died partway through with 
 **Tests.** `test_run_skips_parking_recordings_entirely` (a Parking + a Normal recording in the fake archive - confirms only the Normal one gets described, the Parking one's `.scene.txt` never gets written, and the skip-count message appears). `test_run_survives_one_recordings_failure_and_reports_it` (first recording's fake `describe_scene()` raises `OSError`, second succeeds - confirms both were attempted, the second's `.scene.txt` was written, the first's wasn't, exit code is `EXIT_HAD_ERRORS`, and the failure summary contains both the count and the specific recording id + message). Manually run in the sandbox (no pytest available) by importing `bv_scribe` directly and driving `_run()` with fake `Archive`/`describe_scene` - both passed, plus the two pre-existing `_run()` tests re-verified unaffected. `ast.parse()` clean on both changed source files.
 
 **Not done:** no persistent log file - Christer explicitly said the end-of-run listing is enough "for now." Revisit if a real need for a durable failure log across runs comes up later.
+
+## Note: persistent command history + output logfile for bv-web jobs (future improvement)
+
+Christer, right after restarting bv-web to clear stuck GPU memory (and, as a side effect, losing all record of what had been running): "I would like history file of the command that has been executed, think history in pwsh or bash. I would also want a logfile of all the output."
+
+Current state: `JobRunner` (`web/jobs.py`) is fully in-memory - `self._jobs: dict[str, Job]` - by explicit original design (its own class docstring: "In-memory only... restart regardless of whether it's tracked here"), reasoned at the time as "a job mid-run when bv-web restarts is gone either way, since its background thread doesn't survive the restart regardless." That reasoning covers in-flight jobs correctly, but doesn't address *completed* jobs - today, once bv-web restarts, there is no way to see what commands were run previously (`Job.replicate_command`, from task #676) or what their output was (`Job.output`), even though those jobs finished cleanly before the restart.
+
+Two related but distinct asks:
+1. **Command history** - a persistent, append-only record of every `replicate_command` actually run via bv-web, with a timestamp, surviving restarts - the bv-web equivalent of a pwsh/bash history file.
+2. **Output logfile** - the full `say()`/`warn()` transcript for each job, also written to disk, so a past run's output can be reviewed even after the in-memory `Job` is gone.
+
+Natural pairing: a history file could just index into per-job log files (job id/command/timestamp -> log file path), rather than being two entirely separate mechanisms.
+
+**Not implemented** - recorded per Christer's "More notes:" framing, not a build request yet.
