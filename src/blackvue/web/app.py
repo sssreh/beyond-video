@@ -58,6 +58,7 @@ from .auth import THEME_COOKIE_NAME
 from .auth import SessionStore
 from .auth import require_login
 from .auth import require_owner
+from .auth import require_viewer_or_owner
 from ..history import HistoryFilter
 from ..history import all_entries
 from ..history import filtered_entries
@@ -1212,7 +1213,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
     @app.get("/jobs/bv-search", response_class=HTMLResponse)
     async def new_bv_search_form(
-        request: Request, user: User = Depends(require_owner)
+        request: Request, user: User = Depends(require_viewer_or_owner)
     ):
         return templates.TemplateResponse(
             request,
@@ -1235,7 +1236,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         place: str = Form(""),
         radius: str = Form(""),
         trace: bool = Form(False),
-        user: User = Depends(require_owner),
+        user: User = Depends(require_viewer_or_owner),
     ):
         text = text.strip() or None
         near = near.strip() or None
@@ -1308,9 +1309,19 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_detail(
-        request: Request, job_id: str, user: User = Depends(require_owner)
+        request: Request, job_id: str, user: User = Depends(require_viewer_or_owner)
     ):
         job = _find_job(app.state.job_runner, job_id)
+        # This route is shared by every job type (see the many
+        # start_bv_*() routes above), but only bv-search is open to
+        # viewers (see require_viewer_or_owner's own docstring) - a
+        # viewer trying to load any other job type's detail page (e.g.
+        # by guessing/reusing a job id) still gets the usual 403, same
+        # as if they'd hit that job type's own /jobs/bv-* form directly.
+        if user.role != "owner" and not job.command.startswith("bv-search "):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="owner role required"
+            )
         job_status, output, prompt = job.snapshot()
         # Auto-refresh (the <meta http-equiv="refresh"> below) is a full
         # page reload, which always snaps scroll back to the top - fine

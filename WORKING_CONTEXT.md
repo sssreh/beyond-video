@@ -8760,6 +8760,8 @@ Christer's own suggestion for where this should live: a folder parallel to `beyo
 
 ## Note: let bv-web viewers run bv-search (future improvement)
 
+**Implemented - see "Let bv-web viewers run bv-search" further below.** Left in place for the design-discussion/reasoning trail (option (a) below is the one that shipped).
+
 Christer wants bv-web's "viewer" role to have access to bv-search, not just "owner". Checked `app.py`: bv-search's routes (`GET`/`POST /jobs/bv-search`, plus the job-detail route it shares with every other job type) are currently gated behind `Depends(require_owner)` exactly like bv-generate/bv-export/bv-download/bv-scribe/bv-config/bv-gps/bv-ls - there's no partial-access tier today, `users.py`'s `ROLES = ("owner", "viewer")` is a strict two-way split (owner: full read/write incl. download/generate/export; viewer: read-only browsing).
 
 bv-search is a read-only query over already-generated scene/OCR/transcript text plus GPS - it doesn't create, modify, or consume GPU/CPU the way the other job types do, so treating it like the others is arguably too strict. Two implementation shapes to weigh when this gets built: (a) a one-off carve-out - add a `require_viewer_or_owner` (or similar) dependency and apply it only to the bv-search routes, leaving every other job route on `require_owner` unchanged; (b) something more general, e.g. a per-job-type permission table, if more "read-only" job types show up later. (a) is the smaller change and matches the current codebase's very literal, explicit-per-route style (`require_owner` is already applied route-by-route, not blanket-mounted).
@@ -8875,3 +8877,17 @@ Tests: `test_bv_generate.py` and `test_bv_scribe.py` each gained tests confirmin
 Docs: `docs/man/bv-generate.md` and `docs/man/bv-scribe.md` each gained a sentence in their DESCRIPTION section documenting the started/finished lines, matching how `docs/man/bv-search.md` already documents its own.
 
 Not yet covered by this change: bv-web's `job_detail.html` still shows no started-at timestamp or elapsed-time summary of its own outside of these printed lines now flowing into a job's captured output (and, since task #683, into `history.jsonl`'s own `duration_seconds` field per job) - a dedicated UI surface for "how long is this job taking" is still the separate, not-yet-built quick-tail-view idea (task #687).
+
+## Let bv-web viewers run bv-search
+
+Sixth piece of this work stream - implements option (a) from the note above: a one-off carve-out rather than a general per-job-type permission table, matching bv-web's existing very literal, explicit-per-route style (`require_owner` already applied route-by-route, not blanket-mounted).
+
+`web/auth.py` gained `require_viewer_or_owner()`, a FastAPI dependency functionally identical to `require_login()` (ROLES is just `("owner", "viewer")` - see `users.py` - so "logged in" already means "viewer or owner") but named to document intent at each call site that uses it. `app.py`'s `GET`/`POST /jobs/bv-search` routes switched from `require_owner` to this new dependency.
+
+The one wrinkle: `GET /jobs/{job_id}` (the job-detail/output page) is a single shared route for every job type, not just bv-search - it can't just swap its whole dependency to `require_viewer_or_owner`, or a viewer could load any job's output by guessing/reusing a job id (a download job's archive path, an export job's trip names, etc.). Kept the route open to any logged-in user, but added an explicit in-body check: `job.command.startswith("bv-search ")` - if false and the caller isn't the owner, 403 (same status/detail `require_owner` itself would have raised). `Job.command` already always starts with the literal CLI prog name (`start_bv_search()` sets it to `f"bv-search {camera_id}"`, matching every other `start_bv_*()` method's own convention) so this is a reliable check, not a guess.
+
+`base.html`'s nav: the Search tab moved out of the `{% if user.role == "owner" %}` block (now right after "Browse archive", visible to any logged-in user) - every other job-trigger tab, plus the History tab (task #686, still owner-only - not in scope here), stayed inside it.
+
+Verified via the same Jinja2-direct-render workaround used for prior bv-web-only changes (no fastapi in this sandbox): rendered `base.html` for both an "owner" and a "viewer" fake user and confirmed the owner sees every tab (including Search) while the viewer sees Search but none of the other job tabs or History. `ast.parse()` confirmed clean on `auth.py`/`app.py`. No route-level test suite exists for `app.py` in this sandbox (same fastapi-unavailable limitation noted throughout this restructure - see task #686's own entry), so the `job_detail` permission-check logic itself is unverified beyond manual code review; worth a real end-to-end check (or adding a fastapi-based test suite) once pytest/fastapi are available in a real environment.
+
+Docs: `docs/WEB_ARCHITECTURE.md`'s "Job runner" section updated (the bullet listing owner-only jobs now calls out bv-search as the exception, and a new paragraph documents the `require_viewer_or_owner`/`job_detail` carve-out mechanics) - the file previously had no mention of per-route permission variation at all, every job route was described as uniformly `require_owner`-gated.

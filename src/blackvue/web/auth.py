@@ -111,3 +111,22 @@ def require_owner(user: User = Depends(require_login)) -> User:
             status_code=status.HTTP_403_FORBIDDEN, detail="owner role required"
         )
     return user
+
+
+def require_viewer_or_owner(user: User = Depends(require_login)) -> User:
+    """FastAPI dependency: any logged-in user, viewer or owner alike.
+
+    Functionally identical to require_login (ROLES is just
+    ("owner", "viewer") - see users.py - so "logged in" already means
+    "viewer or owner"), but named for the routes that deliberately opt
+    out of the owner-only default the rest of bv-web uses: bv-search is
+    read-only over already-generated scene/OCR/transcript text plus
+    GPS, doesn't create/modify/consume GPU-CPU the way download/
+    generate/export/scribe do, so it's the one job type Christer wanted
+    viewers to be able to run for themselves (see WORKING_CONTEXT.md's
+    "let bv-web viewers run bv-search" note) - a one-off carve-out
+    rather than a general per-job-type permission table, matching this
+    app's existing very literal, explicit-per-route style.
+    """
+
+    return user
