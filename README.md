@@ -11,9 +11,11 @@ The project was inspired by a BlackVue DR900S installed in a vehicle named Kirby
 | `bv-config` | Create or edit a camera's configuration (endpoints, archive location). |
 | `bv-download` | Download recordings from a camera into a local archive. |
 | `bv-ls` | List and inspect recordings in an archive. |
-| `bv-generate` | Generate derived assets per recording: audio, real duration, transcript, translation, subtitles. |
+| `bv-generate` | Generate derived assets per recording: audio, real duration, transcript, translation, subtitles, scene description. |
 | `bv-lang` | Manage the offline translation packages `bv-generate --translate` uses. |
 | `bv-export` | Detect trips in an archive and assemble each one into its own folder - video, GPX, map overlay, g-sensor overlay, a combined "stitch" video. |
+| `bv-scribe` | Describe what's happening in a recording (or raw video file) using a vision-language model - scene description and/or on-screen text (signs, plates) via OCR. |
+| `bv-search` | Search an archive by text (transcript/translation/scene description) and/or GPS proximity to a point or place name. |
 | `bv-gps` | Fetch a camera's current GPS reading live, one-shot. |
 | `bv-live` | Serve a live browser dashboard for a camera: live video, a scrolling map, a scrolling g-sensor strip. |
 | `bv-web` | A small multi-user web app for browsing trips `bv-export` has already produced (a separate side project - see `docs/WEB_ARCHITECTURE.md`). |
@@ -36,6 +38,7 @@ That covers `bv-config`/`bv-download`/`bv-ls`/`bv-export`/`bv-gps` and `bv-gener
 pip install -e ".[speech]"      # bv-generate --transcribe/--diarize
 pip install -e ".[translate]"   # bv-generate --translate, bv-lang
 pip install -e ".[web]"         # bv-web and bv-live
+pip install -e ".[scene]"       # bv-generate --describe-scene, bv-scribe
 ```
 
 ## Quick start

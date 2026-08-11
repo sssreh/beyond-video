@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+## [0.5.0] - 2026-08-11
+
+Two new commands: `bv-scribe` (vision-language scene description + OCR) and
+`bv-search` (text/GPS search across an archive), both now wired into
+`bv-web` too. Camera configs can be referred to by id everywhere, not just
+in `bv-download`/`bv-config`. A stale test fixture and a stale test
+assertion (unrelated to any feature in this release) were also fixed after
+CI turned out to have been red since nearly the start of the project's CI
+history.
+
+### Added
+
+- `bv-scribe`: new standalone CLI that describes what's happening in a
+  recording (or a raw video file via `--raw`) using a vision-language
+  model - scene description and, opt-in, on-screen text (road signs,
+  license plates) via OCR-style zoom detection. Also available from
+  `bv-generate --describe-scene`, and from the browser via `bv-web`'s
+  progressive-disclosure job-trigger form (full flag parity, ~11 core
+  fields visible by default, everything else behind collapsible Advanced
+  sections). New `.[scene]` install extra
+  (`transformers`/`accelerate`/`qwen-vl-utils`).
+- `bv-search`: new CLI that searches an archive by text (transcript/
+  translation/scene-description content, plain or regex, optionally
+  case-sensitive) and/or GPS proximity to a coordinate or a forward-
+  geocoded place name (via Nominatim, matching Overpass road/area line
+  geometry rather than a single point), combinable in one run. Reports
+  start/finish timing and has an opt-in `--trace` progress-dot mode.
+  Wired into `bv-web` with full flag parity. Both `bv-scribe` and
+  `bv-search` now have quick-link cards on the welcome page.
+- Camera-id resolution: `bv-ls`/`bv-generate`/`bv-export`/`bv-scribe`/
+  `bv-search` now all accept a configured camera's id (e.g. `Kirby`) in
+  the same position a literal archive path would go, resolving it via
+  that camera's config - the same convenience `bv-download`/`bv-config`
+  already had. A literal path (anything with a path separator, or `.`/
+  `..`) is always used as-is, so a same-named directory still works.
+- Camera config gained an optional `Output` field, used as `bv-export
+  --target`'s default so it no longer needs repeating on every run.
+  `bv-config`'s wizard now suggests a default Target directory for a
+  brand-new camera.
+
+### Changed
+
+- Camera config's field names: `target` (the download/archive directory)
+  is now `archive`, and `output` (the export destination) is now
+  `target` - clearer names now that both concepts exist side by side.
+  Config files written with the old names keep loading correctly, no
+  manual migration needed.
+- `bv-search`: `--place`'s Nominatim resolution now happens - and prints
+  its confirmation line - before the timed search section begins, not
+  inside it; each matching recording is now preceded by a blank line for
+  readability.
+- `README.md`'s command table and install-extras list, which had drifted
+  out of date, now include `bv-scribe`/`bv-search` and the `.[scene]`
+  extra.
+
+### Fixed
+
+- CI's `pytest` step had apparently been failing on every push since
+  nearly the start of the project's CI history, unrelated to any feature
+  work - two stale tests, not real bugs: `test_bv_live.py`'s `_FakeConfig`
+  test double still only set the pre-rename `target` field, never updated
+  when `archive` became a required `CameraConfig` field; `test_bv_ls.py`'s
+  display-order sanity check had a hardcoded expected-groups set that was
+  never updated when scene description got its own two-row header group.
+- `bv-web`: light-theme readability on every job-trigger form (labels/
+  checkboxes were hard to read against the background photo - they'd
+  never been wrapped in the same solid content panel other pages use),
+  and `input[type="number"]` fields weren't themed at all.
+- `bv-web`: a `bv-search` job's output now links each matching recording
+  id straight to that recording's video page.
+- `bv-web`: the Timestamp field's placeholder text ("matches a single
+  recording/day") was a confusing sentence fragment - replaced with a
+  concrete example on every form that has the field.
+- `bv-web`: bv-generate's job-trigger form was bypassing the GPU-aware
+  `--model-size` default by always sending an explicit value.
+
 ## [0.4.0] - 2026-08-09
 
 Most of this release is `bv-generate`'s transcription path getting faster and
