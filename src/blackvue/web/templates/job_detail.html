@@ -55,10 +55,34 @@ function copyReplicateCommand(button) {
 <p class="hint">({{ tail_truncated_count }} earlier line(s) hidden - <a href="{{ tail_off_url }}">show full output</a>.)</p>
 {% endif %}
 
-<pre class="job-output">{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
+<pre class="job-output" id="job-output">{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
 {% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
 {% else %}{{ line }}
 {% endif %}{% endfor %}</pre>
+<script>
+  // pre.job-output is a fixed-height, scrollable box (base.html:
+  // max-height: 60vh, overflow-y: auto) that only actually shows
+  // about 24 lines before it needs scrolling - a bare <pre> always
+  // starts scrolled to its own top, though, so on a job whose output
+  // (or ?tail=1's own last-30-lines slice - see job's own docstring
+  // in app.py) is longer than that, the newest lines sat below the
+  // fold and never got seen without a manual scroll. Christer, after
+  // ?tail=1 still looked "stuck" on old progress: "still showing the
+  // first 30 rows... it started on 50 instead of 203" - the shown
+  // slice actually *was* the real last 30/tail_line_count lines each
+  // time (server-side slicing was already correct), just rendered
+  // scrolled to the top of that slice, so only its oldest, no-longer-
+  // current entries were visible above the fold. Every page load here
+  // is a genuine full reload (the <meta refresh> above, same as a
+  // manual F5) rather than a partial DOM update, so a plain scroll-
+  // to-bottom on load re-applies itself automatically on every
+  // auto-refresh tick too - no separate "stay pinned to bottom while
+  // new lines stream in" logic needed.
+  (function () {
+    var box = document.getElementById("job-output");
+    if (box) box.scrollTop = box.scrollHeight;
+  })();
+</script>
 
 {% if status == "waiting_for_input" %}
 <div class="prompt-box">

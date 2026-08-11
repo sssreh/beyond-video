@@ -8953,3 +8953,15 @@ Verified: `ast.parse()` clean on `core/history.py`, `web/jobs.py`, `web/app.py`.
 Docs: `docs/WEB_ARCHITECTURE.md` gained a new paragraph (right after the existing "Persistent command history" one, since this feature builds directly on `HistoryEntry.params`) covering the design choice, the data flow, and the pilot-then-rollout scope.
 
 Not yet done: the same `params`/`_recent_web_runs`/`_reuse_defaults`/reuse-panel pattern for the other six job-trigger commands - separate follow-up work once this pilot's pattern is confirmed working in real use.
+
+## Fix job-output pane not scrolling to bottom (?tail=1 looked stale)
+
+Christer, on a running bv-scribe job: "The tail of bv-web job running... [Show only the last 30 lines](...?tail=1), should have the same size as the report window, and its still showing the first 30 rows. and it started on 50 instead of 203."
+
+Diagnosis: `job_detail()`'s server-side `?tail=1` slicing (`output[-TAIL_LINE_COUNT:]`, task #687/its follow-up 200->30 tuning) was never actually wrong - it always sliced the real last 30 lines. The bug was purely visual: `pre.job-output` (`base.html`) is a fixed-height scrollable box (`max-height: 60vh`, ~24 visible rows before scrolling - the same measurement that justified lowering `TAIL_LINE_COUNT` from 200 to 30 in the first place) and a bare `<pre>` always starts scrolled to its own top. So even a correctly-sliced 30-line tail rendered with only its *oldest* ~24 lines visible above the fold - the newest, most-current lines (what Christer actually wanted to see) sat below an un-scrolled fold every single auto-refresh tick. "Started on 50 instead of 203" was him reading the oldest visible line in that unscrolled slice, not a real total-count/slicing bug.
+
+Fix: `job_detail.html`'s `<pre class="job-output">` gained `id="job-output"`, plus a small inline `<script>` right after it that sets `box.scrollTop = box.scrollHeight` on load. Every job-detail page view is already a genuine full page reload (the existing `<meta http-equiv="refresh" content="2">`, same mechanism as a manual F5, not a partial DOM patch), so this scroll-to-bottom re-applies itself automatically on every 2-second auto-refresh tick with no extra "stay pinned while new lines stream in" logic needed - matches this app's existing minimal-JS-only-where-CSS-can't-do-it precedent (the replicate-command Copy button, the submarine easter egg).
+
+Verified via a direct Jinja2 render of `job_detail.html` (no fastapi in this sandbox) with 30 fake output lines, `tail_active=True`, `tail_truncated_count=203`: confirmed `id="job-output"` and the `scrollTop = box.scrollHeight` script are both present, alongside the correct "203 earlier line(s) hidden" hint text. `ast.parse()` doesn't apply to a template file; no Python was touched by this fix.
+
+Docs: `docs/WEB_ARCHITECTURE.md`'s `?tail=1` paragraph gained a new "pre.job-output scroll-to-bottom" paragraph right after it, documenting the root cause and fix.
