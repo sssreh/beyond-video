@@ -32,6 +32,10 @@ bv-scribe [--raw]
 
 `bv-scribe` is the batch-oriented, fully-tunable counterpart to `bv-generate --describe-scene` (see `bv-generate(1)`) - same underlying vision-language model and output (`<recording>.scene.txt`), but with the full set of tuning flags real-footage testing converged on, plus an opt-in `--trip-summary` pass. Selects recordings from a local archive the same way every other `bv-*` command does - by timestamp/`--from`/`--until`/`--timestamp` - rather than the raw file/folder arguments the original standalone scene-scribe prototype took.
 
+**Parking-mode recordings are never considered.** Unlike `bv-generate --describe-scene` (which deliberately does run on them), `bv-scribe` excludes every Parking-mode (`P`) recording from its selection entirely - a dedicated batch run over a whole archive shouldn't spend GPU time on typically long, uneventful parking footage. A skip count is printed when any are excluded. Point `--raw` directly at a parking `.mp4` if you genuinely want one described - that mode has no recording-id-based filtering at all.
+
+**One bad recording never stops the batch.** If describing a recording fails for any reason (a corrupted file, a network read error on a mounted archive, an out-of-VRAM error, ...), `bv-scribe` logs it, moves on to the next recording, and prints a summary of every failed recording at the end of the run - a multi-hour archive-scale run is never lost over one bad file.
+
 Requires the `scene` extra: `pip install .[scene]` (pulls in `transformers`, `accelerate`, `qwen-vl-utils`, and `torchvision`). Install torch separately first, per its own CUDA-build instructions for your GPU (a plain `pip install .[scene]` pulls in whatever torch resolves to from PyPI's default index, which is CPU-only, not necessarily the right CUDA build):
 
 ```

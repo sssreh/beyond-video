@@ -687,10 +687,32 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         warn(f"bv-scribe: {exc}")
         return EXIT_ARGS_ERROR
 
-    recordings = [
+    matching = [
         recording for recording in archive.recordings
         if recording.id.value in interval
     ]
+    # Parking-mode recordings are never considered for bv-scribe, full
+    # stop - unlike bv-generate's --describe-scene (which deliberately
+    # does run on them, "they're still video, just no audio"), a
+    # dedicated batch run over a whole archive shouldn't burn GPU time
+    # and risk hitting one on a long, often-uneventful parking clip.
+    # Also sidesteps a real failure mode: parking recordings tend to be
+    # the largest files (hours of timelapse), which made one the first
+    # to hit a flaky network read on Christer's \\NAS\ archive and take
+    # down an entire 902-recording batch (see the per-recording
+    # try/except below and WORKING_CONTEXT.md) - excluding them here is
+    # a belt-and-suspenders fix, not the only one. Point --raw directly
+    # at a parking .mp4 if you genuinely want one described - that mode
+    # has no RecordingId-based filtering at all.
+    recordings = [r for r in matching if not r.id.is_parking]
+    skipped_parking = len(matching) - len(recordings)
+    if skipped_parking:
+        say(
+            f"bv-scribe: skipping {skipped_parking} parking-mode "
+            "recording(s) - not considered for scene description "
+            "(use --raw against the file directly if you really want "
+            "one described)."
+        )
 
     if not recordings:
         say(f"bv-scribe: {archive_path} - no recordings found in "
@@ -700,13 +722,20 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     scene_kwargs = _scene_kwargs(args)
     had_error = False
     trip_segments: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = []
 
     for i, recording in enumerate(recordings, start=1):
         prefix = f"[{i}/{len(recordings)}] "
-        err, description = _describe_recording(
-            recording, archive_path, scene_kwargs, args,
-            prefix=prefix, say=say, warn=warn,
-        )
+        try:
+            err, description = _describe_recording(
+                recording, archive_path, scene_kwargs, args,
+                prefix=prefix, say=say, warn=warn,
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad recording shouldn't kill an hours-long batch (see WORKING_CONTEXT.md)
+            had_error = True
+            failures.append((str(recording.id), str(exc)))
+            warn(f"bv-scribe: {prefix}{recording.id}: FAILED - {exc}")
+            continue
         had_error |= err
         if args.trip_summary and description is not None:
             trip_segments.append((str(recording.id), description))
@@ -715,6 +744,11 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         trip_segments, scene_kwargs, archive_path / "trip_summary.txt", args,
         say=say, warn=warn,
     )
+
+    if failures:
+        say(f"bv-scribe: {len(failures)} recording(s) failed:")
+        for recording_id, message in failures:
+            say(f"  {recording_id}: {message}")
 
     return EXIT_HAD_ERRORS if had_error else EXIT_OK
 

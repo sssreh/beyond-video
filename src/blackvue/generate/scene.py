@@ -764,15 +764,30 @@ def describe_scene(
     text = loaded.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
-        loaded.process_vision_info, messages
-    )
-    if video_inputs:
-        video_inputs = _crop_top_bottom(
-            video_inputs, opts.crop_top, opts.crop_bottom, loaded.patch_factor
-        )
 
     try:
+        # Video reading/decoding (via qwen_vl_utils -> decord/ffmpeg)
+        # lives inside this try block too now, not just the inference
+        # calls below - it used to sit outside, so a read failure on a
+        # network-mounted archive (a flaky/corrupt file over a \\NAS\
+        # share, Christer's own setup) raised a raw, unwrapped
+        # exception straight out of describe_scene(). Nothing upstream
+        # (bv-scribe's per-recording loop, bv-web's job runner) was
+        # prepared to catch that as anything other than fatal - it
+        # escaped all the way to JobRunner._spawn()'s outer catch-all
+        # and killed an entire 902-recording batch over one bad file.
+        # Wrapping it here means it comes out as a normal MediaToolError
+        # like every other describe_scene() failure, which _run_scene_
+        # pass() already knows how to handle per-recording. See
+        # WORKING_CONTEXT.md.
+        image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
+            loaded.process_vision_info, messages
+        )
+        if video_inputs:
+            video_inputs = _crop_top_bottom(
+                video_inputs, opts.crop_top, opts.crop_bottom, loaded.patch_factor
+            )
+
         inputs = loaded.processor(
             text=[text], images=image_inputs, videos=video_inputs,
             padding=True, return_tensors="pt", **video_kwargs,

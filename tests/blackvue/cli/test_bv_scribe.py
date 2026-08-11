@@ -133,6 +133,71 @@ def test_run_writes_scene_file_per_recording(monkeypatch, tmp_path):
     assert "Routine driving." in written
 
 
+def test_run_skips_parking_recordings_entirely(monkeypatch, tmp_path, capsys):
+    """Parking-mode recordings are never considered for bv-scribe at
+    all - not even attempted - regardless of --overwrite/whatever else.
+    See the "Make bv-scribe skip Parking recordings" entry in
+    WORKING_CONTEXT.md for why (unlike bv-generate --describe-scene,
+    which deliberately does run on them)."""
+
+    normal = _make_recording("20260715_134010_N", tmp_path)
+    parking = _make_recording("20260715_140000_P", tmp_path)
+
+    monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([normal, parking]))
+
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append(source)
+        return "## Description\nRoutine driving.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    args = parse_args([str(tmp_path)])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    assert len(calls) == 1
+    assert not (tmp_path / "20260715_140000_P.scene.txt").exists()
+    assert "skipping 1 parking-mode recording" in capsys.readouterr().out
+
+
+def test_run_survives_one_recordings_failure_and_reports_it(monkeypatch, tmp_path):
+    """A single recording's failure (e.g. a network read error on a
+    \\\\NAS\\ archive) must not kill the rest of an hours-long batch -
+    see the "Make bv-scribe skip Parking recordings + survive
+    per-file failures" entry in WORKING_CONTEXT.md. Confirmed as a
+    real bug: the exception used to escape all the way to bv-web's
+    JobRunner._spawn(), which reported it as a fatal job error and
+    stopped a 902-recording run partway through."""
+
+    bad = _make_recording("20260715_150000_N", tmp_path)
+    good = _make_recording("20260715_160000_N", tmp_path)
+
+    monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([bad, good]))
+
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append(source)
+        if "150000" in str(source):
+            raise OSError("Error reading \\\\nas\\archive\\20260715_150000_NF.mp4")
+        return "## Description\nRoutine driving.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    say_lines = []
+    args = parse_args([str(tmp_path)])
+    exit_code = bv_scribe._run(args, say=say_lines.append)
+
+    assert exit_code == bv_scribe.EXIT_HAD_ERRORS
+    assert len(calls) == 2  # both recordings attempted - the failure didn't stop the batch
+    assert (tmp_path / "20260715_160000_N.scene.txt").exists()
+    assert not (tmp_path / "20260715_150000_N.scene.txt").exists()
+    assert any("1 recording(s) failed" in line for line in say_lines)
+    assert any("20260715_150000_N" in line and "Error reading" in line for line in say_lines)
+
+
 def test_interactive_requires_the_main_thread(monkeypatch):
     """A background thread (bv-web's job runner always runs jobs on
     one) must never be treated as interactive even if the whole
