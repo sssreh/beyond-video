@@ -60,6 +60,7 @@ from .auth import require_login
 from .auth import require_owner
 from .auth import require_viewer_or_owner
 from ..history import HistoryFilter
+from ..history import NumberedEntry
 from ..history import all_entries
 from ..history import filtered_entries
 from ..history import matching_log_lines
@@ -1112,10 +1113,29 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def new_bv_scribe_form(
         request: Request, user: User = Depends(require_owner)
     ):
+        # "Reuse a previous run's parameters" (task following #691 -
+        # Christer: "i would like to have a button or something like
+        # in bv-web to get the latest run parameters filled in for
+        # bv-web or maybe a list of the latest"). recent_runs feeds the
+        # picklist; _reuse_defaults() picks the active one - whatever
+        # ?reuse=<N> names if it's real, else the most recent run, else
+        # {} (falls back to this form's own ordinary hardcoded
+        # defaults, unchanged from before this feature existed).
+        recent_runs = _recent_web_runs("bv-scribe")[:5]
+        defaults, active_reuse_number = _reuse_defaults(
+            recent_runs, request.query_params.get("reuse")
+        )
         return templates.TemplateResponse(
             request,
             "job_new_bv_scribe.html",
-            {"user": user, "cameras": _camera_options(), "error": None},
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "error": None,
+                "defaults": defaults,
+                "recent_runs": recent_runs,
+                "active_reuse_number": active_reuse_number,
+            },
         )
 
     @app.post("/jobs/bv-scribe")
@@ -1177,11 +1197,60 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             value = value.strip()
             return value or None
 
+        # Raw, un-cleaned field values, keyed exactly like this route's
+        # own Form(...) parameters (and this template's own <input
+        # name=...> attributes) - snapshotted for the "reuse a
+        # previous run's parameters" feature (see Job.params's own
+        # docstring in jobs.py). Captured here, before _clean()/the
+        # zoom_signs-style inversions below, so the GET form can
+        # prefill every field with exactly what was actually typed
+        # /checked, not a reprocessed version of it.
+        raw_params = {
+            "id": id,
+            "from_": from_,
+            "until": until,
+            "timestamp": timestamp,
+            "task": task,
+            "camera": camera,
+            "model": model,
+            "fps": fps,
+            "max_frames": max_frames,
+            "max_pixels": max_pixels,
+            "resized_width": resized_width,
+            "resized_height": resized_height,
+            "crop_top": crop_top,
+            "crop_bottom": crop_bottom,
+            "max_new_tokens": max_new_tokens,
+            "repetition_penalty": repetition_penalty,
+            "no_repeat_ngram_size": no_repeat_ngram_size,
+            "do_sample": do_sample,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "no_zoom_signs": no_zoom_signs,
+            "zoom_frames": zoom_frames,
+            "zoom_detect_width": zoom_detect_width,
+            "zoom_padding": zoom_padding,
+            "zoom_ocr_width": zoom_ocr_width,
+            "zoom_max_new_tokens": zoom_max_new_tokens,
+            "zoom_detect_max_new_tokens": zoom_detect_max_new_tokens,
+            "zoom_repetition_penalty": zoom_repetition_penalty,
+            "zoom_no_repeat_ngram_size": zoom_no_repeat_ngram_size,
+            "no_zoom_plate_confidence_check": no_zoom_plate_confidence_check,
+            "trip_summary": trip_summary,
+            "trip_summary_max_new_tokens": trip_summary_max_new_tokens,
+            "cpu": cpu,
+            "overwrite": overwrite,
+            "dry_run": dry_run,
+            "verbose": verbose,
+        }
+
         archive_path = _find_camera_archive(app.state.camera_config_cache, id)
 
         job = app.state.job_runner.start_bv_scribe(
             camera_id=id,
             archive_path=archive_path,
+            params=raw_params,
             from_=_clean(from_),
             until=_clean(until),
             timestamp=_clean(timestamp),
@@ -1539,6 +1608,61 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         )
 
     return app
+
+
+def _recent_web_runs(command: str) -> list[NumberedEntry]:
+    """Every past bv-web-triggered run of `command` that has a params
+    snapshot (see Job.params/HistoryEntry.params's own docstrings),
+    newest first - the "reuse a previous run's parameters" feature's
+    data source (Christer: "i would like to have a button or something
+    like in bv-web to get the latest run parameters filled in for
+    bv-web or maybe a list of the latest"). Not capped here - the
+    caller slices to however many it wants to show (job_new_bv_scribe
+    .html shows the first 5), but an older, no-longer-visible entry a
+    bookmarked `?reuse=<N>` URL points at can still be found by
+    scanning this same uncapped list.
+
+    A CLI-sourced entry has no web form to have snapshotted, and a
+    bv-web entry recorded before this feature existed has
+    entry.params == None - both filtered out, since there's nothing
+    to reuse from either.
+    """
+
+    matches = filtered_entries(HistoryFilter(command=command, source="bv-web"))
+    with_params = [numbered for numbered in matches if numbered.entry.params]
+    with_params.reverse()
+    return with_params
+
+
+def _reuse_defaults(
+    recent_runs: list[NumberedEntry], reuse_param: str | None
+) -> tuple[dict, int | None]:
+    """Resolve a job-trigger form's `defaults` dict plus which entry
+    (if any) is the active one - `?reuse=<N>` if it names a real entry
+    in `recent_runs`, otherwise the most recent entry (the "prefill
+    with the latest run automatically" half of the feature), otherwise
+    `({}, None)` when there's no history yet - the form then just
+    falls back to its own ordinary hardcoded defaults, unchanged from
+    before this feature existed.
+    """
+
+    if reuse_param is not None:
+        try:
+            reuse_number = int(reuse_param)
+        except ValueError:
+            reuse_number = None
+        if reuse_number is not None:
+            match = next(
+                (n for n in recent_runs if n.number == reuse_number), None
+            )
+            if match is not None:
+                return match.entry.params or {}, match.number
+
+    if recent_runs:
+        latest = recent_runs[0]
+        return latest.entry.params or {}, latest.number
+
+    return {}, None
 
 
 def _camera_options() -> list[dict[str, str]]:

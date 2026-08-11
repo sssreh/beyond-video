@@ -161,6 +161,65 @@ def test_read_entries_skips_malformed_lines(tmp_path, monkeypatch):
     assert [e.command for e in entries] == ["bv-ls", "bv-scribe"]
 
 
+# ---------------------------------------------------------------------------
+# HistoryEntry.params - the raw web-form field dict added for the "reuse a
+# previous run's parameters" bv-web feature (see HistoryEntry's own
+# docstring). Only ever set for bv-web-sourced entries.
+# ---------------------------------------------------------------------------
+
+
+def test_params_defaults_to_none():
+    assert _entry().params is None
+
+
+def test_record_and_read_entries_round_trip_params(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    history.record(
+        _entry(
+            source="bv-web",
+            username="christer",
+            command="bv-scribe",
+            params={"id": "kirby", "task": "ocr", "trip_summary": True},
+        )
+    )
+
+    entries = history.read_entries()
+
+    assert len(entries) == 1
+    assert entries[0].params == {
+        "id": "kirby",
+        "task": "ocr",
+        "trip_summary": True,
+    }
+
+
+def test_read_entries_defaults_params_to_none_for_old_lines_missing_the_key(
+    tmp_path,
+):
+    # Simulates a history.jsonl line written before the `params` field
+    # existed - HistoryEntry(**data) must still load it.
+    target = tmp_path / "history.jsonl"
+    target.write_text(
+        json.dumps(
+            {
+                "command": "bv-ls",
+                "command_line": "bv-ls /data/archive/Kirby",
+                "source": "cli",
+                "username": None,
+                "started_at": "2026-08-11T12:00:00+00:00",
+                "duration_seconds": 1.0,
+                "status": "succeeded",
+            }
+        )
+        + "\n"
+    )
+
+    entries = history.read_entries(path=target)
+
+    assert entries[0].params is None
+
+
 def test_read_entries_accepts_an_explicit_path(tmp_path):
     # Deliberately doesn't touch record()/BEYOND_VIDEO_LOGS_DIR at all -
     # read_entries(path=...) should work from a bare file, independent

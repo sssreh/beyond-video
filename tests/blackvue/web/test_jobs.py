@@ -1594,6 +1594,29 @@ def test_start_bv_scribe_job_fails_when_run_returns_nonzero(monkeypatch):
     assert status == JobStatus.FAILED
 
 
+def test_start_bv_scribe_stores_params_on_the_job(monkeypatch):
+    # Job.params (the "reuse a previous run's parameters" feature - see
+    # its own docstring in web/jobs.py) should end up exactly as given,
+    # untouched by anything start_bv_scribe() itself does with its own
+    # typed kwargs.
+    monkeypatch.setattr(bv_scribe_module, "_run", lambda args, *, say, warn: 0)
+
+    raw_params = {"id": "kirby", "task": "ocr", "trip_summary": True}
+    runner = JobRunner()
+    job = runner.start_bv_scribe(**_scribe_kwargs(params=raw_params))
+
+    assert job.params == raw_params
+
+
+def test_start_bv_scribe_defaults_params_to_empty_dict_when_not_given(monkeypatch):
+    monkeypatch.setattr(bv_scribe_module, "_run", lambda args, *, say, warn: 0)
+
+    runner = JobRunner()
+    job = runner.start_bv_scribe(**_scribe_kwargs())
+
+    assert job.params == {}
+
+
 # ---------------------------------------------------------------------------
 # start_bv_search()
 # ---------------------------------------------------------------------------

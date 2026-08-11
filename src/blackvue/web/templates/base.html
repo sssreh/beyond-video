@@ -584,6 +584,35 @@
     .content-panel table { margin: 0; }
     .content-panel > *:first-child { margin-top: 0; }
     .content-panel > *:last-child { margin-bottom: 0; }
+    /* job_new_bv_scribe.html's "Reuse a previous run" panel (the
+       "i would like to have a button or something like in bv-web to
+       get the latest run parameters filled in" feature) - a plain
+       .content-panel holding a short list of past bv-web runs of this
+       command, each a link that reloads the form with ?reuse=<N>. The
+       currently-active entry (the one the form below is actually
+       prefilled from - see app.py's _reuse_defaults()) gets a subtle
+       highlight so it's clear which history entry produced what's in
+       the form, without a heavier "selected" control. */
+    .reuse-panel { margin-bottom: 1.5rem; }
+    .reuse-panel h3 {
+      text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.06em;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.5rem;
+    }
+    .reuse-list { list-style: none; padding: 0; margin: 0; }
+    .reuse-list li { border-top: 1px solid var(--panel-border); }
+    .reuse-list li:first-child { border-top: none; }
+    .reuse-list a {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.75rem;
+      padding: 0.45rem 0.3rem; text-decoration: none; color: inherit;
+      border-radius: 4px;
+    }
+    .reuse-list a:hover { background: var(--badge-bg); }
+    .reuse-list li.active a { background: var(--badge-bg); }
+    .reuse-date { font-size: 0.8rem; color: var(--muted); flex-shrink: 0; }
+    .reuse-command {
+      font-size: 0.85rem; overflow-x: auto; white-space: nowrap;
+      flex: 1 1 auto; min-width: 0;
+    }
     /* welcome.html - the post-login landing page. First tried with no
        background at all (relying purely on text-shadow, see the header/
        nav comment above for why that stopped being enough) - now a

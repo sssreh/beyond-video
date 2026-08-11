@@ -148,6 +148,7 @@ def _record_job_history(job: Job) -> None:
             started_at=job.created_at.isoformat(),
             duration_seconds=duration_seconds,
             status=status.value,
+            params=job.params or None,
         )
     )
 
@@ -198,6 +199,20 @@ class Job:
     run wouldn't need it. Set by every start_bv_*() method, including
     bv-config's wizard trigger (its own replicate command just starts
     the same interactive wizard for real, in a real terminal)."""
+    params: dict = field(default_factory=dict)
+    """The raw web-form field values this job was triggered with, keyed
+    by the same `name=` attributes the trigger form's own inputs use
+    (e.g. `{"id": "Kirby", "from_": "", "task": "both", "cpu": False,
+    ...}`) - captured once, in app.py's own POST route, before any
+    cleaning/type-conversion happens. Exists for the "reuse a previous
+    run's parameters" feature (Christer: "i would like to have a
+    button ... to get the latest run parameters filled in"):
+    _record_job_history() persists this onto the job's HistoryEntry,
+    and the trigger form's own GET route reads it back to prefill the
+    form. Empty for job types that don't build one yet (see each
+    start_bv_*() method - only ones that opted in set this), and
+    always empty for bv-config's wizard trigger (there's no ordinary
+    field-form to prefill there)."""
     status: JobStatus = JobStatus.RUNNING
     output: list[str] = field(default_factory=list)
     prompt: str | None = None
@@ -875,6 +890,7 @@ class JobRunner:
         dry_run: bool,
         verbose: bool,
         username: str,
+        params: dict | None = None,
     ) -> Job:
         """Start bv-scribe as a job against one already-configured
         camera's archive - full flag parity with the CLI (unlike the
@@ -918,6 +934,14 @@ class JobRunner:
         `archive_path` is resolved by the caller (app.py's route, via
         `_find_camera_archive()`) the same way start_bv_generate()'s
         own docstring explains.
+
+        `params`, if given, is the raw web-form field dict app.py's
+        own POST route captured before cleaning - stored on the
+        returned Job (see Job.params's own docstring) so a later
+        history-driven "reuse this run's parameters" form load can
+        read it back. Optional and otherwise ignored by this method -
+        the actual job still runs from `argv` above, built from this
+        method's own typed kwargs, not from `params`.
         """
 
         from ..cli import bv_scribe
@@ -1008,6 +1032,7 @@ class JobRunner:
                 "bv-scribe", [camera_id, *argv[1:]]
             ),
             username=username,
+            params=params,
         )
 
         def run() -> int:
@@ -1127,7 +1152,12 @@ class JobRunner:
         return job.cancel()
 
     def _new_job(
-        self, *, command: str, replicate_command: str = "", username: str
+        self,
+        *,
+        command: str,
+        replicate_command: str = "",
+        username: str,
+        params: dict | None = None,
     ) -> Job:
         job = Job(
             id=uuid.uuid4().hex,
@@ -1135,6 +1165,7 @@ class JobRunner:
             replicate_command=replicate_command,
             username=username,
             created_at=datetime.now(timezone.utc),
+            params=params or {},
         )
         self._jobs[job.id] = job
         return job

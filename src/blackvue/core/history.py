@@ -57,6 +57,23 @@ class HistoryEntry:
     user to attribute it to). `started_at` is an ISO-8601 UTC
     timestamp; `status` is "succeeded"/"failed"/"cancelled"/
     "interrupted".
+
+    `params` (added for the "reuse a previous run's parameters" bv-web
+    feature - Christer: "i would like to have a button or something
+    like in bv-web to get the latest run parameters filled in") is the
+    raw web-form field dict (the exact `str | bool` values a job
+    -trigger route's POST handler received, keyed by the same names
+    the GET form's own `<input name=...>`/`<select name=...>` use) -
+    only ever set for bv-web-sourced entries; a direct CLI invocation
+    has no web form to snapshot, its full argv is already captured in
+    `command_line` instead. `None` for every entry recorded before
+    this field existed, and for CLI entries going forward - `dict |
+    None` rather than defaulting to `{}` so "no params recorded" and
+    "recorded an empty dict" stay distinguishable, though the latter
+    shouldn't happen in practice. A plain field with a default rather
+    than a new dataclass, so old history.jsonl lines missing this key
+    keep loading unchanged via `HistoryEntry(**data)` in
+    read_entries() below.
     """
 
     command: str
@@ -66,6 +83,7 @@ class HistoryEntry:
     started_at: str
     duration_seconds: float
     status: str
+    params: dict | None = None
 
 
 def history_path() -> Path:
