@@ -44,6 +44,13 @@ def test_parse_args_defaults():
     assert args.near is None
     assert args.place is None
     assert args.radius == bv_search.DEFAULT_RADIUS_METERS
+    assert args.trace is False
+
+
+def test_parse_args_trace_flag_sets_true():
+    args = parse_args(["/some/archive", "--text", "traffic", "--trace"])
+
+    assert args.trace is True
 
 
 def test_parse_args_path_defaults_to_cwd():
@@ -378,3 +385,146 @@ def test_run_place_reports_error_when_not_found(monkeypatch, tmp_path):
     exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
 
     assert exit_code == bv_search.EXIT_HAD_ERRORS
+
+
+# ---------------------------------------------------------------------------
+# Start/finished timing lines - a wide-range search over a big archive can
+# take tens of seconds with nothing else printed in between, so _run()
+# reports when it started and how long it took, on every exit path.
+# ---------------------------------------------------------------------------
+
+
+def test_run_prints_started_and_finished_lines_around_a_search(monkeypatch, tmp_path):
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([]))
+
+    args = parse_args([str(tmp_path), "--text", "traffic"])
+    messages = []
+    bv_search._run(args, say=messages.append, warn=messages.append)
+
+    assert any(m.startswith("bv-search: started ") for m in messages)
+    assert any(
+        m.startswith("bv-search: finished ") and m.rstrip().endswith("s)")
+        for m in messages
+    )
+    # started comes before finished.
+    started_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-search: started ")
+    )
+    finished_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-search: finished ")
+    )
+    assert started_index < finished_index
+
+
+def test_run_prints_finished_line_even_when_the_time_parser_rejects_input(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([]))
+
+    args = parse_args([str(tmp_path), "--text", "traffic", "--timestamp", "abc"])
+    messages = []
+    exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_search.EXIT_ARGS_ERROR
+    assert any(m.startswith("bv-search: started ") for m in messages)
+    assert any(m.startswith("bv-search: finished ") for m in messages)
+
+
+def test_run_does_not_print_started_or_finished_when_no_criteria_given(tmp_path):
+    args = parse_args([str(tmp_path)])
+    messages = []
+    exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
+
+    # The args-error path returns before any real work starts, so there's
+    # nothing worth timing - matches every other bv-* CLI's own usage-
+    # error behavior (no run summary for a command that never ran).
+    assert exit_code == bv_search.EXIT_ARGS_ERROR
+    assert not any("started" in m or "finished" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# DotProgress / --trace - mirrors bv-download's own DotProgress, printing a
+# heartbeat '.' to real stdout (not through the injected `say`) every
+# TRACE_INTERVAL_RECORDINGS recordings searched.
+# ---------------------------------------------------------------------------
+
+
+def test_dot_progress_prints_nothing_below_the_interval(capsys):
+    progress = bv_search.DotProgress(interval=5)
+
+    for _ in range(4):
+        progress.tick()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_dot_progress_prints_one_dot_per_interval_crossed(capsys):
+    progress = bv_search.DotProgress(interval=5)
+
+    for _ in range(5):
+        progress.tick()
+
+    assert capsys.readouterr().out == "."
+
+
+def test_dot_progress_prints_multiple_dots_over_many_ticks(capsys):
+    progress = bv_search.DotProgress(interval=5)
+
+    for _ in range(12):  # crosses 5 and 10
+        progress.tick()
+
+    assert capsys.readouterr().out == ".."
+
+
+def test_dot_progress_finish_prints_nothing_when_no_dots_were_printed(capsys):
+    progress = bv_search.DotProgress(interval=5)
+
+    progress.finish()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_dot_progress_finish_prints_a_trailing_newline_when_dots_were_printed(capsys):
+    progress = bv_search.DotProgress(interval=5)
+
+    for _ in range(5):
+        progress.tick()
+    capsys.readouterr()  # discard the dot itself
+
+    progress.finish()
+
+    assert capsys.readouterr().out == "\n"
+
+
+def test_run_trace_flag_prints_progress_dots(monkeypatch, tmp_path, capsys):
+    real_dot_progress = bv_search.DotProgress
+    monkeypatch.setattr(bv_search, "DotProgress", lambda: real_dot_progress(interval=2))
+
+    recordings = [
+        _make_recording(f"2026071512{i:04d}_N", tmp_path, {Asset.TRANSCRIPT: "traffic"})
+        for i in range(5)
+    ]
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive(recordings))
+
+    args = parse_args([str(tmp_path), "--text", "traffic", "--trace"])
+    exit_code = bv_search._run(args, say=lambda m: None, warn=lambda m: None)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == bv_search.EXIT_OK
+    # 5 recordings, interval 2 -> 2 dots plus the closing newline.
+    assert out.count(".") == 2
+    assert out.endswith("\n")
+
+
+def test_run_without_trace_flag_prints_no_dots(monkeypatch, tmp_path, capsys):
+    recordings = [
+        _make_recording(f"2026071512{i:04d}_N", tmp_path, {Asset.TRANSCRIPT: "traffic"})
+        for i in range(5)
+    ]
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive(recordings))
+
+    args = parse_args([str(tmp_path), "--text", "traffic"])
+    bv_search._run(args, say=lambda m: None, warn=lambda m: None)
+
+    assert "." not in capsys.readouterr().out

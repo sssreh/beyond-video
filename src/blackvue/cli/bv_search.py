@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 from ..archive import Archive
@@ -33,6 +35,44 @@ EXIT_ARGS_ERROR = 1
 EXIT_HAD_ERRORS = 2
 
 DEFAULT_RADIUS_METERS = 200.0
+
+TRACE_INTERVAL_RECORDINGS = 25
+
+
+class DotProgress:
+    """A --trace progress indicator: print '.' to stdout every
+    TRACE_INTERVAL_RECORDINGS recordings searched, across the whole
+    run - a simple "still alive" signal for a long search (a wide
+    date range over a big archive can take tens of seconds with
+    nothing else printed in the meantime), not a percentage (the
+    total recording count is known upfront here, unlike bv-download's
+    total byte count, but a percentage isn't obviously more useful
+    than a heartbeat for this). Mirrors bv-download's own DotProgress
+    (see bv_download.py), just counting recordings searched instead
+    of bytes downloaded.
+
+    Call tick() once per recording searched; call finish() once at
+    the end of the run to close the line with a trailing newline -
+    but only if at least one dot was ever printed, so a --trace run
+    over a short range doesn't print a stray blank line.
+    """
+
+    def __init__(self, interval: int = TRACE_INTERVAL_RECORDINGS) -> None:
+        self._interval = interval
+        self._count = 0
+        self._dots_printed = 0
+
+    def tick(self) -> None:
+        self._count += 1
+        dots_due = self._count // self._interval
+
+        while self._dots_printed < dots_due:
+            print(".", end="", flush=True)
+            self._dots_printed += 1
+
+    def finish(self) -> None:
+        if self._dots_printed:
+            print()
 
 
 def _parse_coordinates(value: str) -> tuple[float, float]:
@@ -169,6 +209,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help=(
+            "Print a '.' every "
+            f"{TRACE_INTERVAL_RECORDINGS} recordings searched, so a "
+            "long run shows it's still active (see bv-download's own "
+            "--trace)."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -192,107 +243,135 @@ def _report_geo_match(say, match) -> None:
 def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     """Run bv-search for already-parsed arguments. `say`/`warn` are
     injectable (default: real stdout/stderr), same pattern as every
-    other bv-* CLI's own `_run()`."""
+    other bv-* CLI's own `_run()`.
+
+    Prints a "started HH:MM:SS" line right away and a "finished
+    HH:MM:SS (N.Ns)" line before returning, on every exit path
+    (wrapped in try/finally) - a search over a wide date range on a
+    big archive can take tens of seconds with nothing else printed in
+    the meantime, so both when it ran and how long it took are worth
+    knowing without instrumenting the shell yourself.
+    """
 
     if args.text is None and args.near is None and args.place is None:
         warn("bv-search: give at least one of --text, --near, or --place")
         return EXIT_ARGS_ERROR
 
-    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
-    archive = Archive(archive_path)
+    started_at = datetime.now()
+    started_monotonic = time.monotonic()
+    say(f"bv-search: started {started_at:%H:%M:%S}")
 
     try:
-        interval = LexicalTimeParser(
-            timestamp=args.timestamp, from_=args.from_, until=args.until,
-        ).parse()
-    except ValueError as exc:
-        warn(f"bv-search: {exc}")
-        return EXIT_ARGS_ERROR
+        archive_path, _camera_config = resolve_archive_path(
+            args.path, args.config_dir
+        )
+        archive = Archive(archive_path)
 
-    target: tuple[float, float] | None = args.near
-    target_lines: tuple[tuple[tuple[float, float], ...], ...] = ()
-
-    if args.place is not None:
-        # Deferred import: blackvue.export's package __init__ pulls in
-        # the whole ffmpeg/PIL/numpy-heavy export toolkit (stitching,
-        # map rendering, ...) just to get to this one small geocoding
-        # helper - not worth paying for on every bv-search run, only
-        # the ones that actually use --place. Same pattern speech.py/
-        # scene.py already use for torch/ctranslate2.
-        from ..export.geocoding import load_or_forward_geocode
-
-        cache_dir = archive_path / ".osm_cache"
         try:
-            result = load_or_forward_geocode(args.place, cache_dir)
-        except (MediaToolError, OSError) as exc:
+            interval = LexicalTimeParser(
+                timestamp=args.timestamp, from_=args.from_, until=args.until,
+            ).parse()
+        except ValueError as exc:
             warn(f"bv-search: {exc}")
-            return EXIT_HAD_ERRORS
-        if result is None:
-            warn(f"bv-search: no place found matching {args.place!r}")
-            return EXIT_HAD_ERRORS
-        target = result.point
-        target_lines = result.lines
-        geometry_note = (
-            f" (road/area geometry, {len(target_lines)} segment(s) - "
-            "searching along the whole shape, not just this point)"
-            if target_lines
-            else ""
-        )
-        say(
-            f"bv-search: {args.place!r} -> "
-            f"{target[0]:.5f},{target[1]:.5f}{geometry_note}"
-        )
+            return EXIT_ARGS_ERROR
 
-    recordings = [
-        recording for recording in archive.recordings
-        if recording.id.value in interval
-    ]
+        target: tuple[float, float] | None = args.near
+        target_lines: tuple[tuple[tuple[float, float], ...], ...] = ()
 
-    if not recordings:
-        say(f"bv-search: {archive_path} - no recordings found in range.")
-        return EXIT_OK
+        if args.place is not None:
+            # Deferred import: blackvue.export's package __init__ pulls
+            # in the whole ffmpeg/PIL/numpy-heavy export toolkit
+            # (stitching, map rendering, ...) just to get to this one
+            # small geocoding helper - not worth paying for on every
+            # bv-search run, only the ones that actually use --place.
+            # Same pattern speech.py/scene.py already use for torch/
+            # ctranslate2.
+            from ..export.geocoding import load_or_forward_geocode
 
-    text_assets = TEXT_SEARCH_ASSETS[args.asset]
-    had_error = False
-    match_count = 0
-
-    for recording in recordings:
-        text_matches = []
-
-        if args.text is not None:
+            cache_dir = archive_path / ".osm_cache"
             try:
-                text_matches = search_text(
-                    recording, args.text,
-                    assets=text_assets,
-                    case_sensitive=args.case_sensitive,
-                    regex=args.regex,
-                )
-            except MediaToolError as exc:
-                warn(f"bv-search: {recording.id}: {exc}")
-                had_error = True
-                continue
-            if not text_matches:
-                continue
-
-        geo_match = None
-        if target is not None:
-            geo_match = search_near(
-                recording, target[0], target[1], args.radius, lines=target_lines
+                result = load_or_forward_geocode(args.place, cache_dir)
+            except (MediaToolError, OSError) as exc:
+                warn(f"bv-search: {exc}")
+                return EXIT_HAD_ERRORS
+            if result is None:
+                warn(f"bv-search: no place found matching {args.place!r}")
+                return EXIT_HAD_ERRORS
+            target = result.point
+            target_lines = result.lines
+            geometry_note = (
+                f" (road/area geometry, {len(target_lines)} segment(s) - "
+                "searching along the whole shape, not just this point)"
+                if target_lines
+                else ""
             )
-            if geo_match is None:
-                continue
+            say(
+                f"bv-search: {args.place!r} -> "
+                f"{target[0]:.5f},{target[1]:.5f}{geometry_note}"
+            )
 
-        match_count += 1
-        say(str(recording.id))
-        for match in text_matches:
-            _report_text_match(say, match)
-        if geo_match is not None:
-            _report_geo_match(say, geo_match)
+        recordings = [
+            recording for recording in archive.recordings
+            if recording.id.value in interval
+        ]
 
-    if match_count == 0:
-        say("bv-search: no matches.")
+        if not recordings:
+            say(f"bv-search: {archive_path} - no recordings found in range.")
+            return EXIT_OK
 
-    return EXIT_HAD_ERRORS if had_error else EXIT_OK
+        text_assets = TEXT_SEARCH_ASSETS[args.asset]
+        had_error = False
+        match_count = 0
+        progress = DotProgress() if args.trace else None
+
+        for recording in recordings:
+            if progress is not None:
+                progress.tick()
+
+            text_matches = []
+
+            if args.text is not None:
+                try:
+                    text_matches = search_text(
+                        recording, args.text,
+                        assets=text_assets,
+                        case_sensitive=args.case_sensitive,
+                        regex=args.regex,
+                    )
+                except MediaToolError as exc:
+                    warn(f"bv-search: {recording.id}: {exc}")
+                    had_error = True
+                    continue
+                if not text_matches:
+                    continue
+
+            geo_match = None
+            if target is not None:
+                geo_match = search_near(
+                    recording, target[0], target[1], args.radius,
+                    lines=target_lines,
+                )
+                if geo_match is None:
+                    continue
+
+            match_count += 1
+            say(str(recording.id))
+            for match in text_matches:
+                _report_text_match(say, match)
+            if geo_match is not None:
+                _report_geo_match(say, geo_match)
+
+        if progress is not None:
+            progress.finish()
+
+        if match_count == 0:
+            say("bv-search: no matches.")
+
+        return EXIT_HAD_ERRORS if had_error else EXIT_OK
+    finally:
+        elapsed_seconds = time.monotonic() - started_monotonic
+        finished_at = datetime.now()
+        say(f"bv-search: finished {finished_at:%H:%M:%S} ({elapsed_seconds:.1f}s)")
 
 
 def main(argv: list[str] | None = None) -> int:
