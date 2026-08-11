@@ -8687,3 +8687,13 @@ Confirmed via elimination, not guesswork: a `bv-ls` job against the same camera 
 Christer, after the 902-recording Kirby_2019 bv-scribe web job started running cleanly on GPU: asked if there's a log of how long the whole run takes. Currently there isn't - `bv-scribe` itself prints no timing (unlike `bv-search`'s start/stop/duration + `--trace` reporting from task #643), and bv-web's `job_detail.html` shows only a status badge and raw output lines, no start timestamp or elapsed time anywhere (`Job.created_at` exists on the dataclass but isn't even rendered on the page).
 
 Christer's own call for now: skip building this, he'll just check the `.scene.txt`/`.rear.scene.txt` file timestamps himself once the run finishes ("I can always check time for our scene files"). Noted here as a real future improvement, not implemented - candidates if it's picked up later: an elapsed-time line appended alongside the existing `(exit code N)` line `JobRunner._spawn()`'s `target()` already writes when a job finishes, and/or surfacing `Job.created_at` plus a live "running for Xm" indicator on `job_detail.html` itself.
+
+## Note: extend started/finished/duration reporting beyond bv-search (future improvement)
+
+Christer asked (as a question, not a build request) whether most bv-* commands should print start/stop/duration like `bv-search` already does (task #643-649: `say(f"bv-search: started {started_at:%H:%M:%S}")` up front, `say(f"bv-search: finished {finished_at:%H:%M:%S} ({elapsed_seconds:.1f}s)")` on every exit path via try/finally, always-on, no toggle flag), specifically floating `bv-generate`, `bv-export`/trip, and `bv-scribe`.
+
+Current state: only `bv-search` has this. `bv-generate`/`bv-scribe`/`bv-download` have none. `bv-export` is a different case - it already writes phase-level timing into each trip's own `trip.log` on disk (map/gsensor render elapsed seconds, from tasks #78/#81), just not as a top-level started/finished line on stdout/the job output box.
+
+Discussed recommendation: `bv-generate` and `bv-scribe` are the strongest candidates (long batch runs, no timing today, exactly what prompted this question after the 902-recording Kirby_2019 run). Lean toward keeping it always-on/no-flag like `bv-search`, for consistency, unless a real use case for suppressing it shows up (e.g. `bv-generate` in scripted/cron use wanting stable minimal output).
+
+**Not implemented.** Christer wants to wait for the current bv-scribe run (expected half a day or more) to finish before deciding whether to build this - noted here so the discussion isn't lost.
