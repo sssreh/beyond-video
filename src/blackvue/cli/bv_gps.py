@@ -210,7 +210,9 @@ def main(argv: list[str] | None = None) -> int:
     # output log alongside the real terminal output.
     say = wrap_say("bv-gps")
     warn = wrap_warn("bv-gps", _default_warn)
-    return run_cli("bv-gps", lambda: _run(args, say=say, warn=warn))
+    return run_cli(
+        "bv-gps", lambda: _run(args, say=say, warn=warn), argv=argv
+    )
 
 
 if __name__ == "__main__":

@@ -766,7 +766,9 @@ def main(argv: list[str] | None = None) -> int:
     # coverage for free via Job.append_output() itself.
     say = wrap_say("bv-scribe")
     warn = wrap_warn("bv-scribe", _default_warn)
-    return run_cli("bv-scribe", lambda: _run(args, say=say, warn=warn))
+    return run_cli(
+        "bv-scribe", lambda: _run(args, say=say, warn=warn), argv=argv
+    )
 
 
 if __name__ == "__main__":

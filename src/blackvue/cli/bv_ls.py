@@ -475,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     # this per-command wiring, since every job already funnels through
     # that one function.
     say = wrap_say("bv-ls")
-    return run_cli("bv-ls", lambda: _run(args, say=say))
+    return run_cli("bv-ls", lambda: _run(args, say=say), argv=argv)
 
 
 if __name__ == "__main__":

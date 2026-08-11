@@ -299,6 +299,68 @@ def test_spawned_job_reaches_failed_on_nonzero_exit_code():
     assert "(exit code 1)" in output
 
 
+def test_spawned_job_records_a_succeeded_history_entry(tmp_path, monkeypatch):
+    # The bv-web half of core/history.py's persistent command-history
+    # index (see that module's own docstring) - JobRunner._spawn()'s
+    # outer `finally` records one entry per job once it reaches a
+    # terminal status. Polls the history file itself (not just
+    # job.snapshot()) since the background thread's own `finally`
+    # block - where the record actually gets written - runs slightly
+    # after the status flip the thread makes just before it.
+    import json
+
+    from blackvue.core import history
+
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    runner = JobRunner()
+    job = runner._new_job(
+        command="bv-scribe Kirby",
+        replicate_command="bv-scribe Kirby --task describe_scene",
+        username="christer",
+    )
+
+    runner._spawn(job, lambda: 0)
+
+    # Wait for actual content, not just the file's existence - open(path,
+    # "a") creates the (empty) file on disk before write() lands, so a
+    # bare .exists() check can observe that empty in-between moment
+    # under load and read back nothing.
+    _wait_until(
+        lambda: history.history_path().exists()
+        and history.history_path().read_text().strip() != ""
+    )
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["command"] == "bv-scribe"
+    assert entry["command_line"] == "bv-scribe Kirby --task describe_scene"
+    assert entry["source"] == "bv-web"
+    assert entry["username"] == "christer"
+    assert entry["status"] == "succeeded"
+
+
+def test_spawned_job_records_a_failed_history_entry(tmp_path, monkeypatch):
+    import json
+
+    from blackvue.core import history
+
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    runner = JobRunner()
+    job = runner._new_job(command="bv-export Kirby", username="christer")
+
+    runner._spawn(job, lambda: 2)
+
+    _wait_until(
+        lambda: history.history_path().exists()
+        and history.history_path().read_text().strip() != ""
+    )
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["command"] == "bv-export"
+    assert entry["status"] == "failed"
+    # No replicate_command given - falls back to the bare job.command.
+    assert entry["command_line"] == "bv-export Kirby"
+
+
 def test_spawned_job_reaches_failed_when_run_raises():
     runner = JobRunner()
     job = runner._new_job(command="fake-cmd", username="christer")

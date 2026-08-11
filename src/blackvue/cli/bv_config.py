@@ -250,7 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     # untouched - only what gets printed is logged, not raw keystrokes.
     say = wrap_say("bv-config")
     warn = wrap_warn("bv-config", _default_warn)
-    return run_cli("bv-config", lambda: _run(args, say=say, warn=warn))
+    return run_cli(
+        "bv-config", lambda: _run(args, say=say, warn=warn), argv=argv
+    )
 
 
 if __name__ == "__main__":

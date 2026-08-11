@@ -768,7 +768,9 @@ def main(argv: list[str] | None = None) -> int:
     # output log alongside the real terminal output.
     say = wrap_say("bv-download")
     warn = wrap_warn("bv-download", _default_warn)
-    return run_cli("bv-download", lambda: _run(args, say=say, warn=warn))
+    return run_cli(
+        "bv-download", lambda: _run(args, say=say, warn=warn), argv=argv
+    )
 
 
 if __name__ == "__main__":

@@ -119,6 +119,39 @@ def _replicate_command_line(name: str, argv: list[str]) -> str:
     return " ".join([name, *(_quote_for_replicate(a) for a in argv)])
 
 
+def _record_job_history(job: Job) -> None:
+    """Append one core/history.py entry for a just-finished job - see
+    JobRunner._spawn()'s own comment for why this lives in a single
+    outer `finally` rather than at each individual exit path.
+
+    `command` is recovered from `job.command`'s own first word (every
+    start_bv_*() method sets it as `f"bv-... {...}"` - see
+    Job.append_output()'s own comment for the identical trick, used
+    there for core/joblog.py's output transcript instead). `command_
+    line` prefers `job.replicate_command` - the real paste-able
+    invocation, options included - falling back to the bare `job.
+    command` only for the hypothetical case a caller left it unset.
+    """
+
+    from ..core import history
+
+    status, _, _ = job.snapshot()
+    duration_seconds = (
+        datetime.now(timezone.utc) - job.created_at
+    ).total_seconds()
+    history.record(
+        history.HistoryEntry(
+            command=job.command.split(maxsplit=1)[0],
+            command_line=job.replicate_command or job.command,
+            source="bv-web",
+            username=job.username,
+            started_at=job.created_at.isoformat(),
+            duration_seconds=duration_seconds,
+            status=status.value,
+        )
+    )
+
+
 class JobStatus(str, Enum):
     RUNNING = "running"
     WAITING_FOR_INPUT = "waiting_for_input"
@@ -1110,40 +1143,54 @@ class JobRunner:
     def _spawn(job: Job, run: Callable[[], int]) -> None:
         def target() -> None:
             try:
-                code = run()
-            except _JobCancelled:
-                # cancel() already set CANCELLED and appended
-                # "Cancelled." before unblocking ask() - nothing left
-                # to record.
-                return
-            except (Exception, SystemExit) as exc:  # noqa: BLE001 - report, never crash silently
-                # SystemExit alongside the usual Exception: none of
-                # this project's own _run()s should ever let one
-                # escape here (bv_export._run() in particular converts
-                # its own internal SystemExit into a normal return
-                # before this point - see that function's own
-                # docstring for why), but SystemExit subclasses
-                # BaseException, not Exception, so a bare `except
-                # Exception` would silently miss it entirely - the
-                # background thread would just end with this job
-                # stuck showing RUNNING forever, since nothing would
-                # ever set its status. Defense in depth against
-                # exactly that, not a substitute for handling it
-                # properly at the source.
-                job.append_output(f"Error: {exc}")
-                job.set_status(JobStatus.FAILED)
-                return
-            if job.snapshot()[0] == JobStatus.CANCELLED:
-                # cancel() was called while this job was RUNNING with
-                # no prompt open (so there was nothing to unblock),
-                # and run() has now returned on its own - don't
-                # overwrite the cancellation with a stale
-                # success/failure status.
-                return
-            job.append_output(f"(exit code {code})")
-            job.set_status(
-                JobStatus.SUCCEEDED if code == 0 else JobStatus.FAILED
-            )
+                try:
+                    code = run()
+                except _JobCancelled:
+                    # cancel() already set CANCELLED and appended
+                    # "Cancelled." before unblocking ask() - nothing
+                    # left to record.
+                    return
+                except (Exception, SystemExit) as exc:  # noqa: BLE001 - report, never crash silently
+                    # SystemExit alongside the usual Exception: none
+                    # of this project's own _run()s should ever let
+                    # one escape here (bv_export._run() in particular
+                    # converts its own internal SystemExit into a
+                    # normal return before this point - see that
+                    # function's own docstring for why), but
+                    # SystemExit subclasses BaseException, not
+                    # Exception, so a bare `except Exception` would
+                    # silently miss it entirely - the background
+                    # thread would just end with this job stuck
+                    # showing RUNNING forever, since nothing would
+                    # ever set its status. Defense in depth against
+                    # exactly that, not a substitute for handling it
+                    # properly at the source.
+                    job.append_output(f"Error: {exc}")
+                    job.set_status(JobStatus.FAILED)
+                    return
+                if job.snapshot()[0] == JobStatus.CANCELLED:
+                    # cancel() was called while this job was RUNNING
+                    # with no prompt open (so there was nothing to
+                    # unblock), and run() has now returned on its own
+                    # - don't overwrite the cancellation with a stale
+                    # success/failure status.
+                    return
+                job.append_output(f"(exit code {code})")
+                job.set_status(
+                    JobStatus.SUCCEEDED if code == 0 else JobStatus.FAILED
+                )
+            finally:
+                # core/history.py's own persistent command-history
+                # index - the bv-web half of the same "direct CLI
+                # calls too, not just bv-web jobs" scope
+                # cli/errors.py's run_cli() already covers on the
+                # direct-CLI side. A single outer `finally` wrapping
+                # every exit path above (including both early
+                # `return`s) means exactly one entry is recorded per
+                # job regardless of which path it took, with the
+                # job's own now-final status already settled by the
+                # time this runs.
+                _record_job_history(job)
 
         threading.Thread(target=target, daemon=True).start()
 

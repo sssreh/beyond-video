@@ -1,6 +1,9 @@
+import json
+
 from blackvue.cli.errors import EXIT_INTERRUPTED
 from blackvue.cli.errors import EXIT_OS_ERROR
 from blackvue.cli.errors import run_cli
+from blackvue.core import history
 
 
 def test_run_cli_returns_the_wrapped_functions_result():
@@ -82,3 +85,95 @@ def test_run_cli_lets_system_exit_propagate():
         assert exc.code == 2
 
     assert raised is True
+
+
+# ---------------------------------------------------------------------------
+# run_cli() also records one core/history.py entry per invocation - the
+# direct-CLI half of the persistent command-history index (see
+# core/history.py's own module docstring for the full "Scope - settled"
+# picture, including the bv-web half in web/jobs.py).
+# ---------------------------------------------------------------------------
+
+
+def test_run_cli_records_a_succeeded_history_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    run_cli("bv-ls", lambda: 0, argv=["/data/archive/Kirby", "--all"])
+
+    lines = history.history_path().read_text().strip().split("\n")
+    entry = json.loads(lines[-1])
+    assert entry["command"] == "bv-ls"
+    assert entry["command_line"] == "bv-ls /data/archive/Kirby --all"
+    assert entry["source"] == "cli"
+    assert entry["username"] is None
+    assert entry["status"] == "succeeded"
+
+
+def test_run_cli_records_a_failed_history_entry_for_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    run_cli("bv-gps", lambda: 3, argv=["Kirby"])
+
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["status"] == "failed"
+
+
+def test_run_cli_records_an_interrupted_history_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    def raiser():
+        raise KeyboardInterrupt
+
+    run_cli("bv-scribe", raiser, argv=["Kirby"])
+
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["status"] == "interrupted"
+
+
+def test_run_cli_records_a_failed_history_entry_for_os_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    def raiser():
+        raise FileNotFoundError(2, "No such file or directory", "/nope")
+
+    run_cli("bv-download", raiser, argv=["Kirby"])
+
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["status"] == "failed"
+
+
+def test_run_cli_records_history_even_when_an_unhandled_exception_propagates(
+    tmp_path, monkeypatch
+):
+    # run_cli() only special-cases KeyboardInterrupt/OSError - any other
+    # exception (including SystemExit) is left to propagate, but the
+    # history entry must still be recorded via the `finally` block.
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    def raiser():
+        raise ValueError("boom")
+
+    try:
+        run_cli("bv-search", raiser, argv=["Kirby"])
+    except ValueError:
+        pass
+
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["command"] == "bv-search"
+    assert entry["status"] == "failed"
+
+
+def test_run_cli_falls_back_to_sys_argv_when_argv_is_none(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.argv", ["bv-ls", "Kirby", "--all"])
+
+    run_cli("bv-ls", lambda: 0)
+
+    entry = json.loads(history.history_path().read_text().strip())
+    assert entry["command_line"] == "bv-ls Kirby --all"

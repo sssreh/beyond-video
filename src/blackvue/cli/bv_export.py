@@ -1733,6 +1733,7 @@ def main(argv: list[str] | None = None) -> int:
     return run_cli(
         "bv-export",
         lambda: _run(args, command_line=command_line, say=say, warn=warn),
+        argv=argv,
     )
 
 
