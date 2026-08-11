@@ -5,10 +5,14 @@
 <div class="command-help">
   <p>Runs a vision-language model over one camera's archive to describe
   what's happening in each recording and/or read visible text (signs,
-  plates) via OCR - the same actions <code>bv-scribe</code> runs from
-  the command line. A curated subset of its flags is offered here; use
-  the command line directly for the full fine-tuning surface (zoom
-  detection, sampling, etc).</p>
+  plates) via OCR - the same work <code>bv-scribe</code> does from the
+  command line, with full parity for every flag it supports. The
+  Advanced sections below hold the same fine-tuning knobs
+  <code>bv-scribe --help</code> lists up front (frame sampling, the
+  zoom-detection sub-pipeline) - the CLI has no choice but to show
+  everything at once, but here they stay out of the way until you
+  actually want them, and the trip summary knob opens on its own once
+  its checkbox above is checked.</p>
 </div>
 {% if error %}
 <p class="error">{{ error }}</p>
@@ -116,8 +120,235 @@
     </div>
   </div>
 
+  <details class="option-group" id="advanced-sampling">
+    <summary>Advanced sampling &amp; model</summary>
+    <p class="hint">How frames are sampled and how the model generates its answer. Leave blank to use bv-scribe's own defaults.</p>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="fps">
+          Sample rate (fps)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Frames per second of video to sample. Default: 1.0.</span></span>
+        </label>
+        <input type="number" id="fps" name="fps" min="0" step="0.1" placeholder="1.0">
+      </div>
+      <div class="field">
+        <label class="field-label" for="max_frames">
+          Max frames
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Hard cap on sampled frames regardless of sample rate. Default: 16.</span></span>
+        </label>
+        <input type="number" id="max_frames" name="max_frames" min="1" step="1" placeholder="16">
+      </div>
+      <div class="field">
+        <label class="field-label" for="max_pixels">
+          Max pixels per frame
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Resolution cap per sampled frame, in total pixels - only used when resized width/height are both 0. Default: 151200.</span></span>
+        </label>
+        <input type="number" id="max_pixels" name="max_pixels" min="1" step="1" placeholder="151200">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="resized_width">
+          Resized width
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Force an exact frame width, bypassing max pixels. Default: 1092. Pass 0 (with resized height 0) to fall back to max pixels instead.</span></span>
+        </label>
+        <input type="number" id="resized_width" name="resized_width" min="0" step="1" placeholder="1092">
+      </div>
+      <div class="field">
+        <label class="field-label" for="resized_height">
+          Resized height
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Force an exact frame height - see resized width. Default: 588.</span></span>
+        </label>
+        <input type="number" id="resized_height" name="resized_height" min="0" step="1" placeholder="588">
+      </div>
+      <div class="field">
+        <label class="field-label" for="max_new_tokens">
+          Max answer length (tokens)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap on generated answer length. Default: 768.</span></span>
+        </label>
+        <input type="number" id="max_new_tokens" name="max_new_tokens" min="1" step="1" placeholder="768">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="crop_top">
+          Crop top (fraction)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Fraction of frame height to crop off the top before the model sees it, to cut out BlackVue's burned-in overlay text. Default: 0.0378.</span></span>
+        </label>
+        <input type="number" id="crop_top" name="crop_top" min="0" max="1" step="0.001" placeholder="0.0378">
+      </div>
+      <div class="field">
+        <label class="field-label" for="crop_bottom">
+          Crop bottom (fraction)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Fraction of frame height to crop off the bottom - see crop top. Default: 0.0344.</span></span>
+        </label>
+        <input type="number" id="crop_bottom" name="crop_bottom" min="0" max="1" step="0.001" placeholder="0.0344">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="repetition_penalty">
+          Repetition penalty
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Penalizes repeated tokens. Default: 1.15, 1.0 = off.</span></span>
+        </label>
+        <input type="number" id="repetition_penalty" name="repetition_penalty" min="1" step="0.01" placeholder="1.15">
+      </div>
+      <div class="field">
+        <label class="field-label" for="no_repeat_ngram_size">
+          No-repeat n-gram size
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Forbids repeating any N-token sequence. Default: 3, 0 = off.</span></span>
+        </label>
+        <input type="number" id="no_repeat_ngram_size" name="no_repeat_ngram_size" min="0" step="1" placeholder="3">
+      </div>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="do_sample" name="do_sample" value="true" style="width: auto; margin: 0;">
+        Enable probabilistic sampling (instead of greedy decoding)
+      </label>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="temperature">
+          Temperature
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Sampling temperature, only used with probabilistic sampling enabled. Default: 0.7.</span></span>
+        </label>
+        <input type="number" id="temperature" name="temperature" min="0" step="0.01" placeholder="0.7">
+      </div>
+      <div class="field">
+        <label class="field-label" for="top_p">
+          Top-p
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Nucleus sampling cutoff, only used with probabilistic sampling enabled. Default: 0.8.</span></span>
+        </label>
+        <input type="number" id="top_p" name="top_p" min="0" max="1" step="0.01" placeholder="0.8">
+      </div>
+      <div class="field">
+        <label class="field-label" for="top_k">
+          Top-k
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Top-k sampling cutoff, only used with probabilistic sampling enabled. Default: 20.</span></span>
+        </label>
+        <input type="number" id="top_k" name="top_k" min="0" step="1" placeholder="20">
+      </div>
+    </div>
+  </details>
+
+  <details class="option-group" id="advanced-zoom">
+    <summary>Advanced zoom detection</summary>
+    <p class="hint">After the main pass, signs/plates can be re-read at native resolution for small/distant text the main pass's downscaled frames can't resolve. On by default; leave blank to use bv-scribe's own defaults.</p>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="no_zoom_signs" name="no_zoom_signs" value="true" style="width: auto; margin: 0;">
+        Disable zoom-and-re-read for signs/plates
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="no_zoom_plate_confidence_check" name="no_zoom_plate_confidence_check" value="true" style="width: auto; margin: 0;">
+        Disable double-read confidence check for plates
+      </label>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="zoom_frames">
+          Zoom detection frames
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">How many full-resolution frames to sample for sign detection. Default: 4.</span></span>
+        </label>
+        <input type="number" id="zoom_frames" name="zoom_frames" min="1" step="1" placeholder="4">
+      </div>
+      <div class="field">
+        <label class="field-label" for="zoom_detect_width">
+          Zoom detection width
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Resolution for the detection step. Default: 1092.</span></span>
+        </label>
+        <input type="number" id="zoom_detect_width" name="zoom_detect_width" min="1" step="1" placeholder="1092">
+      </div>
+      <div class="field">
+        <label class="field-label" for="zoom_padding">
+          Zoom crop padding (fraction)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Padding fraction around each detected box. Default: 0.15.</span></span>
+        </label>
+        <input type="number" id="zoom_padding" name="zoom_padding" min="0" step="0.01" placeholder="0.15">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="zoom_ocr_width">
+          Zoom OCR min width
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Minimum width a cropped sign/plate is upscaled to before OCR. Default: 640.</span></span>
+        </label>
+        <input type="number" id="zoom_ocr_width" name="zoom_ocr_width" min="1" step="1" placeholder="640">
+      </div>
+      <div class="field">
+        <label class="field-label" for="zoom_max_new_tokens">
+          Zoom OCR max tokens
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap on generated tokens for each crop's OCR read. Default: 200.</span></span>
+        </label>
+        <input type="number" id="zoom_max_new_tokens" name="zoom_max_new_tokens" min="1" step="1" placeholder="200">
+      </div>
+      <div class="field">
+        <label class="field-label" for="zoom_detect_max_new_tokens">
+          Zoom detection max tokens
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap on generated tokens for the detection call. Default: 500.</span></span>
+        </label>
+        <input type="number" id="zoom_detect_max_new_tokens" name="zoom_detect_max_new_tokens" min="1" step="1" placeholder="500">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="zoom_repetition_penalty">
+          Zoom repetition penalty
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Separate repetition penalty for detection/OCR calls. Default: 1.0, off.</span></span>
+        </label>
+        <input type="number" id="zoom_repetition_penalty" name="zoom_repetition_penalty" min="1" step="0.01" placeholder="1.0">
+      </div>
+      <div class="field">
+        <label class="field-label" for="zoom_no_repeat_ngram_size">
+          Zoom no-repeat n-gram size
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Separate no-repeat n-gram size for detection/OCR calls. Default: 0, off.</span></span>
+        </label>
+        <input type="number" id="zoom_no_repeat_ngram_size" name="zoom_no_repeat_ngram_size" min="0" step="1" placeholder="0">
+      </div>
+    </div>
+  </details>
+
+  <details class="option-group" id="advanced-trip-summary">
+    <summary>Advanced trip summary</summary>
+    <p class="hint">Opens automatically once "Also write a trip summary" above is checked.</p>
+    <label class="field-label" for="trip_summary_max_new_tokens">
+      Trip summary max tokens
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap on generated tokens for the trip summary pass. Default: 768.</span></span>
+    </label>
+    <input type="number" id="trip_summary_max_new_tokens" name="trip_summary_max_new_tokens" min="1" step="1" placeholder="768">
+  </details>
+
   <button type="submit">Start</button>
 </form>
+<script>
+  // Progressive disclosure: checking "Also write a trip summary"
+  // opens its matching Advanced <details> section automatically -
+  // same one-directional pattern job_new_bv_export.html's own script
+  // already uses (unchecking never force-closes it again).
+  (function () {
+    var triggers = [
+      ["trip_summary", "advanced-trip-summary"],
+    ];
+    triggers.forEach(function (pair) {
+      var checkbox = document.getElementById(pair[0]);
+      var details = document.getElementById(pair[1]);
+      if (!checkbox || !details) return;
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked) details.open = true;
+      });
+    });
+  })();
+</script>
 {% else %}
 <p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
 with bv-config</a> first.</p>

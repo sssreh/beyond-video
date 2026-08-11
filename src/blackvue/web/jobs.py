@@ -727,7 +727,32 @@ class JobRunner:
         task: str,
         camera: str,
         model: str | None,
+        fps: float | None,
+        max_frames: int | None,
+        max_pixels: int | None,
+        resized_width: int | None,
+        resized_height: int | None,
+        crop_top: float | None,
+        crop_bottom: float | None,
+        max_new_tokens: int | None,
+        repetition_penalty: float | None,
+        no_repeat_ngram_size: int | None,
+        do_sample: bool,
+        temperature: float | None,
+        top_p: float | None,
+        top_k: int | None,
+        zoom_signs: bool,
+        zoom_frames: int | None,
+        zoom_detect_width: int | None,
+        zoom_padding: float | None,
+        zoom_ocr_width: int | None,
+        zoom_max_new_tokens: int | None,
+        zoom_detect_max_new_tokens: int | None,
+        zoom_repetition_penalty: float | None,
+        zoom_no_repeat_ngram_size: int | None,
+        zoom_plate_confidence_check: bool,
         trip_summary: bool,
+        trip_summary_max_new_tokens: int | None,
         cpu: bool,
         overwrite: bool,
         dry_run: bool,
@@ -735,19 +760,43 @@ class JobRunner:
         username: str,
     ) -> Job:
         """Start bv-scribe as a job against one already-configured
-        camera's archive - a curated subset of bv-scribe's own ~40
-        flags, not full parity (unlike bv-generate/bv-export above).
-        Christer's own call when asked, given how many of those are
-        fine-tuning knobs for the zoom-detection sub-pipeline (
-        --zoom-frames, --zoom-padding, --zoom-ocr-width, and a dozen
-        more): task/camera/model, --trip-summary, --cpu, and the usual
-        overwrite/dry-run/verbose trio are exposed; every --zoom-*
-        flag and the do-sample/temperature/top-p/top-k sampling knobs
-        stay CLI-only, tuned once from a real terminal rather than
-        re-tuned per web run. --raw is also not exposed - it's an
-        escape hatch for non-archive footage with no camera id at
-        all, orthogonal to this curated-by-camera-id trigger the same
-        way bv-gps's own --host is.
+        camera's archive - full flag parity with the CLI (unlike the
+        original "curated subset" version of this method), just like
+        start_bv_generate()/start_bv_export()/start_bv_ls() above.
+        Christer's actual ask, on reflection, wasn't "leave these
+        flags off the form" - it was "hide them the way bv-export
+        hides its own advanced flags" (see job_new_bv_export.html's
+        progressive-disclosure `<details>` sections, and the
+        "Progressive disclosure for the bv-export web form" entry in
+        WORKING_CONTEXT.md). So every flag gets a real keyword here;
+        job_new_bv_scribe.html is what actually keeps the zoom-
+        detection/sampling knobs out of sight by default, not this
+        method.
+
+        Every `None` here means "don't pass the flag, let bv-scribe's
+        own parse_args() default apply" - the same optional-numeric-
+        field convention start_bv_export()'s own fields already use.
+        `do_sample`/`zoom_signs`/`zoom_plate_confidence_check` are
+        plain bools (not Optional) because their CLI defaults are a
+        fixed True/False `parse_args()` already bakes in via
+        BooleanOptionalAction - `zoom_signs`/`zoom_plate_confidence_
+        check` default True and only ever need a `--no-...` flag
+        appended when explicitly turned off, the exact same "default-
+        true-omits-the-negative-flag" pattern start_bv_ls()'s own
+        `duration` parameter already established; `do_sample` defaults
+        False and only ever needs `--do-sample` appended when
+        explicitly turned on.
+
+        `--raw` and `--config-dir` are still not exposed - unlike the
+        advanced tuning flags above, these aren't about clutter, they
+        're an escape hatch for non-archive footage with no camera id
+        at all (orthogonal to this curated-by-camera-id trigger, the
+        same way bv-gps's own --host isn't exposed either).
+        `--zoom-debug-dir` is also not exposed, for the same "no
+        arbitrary filesystem path as a form field" reason bv-export's
+        own `--target` was never a field either (see "Curated subset
+        vs. full parity" in docs/WEB_ARCHITECTURE.md) - it's a real
+        server-filesystem path, not curated data.
 
         `archive_path` is resolved by the caller (app.py's route, via
         `_find_camera_archive()`) the same way start_bv_generate()'s
@@ -770,8 +819,62 @@ class JobRunner:
             argv += ["--camera", camera]
         if model:
             argv += ["--model", model]
+
+        if fps is not None:
+            argv += ["--fps", str(fps)]
+        if max_frames is not None:
+            argv += ["--max-frames", str(max_frames)]
+        if max_pixels is not None:
+            argv += ["--max-pixels", str(max_pixels)]
+        if resized_width is not None:
+            argv += ["--resized-width", str(resized_width)]
+        if resized_height is not None:
+            argv += ["--resized-height", str(resized_height)]
+        if crop_top is not None:
+            argv += ["--crop-top", str(crop_top)]
+        if crop_bottom is not None:
+            argv += ["--crop-bottom", str(crop_bottom)]
+        if max_new_tokens is not None:
+            argv += ["--max-new-tokens", str(max_new_tokens)]
+        if repetition_penalty is not None:
+            argv += ["--repetition-penalty", str(repetition_penalty)]
+        if no_repeat_ngram_size is not None:
+            argv += ["--no-repeat-ngram-size", str(no_repeat_ngram_size)]
+        if do_sample:
+            argv.append("--do-sample")
+        if temperature is not None:
+            argv += ["--temperature", str(temperature)]
+        if top_p is not None:
+            argv += ["--top-p", str(top_p)]
+        if top_k is not None:
+            argv += ["--top-k", str(top_k)]
+
+        if not zoom_signs:
+            argv.append("--no-zoom-signs")
+        if zoom_frames is not None:
+            argv += ["--zoom-frames", str(zoom_frames)]
+        if zoom_detect_width is not None:
+            argv += ["--zoom-detect-width", str(zoom_detect_width)]
+        if zoom_padding is not None:
+            argv += ["--zoom-padding", str(zoom_padding)]
+        if zoom_ocr_width is not None:
+            argv += ["--zoom-ocr-width", str(zoom_ocr_width)]
+        if zoom_max_new_tokens is not None:
+            argv += ["--zoom-max-new-tokens", str(zoom_max_new_tokens)]
+        if zoom_detect_max_new_tokens is not None:
+            argv += ["--zoom-detect-max-new-tokens", str(zoom_detect_max_new_tokens)]
+        if zoom_repetition_penalty is not None:
+            argv += ["--zoom-repetition-penalty", str(zoom_repetition_penalty)]
+        if zoom_no_repeat_ngram_size is not None:
+            argv += ["--zoom-no-repeat-ngram-size", str(zoom_no_repeat_ngram_size)]
+        if not zoom_plate_confidence_check:
+            argv.append("--no-zoom-plate-confidence-check")
+
         if trip_summary:
             argv.append("--trip-summary")
+        if trip_summary_max_new_tokens is not None:
+            argv += ["--trip-summary-max-new-tokens", str(trip_summary_max_new_tokens)]
+
         if cpu:
             argv.append("--cpu")
         if overwrite:

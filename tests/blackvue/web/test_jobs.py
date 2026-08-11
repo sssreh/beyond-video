@@ -1186,10 +1186,14 @@ def test_start_bv_ls_job_fails_when_run_returns_nonzero(monkeypatch):
 
 def _scribe_kwargs(**overrides):
     """Every start_bv_scribe() keyword, defaulted to bv-scribe's own
-    plainest possible invocation - the curated subset Christer chose
-    over full CLI parity (see JobRunner.start_bv_scribe()'s own
-    docstring), same per-test-override shape the other _*_kwargs()
-    helpers above use."""
+    plainest possible invocation - full CLI parity (every keyword
+    that isn't a plain default-True/False flag is None, meaning "let
+    bv-scribe's own parse_args() default apply"), same per-test-
+    override shape the other _*_kwargs() helpers above use. What's
+    curated here isn't the flag set (see JobRunner.start_bv_scribe()'s
+    own docstring for why that changed) - it's job_new_bv_scribe.html
+    keeping the advanced ones collapsed by default, a template/UI
+    concern this JobRunner-level helper has nothing to do with."""
 
     kwargs = dict(
         camera_id="kirby",
@@ -1200,7 +1204,32 @@ def _scribe_kwargs(**overrides):
         task="both",
         camera="front",
         model=None,
+        fps=None,
+        max_frames=None,
+        max_pixels=None,
+        resized_width=None,
+        resized_height=None,
+        crop_top=None,
+        crop_bottom=None,
+        max_new_tokens=None,
+        repetition_penalty=None,
+        no_repeat_ngram_size=None,
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        zoom_signs=True,
+        zoom_frames=None,
+        zoom_detect_width=None,
+        zoom_padding=None,
+        zoom_ocr_width=None,
+        zoom_max_new_tokens=None,
+        zoom_detect_max_new_tokens=None,
+        zoom_repetition_penalty=None,
+        zoom_no_repeat_ngram_size=None,
+        zoom_plate_confidence_check=True,
         trip_summary=False,
+        trip_summary_max_new_tokens=None,
         cpu=False,
         overwrite=False,
         dry_run=False,
@@ -1251,9 +1280,17 @@ def test_start_bv_scribe_defaults_reach_parsed_args(monkeypatch):
     assert args.overwrite is False
     assert args.dry_run is False
     assert args.verbose is False
+    # Every advanced field left at None means "don't pass the flag" -
+    # bv-scribe's own parse_args() defaults come through untouched.
+    assert args.fps == 1.0
+    assert args.max_frames == 16
+    assert args.do_sample is False
+    assert args.zoom_signs is True
+    assert args.zoom_plate_confidence_check is True
+    assert args.trip_summary_max_new_tokens == 768
 
 
-def test_start_bv_scribe_curated_flags_reach_parsed_args(monkeypatch):
+def test_start_bv_scribe_core_flags_reach_parsed_args(monkeypatch):
     captured = {}
 
     def fake_run(args, *, say, warn):
@@ -1292,6 +1329,114 @@ def test_start_bv_scribe_curated_flags_reach_parsed_args(monkeypatch):
     assert args.overwrite is True
     assert args.dry_run is True
     assert args.verbose is True
+
+
+def test_start_bv_scribe_advanced_sampling_flags_reach_parsed_args(monkeypatch):
+    # Full parity now covers the sampling/model tuning knobs that used
+    # to be curated away entirely - job_new_bv_scribe.html's own
+    # "Advanced sampling & model" <details> is what keeps these out of
+    # sight by default, not JobRunner/parse_args().
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_scribe(
+        **_scribe_kwargs(
+            fps=2.0,
+            max_frames=32,
+            max_pixels=200000,
+            resized_width=800,
+            resized_height=450,
+            crop_top=0.05,
+            crop_bottom=0.05,
+            max_new_tokens=500,
+            repetition_penalty=1.2,
+            no_repeat_ngram_size=4,
+            do_sample=True,
+            temperature=0.9,
+            top_p=0.5,
+            top_k=10,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.fps == 2.0
+    assert args.max_frames == 32
+    assert args.max_pixels == 200000
+    assert args.resized_width == 800
+    assert args.resized_height == 450
+    assert args.crop_top == 0.05
+    assert args.crop_bottom == 0.05
+    assert args.max_new_tokens == 500
+    assert args.repetition_penalty == 1.2
+    assert args.no_repeat_ngram_size == 4
+    assert args.do_sample is True
+    assert args.temperature == 0.9
+    assert args.top_p == 0.5
+    assert args.top_k == 10
+
+
+def test_start_bv_scribe_advanced_zoom_flags_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_scribe(
+        **_scribe_kwargs(
+            zoom_signs=False,
+            zoom_frames=8,
+            zoom_detect_width=1200,
+            zoom_padding=0.25,
+            zoom_ocr_width=800,
+            zoom_max_new_tokens=300,
+            zoom_detect_max_new_tokens=600,
+            zoom_repetition_penalty=1.1,
+            zoom_no_repeat_ngram_size=2,
+            zoom_plate_confidence_check=False,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.zoom_signs is False
+    assert args.zoom_frames == 8
+    assert args.zoom_detect_width == 1200
+    assert args.zoom_padding == 0.25
+    assert args.zoom_ocr_width == 800
+    assert args.zoom_max_new_tokens == 300
+    assert args.zoom_detect_max_new_tokens == 600
+    assert args.zoom_repetition_penalty == 1.1
+    assert args.zoom_no_repeat_ngram_size == 2
+    assert args.zoom_plate_confidence_check is False
+
+
+def test_start_bv_scribe_trip_summary_max_new_tokens_reaches_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_scribe(
+        **_scribe_kwargs(trip_summary=True, trip_summary_max_new_tokens=1024)
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].trip_summary_max_new_tokens == 1024
 
 
 def test_start_bv_scribe_job_fails_when_run_returns_nonzero(monkeypatch):

@@ -1090,25 +1090,92 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         task: str = Form("both"),
         camera: str = Form("front"),
         model: str = Form(""),
+        # Advanced sampling/model (job_new_bv_scribe.html's "Advanced
+        # sampling & model" <details>, collapsed by default) - full
+        # parity, same "collapsed but not curated away" treatment
+        # bv-export's own advanced sections got. See start_bv_scribe()'s
+        # docstring in jobs.py for the full story behind this change.
+        fps: str = Form(""),
+        max_frames: str = Form(""),
+        max_pixels: str = Form(""),
+        resized_width: str = Form(""),
+        resized_height: str = Form(""),
+        crop_top: str = Form(""),
+        crop_bottom: str = Form(""),
+        max_new_tokens: str = Form(""),
+        repetition_penalty: str = Form(""),
+        no_repeat_ngram_size: str = Form(""),
+        do_sample: bool = Form(False),
+        temperature: str = Form(""),
+        top_p: str = Form(""),
+        top_k: str = Form(""),
+        # Advanced zoom detection (its own <details>)
+        no_zoom_signs: bool = Form(False),
+        zoom_frames: str = Form(""),
+        zoom_detect_width: str = Form(""),
+        zoom_padding: str = Form(""),
+        zoom_ocr_width: str = Form(""),
+        zoom_max_new_tokens: str = Form(""),
+        zoom_detect_max_new_tokens: str = Form(""),
+        zoom_repetition_penalty: str = Form(""),
+        zoom_no_repeat_ngram_size: str = Form(""),
+        no_zoom_plate_confidence_check: bool = Form(False),
+        # Trip summary
         trip_summary: bool = Form(False),
+        trip_summary_max_new_tokens: str = Form(""),
         cpu: bool = Form(False),
         overwrite: bool = Form(False),
         dry_run: bool = Form(False),
         verbose: bool = Form(False),
         user: User = Depends(require_owner),
     ):
+        # Every numeric field is optional text, cleaned to str | None
+        # here and passed straight through - jobs.py's start_bv_scribe()
+        # just str()s whatever isn't None into argv, so the real
+        # parsing/range-checking happens exactly once, inside
+        # bv_scribe.parse_args() itself. Same convention
+        # new_bv_export_submit()'s own _clean() helper already uses.
+        def _clean(value: str) -> str | None:
+            value = value.strip()
+            return value or None
+
         archive_path = _find_camera_archive(app.state.camera_config_cache, id)
 
         job = app.state.job_runner.start_bv_scribe(
             camera_id=id,
             archive_path=archive_path,
-            from_=from_.strip() or None,
-            until=until.strip() or None,
-            timestamp=timestamp.strip() or None,
+            from_=_clean(from_),
+            until=_clean(until),
+            timestamp=_clean(timestamp),
             task=task,
             camera=camera,
-            model=model.strip() or None,
+            model=_clean(model),
+            fps=_clean(fps),
+            max_frames=_clean(max_frames),
+            max_pixels=_clean(max_pixels),
+            resized_width=_clean(resized_width),
+            resized_height=_clean(resized_height),
+            crop_top=_clean(crop_top),
+            crop_bottom=_clean(crop_bottom),
+            max_new_tokens=_clean(max_new_tokens),
+            repetition_penalty=_clean(repetition_penalty),
+            no_repeat_ngram_size=_clean(no_repeat_ngram_size),
+            do_sample=do_sample,
+            temperature=_clean(temperature),
+            top_p=_clean(top_p),
+            top_k=_clean(top_k),
+            zoom_signs=not no_zoom_signs,
+            zoom_frames=_clean(zoom_frames),
+            zoom_detect_width=_clean(zoom_detect_width),
+            zoom_padding=_clean(zoom_padding),
+            zoom_ocr_width=_clean(zoom_ocr_width),
+            zoom_max_new_tokens=_clean(zoom_max_new_tokens),
+            zoom_detect_max_new_tokens=_clean(zoom_detect_max_new_tokens),
+            zoom_repetition_penalty=_clean(zoom_repetition_penalty),
+            zoom_no_repeat_ngram_size=_clean(zoom_no_repeat_ngram_size),
+            zoom_plate_confidence_check=not no_zoom_plate_confidence_check,
             trip_summary=trip_summary,
+            trip_summary_max_new_tokens=_clean(trip_summary_max_new_tokens),
             cpu=cpu,
             overwrite=overwrite,
             dry_run=dry_run,
