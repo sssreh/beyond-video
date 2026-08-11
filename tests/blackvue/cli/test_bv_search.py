@@ -136,6 +136,22 @@ def test_run_text_match_reports_recording_and_line(monkeypatch, tmp_path):
     assert any("traffic" in m.lower() for m in messages)
 
 
+def test_run_text_match_is_preceded_by_a_blank_line(monkeypatch, tmp_path):
+    recording = _make_recording(
+        "20260715_120500_N",
+        tmp_path,
+        {Asset.TRANSCRIPT: "Heavy traffic near the roundabout.\n"},
+    )
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+
+    args = parse_args([str(tmp_path), "--text", "traffic"])
+    messages = []
+    bv_search._run(args, say=messages.append, warn=messages.append)
+
+    recording_index = messages.index("20260715_120500_N")
+    assert messages[recording_index - 1] == ""
+
+
 def test_run_text_no_match_reports_no_matches(monkeypatch, tmp_path):
     recording = _make_recording(
         "20260715_121000_N", tmp_path, {Asset.TRANSCRIPT: "Smooth sailing.\n"}

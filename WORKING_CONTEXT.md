@@ -8509,3 +8509,11 @@ Christer, right after the timing/--trace feature above: "I would like the --plac
 **Docs.** `docs/man/bv-search.md`: DESCRIPTION's timing paragraph reworded to explain `--place` resolves first, before the timed section begins.
 
 **Verification.** `ast.parse()` clean. `test_bv_search.py` 28/28 (27 previous + 1 new) through the sandbox pytest shim.
+
+## bv-search: blank line before each matching recording
+
+Christer: "just add a newline before printing recordingid." `_run()`'s match-reporting block now calls `say("")` immediately before `say(str(recording.id))`, so each match starts with a blank separator line - readable when several recordings match in one run (and when `--trace` dots or the started/`--place` lines precede the first result).
+
+**Tests.** `tests/blackvue/cli/test_bv_search.py`: new `test_run_text_match_is_preceded_by_a_blank_line`, confirming the message immediately before a matching recording id is an empty string.
+
+**Verification.** `ast.parse()` clean. `test_bv_search.py` 29/29 (28 previous + 1 new) through the sandbox pytest shim.

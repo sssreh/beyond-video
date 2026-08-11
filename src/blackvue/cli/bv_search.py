@@ -362,6 +362,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
                     continue
 
             match_count += 1
+            say("")
             say(str(recording.id))
             for match in text_matches:
                 _report_text_match(say, match)
