@@ -26,6 +26,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import re
 from argparse import ArgumentTypeError
 from pathlib import Path
 
@@ -92,6 +93,18 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 # the bundled font/mirror-icon).
 STATIC_DIR = Path(__file__).parent / "static"
 
+# bv-search's job output prints each matching recording's bare id on
+# its own unindented line (see cli/bv_search.py's _run(): `say(str(
+# recording.id))`), sandwiched between the blank line before it and
+# the indented match-detail lines after it - a Recording.id is always
+# "<8-digit date>_<6-digit time>_<one-letter kind>" (see domain/
+# recording.py's kind/is_normal/is_event/is_manual properties, and
+# e.g. test_archive_browser.py's "20260715_140212_N"). job_detail.html
+# uses this to turn just those lines into links to the recording's
+# archive detail page, without touching any other job's output or any
+# of bv-search's own indented match/status lines.
+RECORDING_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z]$")
+
 
 def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     """Build the bv-web FastAPI app.
@@ -142,6 +155,12 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # character and leaves everything else exactly as stored.
     templates.env.filters["capitalize_first"] = (
         lambda s: (s[0].upper() + s[1:]) if s else s
+    )
+    # See RECORDING_ID_RE's own comment above - job_detail.html calls
+    # this per output line to decide whether to render it as a link
+    # rather than plain text.
+    templates.env.globals["is_recording_id"] = (
+        lambda s: RECORDING_ID_RE.match(s) is not None
     )
 
     # Unauthenticated on purpose: just the two theme background
@@ -1299,6 +1318,19 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # archive browser's filters already use - and resume by
         # dropping it, no different from an ordinary manual reload.
         paused = request.query_params.get("paused") == "1"
+        # bv-search is the only job type whose output prints recording
+        # ids (see RECORDING_ID_RE's own comment) - camera_id stays
+        # None for every other job type, so job_detail.html only ever
+        # links lines for a bv-search job, never coincidentally similar-
+        # looking text in some other command's output. There's no
+        # dedicated Job.camera_id field (see jobs.py's Job dataclass) -
+        # start_bv_search() sets job.command to exactly
+        # f"bv-search {camera_id}", so the second whitespace-separated
+        # token is the camera id whenever the first is "bv-search".
+        camera_id = None
+        command_parts = job.command.split(maxsplit=1)
+        if command_parts and command_parts[0] == "bv-search" and len(command_parts) == 2:
+            camera_id = command_parts[1]
         response = templates.TemplateResponse(
             request,
             "job_detail.html",
@@ -1314,6 +1346,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "output": output,
                 "prompt": prompt,
                 "paused": paused,
+                "camera_id": camera_id,
             },
         )
         # Christer noticed that navigating away from a running job (e.g.

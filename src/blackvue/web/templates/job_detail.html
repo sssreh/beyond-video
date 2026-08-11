@@ -21,6 +21,7 @@
 {% endif %}
 
 <pre class="job-output">{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
+{% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
 {% else %}{{ line }}
 {% endif %}{% endfor %}</pre>
 

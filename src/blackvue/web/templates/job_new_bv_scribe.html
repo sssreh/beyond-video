@@ -18,6 +18,7 @@
 <p class="error">{{ error }}</p>
 {% endif %}
 {% if cameras %}
+<div class="content-panel">
 <form method="post" action="/jobs/bv-scribe">
   <div class="option-group">
     <h3>Required</h3>
@@ -330,6 +331,7 @@
 
   <button type="submit">Start</button>
 </form>
+</div>
 <script>
   // Progressive disclosure: checking "Also write a trip summary"
   // opens its matching Advanced <details> section automatically -
