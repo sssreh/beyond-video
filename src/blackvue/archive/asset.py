@@ -37,7 +37,11 @@ class Asset(Enum):
     SUBTITLES = ("SRT",)
     LYRICS = ("LRC",)
     SUMMARY = ("Summ",)
-    SCENE_DESCRIPTION = ("Scene",)
+    # Grouped like TRANSCRIPT/TRANSCRIPT_DIARIZED above - "Front"/"Rear"
+    # distinguish which camera a scene description came from, "Scene"
+    # is the shared two-row bv-ls header group.
+    SCENE_DESCRIPTION = ("Front", "Scene")
+    SCENE_DESCRIPTION_REAR = ("Rear", "Scene")
 
     def __init__(self, label: str, group: str | None = None):
         self._label = label

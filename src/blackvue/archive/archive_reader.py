@@ -39,6 +39,10 @@ class ArchiveReader:
         (".translation.txt", Asset.TRANSLATION),
         (".srt", Asset.SUBTITLES),
         (".lrc", Asset.LYRICS),
+        # Checked before the plain ".scene.txt" below, same reasoning
+        # as the diarized-before-plain transcript/translation ordering
+        # above - ".rear.scene.txt" also ends with ".scene.txt".
+        (".rear.scene.txt", Asset.SCENE_DESCRIPTION_REAR),
         (".scene.txt", Asset.SCENE_DESCRIPTION),
     )
 

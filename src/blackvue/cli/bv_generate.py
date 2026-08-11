@@ -264,6 +264,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--camera",
+        choices=["front", "rear", "both"],
+        default="front",
+        help=(
+            "Which camera(s) --describe-scene processes (default: "
+            "front - same as before this flag existed: front video, "
+            "or rear if there's no front). 'rear' processes only the "
+            "rear video, with the normal full description+OCR pass "
+            "(saved as <recording>.rear.scene.txt) - a deliberate "
+            "choice gets full treatment, not just plates. 'both' adds "
+            "a cheap OCR-only bonus pass on the rear video alongside "
+            "the normal front pass, skipped if the recording has no "
+            "distinct rear video (i.e. front was already using rear "
+            "as its own fallback) - a rear-camera description would "
+            "mostly just restate the front one's, so only plates/signs "
+            "are worth the extra inference call."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -603,6 +623,45 @@ def _do_get_duration(
     return False
 
 
+def _run_describe_scene_pass(
+    recording: Recording,
+    video_path: Path,
+    destination: Path,
+    args: argparse.Namespace,
+    *,
+    task: str | None = None,
+    say=print,
+    warn=_default_warn,
+) -> bool:
+    """Run one describe_scene() call and write its result. Return True
+    on error. Shared by both the front and rear passes of
+    _do_describe_scene() - task=None uses SceneOptions' own default
+    ("both": description + OCR); the --camera both rear bonus pass
+    forces task="ocr" instead, since a rear-camera description would
+    mostly just restate the front one's (see --camera's help text)."""
+
+    if not _should_write_for(destination, args, warn=warn):
+        return False
+
+    if args.dry_run:
+        say(f"{recording.id}: would describe scene -> {destination.name}")
+        return False
+
+    kwargs = {"model": args.scene_model, "force_cpu": args.cpu}
+    if task is not None:
+        kwargs["task"] = task
+
+    try:
+        output_text = describe_scene(video_path, **kwargs)
+    except MediaToolError as exc:
+        warn(f"bv-generate: {recording.id}: {exc}")
+        return True
+
+    destination.write_text(output_text + "\n", encoding="utf-8")
+    _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
+    return False
+
+
 def _do_describe_scene(
     recording: Recording,
     archive_path: Path,
@@ -611,39 +670,63 @@ def _do_describe_scene(
     say=print,
     warn=_default_warn,
 ) -> bool:
-    """Describe one recording's scene/on-screen text. Return True on
-    error. Unlike audio actions, this runs on Parking-mode recordings
-    too - they're timelapse video, not audio, so there's real content
-    for a vision model to look at."""
+    """Describe one recording's scene/on-screen text, for whichever
+    camera(s) --camera selects. Return True on error. Unlike audio
+    actions, this runs on Parking-mode recordings too - they're
+    timelapse video, not audio, so there's real content for a vision
+    model to look at."""
 
-    destination = archive_path / f"{recording.id}.scene.txt"
+    front_file = recording.file(Asset.FRONT)
+    rear_file = recording.file(Asset.REAR)
+    had_error = False
 
-    if not _should_write_for(destination, args, warn=warn):
-        return False
+    if args.camera in ("front", "both"):
+        # Same front-preferred-with-rear-fallback source selection
+        # select_source() itself uses - kept inline here (rather than
+        # calling select_source()) so front_file/rear_file, already
+        # looked up above for the rear pass below, aren't looked up
+        # twice.
+        source_file = front_file or rear_file
+        if source_file is None:
+            warn(f"bv-generate: {recording.id}: no front or rear video, "
+                "skipping scene description")
+            had_error = True
+        else:
+            had_error |= _run_describe_scene_pass(
+                recording, source_file.path,
+                archive_path / f"{recording.id}.scene.txt",
+                args, say=say, warn=warn,
+            )
 
-    source_file = select_source(recording)
-    if source_file is None:
-        warn(f"bv-generate: {recording.id}: no front or rear video, "
-            "skipping scene description")
-        return True
+    if args.camera in ("rear", "both"):
+        if rear_file is None:
+            if args.camera == "rear":
+                warn(f"bv-generate: {recording.id}: no rear video, "
+                    "skipping scene description")
+                had_error = True
+            else:
+                _report(say, args.verbose,
+                    f"{recording.id}: no rear video, skipping rear "
+                    "scene pass")
+        elif args.camera == "both" and front_file is None:
+            # The front pass above already used rear_file as its own
+            # fallback source (select_source()'s own behavior) - a
+            # second pass on the exact same video would just
+            # duplicate that work under a different filename.
+            _report(say, args.verbose,
+                f"{recording.id}: no distinct rear video (front pass "
+                "already used it as its own fallback), skipping rear "
+                "scene pass")
+        else:
+            had_error |= _run_describe_scene_pass(
+                recording, rear_file.path,
+                archive_path / f"{recording.id}.rear.scene.txt",
+                args,
+                task="ocr" if args.camera == "both" else None,
+                say=say, warn=warn,
+            )
 
-    if args.dry_run:
-        say(f"{recording.id}: would describe scene -> {destination.name}")
-        return False
-
-    try:
-        output_text = describe_scene(
-            source_file.path,
-            model=args.scene_model,
-            force_cpu=args.cpu,
-        )
-    except MediaToolError as exc:
-        warn(f"bv-generate: {recording.id}: {exc}")
-        return True
-
-    destination.write_text(output_text + "\n", encoding="utf-8")
-    _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
-    return False
+    return had_error
 
 
 def _translate_diarized(

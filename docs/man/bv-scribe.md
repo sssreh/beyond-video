@@ -7,7 +7,9 @@
 ## SYNOPSIS
 
 ```
-bv-scribe [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
+bv-scribe [--raw]
+          [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
+          [--camera {front,rear,both}]
           [--task {describe,ocr,both}] [--model MODEL]
           [--fps N] [--max-frames N] [--max-pixels N]
           [--resized-width N] [--resized-height N]
@@ -33,11 +35,13 @@ Requires the `scene` extra: `pip install .[scene]`. Install torch separately fir
 
 **Trusting the output.** Real-footage testing surfaced two distinct failure modes: the model can confidently misread a license plate (report the wrong characters rather than flagging it illegible), and it can invent plausible-sounding but unrelated text on an ambiguous scene (a real Stockholm-area trip once got "Palm Jumeirah" - a Dubai landmark - as on-screen text, more than once, across separate runs). Every output file ends with a disclaimer to this effect - treat every read, especially plates/signs/place names, as unverified until checked against the source video. `--zoom-plate-confidence-check` (on by default) mitigates the plate case specifically: each detected plate crop is read twice (once greedy, once with sampling forced on), and reported as unverified rather than picked between if the two disagree.
 
+`--raw` points `bv-scribe` at non-BlackVue footage instead of an archive - a video file or a directory of video files with no BlackVue filename/sidecar structure at all. See "Raw video mode" below.
+
 ## ARGUMENTS
 
 | Argument | Description |
 |---|---|
-| `PATH` | Archive directory. Default: current directory. |
+| `PATH` | Archive directory, or (with `--raw`) a raw video file or a directory of raw video files. Default: current directory. |
 
 ## OPTIONS
 
@@ -45,9 +49,11 @@ Requires the `scene` extra: `pip install .[scene]`. Install torch separately fir
 
 | Option | Description |
 |---|---|
-| `--from TIMESTAMP` | Only consider recordings from this timestamp. |
-| `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
-| `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. |
+| `--raw` | Treat `PATH` as a raw video file or a directory of raw video files instead of a BlackVue archive. See "Raw video mode" below. |
+| `--from TIMESTAMP` | Only consider recordings from this timestamp. Not used with `--raw`. |
+| `--until TIMESTAMP` | Only consider recordings up to this timestamp. Not used with `--raw`. |
+| `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. Not used with `--raw`. |
+| `--camera {front,rear,both}` | Which camera(s) to process (default: `front` - front video, or rear as fallback if there's no front). `rear` processes only the rear video with the normal full `--task` treatment, saved as `<recording>.rear.scene.txt` - a deliberate choice to look at the rear camera gets full treatment, not just plates. `both` adds a cheap OCR-only bonus pass on the rear video alongside the normal front pass, skipped with a note if the recording has no distinct rear video - a full rear-camera description would mostly just restate the front one's. Not used with `--raw` (raw video files have no front/rear distinction). |
 
 ### Task / model
 
@@ -66,8 +72,8 @@ Requires the `scene` extra: `pip install .[scene]`. Install torch separately fir
 | `--max-pixels N` | Resolution cap per sampled frame, in total pixels. Default: `151200` (~420x360). Only used when `--resized-width`/`--resized-height` are both `0`. |
 | `--resized-width N` | Force an exact frame width, bypassing `--max-pixels` - the actual resolution knob in practice. Default: `1092`. Pass `0` (with `--resized-height 0`) to fall back to `--max-pixels` instead. |
 | `--resized-height N` | Force an exact frame height. Default: `588`. See `--resized-width`. |
-| `--crop-top FRAC` | Fraction of frame height to crop off the top before the model sees it, to cut out BlackVue's burned-in overlay text (timestamp/speed/camera name). Default: `0.0378`. Pass `0` to disable. |
-| `--crop-bottom FRAC` | Fraction of frame height to crop off the bottom. Default: `0.0344`. See `--crop-top`. |
+| `--crop-top FRAC` | Fraction of frame height to crop off the top before the model sees it, to cut out BlackVue's burned-in overlay text (timestamp/speed/camera name). Default: `0.0378`, or `0` (disabled) with `--raw` - see "Raw video mode" below. Pass `0` explicitly to disable in archive mode too. |
+| `--crop-bottom FRAC` | Fraction of frame height to crop off the bottom. Default: `0.0344`, or `0` with `--raw`. See `--crop-top`. |
 
 ### Generation tuning
 
@@ -115,6 +121,18 @@ After the main pass, a few full-resolution frames are separately checked for sig
 | `-v`, `--verbose` | Print each file as it is generated. |
 | `-h`, `--help` | Show help and exit. |
 
+## RAW VIDEO MODE
+
+`--raw` processes video that never went through a BlackVue archive at all - footage from another dashcam, a phone, whatever - by pointing `PATH` directly at a video file or a directory of video files, instead of an archive directory.
+
+With `--raw`:
+
+- `PATH` is a single video file, or a directory - every recognized video file directly inside it (not recursive) is processed, sorted by name. Recognized extensions: `.mp4`, `.mov`, `.avi`, `.mkv`, `.m4v`, `.webm`.
+- `--from`/`--until`/`--timestamp` don't apply (raw footage has no BlackVue recording-id timestamp to select on) and `--camera` doesn't apply (no front/rear distinction) - `bv-scribe` exits with an argument error if either is given alongside `--raw`.
+- `--crop-top`/`--crop-bottom` default to `0` (disabled) instead of the BlackVue-tuned defaults, since those defaults exist specifically to cut out BlackVue's own burned-in overlay text, which won't be there on non-BlackVue footage. Pass either explicitly to crop anyway.
+- Output is written next to each source video as `<video-stem>.scene.txt`, rather than into the archive next to a `RecordingId`-named file.
+- `--trip-summary` still works, synthesizing across every processed video's description the same way it does in archive mode; `trip_summary.txt` is written into the directory (or the single video's parent directory, for a single-file `PATH`).
+
 ## EXIT STATUS
 
 | Code | Meaning |
@@ -153,6 +171,24 @@ Try Qwen3-VL instead of the default Qwen2.5-VL (less tested against real footage
 
 ```
 bv-scribe --timestamp 20260715 --model Qwen/Qwen3-VL-8B-Instruct
+```
+
+Describe only the rear camera for a day, with full description+OCR treatment:
+
+```
+bv-scribe --timestamp 20260715 --camera rear
+```
+
+Describe the front camera normally, plus a cheap OCR-only pass on the rear camera for plates/signs:
+
+```
+bv-scribe --timestamp 20260715 --camera both
+```
+
+Describe a folder of footage from a non-BlackVue camera:
+
+```
+bv-scribe --raw /path/to/other-dashcam-footage
 ```
 
 ## SEE ALSO

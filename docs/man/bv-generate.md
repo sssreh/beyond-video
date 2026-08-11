@@ -13,7 +13,7 @@ bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--model-size SIZE] [--cpu] [--npu-model-dir PATH]
             [--diarize] [--hf-token TOKEN]
             [--srt] [--lrc]
-            [--describe-scene] [--scene-model MODEL]
+            [--describe-scene] [--scene-model MODEL] [--camera {front,rear,both}]
             [--overwrite] [--dry-run] [-v]
             [PATH]
 ```
@@ -56,6 +56,7 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 | `--lrc` | Also write an LRC timestamp file (`<recording>.lrc`), one `[mm:ss.xx]` line per segment. Requires `--transcribe` or `--translate`. If `--translate` is also given, the lines are in the translated language, not the original spoken one. |
 | `--describe-scene` | Describe the recording's contents and read its on-screen text using a local vision-language model (Qwen2.5-VL/Qwen3-VL). Saved as `<recording>.scene.txt`. Works on Parking-mode recordings too (still video, just no audio). Requires the `scene` extra: `pip install .[scene]` (plus torch installed separately - see `bv-scribe(1)` for the CUDA-build note). Uses fixed sensible defaults; see `bv-scribe(1)` for the full set of tuning flags (frame sampling, resolution, the sign-zoom sub-pipeline, batch mode, trip summaries). |
 | `--scene-model MODEL` | Vision-language model for `--describe-scene`. Default: `Qwen/Qwen2.5-VL-7B-Instruct` (~16GB download on first use, cached under `~/.cache/huggingface`). |
+| `--camera {front,rear,both}` | Which camera(s) `--describe-scene` processes (default: `front` - same as before this flag existed: front video, or rear if there's no front). `rear` processes only the rear video, with the normal full description+OCR treatment, saved as `<recording>.rear.scene.txt` - a deliberate choice to look at the rear camera gets full treatment, not just plates. `both` adds a cheap OCR-only bonus pass on the rear video alongside the normal front pass (also `<recording>.rear.scene.txt`), skipped with a note if the recording has no distinct rear video (i.e. front was already using rear as its own fallback) - a full rear-camera description would mostly just restate the front one's, so only plates/signs are worth the extra inference call. |
 
 **A note on trusting `--describe-scene`'s output.** Real-footage testing found two distinct failure modes worth knowing about before treating any of this as fact: the model can confidently misread a license plate (not flag it as illegible, just report the wrong characters), and it can invent plausible-sounding but unrelated text on an ambiguous scene (a real trip near Stockholm once got "Palm Jumeirah" - a Dubai landmark - as on-screen text, more than once). Every `--describe-scene` output ends with a disclaimer to this effect. Plate reads specifically get a mitigation: each detected plate crop is read twice (once greedy, once with sampling forced on), and reported as unverified if the two disagree rather than picked between - see `--zoom-plate-confidence-check` in `bv-scribe(1)`.
 

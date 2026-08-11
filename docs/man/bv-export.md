@@ -221,6 +221,8 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 | `trip.gpx` | always, if GPS data exists |
 | `trip.3gf` | always, if g-sensor data exists |
 | `trip.srt`, `trip.lrc` | always, if transcript data exists |
+| `transcript.txt`, `transcript.diarized.txt`, `translation.txt`, `translation.diarized.txt` | always, if the corresponding per-recording `bv-generate(1)` output exists - each recording's text concatenated in order, under a `# <recording_id>` header per block |
+| `scene.txt`, `scene.rear.txt` | always, if the corresponding per-recording `bv-generate --describe-scene`/`bv-scribe(1)` output exists - same concatenation as the transcript/translation files above |
 | `trip.log` | always - the exact command line used, trip membership reasoning, and (with `--debug`) phase timings |
 | `trip_info.txt` | always - start/end time, duration, total on-disk size, whether Parking-mode footage is included, and (if GPS data exists) distance, average/max speed, moving/idle time, and a reverse-geocoded start/end address |
 | `map.mp4` | `--map` |
@@ -280,4 +282,4 @@ bv-export /path/to/archive --target /path/to/trips --dry-run
 
 ## SEE ALSO
 
-`bv-download(1)` and `bv-generate(1)` populate the archive this reads, `bv-ls(1) --trips` previews the same trip detection this uses.
+`bv-download(1)` and `bv-generate(1)` populate the archive this reads, `bv-scribe(1)` is the batch/tunable alternative to `bv-generate --describe-scene` for producing the per-recording `scene.txt`/`scene.rear.txt` inputs this merges, `bv-ls(1) --trips` previews the same trip detection this uses.

@@ -21,18 +21,23 @@ import sys
 from pathlib import Path
 
 from ..archive import Archive
+from ..archive import Asset
 from .errors import run_cli
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import describe_scene
 from ..generate import extract_description_section
-from ..generate import select_source
 from ..generate import summarize_trip
 from ..lexicaltimeparser import LexicalTimeParser
 
 EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
 EXIT_HAD_ERRORS = 2
+
+# --raw mode's recognized video extensions - deliberately broader than
+# BlackVue's own ".mp4", since --raw exists precisely for non-BlackVue
+# footage.
+RAW_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,24 +60,65 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "path",
         nargs="?",
         default=".",
-        help="Archive directory.",
+        help=(
+            "Archive directory, or (with --raw) a raw video file or "
+            "a directory of raw video files."
+        ),
+    )
+
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help=(
+            "Treat `path` as a raw video file or a directory of raw "
+            "video files instead of a BlackVue archive - no "
+            "--from/--until/--timestamp selection (raw footage has "
+            "no BlackVue recording-id timestamp to select on) and no "
+            "--camera (no front/rear distinction). Cropping "
+            "(--crop-top/--crop-bottom) defaults to disabled, since "
+            "those defaults are tuned for BlackVue's burned-in "
+            "overlay text, which won't exist on non-BlackVue "
+            "footage. Output is written next to each source video as "
+            "<video-stem>.scene.txt."
+        ),
     )
 
     parser.add_argument(
         "--from",
         dest="from_",
         metavar="TIMESTAMP",
-        help="Only consider recordings from this timestamp.",
+        help="Only consider recordings from this timestamp. Not used with --raw.",
     )
     parser.add_argument(
         "--until",
         metavar="TIMESTAMP",
-        help="Only consider recordings up to this timestamp.",
+        help="Only consider recordings up to this timestamp. Not used with --raw.",
     )
     parser.add_argument(
         "--timestamp",
         metavar="TIMESTAMP",
-        help="Only consider recordings matching this timestamp or prefix.",
+        help="Only consider recordings matching this timestamp or prefix. Not used with --raw.",
+    )
+    parser.add_argument(
+        "--camera",
+        choices=["front", "rear", "both"],
+        default="front",
+        help=(
+            "Which camera(s) to process (default: front - same as "
+            "before this flag existed: front video, or rear if "
+            "there's no front). 'rear' processes only the rear "
+            "video, with the normal full --task treatment (saved as "
+            "<recording>.rear.scene.txt) - a deliberate choice gets "
+            "full treatment, not just plates. 'both' adds a cheap "
+            "OCR-only bonus pass on the rear video alongside the "
+            "normal front pass, skipped if the recording has no "
+            "distinct rear video (i.e. front was already using rear "
+            "as its own fallback) - a rear-camera description would "
+            "mostly just restate the front one's, so only "
+            "plates/signs are worth the extra inference call. Not "
+            "used with --raw (raw video files have no front/rear "
+            "distinction)."
+        ),
     )
 
     parser.add_argument(
@@ -139,17 +185,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--crop-top",
         type=float,
-        default=0.0378,
+        default=None,
         help=(
             "Fraction of frame height to crop off the top before the "
-            "model sees it (default: 0.0378), to cut out BlackVue's "
-            "burned-in overlay text. Pass 0 to disable."
+            "model sees it, to cut out BlackVue's burned-in overlay "
+            "text (default: 0.0378, or 0 - disabled - with --raw, "
+            "since raw footage has no BlackVue overlay to crop out)."
         ),
     )
     parser.add_argument(
         "--crop-bottom",
         type=float,
-        default=0.0344,
+        default=None,
         help="Fraction of frame height to crop off the bottom - see --crop-top.",
     )
     parser.add_argument(
@@ -273,7 +320,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print each file as it is generated.",
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    # --raw's cropping defaults differ from archive mode's (see --raw
+    # and --crop-top's help text) - resolved here, once, rather than
+    # in _scene_kwargs(), so an explicit --crop-top/--crop-bottom
+    # always wins regardless of --raw.
+    if args.crop_top is None:
+        args.crop_top = 0.0 if args.raw else 0.0378
+    if args.crop_bottom is None:
+        args.crop_bottom = 0.0 if args.raw else 0.0344
+
+    return args
 
 
 def _interactive() -> bool:
@@ -342,11 +400,243 @@ def _scene_kwargs(args: argparse.Namespace) -> dict:
     )
 
 
+def _run_scene_pass(
+    label: str,
+    video_path: Path,
+    destination: Path,
+    scene_kwargs: dict,
+    args: argparse.Namespace,
+    *,
+    task_override: str | None = None,
+    say=print,
+    warn=_default_warn,
+) -> tuple[bool, str | None]:
+    """Run one describe_scene() call for `label` (used only in
+    messages) and write its result to `destination`. Returns
+    (had_error, description_section) - the description section comes
+    from whatever text ends up at `destination` (freshly generated,
+    or already there and left alone) for --trip-summary to use, or
+    None if this pass produced no usable text (skipped in dry-run, or
+    errored).
+
+    `task_override`, when given, replaces scene_kwargs['task'] for
+    just this call - used for --camera both's OCR-only rear bonus
+    pass, which should ignore whatever --task the user asked for on
+    the main pass."""
+
+    need_write = _should_write(
+        destination, overwrite=args.overwrite, dry_run=args.dry_run, warn=warn,
+    )
+
+    if not need_write:
+        if destination.exists():
+            try:
+                return False, extract_description_section(
+                    destination.read_text(encoding="utf-8")
+                )
+            except OSError as exc:
+                warn(f"bv-scribe: couldn't read {destination} for the "
+                    f"trip summary ({exc})")
+        return False, None
+
+    if args.dry_run:
+        say(f"{label}: would describe scene -> {destination.name}")
+        return False, None
+
+    kwargs = dict(scene_kwargs)
+    if task_override is not None:
+        kwargs["task"] = task_override
+
+    say(label)
+    try:
+        output_text = describe_scene(video_path, **kwargs)
+    except MediaToolError as exc:
+        warn(f"bv-scribe: {label}: {exc}")
+        return True, None
+
+    destination.write_text(output_text + "\n", encoding="utf-8")
+    say(f"wrote {destination.name}")
+    return False, extract_description_section(output_text)
+
+
+def _describe_recording(
+    recording,
+    archive_path: Path,
+    scene_kwargs: dict,
+    args: argparse.Namespace,
+    *,
+    prefix: str,
+    say=print,
+    warn=_default_warn,
+) -> tuple[bool, str | None]:
+    """Describe one recording's scene/on-screen text for whichever
+    camera(s) --camera selects. Returns (had_error, description) -
+    description is the text --trip-summary should use for this
+    recording: the front pass's, or (with --camera rear, which has no
+    front pass at all) the rear pass's - or None if nothing usable
+    was produced."""
+
+    front_file = recording.file(Asset.FRONT)
+    rear_file = recording.file(Asset.REAR)
+    had_error = False
+    description: str | None = None
+
+    if args.camera in ("front", "both"):
+        # Same front-preferred-with-rear-fallback source selection
+        # select_source() itself uses - kept inline here so
+        # front_file/rear_file, already looked up above for the rear
+        # pass below, aren't looked up twice.
+        source_file = front_file or rear_file
+        if source_file is None:
+            warn(f"bv-scribe: {recording.id}: no front or rear video, skipping")
+            had_error = True
+        else:
+            err, description = _run_scene_pass(
+                f"{prefix}{recording.id}", source_file.path,
+                archive_path / f"{recording.id}.scene.txt",
+                scene_kwargs, args, say=say, warn=warn,
+            )
+            had_error |= err
+
+    if args.camera in ("rear", "both"):
+        if rear_file is None:
+            if args.camera == "rear":
+                warn(f"bv-scribe: {recording.id}: no rear video, skipping")
+                had_error = True
+            elif args.verbose:
+                say(f"{recording.id}: no rear video, skipping rear scene pass")
+        elif args.camera == "both" and front_file is None:
+            # The front pass above already used rear_file as its own
+            # fallback source - a second pass on the exact same video
+            # would just duplicate that work under a different
+            # filename.
+            if args.verbose:
+                say(f"{recording.id}: no distinct rear video (front pass "
+                    "already used it as its own fallback), skipping rear "
+                    "scene pass")
+        else:
+            err, rear_description = _run_scene_pass(
+                f"{prefix}{recording.id} (rear)", rear_file.path,
+                archive_path / f"{recording.id}.rear.scene.txt",
+                scene_kwargs, args,
+                task_override="ocr" if args.camera == "both" else None,
+                say=say, warn=warn,
+            )
+            had_error |= err
+            if args.camera == "rear":
+                description = rear_description
+
+    return had_error, description
+
+
+def _collect_raw_videos(path: Path) -> list[Path]:
+    """Return the video file(s) --raw mode should process for `path`:
+    just the file itself if it's a single video, or every recognized
+    video file directly inside it (not recursive, sorted by name) if
+    it's a directory."""
+
+    if path.is_file():
+        return [path]
+
+    return sorted(
+        p for p in path.iterdir()
+        if p.is_file() and p.suffix.lower() in RAW_VIDEO_EXTENSIONS
+    )
+
+
+def _finalize_trip_summary(
+    trip_segments: list[tuple[str, str]],
+    scene_kwargs: dict,
+    summary_path: Path,
+    args: argparse.Namespace,
+    *,
+    say=print,
+    warn=_default_warn,
+) -> bool:
+    """Run --trip-summary's extra synthesis pass, if there's enough
+    material for it. Returns True on error. Shared by archive mode
+    and --raw mode, which only differ in where trip_segments/
+    summary_path come from."""
+
+    if not args.trip_summary or args.dry_run:
+        return False
+
+    if len(trip_segments) < 2:
+        say("bv-scribe: trip-summary needs 2+ described recordings, skipping.")
+        return False
+
+    say(f"Summarizing trip across {len(trip_segments)} recording(s)...")
+    try:
+        summary_text = summarize_trip(trip_segments, **scene_kwargs)
+    except MediaToolError as exc:
+        warn(f"bv-scribe: trip-summary: {exc}")
+        return True
+
+    summary_path.write_text(summary_text + "\n", encoding="utf-8")
+    say(f"wrote {summary_path.name}")
+    return False
+
+
+def _run_raw(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
+    """Run bv-scribe in --raw mode: describe scene for a single raw
+    video file, or every video file directly inside a raw directory -
+    no archive, no LexicalTimeParser recording selection, since raw
+    footage has none of BlackVue's filename/sidecar structure to
+    select on."""
+
+    if args.timestamp or args.from_ or args.until:
+        warn("bv-scribe: --from/--until/--timestamp don't apply with "
+            "--raw (raw video files have no BlackVue recording-id "
+            "timestamp to select on)")
+        return EXIT_ARGS_ERROR
+    if args.camera != "front":
+        warn("bv-scribe: --camera doesn't apply with --raw (raw video "
+            "files have no front/rear distinction)")
+        return EXIT_ARGS_ERROR
+
+    raw_path = Path(args.path)
+    if not raw_path.exists():
+        warn(f"bv-scribe: {raw_path}: no such file or directory")
+        return EXIT_ARGS_ERROR
+
+    videos = _collect_raw_videos(raw_path)
+    if not videos:
+        say(f"bv-scribe: {raw_path} - no video files found, nothing to do.")
+        return EXIT_OK
+
+    scene_kwargs = _scene_kwargs(args)
+    had_error = False
+    trip_segments: list[tuple[str, str]] = []
+    summary_dir = raw_path if raw_path.is_dir() else raw_path.parent
+
+    for i, video in enumerate(videos, start=1):
+        prefix = f"[{i}/{len(videos)}] "
+        destination = video.with_name(f"{video.stem}.scene.txt")
+
+        err, description = _run_scene_pass(
+            f"{prefix}{video.name}", video, destination, scene_kwargs, args,
+            say=say, warn=warn,
+        )
+        had_error |= err
+        if args.trip_summary and description is not None:
+            trip_segments.append((video.stem, description))
+
+    had_error |= _finalize_trip_summary(
+        trip_segments, scene_kwargs, summary_dir / "trip_summary.txt", args,
+        say=say, warn=warn,
+    )
+
+    return EXIT_HAD_ERRORS if had_error else EXIT_OK
+
+
 def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     """Run bv-scribe for already-parsed arguments. `say`/`warn` are
     injectable (default: real stdout/stderr) so bv-web's job runner
     can capture this command's output into a job's transcript, same
     pattern as every other bv-* CLI's own `_run()`."""
+
+    if args.raw:
+        return _run_raw(args, say=say, warn=warn)
 
     archive_path = Path(args.path)
     archive = Archive(archive_path)
@@ -375,62 +665,18 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
     for i, recording in enumerate(recordings, start=1):
         prefix = f"[{i}/{len(recordings)}] "
-        destination = archive_path / f"{recording.id}.scene.txt"
-
-        need_write = _should_write(
-            destination, overwrite=args.overwrite, dry_run=args.dry_run, warn=warn,
+        err, description = _describe_recording(
+            recording, archive_path, scene_kwargs, args,
+            prefix=prefix, say=say, warn=warn,
         )
+        had_error |= err
+        if args.trip_summary and description is not None:
+            trip_segments.append((str(recording.id), description))
 
-        if not need_write:
-            if args.trip_summary and destination.exists():
-                try:
-                    trip_segments.append((
-                        str(recording.id),
-                        extract_description_section(destination.read_text(encoding="utf-8")),
-                    ))
-                except OSError as exc:
-                    warn(f"bv-scribe: {prefix}couldn't read {destination} "
-                        f"for the trip summary ({exc})")
-            continue
-
-        source_file = select_source(recording)
-        if source_file is None:
-            warn(f"bv-scribe: {recording.id}: no front or rear video, skipping")
-            had_error = True
-            continue
-
-        if args.dry_run:
-            say(f"{prefix}{recording.id}: would describe scene -> {destination.name}")
-            continue
-
-        say(f"{prefix}{recording.id}")
-        try:
-            output_text = describe_scene(source_file.path, **scene_kwargs)
-        except MediaToolError as exc:
-            warn(f"bv-scribe: {recording.id}: {exc}")
-            had_error = True
-            continue
-
-        destination.write_text(output_text + "\n", encoding="utf-8")
-        say(f"{prefix}wrote {destination.name}")
-
-        if args.trip_summary:
-            trip_segments.append((str(recording.id), extract_description_section(output_text)))
-
-    if args.trip_summary and not args.dry_run:
-        if len(trip_segments) < 2:
-            say("bv-scribe: trip-summary needs 2+ described recordings, skipping.")
-        else:
-            say(f"Summarizing trip across {len(trip_segments)} recording(s)...")
-            try:
-                summary_text = summarize_trip(trip_segments, **scene_kwargs)
-            except MediaToolError as exc:
-                warn(f"bv-scribe: trip-summary: {exc}")
-                had_error = True
-            else:
-                summary_path = archive_path / "trip_summary.txt"
-                summary_path.write_text(summary_text + "\n", encoding="utf-8")
-                say(f"wrote {summary_path.name}")
+    had_error |= _finalize_trip_summary(
+        trip_segments, scene_kwargs, archive_path / "trip_summary.txt", args,
+        say=say, warn=warn,
+    )
 
     return EXIT_HAD_ERRORS if had_error else EXIT_OK
 

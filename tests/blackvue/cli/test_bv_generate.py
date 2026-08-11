@@ -37,6 +37,7 @@ def _base_args(**overrides):
         lrc=False,
         describe_scene=False,
         scene_model=SCENE_DEFAULT_MODEL,
+        camera="front",
         overwrite=False,
         dry_run=False,
         verbose=False,
@@ -1809,3 +1810,137 @@ def test_do_describe_scene_propagates_media_tool_error(monkeypatch, tmp_path):
 
     assert had_error is True
     assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
+
+
+def test_parse_args_camera_defaults_to_front():
+    args = parse_args(["/some/path", "--describe-scene"])
+
+    assert args.camera == "front"
+
+
+def test_parse_args_camera_accepts_rear_and_both():
+    assert parse_args(
+        ["/some/path", "--describe-scene", "--camera", "rear"]
+    ).camera == "rear"
+    assert parse_args(
+        ["/some/path", "--describe-scene", "--camera", "both"]
+    ).camera == "both"
+
+
+def test_parse_args_camera_rejects_invalid_choice():
+    with pytest.raises(SystemExit):
+        parse_args(["/some/path", "--describe-scene", "--camera", "sideways"])
+
+
+def _make_front_rear_recording(recording_id: str, tmp_path: Path, *, front=True, rear=True):
+    recording = Recording(id=RecordingId(recording_id))
+    if front:
+        front_video = tmp_path / f"{recording_id}F.mp4"
+        front_video.write_bytes(b"x")
+        recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_video)
+    if rear:
+        rear_video = tmp_path / f"{recording_id}R.mp4"
+        rear_video.write_bytes(b"x")
+        recording.assets[Asset.REAR] = AssetFile(asset=Asset.REAR, path=rear_video)
+    return recording
+
+
+def test_do_describe_scene_camera_front_is_unchanged_default(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nFront view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+
+    recording = _make_front_rear_recording("20260715_134010_N", tmp_path)
+    args = _base_args(describe_scene=True, camera="front")
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert len(calls) == 1
+    assert "task" not in calls[0][1]
+    assert (tmp_path / "20260715_134010_N.scene.txt").exists()
+    assert not (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
+
+
+def test_do_describe_scene_camera_rear_only(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nRear view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+
+    recording = _make_front_rear_recording("20260715_134010_N", tmp_path)
+    args = _base_args(describe_scene=True, camera="rear")
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert len(calls) == 1
+    # Rear-only is a deliberate choice - it gets the normal full task,
+    # not an OCR-only bonus pass.
+    assert "task" not in calls[0][1]
+    assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
+    assert (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
+
+
+def test_do_describe_scene_camera_rear_errors_without_rear_video(monkeypatch, tmp_path):
+    monkeypatch.setattr(bv_generate, "describe_scene", _refuse)
+
+    recording = _make_front_rear_recording("20260715_134010_N", tmp_path, rear=False)
+    args = _base_args(describe_scene=True, camera="rear")
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is True
+    assert not (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
+
+
+def test_do_describe_scene_camera_both_writes_front_and_rear_bonus(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nSome view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+
+    recording = _make_front_rear_recording("20260715_134010_N", tmp_path)
+    args = _base_args(describe_scene=True, camera="both")
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert len(calls) == 2
+    assert "task" not in calls[0][1]
+    assert calls[1][1]["task"] == "ocr"
+    assert (tmp_path / "20260715_134010_N.scene.txt").exists()
+    assert (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
+
+
+def test_do_describe_scene_camera_both_skips_bonus_without_distinct_rear(monkeypatch, tmp_path):
+    # No front video at all - the front pass already used the rear
+    # video as its own fallback, so a second pass on the same file
+    # under a different name would just duplicate that work.
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nSome view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+
+    recording = _make_front_rear_recording("20260715_134010_N", tmp_path, front=False)
+    args = _base_args(describe_scene=True, camera="both")
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert len(calls) == 1
+    assert (tmp_path / "20260715_134010_N.scene.txt").exists()
+    assert not (tmp_path / "20260715_134010_N.rear.scene.txt").exists()

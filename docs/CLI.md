@@ -25,7 +25,7 @@ The ID identifies the camera's configuration and, through it, the local archive 
 
 ## Recording selection by timestamp
 
-`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, and `bv-scribe` all accept the same three timestamp options, narrowing which recordings a run considers:
+`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, and `bv-scribe` all accept the same three timestamp options, narrowing which recordings a run considers (`bv-scribe --raw` is the one exception - it processes raw video files with no archive/recording-id structure at all, so these don't apply there; see `docs/man/bv-scribe.md`):
 
 ```text
 --from TIMESTAMP

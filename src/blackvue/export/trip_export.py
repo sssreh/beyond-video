@@ -87,6 +87,8 @@ TEXT_ASSETS = (
     (Asset.TRANSCRIPT_DIARIZED, "transcript.diarized.txt"),
     (Asset.TRANSLATION, "translation.txt"),
     (Asset.TRANSLATION_DIARIZED, "translation.diarized.txt"),
+    (Asset.SCENE_DESCRIPTION, "scene.txt"),
+    (Asset.SCENE_DESCRIPTION_REAR, "scene.rear.txt"),
 )
 
 

@@ -46,6 +46,31 @@ def test_parse_args_trip_summary_flag():
     assert args.trip_summary is True
 
 
+def test_parse_args_camera_defaults_to_front():
+    args = parse_args(["/some/archive"])
+
+    assert args.camera == "front"
+
+
+def test_parse_args_raw_defaults_to_off_and_disables_crop():
+    args = parse_args(["/some/archive"])
+    assert args.raw is False
+    assert args.crop_top == 0.0378
+    assert args.crop_bottom == 0.0344
+
+    raw_args = parse_args(["/some/path", "--raw"])
+    assert raw_args.raw is True
+    assert raw_args.crop_top == 0.0
+    assert raw_args.crop_bottom == 0.0
+
+
+def test_parse_args_raw_explicit_crop_overrides_disabled_default():
+    args = parse_args(["/some/path", "--raw", "--crop-top", "0.05", "--crop-bottom", "0.02"])
+
+    assert args.crop_top == 0.05
+    assert args.crop_bottom == 0.02
+
+
 def _make_recording(recording_id: str, tmp_path: Path) -> Recording:
     recording = Recording(id=RecordingId(recording_id))
     video = tmp_path / f"{recording_id}F.mp4"
@@ -193,3 +218,161 @@ def test_run_trip_summary_synthesizes_across_recordings(monkeypatch, tmp_path):
     assert len(summarize_calls[0]) == 2
     summary_text = (tmp_path / "trip_summary.txt").read_text(encoding="utf-8")
     assert "trip went smoothly" in summary_text
+
+
+def _make_front_rear_recording(recording_id: str, tmp_path: Path, *, front=True, rear=True):
+    recording = Recording(id=RecordingId(recording_id))
+    if front:
+        front_video = tmp_path / f"{recording_id}F.mp4"
+        front_video.write_bytes(b"x")
+        recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_video)
+    if rear:
+        rear_video = tmp_path / f"{recording_id}R.mp4"
+        rear_video.write_bytes(b"x")
+        recording.assets[Asset.REAR] = AssetFile(asset=Asset.REAR, path=rear_video)
+    return recording
+
+
+def test_run_camera_rear_writes_rear_scene_file(monkeypatch, tmp_path):
+    recording = _make_front_rear_recording("20260715_210000_N", tmp_path)
+
+    monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([recording]))
+
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nRear view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    args = parse_args([str(tmp_path), "--camera", "rear"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    assert len(calls) == 1
+    assert calls[0][1]["task"] == "both"  # full treatment, not OCR-only
+    assert not (tmp_path / "20260715_210000_N.scene.txt").exists()
+    assert (tmp_path / "20260715_210000_N.rear.scene.txt").exists()
+
+
+def test_run_camera_both_writes_front_and_rear_bonus(monkeypatch, tmp_path):
+    recording = _make_front_rear_recording("20260715_220000_N", tmp_path)
+
+    monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([recording]))
+
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nSome view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    args = parse_args([str(tmp_path), "--camera", "both"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    assert len(calls) == 2
+    assert calls[0][1]["task"] == "both"
+    assert calls[1][1]["task"] == "ocr"
+    assert (tmp_path / "20260715_220000_N.scene.txt").exists()
+    assert (tmp_path / "20260715_220000_N.rear.scene.txt").exists()
+
+
+def test_run_camera_rear_errors_without_rear_video(monkeypatch, tmp_path):
+    recording = _make_front_rear_recording("20260715_230000_N", tmp_path, rear=False)
+
+    monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([recording]))
+    monkeypatch.setattr(bv_scribe, "describe_scene", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("should not describe - no rear video for --camera rear")
+    ))
+
+    args = parse_args([str(tmp_path), "--camera", "rear"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_HAD_ERRORS
+    assert not (tmp_path / "20260715_230000_N.rear.scene.txt").exists()
+
+
+def test_run_raw_single_file_writes_next_to_video(monkeypatch, tmp_path):
+    video = tmp_path / "clip1.mp4"
+    video.write_bytes(b"x")
+
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs))
+        return "## Description\nA road.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    args = parse_args([str(video), "--raw"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    assert len(calls) == 1
+    assert calls[0][1]["crop_top"] == 0.0
+    assert calls[0][1]["crop_bottom"] == 0.0
+    dest = tmp_path / "clip1.scene.txt"
+    assert dest.exists()
+    assert "A road." in dest.read_text(encoding="utf-8")
+
+
+def test_run_raw_directory_processes_every_video_ignores_non_video(monkeypatch, tmp_path):
+    for name in ("b.mp4", "a.mov", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append(source)
+        return "## Description\nSome scene.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    args = parse_args([str(tmp_path), "--raw"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    assert [c.name for c in calls] == ["a.mov", "b.mp4"]  # sorted, non-video skipped
+    assert (tmp_path / "a.scene.txt").exists()
+    assert (tmp_path / "b.scene.txt").exists()
+    assert not (tmp_path / "notes.scene.txt").exists()
+
+
+def test_run_raw_rejects_timestamp_selection(tmp_path):
+    args = parse_args([str(tmp_path), "--raw", "--timestamp", "20260101"])
+
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_ARGS_ERROR
+
+
+def test_run_raw_rejects_camera_flag(tmp_path):
+    args = parse_args([str(tmp_path), "--raw", "--camera", "rear"])
+
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_ARGS_ERROR
+
+
+def test_run_raw_trip_summary_writes_to_directory(monkeypatch, tmp_path):
+    for name in ("a.mp4", "b.mp4"):
+        (tmp_path / name).write_bytes(b"x")
+
+    def fake_describe_scene(source, **kwargs):
+        return f"## Description\nScene for {source.stem}.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+    monkeypatch.setattr(
+        bv_scribe, "summarize_trip",
+        lambda segments, **kwargs: "Raw trip narrative.",
+    )
+
+    args = parse_args([str(tmp_path), "--raw", "--trip-summary"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    summary = (tmp_path / "trip_summary.txt").read_text(encoding="utf-8")
+    assert "Raw trip narrative." in summary

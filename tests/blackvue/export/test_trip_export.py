@@ -30,6 +30,8 @@ from blackvue.export.trip_export import _union_bbox
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
+from blackvue.export.trip_export import TEXT_ASSETS
+from blackvue.export.text import merge_text_assets
 from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeechSegment
@@ -421,6 +423,58 @@ def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
     assert "End location: 1 Fake Street, Fake City" in trip_info_text
 
     assert result.warnings == ()
+
+
+def test_text_assets_includes_scene_description_entries():
+    # Christer: "this will also be a flag for bv-export i guess" ->
+    # "dont touch bv-export except for merge of scene" - no new flag,
+    # just these two entries reusing the existing generic
+    # TEXT_ASSETS/merge_text_assets() mechanism already used for
+    # transcript/translation merging.
+    assert (Asset.SCENE_DESCRIPTION, "scene.txt") in TEXT_ASSETS
+    assert (Asset.SCENE_DESCRIPTION_REAR, "scene.rear.txt") in TEXT_ASSETS
+
+
+def test_merge_text_assets_merges_scene_descriptions_across_a_trip(tmp_path):
+    scene_a = tmp_path / "a.scene.txt"
+    scene_a.write_text("Front: quiet residential street.", encoding="utf-8")
+    rear_a = tmp_path / "a.rear.scene.txt"
+    rear_a.write_text("Rear: plate ABC123.", encoding="utf-8")
+    scene_b = tmp_path / "b.scene.txt"
+    scene_b.write_text("Front: entering a roundabout.", encoding="utf-8")
+
+    recording_a = Recording(
+        id=RecordingId("20260715_100000_N"),
+        assets={
+            Asset.SCENE_DESCRIPTION: AssetFile(Asset.SCENE_DESCRIPTION, scene_a),
+            Asset.SCENE_DESCRIPTION_REAR: AssetFile(Asset.SCENE_DESCRIPTION_REAR, rear_a),
+        },
+    )
+    recording_b = Recording(
+        id=RecordingId("20260715_100100_N"),
+        assets={
+            Asset.SCENE_DESCRIPTION: AssetFile(Asset.SCENE_DESCRIPTION, scene_b),
+        },
+    )
+    trip = (recording_a, recording_b)
+
+    merged_front = merge_text_assets(trip, Asset.SCENE_DESCRIPTION)
+    assert "quiet residential street" in merged_front
+    assert "entering a roundabout" in merged_front
+
+    merged_rear = merge_text_assets(trip, Asset.SCENE_DESCRIPTION_REAR)
+    assert merged_rear is not None
+    assert "plate ABC123" in merged_rear
+    # Second recording has no rear scene description - only the first
+    # recording's block should appear.
+    assert "entering a roundabout" not in merged_rear
+
+
+def test_merge_text_assets_scene_returns_none_when_no_recording_has_it():
+    recording = Recording(id=RecordingId("20260715_100000_N"))
+
+    assert merge_text_assets((recording,), Asset.SCENE_DESCRIPTION) is None
+    assert merge_text_assets((recording,), Asset.SCENE_DESCRIPTION_REAR) is None
 
 
 def test_export_trip_info_start_matches_content_when_leading_parking_excluded(
