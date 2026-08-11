@@ -111,6 +111,15 @@ STATIC_DIR = Path(__file__).parent / "static"
 # of bv-search's own indented match/status lines.
 RECORDING_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z]$")
 
+# Quick-tail view (task #687 in WORKING_CONTEXT.md): job_detail()'s
+# ?tail=1 option renders only the most recent TAIL_LINE_COUNT output
+# lines of a still-running job, instead of the full (potentially
+# thousands-of-lines) history that grows every 2s auto-refresh tick.
+# 200 is generous enough to show real context around whatever a job
+# just printed, without re-rendering an 800-recording batch's entire
+# output on every single refresh.
+TAIL_LINE_COUNT = 200
+
 
 def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     """Build the bv-web FastAPI app.
@@ -1334,6 +1343,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # archive browser's filters already use - and resume by
         # dropping it, no different from an ordinary manual reload.
         paused = request.query_params.get("paused") == "1"
+        # Quick-tail view (task #687): a long-running job (a 902-
+        # recording bv-scribe batch is the real example that prompted
+        # this) accumulates thousands of output lines, and the auto-
+        # refresh above is a full page reload - every 2s tick re-sends
+        # and re-renders the *entire* output list, getting heavier the
+        # longer the job runs. `?tail=1` renders only the most recent
+        # TAIL_LINE_COUNT lines instead of the full history, the
+        # smaller-endpoint-on-the-existing-page option from the design
+        # note (WORKING_CONTEXT.md) rather than a separate quick-peek
+        # surface - reuses this same route/template, no new page. A
+        # finished job's full output is comparatively cheap to keep
+        # around/re-render (no more refresh ticks coming), so tailing
+        # only actually matters - and is only offered - while running.
+        tail_requested = request.query_params.get("tail") == "1"
+        tail_active = tail_requested and not job_status.is_finished
+        displayed_output = output
+        tail_truncated_count = 0
+        if tail_active and len(output) > TAIL_LINE_COUNT:
+            tail_truncated_count = len(output) - TAIL_LINE_COUNT
+            displayed_output = output[-TAIL_LINE_COUNT:]
         # bv-search is the only job type whose output prints recording
         # ids (see RECORDING_ID_RE's own comment) - camera_id stays
         # None for every other job type, so job_detail.html only ever
@@ -1359,10 +1388,20 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 # {% if %} checks below actually need.
                 "status": job_status.value,
                 "is_finished": job_status.is_finished,
-                "output": output,
+                "output": displayed_output,
                 "prompt": prompt,
                 "paused": paused,
                 "camera_id": camera_id,
+                "tail_active": tail_active,
+                "tail_truncated_count": tail_truncated_count,
+                "tail_line_count": TAIL_LINE_COUNT,
+                # Links built here rather than string-concatenated in
+                # the template, so toggling one of paused/tail never
+                # silently drops the other's own query param.
+                "tail_on_url": f"/jobs/{job.id}?tail=1" + ("&paused=1" if paused else ""),
+                "tail_off_url": f"/jobs/{job.id}" + ("?paused=1" if paused else ""),
+                "pause_url": f"/jobs/{job.id}?paused=1" + ("&tail=1" if tail_requested else ""),
+                "resume_url": f"/jobs/{job.id}" + ("?tail=1" if tail_requested else ""),
             },
         )
         # Christer noticed that navigating away from a running job (e.g.
