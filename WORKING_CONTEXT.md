@@ -8735,3 +8735,5 @@ Two related but distinct asks:
 Natural pairing: a history file could just index into per-job log files (job id/command/timestamp -> log file path), rather than being two entirely separate mechanisms.
 
 **Not implemented** - recorded per Christer's "More notes:" framing, not a build request yet.
+
+Christer's own suggestion for where this should live: a folder parallel to `beyond-video` itself (a sibling directory, not inside the repo/package - e.g. `../log` next to `../beyond-video`), named `log` or similar. Would need a real default-path story matching how `default_config_dir()`/archive paths already work across his split NAS(Docker)+PC(native) setup - a sibling-of-the-repo path makes sense for a native install but needs an explicit Docker volume mount (same pattern as `/data/archive`, `/data/trips`) to mean anything inside a container, plus probably an env-var override for the same reasons `BEYOND_VIDEO_USERS_FILE`/`default_config_dir()` got one.
