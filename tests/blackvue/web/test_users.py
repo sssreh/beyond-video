@@ -29,25 +29,48 @@ def test_default_users_path_uses_env_var_override_when_set(monkeypatch):
     assert default_users_path() == Path("/data/config/web-users.cfg")
 
 
-def test_default_users_path_falls_back_to_home_when_unset(monkeypatch):
+def test_default_users_path_falls_back_to_home_when_unset(monkeypatch, tmp_path):
     monkeypatch.delenv("BEYOND_VIDEO_USERS_FILE", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     assert (
         default_users_path()
-        == Path.home() / ".config" / "beyond-video" / "web-users.cfg"
+        == tmp_path / "beyond-video-data" / ".config" / "web-users.cfg"
     )
 
 
-def test_default_users_path_falls_back_to_home_when_empty(monkeypatch):
+def test_default_users_path_falls_back_to_home_when_empty(monkeypatch, tmp_path):
     # An empty string is falsy - treated the same as unset, not as "use the
     # current directory" (Path("")'s own surprising meaning) - same
     # convention default_config_dir() uses.
     monkeypatch.setenv("BEYOND_VIDEO_USERS_FILE", "")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     assert (
         default_users_path()
-        == Path.home() / ".config" / "beyond-video" / "web-users.cfg"
+        == tmp_path / "beyond-video-data" / ".config" / "web-users.cfg"
     )
+
+
+def test_default_users_path_shares_default_config_dir_migration(monkeypatch, tmp_path):
+    # default_users_path() deliberately reuses
+    # camera_config.default_config_dir() for its fallback directory (see
+    # its own docstring) rather than re-deriving the path by hand, so the
+    # one-time ~/.config/beyond-video -> ~/beyond-video-data/.config
+    # migration covers web-users.cfg too, without a second copy of the
+    # move logic.
+    monkeypatch.delenv("BEYOND_VIDEO_USERS_FILE", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    old_dir = tmp_path / ".config" / "beyond-video"
+    old_dir.mkdir(parents=True)
+    (old_dir / "web-users.cfg").write_text("dummy users file", encoding="utf-8")
+
+    result = default_users_path()
+
+    new_dir = tmp_path / "beyond-video-data" / ".config"
+    assert result == new_dir / "web-users.cfg"
+    assert not old_dir.exists()
+    assert result.read_text(encoding="utf-8") == "dummy users file"
 
 
 def test_hash_password_round_trip():

@@ -36,18 +36,85 @@ def test_default_config_dir_uses_env_var_override_when_set(monkeypatch):
     assert default_config_dir() == Path("/data/camera-config")
 
 
-def test_default_config_dir_falls_back_to_home_when_unset(monkeypatch):
+def test_default_config_dir_falls_back_to_home_when_unset(monkeypatch, tmp_path):
     monkeypatch.delenv("BEYOND_VIDEO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    assert default_config_dir() == Path.home() / ".config" / "beyond-video"
+    assert default_config_dir() == tmp_path / "beyond-video-data" / ".config"
 
 
-def test_default_config_dir_falls_back_to_home_when_empty(monkeypatch):
+def test_default_config_dir_falls_back_to_home_when_empty(monkeypatch, tmp_path):
     # An empty string is falsy - treated the same as unset, not as "use the
     # current directory" (Path("")'s own surprising meaning).
     monkeypatch.setenv("BEYOND_VIDEO_CONFIG_DIR", "")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    assert default_config_dir() == Path.home() / ".config" / "beyond-video"
+    assert default_config_dir() == tmp_path / "beyond-video-data" / ".config"
+
+
+# ---------------------------------------------------------------------------
+# default_config_dir()'s one-time auto-migration from the old default
+# (~/.config/beyond-video) to the new one (~/beyond-video-data/.config) -
+# Christer's own request, since he already has real camera configs saved at
+# the old location and didn't want them to just silently "disappear" the
+# first time he ran a command after this default changed. See the function's
+# own docstring and WORKING_CONTEXT.md's beyond-video-data/ discussion.
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_dir_fresh_install_uses_new_location(monkeypatch, tmp_path):
+    monkeypatch.delenv("BEYOND_VIDEO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    result = default_config_dir()
+
+    assert result == tmp_path / "beyond-video-data" / ".config"
+    # Never auto-created just by asking for the path - matches the old
+    # function's behavior (callers/save_camera_config() create it as
+    # needed), and nothing to migrate in a fresh install anyway.
+    assert not result.exists()
+
+
+def test_default_config_dir_migrates_existing_old_location(monkeypatch, tmp_path):
+    monkeypatch.delenv("BEYOND_VIDEO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    old_dir = tmp_path / ".config" / "beyond-video"
+    old_dir.mkdir(parents=True)
+    (old_dir / "Kirby.cfg").write_text("dummy config", encoding="utf-8")
+
+    result = default_config_dir()
+
+    new_dir = tmp_path / "beyond-video-data" / ".config"
+    assert result == new_dir
+    assert not old_dir.exists()
+    assert (new_dir / "Kirby.cfg").read_text(encoding="utf-8") == "dummy config"
+
+
+def test_default_config_dir_prefers_new_location_when_both_exist(monkeypatch, tmp_path):
+    # Already migrated (or a user created both by hand) - leave the old
+    # folder alone rather than touching/removing it a second time.
+    monkeypatch.delenv("BEYOND_VIDEO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    old_dir = tmp_path / ".config" / "beyond-video"
+    old_dir.mkdir(parents=True)
+    new_dir = tmp_path / "beyond-video-data" / ".config"
+    new_dir.mkdir(parents=True)
+
+    result = default_config_dir()
+
+    assert result == new_dir
+    assert old_dir.exists()
+
+
+def test_default_config_dir_migration_prints_a_notice(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("BEYOND_VIDEO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    old_dir = tmp_path / ".config" / "beyond-video"
+    old_dir.mkdir(parents=True)
+
+    default_config_dir()
+
+    assert "moved config folder" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

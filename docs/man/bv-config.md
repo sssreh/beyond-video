@@ -37,7 +37,7 @@ The wizard asks, in order:
 
 | Option | Description |
 |---|---|
-| `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory (e.g. `~/.config/beyond-video` on Linux). |
+| `--config-dir DIR` | Directory camera configs live in. Default: `~/beyond-video-data/.config` (if you're upgrading from an older version, the old `~/.config/beyond-video` folder is moved there automatically the first time any `bv-*` command runs). |
 | `-h`, `--help` | Show help and exit. |
 
 ## EXIT STATUS

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -48,15 +49,67 @@ class CameraConfigError(Exception):
     """Raised when a camera configuration cannot be loaded or is invalid."""
 
 
+# The original default, superseded below by ~/beyond-video-data/.config -
+# kept as its own name so the one-time migration logic (and its tests) can
+# refer to "the old place" without re-deriving it inline. Christer's own
+# framing: ".config" read oddly holding non-config app state once logs/
+# history joined it, and a dotfolder isn't somewhere he'd browse to by
+# default - see WORKING_CONTEXT.md's beyond-video-data/ discussion.
+def _legacy_config_dir() -> Path:
+    return Path.home() / ".config" / "beyond-video"
+
+
+def _new_config_dir() -> Path:
+    return Path.home() / "beyond-video-data" / ".config"
+
+
 def default_config_dir() -> Path:
-    """Return the default directory camera configs live in - the
-    BEYOND_VIDEO_CONFIG_DIR environment variable if set (see its own
-    comment above), otherwise ~/.config/beyond-video."""
+    """Return the default directory camera configs (and bv-web's
+    web-users.cfg, see web/users.py's default_users_path()) live in -
+    the BEYOND_VIDEO_CONFIG_DIR environment variable if set (see its
+    own comment above), otherwise ~/beyond-video-data/.config.
+
+    One-time auto-migration: this used to default to
+    ~/.config/beyond-video. If the new location doesn't exist yet but
+    the old one does, the old folder is renamed (not copied) into the
+    new location - same home-directory tree, so a plain Path.rename()
+    needs no cross-device copy - and a one-line notice is printed so
+    it's not a silent surprise the first time a bv-* command runs
+    after upgrading. After that one move, the new location exists, so
+    every later call just returns it directly - no ongoing dual-path
+    checking. If the rename itself fails (permissions, concurrent
+    access, etc.) this falls back to returning the old location rather
+    than losing every camera config - not fatal, and the same check
+    just runs again on the next invocation."""
 
     override = os.environ.get(_CONFIG_DIR_ENV_VAR)
     if override:
         return Path(override)
-    return Path.home() / ".config" / "beyond-video"
+
+    new_dir = _new_config_dir()
+    if new_dir.exists():
+        return new_dir
+
+    old_dir = _legacy_config_dir()
+    if old_dir.exists():
+        try:
+            new_dir.parent.mkdir(parents=True, exist_ok=True)
+            old_dir.rename(new_dir)
+        except OSError as exc:
+            print(
+                f"beyond-video: couldn't move config folder from {old_dir} "
+                f"to {new_dir} ({exc}) - using the old location for now.",
+                file=sys.stderr,
+            )
+            return old_dir
+        print(
+            f"beyond-video: moved config folder from {old_dir} to "
+            f"{new_dir} (new default location).",
+            file=sys.stderr,
+        )
+        return new_dir
+
+    return new_dir
 
 
 def config_path(config_dir: Path, id_: str) -> Path:
