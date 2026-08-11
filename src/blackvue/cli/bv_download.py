@@ -25,6 +25,8 @@ from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import load_camera_config
+from ..core.joblog import wrap_say
+from ..core.joblog import wrap_warn
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
 from ..core.endpoint import Endpoint
@@ -761,7 +763,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run bv-download."""
 
     args = parse_args(argv)
-    return run_cli("bv-download", lambda: _run(args))
+    # See bv_scribe.py's own main() for why - wrap_say()/wrap_warn()
+    # (core/joblog.py) mirror every printed line into the persistent
+    # output log alongside the real terminal output.
+    say = wrap_say("bv-download")
+    warn = wrap_warn("bv-download", _default_warn)
+    return run_cli("bv-download", lambda: _run(args, say=say, warn=warn))
 
 
 if __name__ == "__main__":

@@ -58,6 +58,8 @@ from datetime import timezone
 from enum import Enum
 from pathlib import Path
 
+from ..core.joblog import log_line
+
 
 class BvExportArgError(Exception):
     """Raised by JobRunner.start_bv_export() when bv-export's own
@@ -182,6 +184,17 @@ class Job:
     def append_output(self, line: str) -> None:
         with self._lock:
             self.output.append(line)
+        # Mirror into the persistent rotating logfile too (see
+        # core/joblog.py) - the bv-web half of "I would also want a
+        # logfile of all the output" (WORKING_CONTEXT.md); direct-CLI
+        # runs get the same coverage via wrap_say()/wrap_warn() in each
+        # bv-*.py's own main(). `self.command` always starts with
+        # "bv-<name> ..." (every start_bv_*() method sets it that way -
+        # see each one's own `command=f"bv-... {...}"` above), so
+        # splitting on the first space recovers the same `prog` string
+        # wrap_say()/wrap_warn() use, without needing a dedicated field
+        # threaded through all eight start_bv_*() methods just for this.
+        log_line(self.command.split(maxsplit=1)[0], line)
 
     def set_status(
         self, status: JobStatus, *, prompt: str | None = None

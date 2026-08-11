@@ -38,6 +38,18 @@ services:
       # makes adduser and serve agree on the same file by default,
       # with no flag required on either subcommand.
       - BEYOND_VIDEO_USERS_FILE=/data/config/web-users.cfg
+      # See core/joblog.py's own comment: without this, the persistent
+      # output logfile (both bv-web's own job runner and any bv-*
+      # command run inside this container) lands in the container's
+      # ephemeral $HOME/beyond-video-data/logs instead of the mounted
+      # ./data/logs below - fine for bv-web's own long-running
+      # container between restarts, but lost outright the moment
+      # bv-cli's own `docker-compose run --rm` containers exit (see
+      # that service's own comment on this same variable below). Same
+      # host folder both services point at, so one combined transcript
+      # covers every invocation path, matching how BEYOND_VIDEO_CONFIG_DIR
+      # already unifies camera configs across bv-web/bv-cli/Christer's PC.
+      - BEYOND_VIDEO_LOGS_DIR=/data/logs
     volumes:
       # The trip archive bv-export writes into (--target). Read-write:
       # bv-web's own job runner can trigger bv-export directly (its
@@ -75,6 +87,12 @@ services:
       # create/edit a camera's config through its own UI, not just read
       # one bv-cli already wrote.
       - ./data/camera-config:/data/camera-config
+      # Persistent output log (core/joblog.py) - the SAME host folder
+      # bv-cli's own ./data/logs mount below points at, so a job
+      # triggered from bv-web's UI and a command typed straight into
+      # `docker-compose run bv-cli ...` both append to the same
+      # rotating monthly transcript.
+      - ./data/logs:/data/logs
 
   # The full bv-* pipeline (bv-config, bv-download, bv-generate,
   # bv-lang, bv-export) - see docs/DEPLOY.md's "Feeding it real trips"
@@ -114,3 +132,14 @@ services:
       # land at /data/config inside their own separate containers,
       # which is fine since containers don't share a filesystem.
       - ./data/camera-config:/data/config
+      # Persistent output log (core/joblog.py) - the SAME host folder
+      # bv-web's own ./data/logs mount above points at. Without this
+      # (and the BEYOND_VIDEO_LOGS_DIR env var below), every `bv-*`
+      # command run through `docker-compose run --rm bv-cli ...` would
+      # write its wrap_say()/wrap_warn() lines into that one-off
+      # container's own ephemeral $HOME - gone the instant `--rm`
+      # removes it, same class of bug BEYOND_VIDEO_CONFIG_DIR already
+      # fixed for camera configs above.
+      - ./data/logs:/data/logs
+    environment:
+      - BEYOND_VIDEO_LOGS_DIR=/data/logs

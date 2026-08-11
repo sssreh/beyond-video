@@ -9,6 +9,7 @@ from blackvue.cli.display_group import DisplayGroup
 from blackvue.cli.errors import run_cli
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import resolve_archive_path
+from blackvue.core.joblog import wrap_say
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
@@ -466,7 +467,15 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    return run_cli("bv-ls", lambda: _run(args))
+    # wrap_say()/wrap_warn() (see core/joblog.py) mirror every line
+    # into the persistent output log alongside the real terminal
+    # output - the direct-CLI half of "I would also want a logfile of
+    # all the output" (see WORKING_CONTEXT.md); bv-web's job runner
+    # gets the same coverage via Job.append_output() itself instead of
+    # this per-command wiring, since every job already funnels through
+    # that one function.
+    say = wrap_say("bv-ls")
+    return run_cli("bv-ls", lambda: _run(args, say=say))
 
 
 if __name__ == "__main__":

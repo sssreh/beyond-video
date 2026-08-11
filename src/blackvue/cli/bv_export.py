@@ -24,6 +24,8 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import resolve_archive_path
+from blackvue.core.joblog import wrap_say
+from blackvue.core.joblog import wrap_warn
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.map_video import DEFAULT_INTRO_SECONDS
@@ -1723,7 +1725,15 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = argv if argv is not None else sys.argv[1:]
     command_line = "bv-export " + shlex.join(raw_argv)
 
-    return run_cli("bv-export", lambda: _run(args, command_line=command_line))
+    # See bv_scribe.py's own main() for why - wrap_say()/wrap_warn()
+    # (core/joblog.py) mirror every printed line into the persistent
+    # output log alongside the real terminal output.
+    say = wrap_say("bv-export")
+    warn = wrap_warn("bv-export", _default_warn)
+    return run_cli(
+        "bv-export",
+        lambda: _run(args, command_line=command_line, say=say, warn=warn),
+    )
 
 
 def _run(

@@ -148,6 +148,34 @@ def test_job_append_output_accumulates_in_order():
     assert output == ["first line", "second line"]
 
 
+def test_job_append_output_also_persists_to_the_joblog(tmp_path, monkeypatch):
+    # The bv-web half of core/joblog.py's persistent output logfile (see
+    # its own module docstring) - append_output() mirrors every line into
+    # the same rotating logfile direct-CLI runs write to via
+    # wrap_say()/wrap_warn(), tagged with the job's own prog name (the
+    # first word of Job.command - see append_output()'s own comment for
+    # why that's enough without a dedicated field). tests/conftest.py's
+    # autouse fixture already isolates BEYOND_VIDEO_LOGS_DIR globally;
+    # this test just points it at its own tmp_path so it can read back
+    # what got written.
+    from blackvue.core import joblog
+
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    joblog._logger = None
+
+    job = _new_job(command="bv-scribe Kirby")
+    job.append_output("Starting scene description job")
+    job.append_output("(exit code 0)")
+
+    from datetime import datetime
+
+    month_key = datetime.now().strftime("%Y-%m")
+    log_file = tmp_path / f"beyond-video-{month_key}.log"
+    text = log_file.read_text()
+    assert "[bv-scribe] Starting scene description job" in text
+    assert "[bv-scribe] (exit code 0)" in text
+
+
 def test_job_set_status_updates_status_and_prompt_together():
     job = _new_job()
 

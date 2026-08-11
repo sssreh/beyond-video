@@ -8,6 +8,7 @@ from blackvue.core.camera_config import CameraConfigError
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import default_archive_dir
 from blackvue.core.camera_config import default_config_dir
+from blackvue.core.camera_config import default_logs_dir
 from blackvue.core.camera_config import default_target_dir
 from blackvue.core.camera_config import list_camera_ids
 from blackvue.core.camera_config import load_camera_config
@@ -50,6 +51,33 @@ def test_default_config_dir_falls_back_to_home_when_empty(monkeypatch, tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     assert default_config_dir() == tmp_path / "beyond-video-data" / ".config"
+
+
+# ---------------------------------------------------------------------------
+# default_logs_dir() - a sibling of default_config_dir()'s own
+# ~/beyond-video-data/.config, no migration needed since persistent logging
+# is a brand-new feature (core/joblog.py), not a relocated one.
+# ---------------------------------------------------------------------------
+
+
+def test_default_logs_dir_uses_env_var_override_when_set(monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", "/data/logs")
+
+    assert default_logs_dir() == Path("/data/logs")
+
+
+def test_default_logs_dir_falls_back_to_home_when_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("BEYOND_VIDEO_LOGS_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert default_logs_dir() == tmp_path / "beyond-video-data" / "logs"
+
+
+def test_default_logs_dir_falls_back_to_home_when_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", "")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert default_logs_dir() == tmp_path / "beyond-video-data" / "logs"
 
 
 # ---------------------------------------------------------------------------

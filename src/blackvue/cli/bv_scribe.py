@@ -26,6 +26,8 @@ from ..archive import Asset
 from .errors import run_cli
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
+from ..core.joblog import wrap_say
+from ..core.joblog import wrap_warn
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import describe_scene
@@ -757,7 +759,14 @@ def main(argv: list[str] | None = None) -> int:
     """Run bv-scribe."""
 
     args = parse_args(argv)
-    return run_cli("bv-scribe", lambda: _run(args))
+    # wrap_say()/wrap_warn() (core/joblog.py) mirror every printed line
+    # into the persistent, monthly-rotating output log alongside the
+    # real terminal output - see WORKING_CONTEXT.md's "Scope - settled:
+    # direct CLI calls too" note. bv-web's own job runner gets the same
+    # coverage for free via Job.append_output() itself.
+    say = wrap_say("bv-scribe")
+    warn = wrap_warn("bv-scribe", _default_warn)
+    return run_cli("bv-scribe", lambda: _run(args, say=say, warn=warn))
 
 
 if __name__ == "__main__":

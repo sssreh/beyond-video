@@ -21,6 +21,8 @@ from ..core.camera_config import load_camera_config
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
 from ..core.endpoint import Endpoint
+from ..core.joblog import wrap_say
+from ..core.joblog import wrap_warn
 from ..domain.live_gps_fix import LiveGpsFix
 from ..export.geocoding import reverse_geocode
 from ..generate.media import MediaToolError
@@ -203,7 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run bv-gps."""
 
     args = parse_args(argv)
-    return run_cli("bv-gps", lambda: _run(args))
+    # See bv_scribe.py's own main() for why - wrap_say()/wrap_warn()
+    # (core/joblog.py) mirror every printed line into the persistent
+    # output log alongside the real terminal output.
+    say = wrap_say("bv-gps")
+    warn = wrap_warn("bv-gps", _default_warn)
+    return run_cli("bv-gps", lambda: _run(args, say=say, warn=warn))
 
 
 if __name__ == "__main__":

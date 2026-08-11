@@ -23,6 +23,8 @@ from ..core.camera_config import load_camera_config
 from ..core.camera_config import save_camera_config
 from ..core.camera_config import validate_id
 from ..core.camera_config import validate_name
+from ..core.joblog import wrap_say
+from ..core.joblog import wrap_warn
 from ..core.endpoint import Endpoint
 
 EXIT_OK = 0
@@ -241,7 +243,14 @@ def main(argv: list[str] | None = None) -> int:
     """Run bv-config."""
 
     args = parse_args(argv)
-    return run_cli("bv-config", lambda: _run(args))
+    # See bv_scribe.py's own main() for why - wrap_say()/wrap_warn()
+    # (core/joblog.py) mirror every printed line into the persistent
+    # output log alongside the real terminal output. `ask` (the
+    # wizard's interactive input() prompts) is deliberately left
+    # untouched - only what gets printed is logged, not raw keystrokes.
+    say = wrap_say("bv-config")
+    warn = wrap_warn("bv-config", _default_warn)
+    return run_cli("bv-config", lambda: _run(args, say=say, warn=warn))
 
 
 if __name__ == "__main__":

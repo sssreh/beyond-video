@@ -20,6 +20,8 @@ from ..archive.recording import Recording
 from .errors import run_cli
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
+from ..core.joblog import wrap_say
+from ..core.joblog import wrap_warn
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import SpeechSegment
@@ -1417,7 +1419,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run bv-generate."""
 
     args = parse_args(argv)
-    return run_cli("bv-generate", lambda: _run(args))
+    # See bv_scribe.py's own main() for why - wrap_say()/wrap_warn()
+    # (core/joblog.py) mirror every printed line into the persistent
+    # output log alongside the real terminal output.
+    say = wrap_say("bv-generate")
+    warn = wrap_warn("bv-generate", _default_warn)
+    return run_cli("bv-generate", lambda: _run(args, say=say, warn=warn))
 
 
 if __name__ == "__main__":

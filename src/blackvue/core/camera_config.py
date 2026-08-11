@@ -44,6 +44,12 @@ MAX_NAME_LENGTH = 128
 # container was never mounted to anything.
 _CONFIG_DIR_ENV_VAR = "BEYOND_VIDEO_CONFIG_DIR"
 
+# Same override pattern as _CONFIG_DIR_ENV_VAR above, for
+# default_logs_dir() below - a Docker deployment needs this pointed at
+# a mounted host folder too, the same reasoning as BEYOND_VIDEO_CONFIG_DIR/
+# BEYOND_VIDEO_USERS_FILE.
+_LOGS_DIR_ENV_VAR = "BEYOND_VIDEO_LOGS_DIR"
+
 
 class CameraConfigError(Exception):
     """Raised when a camera configuration cannot be loaded or is invalid."""
@@ -110,6 +116,22 @@ def default_config_dir() -> Path:
         return new_dir
 
     return new_dir
+
+
+def default_logs_dir() -> Path:
+    """Return the default directory persistent command-history/output
+    logs live in - the BEYOND_VIDEO_LOGS_DIR environment variable if
+    set, otherwise ~/beyond-video-data/logs (a sibling of
+    default_config_dir()'s own ~/beyond-video-data/.config, same
+    parent folder - see WORKING_CONTEXT.md's beyond-video-data/
+    discussion). No migration needed here, unlike default_config_dir():
+    there was never an old default for this - persistent logging is a
+    new feature, not a relocated one."""
+
+    override = os.environ.get(_LOGS_DIR_ENV_VAR)
+    if override:
+        return Path(override)
+    return Path.home() / "beyond-video-data" / "logs"
 
 
 def config_path(config_dir: Path, id_: str) -> Path:
