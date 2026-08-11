@@ -115,10 +115,14 @@ RECORDING_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z]$")
 # ?tail=1 option renders only the most recent TAIL_LINE_COUNT output
 # lines of a still-running job, instead of the full (potentially
 # thousands-of-lines) history that grows every 2s auto-refresh tick.
-# 200 is generous enough to show real context around whatever a job
-# just printed, without re-rendering an 800-recording batch's entire
-# output on every single refresh.
-TAIL_LINE_COUNT = 200
+# Originally 200, dropped to 30 after Christer measured his own
+# job-output panel (pre.job-output's max-height: 60vh) actually shows
+# about 24 lines before it scrolls - 200 lines buffered behind a
+# ~24-line window was mostly wasted re-render/re-send cost on every
+# 2s refresh, not extra visible context. 30 keeps a small amount of
+# scroll-back slack above that visible window without reintroducing
+# the growing-payload problem this feature exists to solve.
+TAIL_LINE_COUNT = 30
 
 
 def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
