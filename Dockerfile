@@ -5,13 +5,15 @@
 # theory that bv-download/bv-generate/bv-export would only ever run as
 # separate CLI commands elsewhere, never inside this container. That
 # stopped being true once bv-web's own job runner grew triggers for
-# those three commands (see WORKING_CONTEXT.md) - a job started from
-# the web UI runs *in this container*, so it needs the same toolchain
-# bv-cli's own image has: ffmpeg (for real audio extraction/duration,
-# not just the pure-Python MP4-box fallback) plus the speech/translate
-# extras (faster-whisper/pyannote.audio/argostranslate, and torch
-# transitively - same size/build-time trade-off Dockerfile.cli already
-# accepts). This image is now effectively bv-cli's image plus the web
+# those three commands, then bv-scribe too (see WORKING_CONTEXT.md) - a
+# job started from the web UI runs *in this container*, so it needs
+# the same toolchain bv-cli's own image has: ffmpeg (for real audio
+# extraction/duration, not just the pure-Python MP4-box fallback) plus
+# the speech/translate extras (faster-whisper/pyannote.audio/
+# argostranslate, and torch transitively) and the scene extra
+# (transformers/accelerate/qwen-vl-utils, for bv-scribe's scene
+# description) - same size/build-time trade-off Dockerfile.cli already
+# accepts. This image is now effectively bv-cli's image plus the web
 # server, not a separate lightweight thing.
 FROM python:3.13-slim
 
@@ -28,7 +30,12 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir ".[web,speech,translate]"
+# scene (transformers/accelerate/qwen-vl-utils) is needed too - bv-web's
+# job runner also triggers bv-scribe (--describe-scene) in this same
+# container, same reasoning as speech/translate above. Without it,
+# bv-scribe fails at runtime with "No module named 'qwen_vl_utils'"
+# even though it's listed as a job the web UI can start.
+RUN pip install --no-cache-dir ".[web,speech,translate,scene]"
 
 # Where the volumes docker-compose.yml mounts land inside the
 # container: the raw camera archive and trip archive (both read-write

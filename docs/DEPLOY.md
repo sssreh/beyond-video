@@ -80,7 +80,7 @@ sudo docker-compose build bv-web
 sudo docker-compose up -d bv-web
 ```
 
-The `build` step here is slow the first time - `bv-web`'s image now carries the same faster-whisper/pyannote.audio/argostranslate (and torch, transitively) dependencies `bv-cli`'s image does, plus `ffmpeg`, since `bv-web`'s own job runner can trigger `bv-generate`/`bv-export`/`bv-download` directly (see step 7). Expect several minutes and a multi-GB image; that's normal, not stuck.
+The `build` step here is slow the first time - `bv-web`'s image now carries the same faster-whisper/pyannote.audio/argostranslate (and torch, transitively) dependencies `bv-cli`'s image does, plus `ffmpeg` and the transformers/qwen-vl-utils scene-description dependencies `bv-scribe` needs, since `bv-web`'s own job runner can trigger `bv-generate`/`bv-export`/`bv-download`/`bv-scribe` directly (see step 7). Expect several minutes and a multi-GB image; that's normal, not stuck.
 
 Note the hyphen: Synology's Container Manager only puts the old standalone `docker-compose` 1.x CLI on the SSH `$PATH`, not the newer `docker compose` (space) v2 plugin - `docker compose ...` will fail with a confusing `unknown shorthand flag` error rather than a clear "not found." Check which one you have with `docker-compose --version` (v1, hyphenated) vs `docker compose version` (v2 plugin) if unsure; every command in this doc uses the hyphenated form to match Christer's actual NAS.
 
@@ -110,7 +110,7 @@ If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Fir
 
 - **On the NAS**, via the `bv-cli` service (below) - works standalone, good for scheduled/unattended exports that shouldn't depend on the PC being on.
 - **On Christer's PC**, natively, reaching the NAS's `data/archive`/`data/trips` over an SMB-mapped network drive - faster (GPU acceleration, already proven to work there - see `WORKING_CONTEXT.md`'s "GPU auto-detect + CPU fallback" work), good for anything time-sensitive or GPU-hungry (`--transcribe`/`--diarize` in particular).
-- **From a browser**, via `bv-web`'s own "Generate assets"/"Export trips" job pages - no SSH or `docker-compose run` needed, good for a quick one-off from a phone or another PC. Runs inside the `bv-web` container itself (CPU-only, same as the `bv-cli` path - not GPU-accelerated the way the PC path is), which is why `bv-web`'s image now carries the same full toolchain `bv-cli`'s does rather than just the lightweight `web` extra.
+- **From a browser**, via `bv-web`'s own "Generate assets"/"Export trips"/"Scene description" job pages - no SSH or `docker-compose run` needed, good for a quick one-off from a phone or another PC. Runs inside the `bv-web` container itself (CPU-only, same as the `bv-cli` path - not GPU-accelerated the way the PC path is), which is why `bv-web`'s image now carries the same full toolchain `bv-cli`'s does (plus the scene-description extra `bv-cli`'s image also has) rather than just the lightweight `web` extra.
 
 All three write into the exact same `data/trips`/`data/archive` folders, so there's nothing to reconcile between them - a trip exported from the NAS CLI, the browser, or the PC shows up in `bv-web` identically.
 

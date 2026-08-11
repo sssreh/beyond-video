@@ -9,11 +9,13 @@
 # exports when the PC isn't on.
 #
 # Installs the full toolchain: ffmpeg, faster-whisper, pyannote.audio,
-# argostranslate - the latter two pull in torch, so this image is
-# large and slow to build the first time; that's expected, not a sign
-# something's stuck. The NAS has no GPU, so faster-whisper/
-# pyannote.audio run on CPU here - slower than the PC path, an
-# accepted trade-off for having the NAS able to do this unattended.
+# argostranslate, plus transformers/accelerate/qwen-vl-utils for
+# bv-generate --describe-scene - the audio libs pull in torch, so this
+# image is large and slow to build the first time; that's expected,
+# not a sign something's stuck. The NAS has no GPU, so faster-whisper/
+# pyannote.audio/the scene-description model all run on CPU here -
+# slower than the PC path, an accepted trade-off for having the NAS
+# able to do this unattended.
 #
 # No fixed ENTRYPOINT/CMD - there's no single "bv-cli" binary, just
 # five separate bv-* commands, so the full command (bv-download Kirby,
@@ -32,7 +34,11 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir ".[speech,translate]"
+# scene (transformers/accelerate/qwen-vl-utils) is needed alongside
+# speech/translate - bv-generate --describe-scene runs in this image
+# too (see the pipeline list in the header comment above), and without
+# it that fails at runtime with "No module named 'qwen_vl_utils'".
+RUN pip install --no-cache-dir ".[speech,translate,scene]"
 
 # Where docker-compose.yml's volumes land: /data/archive is
 # bv-download's target (raw recordings) and bv-config's "Target
