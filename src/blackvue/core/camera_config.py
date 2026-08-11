@@ -65,9 +65,9 @@ def config_path(config_dir: Path, id_: str) -> Path:
     return config_dir / f"{id_}.cfg"
 
 
-def default_target_dir(id_: str) -> Path:
-    """Return a suggested default archive directory for a new camera's
-    Target field - `~/beyond-video/archive/<id>`, offered as bv-config's
+def default_archive_dir(id_: str) -> Path:
+    """Return a suggested default directory for a new camera's Archive
+    field - `~/beyond-video/archive/<id>`, offered as bv-config's
     wizard's own [default] value so creating a new camera doesn't
     require typing a full path by hand for the common case.
 
@@ -81,6 +81,38 @@ def default_target_dir(id_: str) -> Path:
     """
 
     return Path.home() / "beyond-video" / "archive" / id_
+
+
+def default_target_dir(archive: Path) -> Path:
+    """Return a suggested default Target (bv-export destination)
+    directory, parallel to a camera's own Archive (download)
+    directory - the same archive-vs-trips sibling relationship this
+    project's own Docker deployment already uses (see docs/DEPLOY.md's
+    data/archive vs data/trips layout, and docker-compose.yml's own
+    volumes of the same names).
+
+    Swaps the last path component literally named "archive" (case-
+    insensitive, so "Archive"/"ARCHIVE" also match) for "trips" -
+    `.../archive/Kirby` suggests `.../trips/Kirby`, and a NAS
+    deployment's `/data/archive` suggests `/data/trips`. Falls back to
+    a plain `trips` directory next to Archive itself
+    (`archive.parent / "trips"`) when no component is literally named
+    "archive" - a custom Archive that doesn't follow that convention
+    still gets a sensible, clearly-different-from-Archive suggestion
+    rather than no suggestion at all.
+
+    Purely a suggestion, like default_archive_dir(): always overridable
+    in the wizard, and never created by this function itself.
+    """
+
+    parts = list(archive.parts)
+
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].lower() == "archive":
+            parts[index] = "trips"
+            return Path(*parts)
+
+    return archive.parent / "trips"
 
 
 def _looks_like_path(value: str) -> bool:
@@ -121,11 +153,11 @@ def resolve_archive_path(
     """Resolve a bv-* archive command's positional PATH argument -
     either a literal archive directory, or a camera system id (the
     same ids bv-config/bv-download/bv-gps/bv-live already take)
-    resolved to that camera's own `target` directory.
+    resolved to that camera's own `archive` directory.
 
     Returns `(resolved_path, camera_config)` - `camera_config` is the
     loaded CameraConfig when `path_or_id` resolved to one (so a caller
-    like bv-export can also read its `output` field without a second
+    like bv-export can also read its `target` field without a second
     lookup), or None when `path_or_id` was used as a literal path.
 
     Resolution order: if `path_or_id` already looks like a path (see
@@ -151,7 +183,7 @@ def resolve_archive_path(
         cfg_path = config_path(config_dir, path_or_id)
         if cfg_path.exists():
             config = load_camera_config(cfg_path)
-            return config.target, config
+            return config.archive, config
 
     return Path(path_or_id), None
 
@@ -186,7 +218,7 @@ def validate_id(id_: str) -> None:
     An id is ASCII alphanumeric plus underscore/hyphen, at most 128
     characters. Underscore and hyphen were added specifically so a
     camera's archive can be split into per-year ids like "Kirby_2019"
-    .. "Kirby_2026" (each with its own .cfg and a `target` pointing
+    .. "Kirby_2026" (each with its own .cfg and an `archive` pointing
     at that year's own subfolder) - a manual way to shrink an
     otherwise huge single archive-browser page, on top of (not
     instead of) archive_recording_list.html's own lazy-loaded
@@ -229,18 +261,33 @@ def validate_name(name: str) -> None:
 
 @dataclass
 class CameraConfig:
-    """One camera system: identity, endpoints, archive target, and an
-    optional default output (export) directory."""
+    """One camera system: identity, endpoints, the archive directory
+    downloads are saved to, and an optional target (export) directory."""
 
     id: str
     name: str
-    target: Path
-    output: Path | None = None
+    archive: Path
+    target: Path | None = None
     endpoints: list[Endpoint] = field(default_factory=list)
 
 
 def load_camera_config(path: Path) -> CameraConfig:
-    """Load a camera config from a .cfg (TOML) file."""
+    """Load a camera config from a .cfg (TOML) file.
+
+    Reads either the current key names (`archive`/`target`) or the
+    pre-rename ones (`target`/`output` - `target` used to mean the
+    download directory now called `archive`, and `output` used to
+    mean the bv-export destination now called `target`) - a config
+    written before this renaming keeps loading correctly, with no
+    manual migration step. Disambiguated by which key is actually
+    present: an `archive` key means the file already uses the current
+    names (its own `target`, if any, is the new field); no `archive`
+    key but a `target` key means the old names (that `target` is the
+    archive dir, and `output`, if any, is the new target field).
+    Writing always uses the current names (see save_camera_config()),
+    so a config self-upgrades in place the next time it's saved (e.g.
+    editing it with `bv-config` again).
+    """
 
     try:
         with path.open("rb") as file:
@@ -251,10 +298,16 @@ def load_camera_config(path: Path) -> CameraConfig:
     id_ = data.get("id", path.stem)
     name = data.get("name", id_)
 
-    if "target" not in data:
-        raise CameraConfigError(f"{path}: missing required key 'target'")
-
-    output_value = data.get("output")
+    if "archive" in data:
+        archive_value = data["archive"]
+        target_value = data.get("target")
+    elif "target" in data:
+        # Pre-rename config: its `target` was the download directory,
+        # its `output` (if any) was the bv-export destination.
+        archive_value = data["target"]
+        target_value = data.get("output")
+    else:
+        raise CameraConfigError(f"{path}: missing required key 'archive'")
 
     endpoints: list[Endpoint] = []
 
@@ -274,8 +327,8 @@ def load_camera_config(path: Path) -> CameraConfig:
     return CameraConfig(
         id=id_,
         name=name,
-        target=Path(data["target"]),
-        output=Path(output_value) if output_value else None,
+        archive=Path(archive_value),
+        target=Path(target_value) if target_value else None,
         endpoints=endpoints,
     )
 
@@ -343,11 +396,11 @@ def save_camera_config(path: Path, config: CameraConfig) -> None:
     lines = [
         f"id = {_toml_string(config.id)}",
         f"name = {_toml_string(config.name)}",
-        f"target = {_toml_string(str(config.target))}",
+        f"archive = {_toml_string(str(config.archive))}",
     ]
 
-    if config.output is not None:
-        lines.append(f"output = {_toml_string(str(config.output))}")
+    if config.target is not None:
+        lines.append(f"target = {_toml_string(str(config.target))}")
 
     lines.append("")
 

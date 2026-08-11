@@ -68,7 +68,7 @@ mkdir -p /volume1/beyond-video/data/camera-config
 
 All four start empty. `data/trips` is what `bv-web` browses and what `bv-export` writes into, whether run on the NAS or from Christer's PC over SMB (see step 7) - leaving it empty for now is fine, `bv-web` just shows "No trips found yet." `data/camera-config` is mounted into `bv-web`'s own container too (`docker-compose.yml`'s `BEYOND_VIDEO_CONFIG_DIR=/data/camera-config` environment variable, read by `core/camera_config.py`'s `default_config_dir()`) - without it, `bv-web` has no persistent `$HOME` inside its container and can't see any camera `.cfg` file `bv-config` wrote, whether from `bv-cli` or from bv-web's own job-trigger form: the camera pick-list on the job forms shows empty, and the archive browser 404s every camera id. Same host folder either way, no extra setup needed - this is just why it's mounted into both containers rather than only `bv-cli`'s.
 
-`data/archive` is *also* mounted into `bv-web`'s container (read-write - its own job runner writes here too when it triggers `bv-download`/`bv-generate`, not just the archive browser reading from it), separately from `data/camera-config` above - a camera's `.cfg` `target` field points into `data/archive` (see step 6's "Target (download path)" answer), and `bv-web`'s archive-browser feature (`/archive` routes) reads recordings straight from that path, not from `data/trips`. Without this mount, the camera picker and camera-config work fine but every camera's archive page says "No recordings found in this camera's archive yet." even once `bv-download` has actually written files there.
+`data/archive` is *also* mounted into `bv-web`'s container (read-write - its own job runner writes here too when it triggers `bv-download`/`bv-generate`, not just the archive browser reading from it), separately from `data/camera-config` above - a camera's `.cfg` `archive` field points into `data/archive` (see step 6's "Archive (download path)" answer), and `bv-web`'s archive-browser feature (`/archive` routes) reads recordings straight from that path, not from `data/trips`. Without this mount, the camera picker and camera-config work fine but every camera's archive page says "No recordings found in this camera's archive yet." even once `bv-download` has actually written files there.
 
 ## 4. Build and start bv-web
 
@@ -146,7 +146,7 @@ All three of `bv-cli`'s volumes are repeated here (not just the archive one) sin
 sudo docker-compose config
 ```
 
-Check the printed `bv-cli` *and* `bv-web` services' `volumes:` blocks both show `/volume1/Dashcam/files:/data/archive` and nothing pointing at `./data/archive` (or `/volume1/beyond-video/data/archive`) - if an old mount is still there too, or `/data/archive` isn't there at all on either service, adjust the override file and re-check before moving on. With `/volume1/Dashcam/files` as the archive, `bv-config`'s **Target (download path)** answer below still stays `/data/archive` - that's the *container path* every `bv-*` command reads/writes, regardless of which host folder it's mapped to.
+Check the printed `bv-cli` *and* `bv-web` services' `volumes:` blocks both show `/volume1/Dashcam/files:/data/archive` and nothing pointing at `./data/archive` (or `/volume1/beyond-video/data/archive`) - if an old mount is still there too, or `/data/archive` isn't there at all on either service, adjust the override file and re-check before moving on. With `/volume1/Dashcam/files` as the archive, `bv-config`'s **Archive (download path)** answer below still stays `/data/archive` - that's the *container path* every `bv-*` command reads/writes, regardless of which host folder it's mapped to.
 
 **Set up the camera** (one-time; re-run later to edit):
 
@@ -154,7 +154,7 @@ Check the printed `bv-cli` *and* `bv-web` services' `volumes:` blocks both show 
 sudo docker-compose run --rm bv-cli bv-config Kirby --config-dir /data/config
 ```
 
-This is `bv-config`'s interactive wizard - name, endpoints (tried in order), and the target download path. For **Target (download path)**, answer `/data/archive` - that's the folder mounted to `./data/archive` on the host, which is where `bv-download` will write raw recordings.
+This is `bv-config`'s interactive wizard - name, endpoints (tried in order), and the archive download path (plus an optional Target directory for `bv-export`, which you can leave blank here). For **Archive (download path)**, answer `/data/archive` - that's the folder mounted to `./data/archive` on the host, which is where `bv-download` will write raw recordings.
 
 **Download from the camera:**
 

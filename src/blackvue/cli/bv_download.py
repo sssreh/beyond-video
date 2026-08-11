@@ -543,7 +543,7 @@ def _run(
             return EXIT_CONFIG_ERROR
 
         endpoints = config.endpoints
-        destination = config.target
+        destination = config.archive
         display_name = config.name
 
     say(_destination_message(display_name, destination, dry_run=args.dry_run))

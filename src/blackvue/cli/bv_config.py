@@ -16,6 +16,7 @@ from .errors import run_cli
 from ..core.camera_config import CameraConfig
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
+from ..core.camera_config import default_archive_dir
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import default_target_dir
 from ..core.camera_config import load_camera_config
@@ -101,10 +102,9 @@ def run_wizard(
     """
 
     default_name = existing.name if existing else id_
-    default_target = (
-        str(existing.target) if existing else str(default_target_dir(id_))
+    default_archive = (
+        str(existing.archive) if existing else str(default_archive_dir(id_))
     )
-    default_output = str(existing.output) if existing and existing.output else ""
     existing_endpoints = existing.endpoints if existing else []
 
     while True:
@@ -116,13 +116,27 @@ def run_wizard(
             say(f"  {exc}")
 
     while True:
-        target = prompt("Target (download path)", default=default_target, ask=ask)
-        if target:
+        archive = prompt("Archive (download path)", default=default_archive, ask=ask)
+        if archive:
             break
-        say("  Target must not be empty.")
+        say("  Archive must not be empty.")
 
-    output = prompt(
-        "Output (bv-export destination, optional)", default=default_output, ask=ask
+    # Computed after `archive` is answered (not up front like
+    # default_archive itself) so the suggestion is always parallel to
+    # wherever Archive actually ended up - whether the user accepted
+    # default_archive_dir()'s own suggestion or typed something
+    # completely different (e.g. a NAS mount or an existing archive
+    # elsewhere). Offered whenever there's no already-saved Target,
+    # not just for a brand-new camera - an existing config can have an
+    # Archive but no Target yet too.
+    default_target = (
+        str(existing.target)
+        if existing and existing.target
+        else str(default_target_dir(Path(archive)))
+    )
+
+    target = prompt(
+        "Target (bv-export destination, optional)", default=default_target, ask=ask
     )
 
     endpoints = edit_endpoints(existing_endpoints, ask=ask, say=say)
@@ -130,8 +144,8 @@ def run_wizard(
     return CameraConfig(
         id=id_,
         name=name,
-        target=Path(target),
-        output=Path(output) if output else None,
+        archive=Path(archive),
+        target=Path(target) if target else None,
         endpoints=endpoints,
     )
 

@@ -47,27 +47,27 @@ def test_main_reports_a_missing_archive_path_cleanly(tmp_path, capsys):
     assert "Traceback" not in err
 
 
-def test_main_resolves_camera_id_and_defaults_target_from_its_output(tmp_path):
+def test_main_resolves_camera_id_and_defaults_target_from_its_config(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()
     _make_video(archive / "20260720_100000_NF.mp4")
 
     config_dir = tmp_path / "config"
-    output = tmp_path / "exports"
+    target = tmp_path / "exports"
     save_camera_config(
         config_path(config_dir, "Kirby"),
-        CameraConfig(id="Kirby", name="Kirby", target=archive, output=output),
+        CameraConfig(id="Kirby", name="Kirby", archive=archive, target=target),
     )
 
     exit_code = main(["Kirby", "--config-dir", str(config_dir)])
 
     assert exit_code == 0
-    folder = output / "trip_20260720_100000_20260720_100000"
+    folder = target / "trip_20260720_100000_20260720_100000"
     assert folder.is_dir()
     assert (folder / "front.mp4").exists()
 
 
-def test_main_target_required_message_mentions_bv_config_when_camera_has_no_output(
+def test_main_target_required_message_mentions_bv_config_when_camera_has_no_target(
     tmp_path, capsys
 ):
     archive = tmp_path / "archive"
@@ -76,7 +76,7 @@ def test_main_target_required_message_mentions_bv_config_when_camera_has_no_outp
     config_dir = tmp_path / "config"
     save_camera_config(
         config_path(config_dir, "Kirby"),
-        CameraConfig(id="Kirby", name="Kirby", target=archive),
+        CameraConfig(id="Kirby", name="Kirby", archive=archive),
     )
 
     exit_code = main(["Kirby", "--config-dir", str(config_dir)])
@@ -103,17 +103,17 @@ def test_main_target_required_message_omits_bv_config_for_a_plain_path(
     assert "bv-config" not in err
 
 
-def test_main_explicit_target_overrides_camera_output(tmp_path):
+def test_main_explicit_target_overrides_camera_target(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()
     _make_video(archive / "20260720_100000_NF.mp4")
 
     config_dir = tmp_path / "config"
-    unused_output = tmp_path / "unused_exports"
+    unused_target = tmp_path / "unused_exports"
     save_camera_config(
         config_path(config_dir, "Kirby"),
         CameraConfig(
-            id="Kirby", name="Kirby", target=archive, output=unused_output
+            id="Kirby", name="Kirby", archive=archive, target=unused_target
         ),
     )
 
@@ -129,7 +129,7 @@ def test_main_explicit_target_overrides_camera_output(tmp_path):
     assert exit_code == 0
     folder = explicit_target / "trip_20260720_100000_20260720_100000"
     assert folder.is_dir()
-    assert not unused_output.exists()
+    assert not unused_target.exists()
 
 
 def test_bv_export_creates_a_trip_folder(tmp_path, capsys):

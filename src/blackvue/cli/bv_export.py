@@ -901,8 +901,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="DIR",
         help=(
             "Directory to create trip subfolders in. Required unless "
-            "`path` resolves to a camera id whose config has an "
-            "Output directory set (see bv-config) - that becomes the "
+            "`path` resolves to a camera id whose config has a "
+            "Target directory set (see bv-config) - that becomes the "
             "default."
         ),
     )
@@ -1766,10 +1766,10 @@ def _run(
 
     target = args.target
     if target is None and camera_config is not None:
-        target = camera_config.output
+        target = camera_config.target
     if target is None:
         warn(
-            "bv-export: --target is required (no Output directory set "
+            "bv-export: --target is required (no Target directory set "
             f"in {args.path!r}'s camera config - see bv-config)"
             if camera_config is not None
             else "bv-export: --target is required"

@@ -109,7 +109,7 @@ def test_main_resolves_a_camera_id_to_its_configured_target(tmp_path, capsys):
     config_dir = tmp_path / "config"
     save_camera_config(
         config_path(config_dir, "Kirby"),
-        CameraConfig(id="Kirby", name="Kirby", target=archive),
+        CameraConfig(id="Kirby", name="Kirby", archive=archive),
     )
 
     exit_code = main(["Kirby", "--config-dir", str(config_dir)])

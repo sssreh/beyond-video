@@ -25,15 +25,25 @@ import pytest
 from blackvue.cli import bv_config as bv_config_module
 from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import CameraConfigError
+from blackvue.core.camera_config import default_archive_dir
 from blackvue.core.camera_config import default_target_dir
 from blackvue.core.endpoint import Endpoint
 
-# The Target prompt's suggested default for a brand-new "mycar" config -
+# The Archive prompt's suggested default for a brand-new "mycar" config -
 # every scripted-ask test below that creates a new config (existing=None)
 # needs this in its question-text key, since prompt() only shows the
 # "[default]" suffix when a default is non-empty (see bv_config.py's
 # run_wizard()).
-_MYCAR_TARGET_PROMPT = f"Target (download path) [{default_target_dir('mycar')}]: "
+_MYCAR_ARCHIVE_PROMPT = f"Archive (download path) [{default_archive_dir('mycar')}]: "
+
+
+def _target_prompt_for(archive: str) -> str:
+    """The Target prompt's question text once Archive has been
+    answered `archive` - its suggested default is only known after
+    that point (see run_wizard()'s own comment on why)."""
+
+    default = default_target_dir(Path(archive))
+    return f"Target (bv-export destination, optional) [{default}]: "
 
 
 def _scripted_ask(answers: dict[str, str | list[str]]):
@@ -138,8 +148,8 @@ def test_run_wizard_builds_a_new_config():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
-            _MYCAR_TARGET_PROMPT: "/tmp/archive",
-            "Output (bv-export destination, optional): ": "",
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            _target_prompt_for("/tmp/archive"): "/tmp/exports",
             "  New endpoint address: ": ["1.2.3.4", ""],
             "  Name [EP1]: ": "home",
         }
@@ -149,46 +159,83 @@ def test_run_wizard_builds_a_new_config():
 
     assert config.id == "mycar"
     assert config.name == "Kirby"
-    assert config.target == Path("/tmp/archive")
-    assert config.output is None
+    assert config.archive == Path("/tmp/archive")
+    assert config.target == Path("/tmp/exports")
     assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
 
 
-def test_run_wizard_target_defaults_to_a_suggested_archive_dir_for_a_new_camera():
+def test_run_wizard_archive_defaults_to_a_suggested_dir_for_a_new_camera():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
-            _MYCAR_TARGET_PROMPT: "",
-            "Output (bv-export destination, optional): ": "",
+            _MYCAR_ARCHIVE_PROMPT: "",
+            _target_prompt_for(str(default_archive_dir("mycar"))): "",
             "  New endpoint address: ": "",
         }
     )
 
     config = bv_config_module.run_wizard("mycar", None, ask=ask, say=lambda t: None)
 
-    assert config.target == default_target_dir("mycar")
+    assert config.archive == default_archive_dir("mycar")
 
 
-def test_run_wizard_sets_output_when_answered():
+def test_run_wizard_target_defaults_to_a_parallel_trips_dir():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
-            _MYCAR_TARGET_PROMPT: "/tmp/archive",
-            "Output (bv-export destination, optional): ": "/tmp/exports",
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            _target_prompt_for("/tmp/archive"): "",
             "  New endpoint address: ": "",
         }
     )
 
     config = bv_config_module.run_wizard("mycar", None, ask=ask, say=lambda t: None)
 
-    assert config.output == Path("/tmp/exports")
+    assert config.target == default_target_dir(Path("/tmp/archive"))
+
+
+def test_run_wizard_target_can_be_left_unset(monkeypatch):
+    # default_target_dir() itself never returns an empty suggestion (it
+    # always falls back to a sibling "trips" dir), so the only way to
+    # actually exercise "Target left unset" is to monkeypatch that
+    # suggestion away - matching the same technique the Archive
+    # empty-reprompt test below uses.
+    monkeypatch.setattr(bv_config_module, "default_target_dir", lambda archive: "")
+
+    ask = _scripted_ask(
+        {
+            "Name [mycar]: ": "Kirby",
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            "Target (bv-export destination, optional): ": "",
+            "  New endpoint address: ": "",
+        }
+    )
+
+    config = bv_config_module.run_wizard("mycar", None, ask=ask, say=lambda t: None)
+
+    assert config.target is None
+
+
+def test_run_wizard_sets_target_when_answered():
+    ask = _scripted_ask(
+        {
+            "Name [mycar]: ": "Kirby",
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            _target_prompt_for("/tmp/archive"): "/tmp/exports",
+            "  New endpoint address: ": "",
+        }
+    )
+
+    config = bv_config_module.run_wizard("mycar", None, ask=ask, say=lambda t: None)
+
+    assert config.target == Path("/tmp/exports")
 
 
 def test_run_wizard_defaults_every_question_to_the_existing_config():
     existing = CameraConfig(
         id="mycar",
         name="Kirby",
-        target=Path("/tmp/archive"),
+        archive=Path("/tmp/archive"),
         endpoints=[Endpoint(name="home", address="1.2.3.4")],
     )
     # Every answer empty - Enter accepts every default, matching what
@@ -197,8 +244,8 @@ def test_run_wizard_defaults_every_question_to_the_existing_config():
     ask = _scripted_ask(
         {
             "Name [Kirby]: ": "",
-            "Target (download path) [/tmp/archive]: ": "",
-            "Output (bv-export destination, optional): ": "",
+            "Archive (download path) [/tmp/archive]: ": "",
+            _target_prompt_for("/tmp/archive"): "",
             "  Address (or 'remove') [1.2.3.4]: ": "1.2.3.4",
             "  Name [home]: ": "home",
             "  New endpoint address: ": "",
@@ -210,23 +257,23 @@ def test_run_wizard_defaults_every_question_to_the_existing_config():
     )
 
     assert config.name == "Kirby"
-    assert config.target == Path("/tmp/archive")
+    assert config.archive == Path("/tmp/archive")
     assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
 
 
-def test_run_wizard_defaults_output_to_the_existing_configs_output():
+def test_run_wizard_defaults_target_to_the_existing_configs_target():
     existing = CameraConfig(
         id="mycar",
         name="Kirby",
-        target=Path("/tmp/archive"),
-        output=Path("/tmp/exports"),
+        archive=Path("/tmp/archive"),
+        target=Path("/tmp/exports"),
         endpoints=[],
     )
     ask = _scripted_ask(
         {
             "Name [Kirby]: ": "",
-            "Target (download path) [/tmp/archive]: ": "",
-            "Output (bv-export destination, optional) [/tmp/exports]: ": "",
+            "Archive (download path) [/tmp/archive]: ": "",
+            "Target (bv-export destination, optional) [/tmp/exports]: ": "",
             "  New endpoint address: ": "",
         }
     )
@@ -235,7 +282,7 @@ def test_run_wizard_defaults_output_to_the_existing_configs_output():
         "mycar", existing, ask=ask, say=lambda t: None
     )
 
-    assert config.output == Path("/tmp/exports")
+    assert config.target == Path("/tmp/exports")
 
 
 def test_run_wizard_reprompts_on_an_invalid_name():
@@ -243,8 +290,8 @@ def test_run_wizard_reprompts_on_an_invalid_name():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": ["x" * 200, "GoodName"],
-            _MYCAR_TARGET_PROMPT: "/tmp/archive",
-            "Output (bv-export destination, optional): ": "",
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            _target_prompt_for("/tmp/archive"): "",
             "  New endpoint address: ": "",
         }
     )
@@ -257,21 +304,21 @@ def test_run_wizard_reprompts_on_an_invalid_name():
     assert any("too long" in line for line in warns)
 
 
-def test_run_wizard_reprompts_on_an_empty_target(monkeypatch):
-    # A brand-new camera's Target now always has a non-empty suggested
-    # default (see default_target_dir()), so a blank Enter normally
+def test_run_wizard_reprompts_on_an_empty_archive(monkeypatch):
+    # A brand-new camera's Archive now always has a non-empty suggested
+    # default (see default_archive_dir()), so a blank Enter normally
     # accepts that suggestion rather than triggering the "must not be
     # empty" guard - monkeypatch the suggestion itself away to exercise
     # that guard against the one remaining way to hit it (a broken/
     # empty suggestion), rather than leaving it untested dead code.
-    monkeypatch.setattr(bv_config_module, "default_target_dir", lambda id_: "")
+    monkeypatch.setattr(bv_config_module, "default_archive_dir", lambda id_: "")
 
     warns: list[str] = []
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
-            "Target (download path): ": ["", "/tmp/archive"],
-            "Output (bv-export destination, optional): ": "",
+            "Archive (download path): ": ["", "/tmp/archive"],
+            _target_prompt_for("/tmp/archive"): "",
             "  New endpoint address: ": "",
         }
     )
@@ -280,7 +327,7 @@ def test_run_wizard_reprompts_on_an_empty_target(monkeypatch):
         "mycar", None, ask=ask, say=warns.append
     )
 
-    assert config.target == Path("/tmp/archive")
+    assert config.archive == Path("/tmp/archive")
     assert any("must not be empty" in line for line in warns)
 
 
@@ -307,12 +354,13 @@ def test_run_reports_invalid_id_via_warn_not_real_stderr(monkeypatch, tmp_path):
 
 
 def test_run_saves_a_new_config_end_to_end(monkeypatch, tmp_path):
+    archive = str(tmp_path / "archive")
     say_lines: list[str] = []
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
-            _MYCAR_TARGET_PROMPT: str(tmp_path / "archive"),
-            "Output (bv-export destination, optional): ": "",
+            _MYCAR_ARCHIVE_PROMPT: archive,
+            _target_prompt_for(archive): "",
             "  New endpoint address: ": ["1.2.3.4", ""],
             "  Name [EP1]: ": "home",
         }

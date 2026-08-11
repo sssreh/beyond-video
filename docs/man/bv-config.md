@@ -12,7 +12,7 @@ bv-config [--config-dir DIR] ID
 
 ## DESCRIPTION
 
-`bv-config` creates or edits a camera's configuration: its display **name**, one or more **endpoints** (network addresses the camera is reachable at, tried in order), the **target** directory downloads are saved to, and an optional **output** directory for `bv-export`.
+`bv-config` creates or edits a camera's configuration: its display **name**, one or more **endpoints** (network addresses the camera is reachable at, tried in order), the **archive** directory downloads are saved to, and an optional **target** directory for `bv-export`.
 
 It's the first command to run for a new camera - `bv-download`, `bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, and `bv-search` all read the archive this config points at (each also accepts `ID` itself in place of a literal archive path - see `docs/CLI.md`), but only `bv-config` itself needs the camera's network address.
 
@@ -21,9 +21,11 @@ Running `bv-config` again on an existing `ID` edits it interactively, defaulting
 The wizard asks, in order:
 
 1. **Name** - a free-form display name (may contain UTF-8/emoji). Must pass validation (see `validate_name`).
-2. **Target** - the local directory recordings are downloaded into. Must not be empty. For a brand-new camera, pre-filled with a suggested default (`~/beyond-video/archive/<ID>`, one subfolder per camera id so multiple cameras never collide) - press Enter to accept it, or type a different path.
-3. **Output** - optional local directory `bv-export` writes trip folders into by default when its own `--target` isn't given. Leave blank to require `--target` explicitly on every `bv-export` run (the behavior before this existed).
+2. **Archive** - the local directory recordings are downloaded into (`bv-download`'s destination, and what every other `bv-*` command reads when you give them this camera's `ID` in place of a path - see `docs/CLI.md`). Must not be empty. For a brand-new camera, pre-filled with a suggested default (`~/beyond-video/archive/<ID>`, one subfolder per camera id so multiple cameras never collide) - press Enter to accept it, or type a different path.
+3. **Target** - optional local directory `bv-export` writes trip folders into by default when its own `--target` flag isn't given explicitly (they share the name deliberately: this field *is* that flag's default value). Always pre-filled with a suggestion parallel to Archive - whatever you just answered for Archive, with its `archive` path component swapped for `trips` (e.g. `.../archive/Kirby` suggests `.../trips/Kirby`; `/data/archive` suggests `/data/trips`), or a plain `trips` folder next to Archive if it doesn't contain an `archive` component at all. Leave blank to require `--target` explicitly on every `bv-export` run (the behavior before this existed).
 4. **Endpoints** - reviewed one at a time if editing an existing config (Enter keeps the current address, typing `remove` drops it), then new endpoints can be appended by address until you leave one blank to stop. Endpoints are tried in the order given here, so put the most reliable/fastest one first (e.g. a local Wi-Fi hotspot before a cloud relay).
+
+**Naming note.** Earlier versions of this wizard called the Archive field "Target" and the Target field "Output" - both renamed for clarity, since `bv-download`/`bv-export` each already have their own separate `--target` flag with a different meaning, and re-using that word for the download directory too was confusing. Existing `.cfg` files from before this renaming used `target =`/`output =` as their TOML keys; running `bv-config` again on an old config migrates it to the new `archive =`/`target =` keys automatically the next time it's saved.
 
 ## ARGUMENTS
 

@@ -1179,11 +1179,14 @@ def _camera_options() -> list[dict[str, str]]:
 
 def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:
     """Resolve a camera id (from the URL) to its archive directory -
-    CameraConfig.target, the directory bv-download writes raw
+    CameraConfig.archive, the directory bv-download writes raw
     recordings to. This is NOT the same thing as bv-export --target
-    (app.state.target, the trips directory trips.py reads) - a camera
-    id names a *source* archive, a trip id names *processed* output;
-    don't conflate the two.
+    (app.state.target, this app's own --target, the trips directory
+    trips.py reads - a separate concept from CameraConfig.target,
+    which is just the *default value* that flag is populated from
+    when a camera config has one set) - a camera id names a *source*
+    archive, a trip id names *processed* output; don't conflate the
+    two.
 
     `camera_id` comes straight from the URL path and is therefore
     untrusted - reject anything that could walk outside
@@ -1213,7 +1216,7 @@ def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:
             status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
         )
 
-    return config.target
+    return config.archive
 
 
 def _find_archive_recording(

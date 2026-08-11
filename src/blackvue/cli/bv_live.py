@@ -451,7 +451,7 @@ def _run(args: argparse.Namespace) -> int:
     app = create_live_app(
         client,
         camera_name=config.name,
-        osm_cache_dir=config.target / ".osm_cache",
+        osm_cache_dir=config.archive / ".osm_cache",
         map_zoom_meters=args.map_zoom,
         gsensor_window_seconds=args.gsensor_window,
     )

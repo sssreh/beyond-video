@@ -6,6 +6,7 @@ from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import CameraConfigCache
 from blackvue.core.camera_config import CameraConfigError
 from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import default_archive_dir
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import default_target_dir
 from blackvue.core.camera_config import list_camera_ids
@@ -59,21 +60,50 @@ def test_validate_id_rejects(id_):
 
 
 # ---------------------------------------------------------------------------
-# default_target_dir() - the suggested [default] bv-config's wizard offers
-# for a brand-new camera's Target prompt, so creating one doesn't require
+# default_archive_dir() - the suggested [default] bv-config's wizard offers
+# for a brand-new camera's Archive prompt, so creating one doesn't require
 # typing a full path by hand for the common case (see bv_config.py's
 # run_wizard()).
 # ---------------------------------------------------------------------------
 
 
-def test_default_target_dir_nests_under_home_by_camera_id():
-    assert default_target_dir("Kirby") == Path.home() / "beyond-video" / "archive" / "Kirby"
+def test_default_archive_dir_nests_under_home_by_camera_id():
+    assert default_archive_dir("Kirby") == Path.home() / "beyond-video" / "archive" / "Kirby"
 
 
-def test_default_target_dir_differs_per_camera_id():
+def test_default_archive_dir_differs_per_camera_id():
     # Deliberately nested by id (unlike default_config_dir()) so two
     # cameras' suggested defaults never collide.
-    assert default_target_dir("Kirby") != default_target_dir("Wren")
+    assert default_archive_dir("Kirby") != default_archive_dir("Wren")
+
+
+# ---------------------------------------------------------------------------
+# default_target_dir() - the suggested [default] bv-config's wizard offers
+# for a camera's Target (bv-export destination) prompt: a folder parallel
+# to whatever was just answered for Archive, with the last "archive" path
+# component swapped for "trips" - matching the project's own docker-compose
+# data/archive + data/trips sibling convention (see docs/DEPLOY.md).
+# ---------------------------------------------------------------------------
+
+
+def test_default_target_dir_swaps_archive_component_for_trips():
+    archive = Path.home() / "beyond-video" / "archive" / "Kirby"
+
+    assert default_target_dir(archive) == Path.home() / "beyond-video" / "trips" / "Kirby"
+
+
+def test_default_target_dir_swaps_archive_component_case_insensitively():
+    assert default_target_dir(Path("/data/Archive")) == Path("/data/trips")
+
+
+def test_default_target_dir_swaps_only_the_last_archive_component():
+    # A camera id or path component that happens to also be spelled
+    # "archive" shouldn't confuse which occurrence gets swapped.
+    assert default_target_dir(Path("/archive/archive")) == Path("/archive/trips")
+
+
+def test_default_target_dir_falls_back_to_sibling_trips_when_no_archive_component():
+    assert default_target_dir(Path("/data/Kirby")) == Path("/data/trips")
 
 
 @pytest.mark.parametrize(
@@ -110,7 +140,7 @@ def test_save_and_load_round_trip(tmp_path):
     config = CameraConfig(
         id="Kirby",
         name="Kågeröd brown camera",
-        target=Path("/volume1/dashcam/Kirby"),
+        archive=Path("/volume1/dashcam/Kirby"),
         endpoints=[
             Endpoint(name="Wifi", address="192.168.0.1"),
             Endpoint(name="SIM", address="203.0.113.10"),
@@ -124,14 +154,14 @@ def test_save_and_load_round_trip(tmp_path):
     assert loaded == config
 
 
-def test_save_and_load_round_trip_with_output(tmp_path):
+def test_save_and_load_round_trip_with_target(tmp_path):
     path = tmp_path / "Kirby.cfg"
 
     config = CameraConfig(
         id="Kirby",
         name="Kirby",
-        target=Path("/volume1/dashcam/Kirby"),
-        output=Path("/volume1/exports/Kirby"),
+        archive=Path("/volume1/dashcam/Kirby"),
+        target=Path("/volume1/exports/Kirby"),
         endpoints=[],
     )
 
@@ -140,28 +170,28 @@ def test_save_and_load_round_trip_with_output(tmp_path):
     loaded = load_camera_config(path)
 
     assert loaded == config
-    assert loaded.output == Path("/volume1/exports/Kirby")
+    assert loaded.target == Path("/volume1/exports/Kirby")
 
 
-def test_output_defaults_to_none_when_omitted(tmp_path):
+def test_target_defaults_to_none_when_omitted(tmp_path):
     path = tmp_path / "Kirby.cfg"
-    path.write_text('target = "/volume1/dashcam/Kirby"\n')
+    path.write_text('archive = "/volume1/dashcam/Kirby"\n')
 
     loaded = load_camera_config(path)
 
-    assert loaded.output is None
+    assert loaded.target is None
 
 
-def test_save_omits_output_line_when_not_set(tmp_path):
+def test_save_omits_target_line_when_not_set(tmp_path):
     path = tmp_path / "Kirby.cfg"
 
-    config = CameraConfig(id="Kirby", name="Kirby", target=Path("/x"))
+    config = CameraConfig(id="Kirby", name="Kirby", archive=Path("/x"))
     save_camera_config(path, config)
 
-    assert "output" not in path.read_text()
+    assert "target" not in path.read_text()
 
 
-def test_load_missing_target_is_an_error(tmp_path):
+def test_load_missing_archive_is_an_error(tmp_path):
     path = tmp_path / "Kirby.cfg"
     path.write_text('id = "Kirby"\nname = "Kirby"\n')
 
@@ -171,7 +201,7 @@ def test_load_missing_target_is_an_error(tmp_path):
 
 def test_load_defaults_id_and_name_from_filename(tmp_path):
     path = tmp_path / "Kirby.cfg"
-    path.write_text('target = "/volume1/dashcam/Kirby"\n')
+    path.write_text('archive = "/volume1/dashcam/Kirby"\n')
 
     loaded = load_camera_config(path)
 
@@ -180,16 +210,62 @@ def test_load_defaults_id_and_name_from_filename(tmp_path):
     assert loaded.endpoints == []
 
 
+# ---------------------------------------------------------------------------
+# Backward compatibility - configs written before the archive/target rename
+# used `target =` for the download directory and `output =` for the
+# bv-export destination. load_camera_config() disambiguates by which key is
+# actually present, so an old .cfg keeps working untouched, and self-
+# upgrades to the new `archive =`/`target =` keys the next time it's saved.
+# ---------------------------------------------------------------------------
+
+
+def test_load_accepts_pre_rename_target_key_as_archive(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+    path.write_text('target = "/volume1/dashcam/Kirby"\n')
+
+    loaded = load_camera_config(path)
+
+    assert loaded.archive == Path("/volume1/dashcam/Kirby")
+    assert loaded.target is None
+
+
+def test_load_accepts_pre_rename_output_key_as_target(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+    path.write_text(
+        'target = "/volume1/dashcam/Kirby"\noutput = "/volume1/exports/Kirby"\n'
+    )
+
+    loaded = load_camera_config(path)
+
+    assert loaded.archive == Path("/volume1/dashcam/Kirby")
+    assert loaded.target == Path("/volume1/exports/Kirby")
+
+
+def test_save_upgrades_a_pre_rename_config_to_current_keys(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+    path.write_text(
+        'target = "/volume1/dashcam/Kirby"\noutput = "/volume1/exports/Kirby"\n'
+    )
+
+    loaded = load_camera_config(path)
+    save_camera_config(path, loaded)
+
+    text = path.read_text()
+    assert 'archive = "/volume1/dashcam/Kirby"' in text
+    assert 'target = "/volume1/exports/Kirby"' in text
+    assert "output" not in text
+
+
 def test_list_camera_ids_returns_every_cfg_stem_sorted(tmp_path):
-    (tmp_path / "zebra.cfg").write_text('target = "/x"\n')
-    (tmp_path / "Kirby.cfg").write_text('target = "/x"\n')
-    (tmp_path / "acorn.cfg").write_text('target = "/x"\n')
+    (tmp_path / "zebra.cfg").write_text('archive = "/x"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/x"\n')
+    (tmp_path / "acorn.cfg").write_text('archive = "/x"\n')
 
     assert list_camera_ids(tmp_path) == ["Kirby", "acorn", "zebra"]
 
 
 def test_list_camera_ids_ignores_non_cfg_files(tmp_path):
-    (tmp_path / "Kirby.cfg").write_text('target = "/x"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/x"\n')
     (tmp_path / "notes.txt").write_text("not a config\n")
     (tmp_path / "backup.cfg.bak").write_text("also not a config\n")
 
@@ -247,7 +323,7 @@ def test_camera_config_cache_reuses_result_within_ttl(tmp_path, monkeypatch):
     clock = _FakeClock()
     monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
 
-    (tmp_path / "Kirby.cfg").write_text('target = "/data/archive"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/data/archive"\n')
 
     cache = CameraConfigCache(ttl_seconds=2.0)
     first = cache.get(tmp_path, "Kirby")
@@ -255,12 +331,12 @@ def test_camera_config_cache_reuses_result_within_ttl(tmp_path, monkeypatch):
     # The .cfg changes after the first (real) load - a second get() still
     # within the TTL should return the exact same cached CameraConfig, not
     # notice the change yet.
-    (tmp_path / "Kirby.cfg").write_text('target = "/data/other"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/data/other"\n')
     clock.value += 1.0
     second = cache.get(tmp_path, "Kirby")
 
     assert second is first
-    assert second.target == Path("/data/archive")
+    assert second.archive == Path("/data/archive")
 
 
 def test_camera_config_cache_reloads_once_ttl_expires(tmp_path, monkeypatch):
@@ -269,17 +345,17 @@ def test_camera_config_cache_reloads_once_ttl_expires(tmp_path, monkeypatch):
     clock = _FakeClock()
     monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
 
-    (tmp_path / "Kirby.cfg").write_text('target = "/data/archive"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/data/archive"\n')
 
     cache = CameraConfigCache(ttl_seconds=2.0)
     first = cache.get(tmp_path, "Kirby")
 
-    (tmp_path / "Kirby.cfg").write_text('target = "/data/other"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/data/other"\n')
     clock.value += 2.1
     second = cache.get(tmp_path, "Kirby")
 
     assert second is not first
-    assert second.target == Path("/data/other")
+    assert second.archive == Path("/data/other")
 
 
 def test_camera_config_cache_does_not_cache_a_load_failure(tmp_path, monkeypatch):
@@ -295,8 +371,8 @@ def test_camera_config_cache_does_not_cache_a_load_failure(tmp_path, monkeypatch
 
     # No time has passed at all - if the failure had been cached, this
     # would still raise even though the config now genuinely exists.
-    (tmp_path / "Kirby.cfg").write_text('target = "/data/archive"\n')
-    assert cache.get(tmp_path, "Kirby").target == Path("/data/archive")
+    (tmp_path / "Kirby.cfg").write_text('archive = "/data/archive"\n')
+    assert cache.get(tmp_path, "Kirby").archive == Path("/data/archive")
 
 
 def test_camera_config_cache_keys_are_per_camera_id(tmp_path, monkeypatch):
@@ -305,19 +381,19 @@ def test_camera_config_cache_keys_are_per_camera_id(tmp_path, monkeypatch):
     clock = _FakeClock()
     monkeypatch.setattr(camera_config_module.time, "monotonic", clock)
 
-    (tmp_path / "Kirby.cfg").write_text('target = "/data/kirby"\n')
-    (tmp_path / "Volvo.cfg").write_text('target = "/data/volvo"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/data/kirby"\n')
+    (tmp_path / "Volvo.cfg").write_text('archive = "/data/volvo"\n')
 
     cache = CameraConfigCache(ttl_seconds=2.0)
 
-    assert cache.get(tmp_path, "Kirby").target == Path("/data/kirby")
-    assert cache.get(tmp_path, "Volvo").target == Path("/data/volvo")
+    assert cache.get(tmp_path, "Kirby").archive == Path("/data/kirby")
+    assert cache.get(tmp_path, "Volvo").archive == Path("/data/volvo")
 
 
 # ---------------------------------------------------------------------------
 # resolve_archive_path() - the shared CLI-layer resolver bv-ls/bv-generate/
 # bv-export/bv-scribe/bv-search all use for their `path` positional, so a
-# bare camera id (e.g. "Kirby") resolves to that camera's own `target`
+# bare camera id (e.g. "Kirby") resolves to that camera's own `archive`
 # directory, same ids bv-config/bv-download/bv-gps/bv-live already take. A
 # literal path (relative-dot-prefixed, absolute, or containing a separator)
 # always wins as an explicit escape hatch, matching git's own ./file-vs-
@@ -326,7 +402,7 @@ def test_camera_config_cache_keys_are_per_camera_id(tmp_path, monkeypatch):
 
 
 def test_resolve_archive_path_resolves_a_known_camera_id(tmp_path):
-    (tmp_path / "Kirby.cfg").write_text('target = "/volume1/dashcam/Kirby"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/volume1/dashcam/Kirby"\n')
 
     path, config = resolve_archive_path("Kirby", tmp_path)
 
@@ -352,7 +428,7 @@ def test_resolve_archive_path_treats_path_shaped_values_as_literal(
     # Even though a "Kirby" camera config exists, every one of these is
     # explicitly path-shaped (the git-style escape hatch) and must never
     # be resolved as the camera id.
-    (tmp_path / "Kirby.cfg").write_text('target = "/volume1/dashcam/Kirby"\n')
+    (tmp_path / "Kirby.cfg").write_text('archive = "/volume1/dashcam/Kirby"\n')
 
     path, config = resolve_archive_path(path_or_id, tmp_path)
 
@@ -367,11 +443,11 @@ def test_resolve_archive_path_propagates_a_broken_camera_config(tmp_path):
         resolve_archive_path("Kirby", tmp_path)
 
 
-def test_resolve_archive_path_exposes_camera_output_field(tmp_path):
+def test_resolve_archive_path_exposes_camera_target_field(tmp_path):
     (tmp_path / "Kirby.cfg").write_text(
-        'target = "/volume1/dashcam/Kirby"\noutput = "/volume1/exports/Kirby"\n'
+        'archive = "/volume1/dashcam/Kirby"\ntarget = "/volume1/exports/Kirby"\n'
     )
 
     _path, config = resolve_archive_path("Kirby", tmp_path)
 
-    assert config.output == Path("/volume1/exports/Kirby")
+    assert config.target == Path("/volume1/exports/Kirby")

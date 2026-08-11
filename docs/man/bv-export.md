@@ -60,8 +60,8 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 
 | Option | Description |
 |---|---|
-| `--target DIR` | Directory to create trip subfolders in. Required unless `PATH` resolves to a camera id whose config has an **Output** directory set (see `bv-config(1)`) - that becomes the default. An explicit `--target` always overrides a configured Output directory. |
-| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id and reading its Output directory. Default: the platform's standard config directory (same default as `bv-config(1)`). |
+| `--target DIR` | Directory to create trip subfolders in. Required unless `PATH` resolves to a camera id whose config has a **Trips** directory set (see `bv-config(1)`) - that becomes the default. An explicit `--target` always overrides a configured Trips directory. |
+| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id and reading its Trips directory. Default: the platform's standard config directory (same default as `bv-config(1)`). |
 
 ### Naming and selection
 
