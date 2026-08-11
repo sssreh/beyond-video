@@ -261,12 +261,13 @@ def test_run_place_geocodes_then_searches(monkeypatch, tmp_path):
     # since bv_search imports load_or_forward_geocode locally inside
     # _run() rather than at module scope (see its own comment on why).
     from blackvue.export import geocoding as geocoding_module
+    from blackvue.export.geocoding import GeocodeResult
 
     calls = []
 
     def fake_load_or_forward_geocode(name, cache_dir, **kwargs):
         calls.append((name, cache_dir))
-        return (59.3293, 18.0686)
+        return GeocodeResult(point=(59.3293, 18.0686))
 
     monkeypatch.setattr(
         geocoding_module, "load_or_forward_geocode", fake_load_or_forward_geocode
@@ -283,6 +284,58 @@ def test_run_place_geocodes_then_searches(monkeypatch, tmp_path):
     assert calls[0][0] == "Stockholm"
     assert any("Stockholm" in m for m in messages)
     assert any("20260715_126000_N" in m for m in messages)
+
+
+def test_run_place_with_road_geometry_matches_along_the_whole_road(
+    monkeypatch, tmp_path
+):
+    # A --place match that resolves to a road (GeocodeResult.lines
+    # non-empty) should find a GPS fix near the far end of the road,
+    # not just near Nominatim's single representative point - this is
+    # the whole reason line geometry gets threaded through at all.
+    import blackvue.search as search_module
+    from datetime import datetime
+    from blackvue.telemetry.gps_reader import GpsFix
+    from blackvue.export import geocoding as geocoding_module
+    from blackvue.export.geocoding import GeocodeResult
+
+    recording = Recording(id=RecordingId("20260715_128000_N"))
+    gps_path = tmp_path / "20260715_128000_N.gps"
+    gps_path.write_text("irrelevant")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    # Fix is ~5km from the road's representative point, but right on
+    # the road's own line geometry.
+    fix = GpsFix(
+        timestamp=datetime(2026, 7, 15, 12, 30, 0),
+        valid=True,
+        latitude=59.364,
+        longitude=18.0501,
+        speed_kmh=10.0,
+        course=90.0,
+    )
+    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+
+    road_geometry = GeocodeResult(
+        point=(59.320, 18.050),
+        lines=(((59.320, 18.050), (59.365, 18.050)),),
+    )
+    monkeypatch.setattr(
+        geocoding_module,
+        "load_or_forward_geocode",
+        lambda name, cache_dir, **k: road_geometry,
+    )
+
+    args = parse_args(
+        [str(tmp_path), "--place", "A Long Road", "--radius", "200"]
+    )
+    messages = []
+    exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_search.EXIT_OK
+    assert any("20260715_128000_N" in m for m in messages)
+    assert any("segment" in m for m in messages)
 
 
 def test_run_place_reports_error_when_not_found(monkeypatch, tmp_path):

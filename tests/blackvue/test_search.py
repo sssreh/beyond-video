@@ -204,3 +204,101 @@ def test_search_near_returns_none_when_recording_has_no_gps(tmp_path):
     match = search_near(recording, 59.3293, 18.0686, radius_meters=1000)
 
     assert match is None
+
+
+# --- line-geometry (--place resolving to a road/area) matching ---
+
+
+def test_point_to_segment_distance_meters_is_near_zero_on_the_segment():
+    from blackvue.search import _point_to_segment_distance_meters
+
+    # A short east-west segment; a point that lies on it (roughly
+    # halfway) should be ~0m away.
+    distance = _point_to_segment_distance_meters(
+        59.320, 18.060, (59.320, 18.050), (59.320, 18.070)
+    )
+
+    assert distance == pytest.approx(0.0, abs=1.0)
+
+
+def test_point_to_segment_distance_meters_clamps_to_nearest_endpoint():
+    from blackvue.search import _point_to_segment_distance_meters
+    from blackvue.search import _haversine_distance_meters
+
+    # A point far beyond one end of the segment - the closest point on
+    # the segment is the endpoint itself, not an extrapolation past it.
+    endpoint_distance = _haversine_distance_meters(59.400, 18.200, 59.320, 18.070)
+    projected_distance = _point_to_segment_distance_meters(
+        59.400, 18.200, (59.320, 18.050), (59.320, 18.070)
+    )
+
+    assert projected_distance == pytest.approx(endpoint_distance, rel=0.01)
+
+
+def test_min_distance_to_lines_meters_picks_the_closest_segment_across_lines():
+    from blackvue.search import _min_distance_to_lines_meters
+
+    lines = (
+        ((59.320, 18.050), (59.320, 18.070)),  # nearby line
+        ((60.000, 19.000), (60.001, 19.001)),  # far-away line
+    )
+
+    distance = _min_distance_to_lines_meters(59.320, 18.060, lines)
+
+    assert distance == pytest.approx(0.0, abs=1.0)
+
+
+def test_min_distance_to_lines_meters_handles_a_degenerate_single_vertex_line():
+    from blackvue.search import _min_distance_to_lines_meters
+
+    # One line, made of exactly one vertex - lines is a tuple of
+    # lines, each a tuple of (lat, lon) vertices, so this is
+    # `(( one_vertex, ),)`, not `((lat, lon),)`.
+    distance = _min_distance_to_lines_meters(
+        59.3293, 18.0686, (((59.3293, 18.0686),),)
+    )
+
+    assert distance == pytest.approx(0.0, abs=1.0)
+
+
+def test_search_near_with_lines_finds_a_fix_far_from_the_representative_point(
+    tmp_path, monkeypatch
+):
+    # Simulates a long road: the road's own Nominatim "point" is near
+    # one end, but a GPS fix near the *other* end (far from that
+    # single point, well outside a normal --radius around it) should
+    # still match, since search_near() is told to measure against the
+    # road's own line geometry instead.
+    import blackvue.search as search_module
+
+    recording = Recording(id=RecordingId("20260715_134000_N"))
+    gps_path = tmp_path / "20260715_134000_N.gps"
+    gps_path.write_text("irrelevant - read_gps is faked below")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    # Road runs roughly 5km from one point to another; representative
+    # "point" is the start of the road, the fix is near the far end.
+    road_start = (59.320, 18.050)
+    road_end = (59.365, 18.050)  # ~5km further north
+    fix = _fix(59.364, 18.0501, minutes=0)
+
+    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+
+    # Plain point-distance search from the road's start point, with a
+    # normal radius, would miss this fix entirely.
+    no_lines_match = search_near(
+        recording, road_start[0], road_start[1], radius_meters=200
+    )
+    assert no_lines_match is None
+
+    # With the road's line geometry, the same fix (near the line, far
+    # from the single representative point) is found.
+    with_lines_match = search_near(
+        recording,
+        road_start[0],
+        road_start[1],
+        radius_meters=200,
+        lines=((road_start, road_end),),
+    )
+    assert with_lines_match is not None
+    assert with_lines_match.distance_meters < 200

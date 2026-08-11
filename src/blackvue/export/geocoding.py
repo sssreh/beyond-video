@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlencode
@@ -181,23 +182,111 @@ def _forward_cache_key(name: str) -> str:
     return f"geocode_place_{digest}.json"
 
 
+@dataclass(frozen=True)
+class GeocodeResult:
+    """A forward-geocoded place for bv-search's --place option.
+
+    `point` is always populated - Nominatim's own best-match lat/lon,
+    usable on its own exactly like a plain --near coordinate. `lines`
+    is additionally populated when the match is a road or an area
+    boundary rather than a point-like address/POI: one or more
+    polylines (each a tuple of (lat, lon) vertices) tracing the
+    match's actual OSM geometry.
+
+    This exists because a single point is a poor stand-in for a long
+    road - Nominatim's own lat/lon for a road match is just one point
+    somewhere along it (often near its middle, or one endpoint of
+    whichever OSM way segment matched best), so a normal search
+    --radius around that one point would miss GPS fixes near the rest
+    of the road entirely. search_near() in search.py uses `lines`
+    (distance to the nearest point *on* the road) instead of `point`
+    whenever it's non-empty, so --place "Highway 1" behaves correctly
+    along the road's whole length, not just near wherever Nominatim
+    happened to drop its pin.
+    """
+
+    point: tuple[float, float]
+    lines: tuple[tuple[tuple[float, float], ...], ...] = ()
+
+
+def _geojson_ring_to_line(
+    ring: list[list[float]],
+) -> tuple[tuple[float, float], ...]:
+    """A GeoJSON ring/line is a list of [lon, lat] pairs (GeoJSON's
+    own coordinate order) - flipped here to the (lat, lon) order used
+    everywhere else in this codebase (GpsFix, --near, ...)."""
+
+    return tuple((lat, lon) for lon, lat in ring)
+
+
+def _geojson_to_lines(
+    geojson: dict | None,
+) -> tuple[tuple[tuple[float, float], ...], ...]:
+    """Normalize a Nominatim `geojson` field (requested via
+    `polygon_geojson=1`) into 0+ polylines for GeocodeResult.lines.
+
+    A plain "Point" match (the common case - most addresses/POIs)
+    yields no lines at all; forward_geocode()'s own `point` field is
+    already the right representation for those, so returning `()`
+    here just means "use `point` alone" downstream. "LineString"/
+    "MultiLineString" (roads) map directly. "Polygon"/"MultiPolygon"
+    (areas - parks, water, administrative boundaries) use only each
+    ring's *exterior* boundary, not its holes - bv-search only needs
+    a proximity-to-boundary check here, not full point-in-polygon
+    containment, so a hole (e.g. a lake with an island) doesn't need
+    separate handling. Anything else (missing/unrecognized type) also
+    falls back to `()` - the same "just use `point`" fallback, rather
+    than raising, since not having line geometry for a query is a
+    normal outcome, not a failure.
+    """
+
+    if not geojson:
+        return ()
+
+    geom_type = geojson.get("type")
+    coordinates = geojson.get("coordinates")
+
+    if geom_type == "LineString" and coordinates:
+        return (_geojson_ring_to_line(coordinates),)
+
+    if geom_type == "MultiLineString" and coordinates:
+        return tuple(_geojson_ring_to_line(line) for line in coordinates)
+
+    if geom_type == "Polygon" and coordinates:
+        return (_geojson_ring_to_line(coordinates[0]),)
+
+    if geom_type == "MultiPolygon" and coordinates:
+        return tuple(
+            _geojson_ring_to_line(polygon[0]) for polygon in coordinates if polygon
+        )
+
+    return ()
+
+
 def forward_geocode(
     name: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
-) -> tuple[float, float] | None:
-    """Look up a (lat, lon) coordinate for a free-text place name via
-    Nominatim's forward-geocoding (search) endpoint - the inverse of
-    reverse_geocode() above, for bv-search's --place option.
+) -> GeocodeResult | None:
+    """Look up a place name via Nominatim's forward-geocoding (search)
+    endpoint - the inverse of reverse_geocode() above, for bv-search's
+    --place option.
+
+    Requests `polygon_geojson=1` alongside the usual lat/lon fields,
+    so a road or area match comes back with its actual line geometry
+    (see GeocodeResult's own docstring for why that matters) as well
+    as the plain point every match already has.
 
     Returns None if Nominatim has no match for this query (a genuine,
     cacheable "no result"). Raises MediaToolError if the request
     itself fails (network error, malformed response), same convention
     as reverse_geocode(). Only the single best-ranked match is used -
-    bv-search wants one search point, not a disambiguation list.
+    bv-search wants one search target, not a disambiguation list.
     """
 
     _throttle()
 
-    query = urlencode({"format": "jsonv2", "q": name, "limit": "1"})
+    query = urlencode(
+        {"format": "jsonv2", "q": name, "limit": "1", "polygon_geojson": "1"}
+    )
     request = Request(
         f"{NOMINATIM_SEARCH_URL}?{query}",
         headers={"User-Agent": USER_AGENT},
@@ -222,11 +311,34 @@ def forward_geocode(
         return None
 
     try:
-        return float(payload[0]["lat"]), float(payload[0]["lon"])
+        point = (float(payload[0]["lat"]), float(payload[0]["lon"]))
     except (KeyError, ValueError, TypeError) as exc:
         raise MediaToolError(
             f"Nominatim's place-name lookup response was malformed: {exc}"
         ) from exc
+
+    lines = _geojson_to_lines(payload[0].get("geojson"))
+    return GeocodeResult(point=point, lines=lines)
+
+
+def _geocode_result_to_json(result: GeocodeResult | None) -> dict:
+    if result is None:
+        return {"point": None, "lines": []}
+    return {
+        "point": list(result.point),
+        "lines": [[list(vertex) for vertex in line] for line in result.lines],
+    }
+
+
+def _geocode_result_from_json(payload: dict) -> GeocodeResult | None:
+    point = payload.get("point")
+    if point is None:
+        return None
+    lines = tuple(
+        tuple((vertex[0], vertex[1]) for vertex in line)
+        for line in payload.get("lines", [])
+    )
+    return GeocodeResult(point=(point[0], point[1]), lines=lines)
 
 
 def load_or_forward_geocode(
@@ -234,7 +346,7 @@ def load_or_forward_geocode(
     cache_dir: Path,
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
-) -> tuple[float, float] | None:
+) -> GeocodeResult | None:
     """Reuse a cached forward-geocode lookup for this place name if
     one exists on disk, otherwise geocode fresh and persist the
     result - same load-or-fetch-and-cache pattern as
@@ -246,11 +358,10 @@ def load_or_forward_geocode(
 
     if cache_path.exists():
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        coordinates = payload.get("coordinates")
-        return tuple(coordinates) if coordinates is not None else None
+        return _geocode_result_from_json(payload)
 
-    coordinates = forward_geocode(name, timeout=timeout)
+    result = forward_geocode(name, timeout=timeout)
     cache_path.write_text(
-        json.dumps({"coordinates": coordinates}), encoding="utf-8"
+        json.dumps(_geocode_result_to_json(result)), encoding="utf-8"
     )
-    return coordinates
+    return result

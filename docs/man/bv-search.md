@@ -24,6 +24,8 @@ At least one of `--text`, `--near`, or `--place` must be given. When more than o
 
 **GPS proximity search** (`--near`/`--place`) checks a recording's `.gps` track for any valid fix within `--radius` meters of a point, reporting the closest one. `--near` takes a raw coordinate; `--place` geocodes a free-text place name to a coordinate first via OpenStreetMap Nominatim (needs network access the first time a given name is looked up; results are cached to disk under `<archive>/.osm_cache` afterward, the same cache directory/pattern `bv-export`'s reverse geocoding already uses).
 
+When `--place` resolves to a road or an area (rather than a point-like address/POI), Nominatim's own reply includes the match's actual line/boundary geometry, not just one representative point - `bv-search` uses that geometry automatically, measuring distance to the nearest point *along the whole road* (or area boundary) instead of to a single coordinate. This matters for long roads specifically: a single point somewhere along a multi-kilometer road would make `--radius` only cover a small stretch near that one point, missing recordings near the rest of the road entirely. A confirmation line reports whether this happened (`"<name>" -> lat,lon (road/area geometry, N segment(s) - ...)`).
+
 ## ARGUMENTS
 
 | Argument | Description |

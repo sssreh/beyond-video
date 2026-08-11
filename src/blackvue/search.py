@@ -86,6 +86,82 @@ def _haversine_distance_meters(
     return _EARTH_RADIUS_METERS * c
 
 
+def _project_local_meters(
+    lat: float, lon: float, ref_lat: float
+) -> tuple[float, float]:
+    """Flat-Earth (equirectangular) projection of (lat, lon) into
+    local x/y meters around `ref_lat`, for the point-to-segment
+    distance math below - accurate enough at the scale bv-search's
+    --radius operates at (up to a few km), the same order of
+    approximation _haversine_distance_meters() above already makes
+    (a perfect sphere, not the real ellipsoid)."""
+
+    x = math.radians(lon) * math.cos(math.radians(ref_lat)) * _EARTH_RADIUS_METERS
+    y = math.radians(lat) * _EARTH_RADIUS_METERS
+    return x, y
+
+
+def _point_to_segment_distance_meters(
+    lat: float,
+    lon: float,
+    segment_start: tuple[float, float],
+    segment_end: tuple[float, float],
+) -> float:
+    """Shortest distance from (lat, lon) to the line segment between
+    segment_start and segment_end, in meters - standard 2D point-to-
+    segment projection, done in a local flat projection centered on
+    the query point itself (see _project_local_meters()) rather than
+    on the sphere directly, since a closed-form great-circle point-
+    to-segment distance is significantly more involved for no real
+    accuracy benefit at this scale."""
+
+    ref_lat = lat
+    px, py = _project_local_meters(lat, lon, ref_lat)
+    ax, ay = _project_local_meters(segment_start[0], segment_start[1], ref_lat)
+    bx, by = _project_local_meters(segment_end[0], segment_end[1], ref_lat)
+
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return math.hypot(px - ax, py - ay)
+
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    closest_x, closest_y = ax + t * dx, ay + t * dy
+
+    return math.hypot(px - closest_x, py - closest_y)
+
+
+def _min_distance_to_lines_meters(
+    lat: float,
+    lon: float,
+    lines: tuple[tuple[tuple[float, float], ...], ...],
+) -> float | None:
+    """Shortest distance from (lat, lon) to any of `lines` (each a
+    polyline of (lat, lon) vertices) - the nearest point *on* a road/
+    area boundary, not just to one of its vertices. Returns None if
+    `lines` is empty. A degenerate single-vertex "line" (Nominatim
+    can return one for a very short way) falls back to plain point
+    distance."""
+
+    best: float | None = None
+
+    for line in lines:
+        if len(line) == 1:
+            distance = _haversine_distance_meters(lat, lon, line[0][0], line[0][1])
+            if best is None or distance < best:
+                best = distance
+            continue
+
+        for segment_start, segment_end in zip(line, line[1:]):
+            distance = _point_to_segment_distance_meters(
+                lat, lon, segment_start, segment_end
+            )
+            if best is None or distance < best:
+                best = distance
+
+    return best
+
+
 def search_text(
     recording: Recording,
     pattern: str,
@@ -147,11 +223,22 @@ def search_near(
     lat: float,
     lon: float,
     radius_meters: float,
+    *,
+    lines: tuple[tuple[tuple[float, float], ...], ...] = (),
 ) -> GeoMatch | None:
     """Return the closest valid GPS fix in `recording`'s .gps file to
     (lat, lon), if any fall within `radius_meters` - or None if the
     recording has no GPS data at all, or none of its fixes come that
-    close."""
+    close.
+
+    `lines` - one or more polylines (each a sequence of (lat, lon)
+    vertices) - overrides the plain point/`lat`/`lon` distance check
+    with distance-to-nearest-point-on-any-line when given. bv-search's
+    --place passes a road/area's own line geometry here whenever
+    Nominatim resolves the name to one, since a long road's single
+    representative point (what `lat`/`lon` would otherwise be) badly
+    undershoots how much of the road actually counts as "near" it -
+    see export/geocoding.py's GeocodeResult docstring."""
 
     gps_file = recording.file(Asset.GPS)
     if gps_file is None:
@@ -163,7 +250,16 @@ def search_near(
         if not fix.valid or fix.latitude is None or fix.longitude is None:
             continue
 
-        distance = _haversine_distance_meters(lat, lon, fix.latitude, fix.longitude)
+        if lines:
+            distance = _min_distance_to_lines_meters(
+                fix.latitude, fix.longitude, lines
+            )
+            if distance is None:
+                continue
+        else:
+            distance = _haversine_distance_meters(
+                lat, lon, fix.latitude, fix.longitude
+            )
         if distance > radius_meters:
             continue
 

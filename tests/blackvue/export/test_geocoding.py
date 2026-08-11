@@ -4,6 +4,7 @@ from urllib.error import URLError
 import pytest
 
 from blackvue.export import geocoding as geocoding_module
+from blackvue.export.geocoding import GeocodeResult
 from blackvue.export.geocoding import forward_geocode
 from blackvue.export.geocoding import load_or_forward_geocode
 from blackvue.generate.media import MediaToolError
@@ -41,7 +42,7 @@ def _no_throttle_sleep(monkeypatch):
     monkeypatch.setattr(geocoding_module.time, "sleep", lambda seconds: None)
 
 
-def test_forward_geocode_returns_coordinates_from_best_match(monkeypatch):
+def test_forward_geocode_returns_point_from_best_match(monkeypatch):
     payload = [{"lat": "59.3293", "lon": "18.0686"}]
     captured = []
     monkeypatch.setattr(
@@ -50,9 +51,104 @@ def test_forward_geocode_returns_coordinates_from_best_match(monkeypatch):
 
     result = forward_geocode("Stockholm")
 
-    assert result == (59.3293, 18.0686)
+    assert result == GeocodeResult(point=(59.3293, 18.0686), lines=())
     assert len(captured) == 1
     assert "Stockholm" in captured[0].full_url or "Stockholm" in str(captured[0].full_url)
+
+
+def test_forward_geocode_requests_polygon_geojson(monkeypatch):
+    payload = [{"lat": "59.3293", "lon": "18.0686"}]
+    captured = []
+    monkeypatch.setattr(
+        geocoding_module, "urlopen", _fake_urlopen(payload, captured=captured)
+    )
+
+    forward_geocode("Stockholm")
+
+    assert "polygon_geojson=1" in str(captured[0].full_url)
+
+
+def test_forward_geocode_returns_line_geometry_for_a_road_linestring(monkeypatch):
+    payload = [
+        {
+            "lat": "59.33",
+            "lon": "18.07",
+            "geojson": {
+                "type": "LineString",
+                "coordinates": [[18.05, 59.31], [18.06, 59.32], [18.07, 59.33]],
+            },
+        }
+    ]
+    monkeypatch.setattr(geocoding_module, "urlopen", _fake_urlopen(payload))
+
+    result = forward_geocode("A long road")
+
+    assert result.point == (59.33, 18.07)
+    assert result.lines == (
+        ((59.31, 18.05), (59.32, 18.06), (59.33, 18.07)),
+    )
+
+
+def test_forward_geocode_returns_multiple_lines_for_a_multilinestring(monkeypatch):
+    payload = [
+        {
+            "lat": "59.33",
+            "lon": "18.07",
+            "geojson": {
+                "type": "MultiLineString",
+                "coordinates": [
+                    [[18.05, 59.31], [18.06, 59.32]],
+                    [[18.08, 59.34], [18.09, 59.35]],
+                ],
+            },
+        }
+    ]
+    monkeypatch.setattr(geocoding_module, "urlopen", _fake_urlopen(payload))
+
+    result = forward_geocode("A split road")
+
+    assert result.lines == (
+        ((59.31, 18.05), (59.32, 18.06)),
+        ((59.34, 18.08), (59.35, 18.09)),
+    )
+
+
+def test_forward_geocode_uses_exterior_ring_for_a_polygon(monkeypatch):
+    payload = [
+        {
+            "lat": "59.33",
+            "lon": "18.07",
+            "geojson": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[18.05, 59.31], [18.06, 59.32], [18.07, 59.31], [18.05, 59.31]],
+                    [[18.055, 59.315], [18.06, 59.315], [18.055, 59.315]],
+                ],
+            },
+        }
+    ]
+    monkeypatch.setattr(geocoding_module, "urlopen", _fake_urlopen(payload))
+
+    result = forward_geocode("A park")
+
+    assert result.lines == (
+        ((59.31, 18.05), (59.32, 18.06), (59.31, 18.07), (59.31, 18.05)),
+    )
+
+
+def test_forward_geocode_ignores_point_geojson(monkeypatch):
+    payload = [
+        {
+            "lat": "59.33",
+            "lon": "18.07",
+            "geojson": {"type": "Point", "coordinates": [18.07, 59.33]},
+        }
+    ]
+    monkeypatch.setattr(geocoding_module, "urlopen", _fake_urlopen(payload))
+
+    result = forward_geocode("An address")
+
+    assert result.lines == ()
 
 
 def test_forward_geocode_returns_none_for_no_match(monkeypatch):
@@ -103,7 +199,7 @@ def test_load_or_forward_geocode_fetches_and_caches(tmp_path, monkeypatch):
     cache_dir = tmp_path / ".osm_cache"
     result = load_or_forward_geocode("Stockholm", cache_dir)
 
-    assert result == (59.3293, 18.0686)
+    assert result == GeocodeResult(point=(59.3293, 18.0686), lines=())
     assert len(captured) == 1
 
     cache_files = list(cache_dir.glob("geocode_place_*.json"))
@@ -111,7 +207,35 @@ def test_load_or_forward_geocode_fetches_and_caches(tmp_path, monkeypatch):
 
     # Second call for the same name hits the cache, no further request.
     result_again = load_or_forward_geocode("Stockholm", cache_dir)
-    assert result_again == (59.3293, 18.0686)
+    assert result_again == GeocodeResult(point=(59.3293, 18.0686), lines=())
+    assert len(captured) == 1
+
+
+def test_load_or_forward_geocode_round_trips_line_geometry_through_the_cache(
+    tmp_path, monkeypatch
+):
+    payload = [
+        {
+            "lat": "59.33",
+            "lon": "18.07",
+            "geojson": {
+                "type": "LineString",
+                "coordinates": [[18.05, 59.31], [18.07, 59.33]],
+            },
+        }
+    ]
+    captured = []
+    monkeypatch.setattr(
+        geocoding_module, "urlopen", _fake_urlopen(payload, captured=captured)
+    )
+
+    cache_dir = tmp_path / ".osm_cache"
+    result = load_or_forward_geocode("A long road", cache_dir)
+    assert result.lines == (((59.31, 18.05), (59.33, 18.07)),)
+
+    # Cache hit - same line geometry comes back without a second request.
+    result_again = load_or_forward_geocode("A long road", cache_dir)
+    assert result_again.lines == (((59.31, 18.05), (59.33, 18.07)),)
     assert len(captured) == 1
 
 

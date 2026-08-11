@@ -193,6 +193,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         return EXIT_ARGS_ERROR
 
     target: tuple[float, float] | None = args.near
+    target_lines: tuple[tuple[tuple[float, float], ...], ...] = ()
 
     if args.place is not None:
         # Deferred import: blackvue.export's package __init__ pulls in
@@ -205,14 +206,25 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         cache_dir = archive_path / ".osm_cache"
         try:
-            target = load_or_forward_geocode(args.place, cache_dir)
+            result = load_or_forward_geocode(args.place, cache_dir)
         except (MediaToolError, OSError) as exc:
             warn(f"bv-search: {exc}")
             return EXIT_HAD_ERRORS
-        if target is None:
+        if result is None:
             warn(f"bv-search: no place found matching {args.place!r}")
             return EXIT_HAD_ERRORS
-        say(f"bv-search: {args.place!r} -> {target[0]:.5f},{target[1]:.5f}")
+        target = result.point
+        target_lines = result.lines
+        geometry_note = (
+            f" (road/area geometry, {len(target_lines)} segment(s) - "
+            "searching along the whole shape, not just this point)"
+            if target_lines
+            else ""
+        )
+        say(
+            f"bv-search: {args.place!r} -> "
+            f"{target[0]:.5f},{target[1]:.5f}{geometry_note}"
+        )
 
     recordings = [
         recording for recording in archive.recordings
@@ -247,7 +259,9 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         geo_match = None
         if target is not None:
-            geo_match = search_near(recording, target[0], target[1], args.radius)
+            geo_match = search_near(
+                recording, target[0], target[1], args.radius, lines=target_lines
+            )
             if geo_match is None:
                 continue
 
