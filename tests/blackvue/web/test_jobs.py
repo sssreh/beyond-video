@@ -36,6 +36,37 @@ from blackvue.web.jobs import BvExportArgError
 from blackvue.web.jobs import Job
 from blackvue.web.jobs import JobRunner
 from blackvue.web.jobs import JobStatus
+from blackvue.web.jobs import _quote_for_replicate
+from blackvue.web.jobs import _replicate_command_line
+
+
+# ---------------------------------------------------------------------------
+# _quote_for_replicate / _replicate_command_line
+# ---------------------------------------------------------------------------
+
+
+def test_quote_for_replicate_leaves_plain_values_alone():
+    assert _quote_for_replicate("kirby") == "kirby"
+    assert _quote_for_replicate("20260101_000000") == "20260101_000000"
+
+
+def test_quote_for_replicate_quotes_values_with_whitespace():
+    assert _quote_for_replicate("Slussen, Stockholm") == '"Slussen, Stockholm"'
+
+
+def test_quote_for_replicate_quotes_the_empty_string():
+    assert _quote_for_replicate("") == '""'
+
+
+def test_quote_for_replicate_escapes_embedded_double_quotes():
+    assert _quote_for_replicate('a "quoted" name') == '"a \\"quoted\\" name"'
+
+
+def test_replicate_command_line_joins_name_and_argv():
+    line = _replicate_command_line(
+        "bv-search", ["kirby", "--place", "Slussen, Stockholm", "--radius", "150"]
+    )
+    assert line == 'bv-search kirby --place "Slussen, Stockholm" --radius 150'
 
 
 def _wait_until(predicate, *, timeout: float = 2.0) -> None:
@@ -397,6 +428,7 @@ def test_start_bv_config_wires_ask_say_warn_into_bv_configs_run(monkeypatch):
     job = runner.start_bv_config(id_="kirby", username="christer")
 
     assert job.command == "bv-config kirby"
+    assert job.replicate_command == "bv-config kirby"
 
     _wait_until(lambda: job.snapshot()[0] == JobStatus.WAITING_FOR_INPUT)
     assert runner.answer(job.id, "Kirby") is True
@@ -440,6 +472,7 @@ def test_start_bv_gps_wires_say_warn_but_needs_no_ask(monkeypatch):
     )
 
     assert job.command == "bv-gps kirby"
+    assert job.replicate_command == "bv-gps kirby --timeout 5"
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -534,6 +567,10 @@ def test_start_bv_generate_wires_say_warn_into_bv_generates_run(monkeypatch):
     job = runner.start_bv_generate(**_generate_kwargs(extract_audio=True))
 
     assert job.command == "bv-generate kirby"
+    # camera_id, not the resolved archive_path - see Job.replicate_
+    # command's own docstring for why (the resolved path is only
+    # meaningful inside this container/machine).
+    assert job.replicate_command == "bv-generate kirby --extract-audio"
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -736,6 +773,12 @@ def test_start_bv_export_wires_say_warn_and_command_line_into_run(monkeypatch):
     job = runner.start_bv_export(**_export_kwargs())
 
     assert job.command == "bv-export kirby"
+    # --stitch-layout is always appended (its own default is "auto",
+    # a truthy string, not conditioned on --stitch itself).
+    assert (
+        job.replicate_command
+        == "bv-export kirby --target /trips --stitch-layout auto"
+    )
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -927,6 +970,10 @@ def test_start_bv_download_wires_say_warn_and_forces_yes(monkeypatch):
     job = runner.start_bv_download(**_download_kwargs())
 
     assert job.command == "bv-download kirby"
+    # Includes the forced --yes - see Job.replicate_command's own
+    # docstring on why this shows what actually ran, flags the job
+    # runner itself always adds included.
+    assert job.replicate_command == "bv-download kirby --timeout 5 --yes"
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -1094,6 +1141,7 @@ def test_start_bv_ls_wires_say_but_needs_no_ask_or_warn(monkeypatch):
     job = runner.start_bv_ls(**_ls_kwargs())
 
     assert job.command == "bv-ls kirby"
+    assert job.replicate_command == "bv-ls kirby"
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -1252,6 +1300,9 @@ def test_start_bv_scribe_wires_say_and_warn_into_bv_scribes_run(monkeypatch):
     job = runner.start_bv_scribe(**_scribe_kwargs())
 
     assert job.command == "bv-scribe kirby"
+    assert (
+        job.replicate_command == "bv-scribe kirby --task both --camera front"
+    )
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -1496,6 +1547,10 @@ def test_start_bv_search_wires_say_and_warn_into_bv_searchs_run(monkeypatch):
     job = runner.start_bv_search(**_search_kwargs(text="roundabout"))
 
     assert job.command == "bv-search kirby"
+    assert (
+        job.replicate_command
+        == "bv-search kirby --text roundabout --asset all"
+    )
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
@@ -1562,12 +1617,18 @@ def test_start_bv_search_place_reaches_parsed_args(monkeypatch):
     monkeypatch.setattr(bv_search_module, "_run", fake_run)
 
     runner = JobRunner()
-    runner.start_bv_search(**_search_kwargs(place="Slussen, Stockholm"))
+    job = runner.start_bv_search(**_search_kwargs(place="Slussen, Stockholm"))
 
     _wait_until(lambda: "args" in captured)
     args = captured["args"]
     assert args.place == "Slussen, Stockholm"
     assert args.near is None
+    # A --place value containing a space/comma must come back quoted -
+    # unquoted it would split into two shell arguments on replay.
+    assert (
+        job.replicate_command
+        == 'bv-search kirby --asset all --place "Slussen, Stockholm"'
+    )
 
 
 def test_start_bv_search_time_range_and_trace_reach_parsed_args(monkeypatch):

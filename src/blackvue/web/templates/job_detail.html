@@ -9,6 +9,31 @@
   <span class="badge status-badge {{ status }}">{{ status }}</span>
 </h2>
 
+{% if job.replicate_command %}
+<div class="replicate-command">
+  <code id="replicate-command-text">{{ job.replicate_command }}</code>
+  <button type="button" class="copy-button" onclick="copyReplicateCommand(this)">Copy</button>
+</div>
+<p class="hint replicate-command-hint">Run this yourself in bash or PowerShell to repeat this job from a terminal - needs the camera id set up there too (bv-config).</p>
+<script>
+function copyReplicateCommand(button) {
+  var text = document.getElementById("replicate-command-text").textContent;
+  var done = function () {
+    var original = button.textContent;
+    button.textContent = "Copied";
+    setTimeout(function () { button.textContent = original; }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () {
+      window.prompt("Copy this command:", text);
+    });
+  } else {
+    window.prompt("Copy this command:", text);
+  }
+}
+</script>
+{% endif %}
+
 {% if status == "running" %}
 <p class="refresh-toggle">
   {% if paused %}

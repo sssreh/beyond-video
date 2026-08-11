@@ -91,6 +91,32 @@ class _JobCancelled(Exception):
     further to do beyond letting the thread end."""
 
 
+def _quote_for_replicate(value: str) -> str:
+    """Minimal quoting for Job.replicate_command - good enough to
+    copy/paste into either bash or PowerShell for the values these
+    arguments actually take (camera ids, dates, numbers, --place names
+    with a space or comma, tokens). Only quotes when the value is
+    empty or contains whitespace; embedded double quotes are escaped
+    with a backslash, which both shells accept for the realistic case
+    here (an unescaped one inside a value would be unusual). Not using
+    shlex.quote() - its single-quote style is bash-only and would
+    confuse a PowerShell user copying the same line, defeating the
+    "works in either" goal this exists for."""
+
+    if value == "" or any(character.isspace() for character in value):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def _replicate_command_line(name: str, argv: list[str]) -> str:
+    """Build the human-facing "here's how to run this yourself"
+    command line shown on the job detail page - see Job.replicate_
+    command's own docstring for why this exists and what it
+    deliberately doesn't guarantee."""
+
+    return " ".join([name, *(_quote_for_replicate(a) for a in argv)])
+
+
 class JobStatus(str, Enum):
     RUNNING = "running"
     WAITING_FOR_INPUT = "waiting_for_input"
@@ -122,6 +148,21 @@ class Job:
     command: str
     username: str
     created_at: datetime
+    replicate_command: str = ""
+    """The equivalent real bv-* CLI invocation for this job, using the
+    camera id (not this job's resolved-on-the-server archive path) as
+    the positional PATH argument - a job started from the web UI runs
+    inside bv-web's own process/container, so the literal path it used
+    (e.g. /data/archive/Kirby) usually isn't a real path on whatever
+    machine someone reads this to replicate the job on; the camera id
+    resolves the same way there too as long as that machine also has
+    the camera configured (bv-config), which is Christer's actual dual
+    -machine setup (NAS + PC, see docs/DEPLOY.md). Includes whatever
+    flags the job runner itself always adds (e.g. bv-download's forced
+    --yes) - that's what actually ran, even if a from-scratch terminal
+    run wouldn't need it. Set by every start_bv_*() method, including
+    bv-config's wizard trigger (its own replicate command just starts
+    the same interactive wizard for real, in a real terminal)."""
     status: JobStatus = JobStatus.RUNNING
     output: list[str] = field(default_factory=list)
     prompt: str | None = None
@@ -210,7 +251,11 @@ class JobRunner:
         from ..cli import bv_config
 
         args = bv_config.parse_args([id_])
-        job = self._new_job(command=f"bv-config {id_}", username=username)
+        job = self._new_job(
+            command=f"bv-config {id_}",
+            replicate_command=_replicate_command_line("bv-config", [id_]),
+            username=username,
+        )
 
         def run() -> int:
             ask = self._make_ask(job)
@@ -247,7 +292,11 @@ class JobRunner:
         if no_address:
             argv.append("--no-address")
         args = bv_gps.parse_args(argv)
-        job = self._new_job(command=f"bv-gps {id_}", username=username)
+        job = self._new_job(
+            command=f"bv-gps {id_}",
+            replicate_command=_replicate_command_line("bv-gps", argv),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -312,7 +361,13 @@ class JobRunner:
             argv += ["--gap-tolerance", str(gap_tolerance_seconds)]
 
         args = bv_ls_cli.parse_args(argv)
-        job = self._new_job(command=f"bv-ls {camera_id}", username=username)
+        job = self._new_job(
+            command=f"bv-ls {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-ls", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -404,7 +459,13 @@ class JobRunner:
             argv.append("--dry-run")
 
         args = bv_generate.parse_args(argv)
-        job = self._new_job(command=f"bv-generate {camera_id}", username=username)
+        job = self._new_job(
+            command=f"bv-generate {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-generate", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -621,7 +682,13 @@ class JobRunner:
             )
 
         command_line = "bv-export " + " ".join(argv)
-        job = self._new_job(command=f"bv-export {camera_id}", username=username)
+        job = self._new_job(
+            command=f"bv-export {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-export", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -707,7 +774,11 @@ class JobRunner:
             argv.append("--trace")
 
         args = bv_download.parse_args(argv)
-        job = self._new_job(command=f"bv-download {id_}", username=username)
+        job = self._new_job(
+            command=f"bv-download {id_}",
+            replicate_command=_replicate_command_line("bv-download", argv),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -885,7 +956,13 @@ class JobRunner:
             argv.append("--verbose")
 
         args = bv_scribe.parse_args(argv)
-        job = self._new_job(command=f"bv-scribe {camera_id}", username=username)
+        job = self._new_job(
+            command=f"bv-scribe {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-scribe", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -965,7 +1042,13 @@ class JobRunner:
             argv.append("--trace")
 
         args = bv_search_cli.parse_args(argv)
-        job = self._new_job(command=f"bv-search {camera_id}", username=username)
+        job = self._new_job(
+            command=f"bv-search {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-search", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
 
         def run() -> int:
             say = job.append_output
@@ -997,10 +1080,13 @@ class JobRunner:
             return False
         return job.cancel()
 
-    def _new_job(self, *, command: str, username: str) -> Job:
+    def _new_job(
+        self, *, command: str, replicate_command: str = "", username: str
+    ) -> Job:
         job = Job(
             id=uuid.uuid4().hex,
             command=command,
+            replicate_command=replicate_command,
             username=username,
             created_at=datetime.now(timezone.utc),
         )
