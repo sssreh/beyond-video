@@ -116,3 +116,39 @@ def command_line_from_argv(prog: str, argv: list[str]) -> str:
     terminal invocation actually was."""
 
     return " ".join([prog, *(quote_for_display(a) for a in argv)])
+
+
+def read_entries(path: Path | None = None) -> list[HistoryEntry]:
+    """Read every entry back, oldest first (append order == file
+    order, matching how bash/pwsh's own `history` displays - see
+    bv-history's own docstring). `path` is only ever overridden by
+    tests; real callers always want the current history_path().
+
+    Missing file -> empty list (a fresh install has no history yet,
+    not an error). A line that fails to parse (truncated by a crash
+    mid-write - see record()'s own docstring on why that's possible,
+    or just hand-edited) is silently skipped rather than raising, so
+    one bad line can't make the rest of a real, mostly-fine history
+    file unreadable - `blackvue.history`'s entry numbering (what
+    "entry N" means to a user) is assigned over this function's
+    *returned* list, so a skipped line just never gets a number
+    rather than leaving a gap in the visible sequence.
+    """
+
+    target = path if path is not None else history_path()
+    if not target.exists():
+        return []
+
+    entries: list[HistoryEntry] = []
+    with open(target, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                entries.append(HistoryEntry(**data))
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    return entries

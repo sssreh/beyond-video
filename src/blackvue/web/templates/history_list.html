@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Command history - Beyond Video{% endblock %}
+{% block content %}
+<h2>Command history</h2>
+<p class="hint">Every bv-* command run, typed straight into a terminal or triggered from this site - the persistent record survives restarts.</p>
+
+<form method="get" action="/history" class="filter-bar">
+  <div class="filter-row">
+    <span class="filter-label">Command</span>
+    <span class="filter-fields">
+      <label><input type="text" name="command" value="{{ command_value }}" placeholder="bv-ls" size="12"></label>
+    </span>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">
+      Camera/search
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Camera matches anywhere in the full command line (e.g. an archive path or camera id). Search matches anywhere in the full command line too - the two do the same thing, offered separately for convenience.</span></span>
+    </span>
+    <span class="filter-fields">
+      <label>Camera <input type="text" name="camera" value="{{ camera_value }}" placeholder="Kirby" size="12"></label>
+      <label>Search <input type="text" name="search" value="{{ search_value }}" placeholder="--all" size="12"></label>
+    </span>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">
+      Date/time
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">A prefix of YYYYMMDD_HHMMSS, e.g. 2026, 20260715, or 20260715_14. "Exact" matches only that prefix; "From"/"Until" set an inclusive range and can't be combined with "Exact".</span></span>
+    </span>
+    <span class="filter-fields">
+      <label>Exact <input type="text" name="timestamp" value="{{ timestamp_value }}" placeholder="20260715" size="14"></label>
+      <label>From <input type="text" name="from" value="{{ from_value }}" placeholder="20260701" size="14"></label>
+      <label>Until <input type="text" name="until" value="{{ until_value }}" placeholder="20260731" size="14"></label>
+    </span>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">Options</span>
+    <span class="filter-modes">
+      <label class="filter-checkbox">
+        <input type="checkbox" name="source" value="cli" {% if source_value == "cli" %}checked{% endif %}>
+        Terminal only
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" name="failed_only" value="1" {% if failed_only %}checked{% endif %}>
+        Failed/interrupted only
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" name="all" value="1" {% if show_all %}checked{% endif %}>
+        Show all matches (not just the most recent)
+      </label>
+    </span>
+  </div>
+  <div class="filter-row filter-actions">
+    <button type="submit">Apply</button>
+    {% if command_value or camera_value or search_value or timestamp_value or from_value or until_value or failed_only or show_all %}
+    <a href="/history">Clear filters</a>
+    {% endif %}
+  </div>
+</form>
+
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+
+<div class="content-panel">
+{% if entries %}
+{% if truncated %}
+<p class="hint">Showing the {{ entries|length }} most recent of {{ total_matches }} matching entries - check "Show all matches" above to see everything.</p>
+{% endif %}
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>When</th>
+      <th>Duration</th>
+      <th>Status</th>
+      <th>Who</th>
+      <th>Command</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for numbered in entries %}
+    <tr class="history-row history-{{ numbered.entry.status }}">
+      <td><a href="/history/{{ numbered.number }}">{{ numbered.number }}</a></td>
+      <td>{{ numbered.entry.started_at }}</td>
+      <td>{{ "%.1f"|format(numbered.entry.duration_seconds) }}s</td>
+      <td>{{ numbered.entry.status }}</td>
+      <td>{% if numbered.entry.source == "bv-web" %}{{ numbered.entry.username or "bv-web" }}{% else %}terminal{% endif %}</td>
+      <td class="history-command-line"><code>{{ numbered.entry.command_line }}</code></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No matching entries.</p>
+{% endif %}
+</div>
+{% endblock %}

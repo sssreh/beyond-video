@@ -119,3 +119,68 @@ def test_command_line_from_argv_joins_prog_and_args():
 
 def test_command_line_from_argv_with_no_args():
     assert history.command_line_from_argv("bv-ls", []) == "bv-ls"
+
+
+# ---------------------------------------------------------------------------
+# read_entries() - the read side, added for bv-history (blackvue.history/
+# cli/bv_history.py).
+# ---------------------------------------------------------------------------
+
+
+def test_read_entries_returns_empty_list_when_file_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    assert history.read_entries() == []
+
+
+def test_read_entries_returns_entries_oldest_first(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    history.record(_entry(command="bv-ls"))
+    history.record(_entry(command="bv-gps"))
+    history.record(_entry(command="bv-scribe"))
+
+    entries = history.read_entries()
+
+    assert [e.command for e in entries] == ["bv-ls", "bv-gps", "bv-scribe"]
+    assert all(isinstance(e, HistoryEntry) for e in entries)
+
+
+def test_read_entries_skips_malformed_lines(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+
+    history.record(_entry(command="bv-ls"))
+    with open(history.history_path(), "a", encoding="utf-8") as fh:
+        fh.write("not json at all\n")
+        fh.write('{"command": "bv-gps"}\n')  # valid JSON, missing fields
+        fh.write("\n")  # blank line
+    history.record(_entry(command="bv-scribe"))
+
+    entries = history.read_entries()
+
+    assert [e.command for e in entries] == ["bv-ls", "bv-scribe"]
+
+
+def test_read_entries_accepts_an_explicit_path(tmp_path):
+    # Deliberately doesn't touch record()/BEYOND_VIDEO_LOGS_DIR at all -
+    # read_entries(path=...) should work from a bare file, independent
+    # of history_path()'s own env-var/default_logs_dir() resolution.
+    target = tmp_path / "custom-history.jsonl"
+    target.write_text(
+        json.dumps(
+            {
+                "command": "bv-gps",
+                "command_line": "bv-gps Kirby",
+                "source": "cli",
+                "username": None,
+                "started_at": "2026-08-11T12:00:00+00:00",
+                "duration_seconds": 1.0,
+                "status": "succeeded",
+            }
+        )
+        + "\n"
+    )
+
+    entries = history.read_entries(path=target)
+
+    assert [e.command for e in entries] == ["bv-gps"]

@@ -4,6 +4,8 @@ This page documents the one thing shared across every `bv-*` command that reads 
 
 > This page previously described a larger, aspirational selection syntax (`--type`, `--match`, `--latest`, `--last-hours`/`--last-minutes`/`--last-days`, and commands named `bv-find`/`bv-transcribe`) that was never actually built. None of those exist in the current CLI - this page now documents only what's real, cross-checked against each command's own `--help` output.
 
+One command doesn't fit the recording-selection model below at all: `bv-history` browses the persistent record of every `bv-*` command run (direct-CLI and bv-web alike), the way pwsh/bash's own `history` browses shell history - see `docs/man/bv-history.md`.
+
 ## Camera system ID
 
 `bv-config`, `bv-download`, `bv-gps`, and `bv-live` take a camera system ID as their first argument:

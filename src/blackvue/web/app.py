@@ -58,6 +58,11 @@ from .auth import THEME_COOKIE_NAME
 from .auth import SessionStore
 from .auth import require_login
 from .auth import require_owner
+from ..history import HistoryFilter
+from ..history import all_entries
+from ..history import filtered_entries
+from ..history import matching_log_lines
+from ..history import tail
 from .jobs import BvExportArgError
 from .jobs import Job
 from .jobs import JobRunner
@@ -1390,6 +1395,93 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         app.state.job_runner.cancel(job_id)
         return RedirectResponse(
             url=f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/history", response_class=HTMLResponse)
+    async def history_list(
+        request: Request,
+        user: User = Depends(require_owner),
+        command: str | None = Query(default=None),
+        camera: str | None = Query(default=None),
+        timestamp: str | None = Query(default=None),
+        from_: str | None = Query(default=None, alias="from"),
+        until: str | None = Query(default=None, alias="until"),
+        failed_only: bool = Query(default=False),
+        search: str | None = Query(default=None),
+        source: str | None = Query(default=None),
+        show_all: bool = Query(default=False, alias="all"),
+    ):
+        # Same "" vs None GET-form normalization archive_recording_list()
+        # above already needs and explains in its own comment - a text
+        # box left blank still arrives as "", not an absent param.
+        command = command or None
+        camera = camera or None
+        timestamp = timestamp or None
+        from_ = from_ or None
+        until = until or None
+        search = search or None
+        source = source or None
+
+        error = None
+        matches: list = []
+        try:
+            matches = filtered_entries(
+                HistoryFilter(
+                    command=command,
+                    camera=camera,
+                    since=from_,
+                    until=until,
+                    timestamp=timestamp,
+                    failed_only=failed_only,
+                    search=search,
+                    source=source,
+                ),
+                entries=all_entries(),
+            )
+        except ValueError as exc:
+            error = str(exc)
+
+        shown = matches if show_all else tail(matches)
+        truncated = not show_all and len(shown) < len(matches)
+
+        return templates.TemplateResponse(
+            request,
+            "history_list.html",
+            {
+                "user": user,
+                "entries": shown,
+                "truncated": truncated,
+                "total_matches": len(matches),
+                "command_value": command or "",
+                "camera_value": camera or "",
+                "timestamp_value": timestamp or "",
+                "from_value": from_ or "",
+                "until_value": until or "",
+                "search_value": search or "",
+                "source_value": source or "",
+                "failed_only": failed_only,
+                "show_all": show_all,
+                "error": error,
+            },
+        )
+
+    @app.get("/history/{number}", response_class=HTMLResponse)
+    async def history_detail(
+        request: Request, number: int, user: User = Depends(require_owner)
+    ):
+        match = next((e for e in all_entries() if e.number == number), None)
+        if match is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No history entry numbered {number}.",
+            )
+
+        lines = matching_log_lines(match.entry)
+
+        return templates.TemplateResponse(
+            request,
+            "history_detail.html",
+            {"user": user, "numbered": match, "lines": lines},
         )
 
     return app

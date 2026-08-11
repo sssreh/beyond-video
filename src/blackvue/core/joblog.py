@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import gzip
 import logging
+import re
 import shutil
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -205,3 +207,130 @@ def wrap_warn(prog: str, warn):
         log_line(prog, message)
 
     return wrapped
+
+
+# ---------------------------------------------------------------------------
+# Read side - used by `bv-history show <id>` (blackvue.history/cli/
+# bv_history.py) to reconstruct a past run's full logged output. This
+# module otherwise only writes (see its own module docstring); reading
+# real timestamped lines back out only became needed once bv-history
+# existed to ask for them.
+# ---------------------------------------------------------------------------
+
+# Matches one record's leading "<asctime> [<source>] " prefix, as
+# written by the Formatter in get_logger() above. A line that doesn't
+# match (e.g. a `say()` call whose own message happened to contain an
+# embedded newline) is treated as a continuation of the previous
+# record rather than dropped - best-effort, not a guarantee every
+# multi-line message reconstructs perfectly.
+_LOG_LINE_RE = re.compile(
+    r"^(?P<asctime>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d{3} "
+    r"\[(?P<source>[^\]]*)\] (?P<message>.*)$"
+)
+
+
+@dataclass(frozen=True)
+class LogLine:
+    """One parsed record from a beyond-video-YYYY-MM.log(.gz) file."""
+
+    timestamp: datetime
+    source: str
+    message: str
+
+
+def _month_key_from_filename(path: Path) -> str:
+    # "beyond-video-2026-08.log" / "beyond-video-2026-08.log.gz" -> "2026-08"
+    stem = path.name[len(_LOG_FILENAME_PREFIX) + 1 :]
+    return stem.split(".", 1)[0]
+
+
+def _open_log_file(path: Path):
+    return gzip.open(path, "rt", encoding="utf-8", errors="replace") if (
+        path.suffix == ".gz"
+    ) else open(path, encoding="utf-8", errors="replace")
+
+
+def read_lines(
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    source: str | None = None,
+) -> list[LogLine]:
+    """Return every LogLine across all of this install's monthly
+    logfiles (active + already-gzipped), oldest first, optionally
+    narrowed by an inclusive [since, until] timestamp window and/or an
+    exact `source` tag (the prog name/job command a line was written
+    under - see log_line()'s own docstring).
+
+    `since`/`until` are compared against each record's own `asctime`,
+    which - unlike core/history.py's UTC `started_at` - is naive local
+    time (Python logging's default `time.localtime`-based formatting,
+    never overridden here). Callers correlating a HistoryEntry against
+    this output need to convert first - see bv-history's own
+    `_matching_log_lines()` for the actual conversion.
+
+    Missing logs directory -> empty list, same "nothing recorded yet"
+    contract as core/history.py's own read_entries(). A line that
+    doesn't match the expected "<asctime> [<source>] <message>" shape
+    is treated as a continuation of the previous matched line (see
+    _LOG_LINE_RE's own comment) rather than dropped outright, so a
+    message with an embedded newline doesn't just lose its second
+    half - if no previous line exists yet (a genuinely corrupt/partial
+    file), it's skipped.
+    """
+
+    directory = default_logs_dir()
+    if not directory.exists():
+        return []
+
+    paths = sorted(
+        (
+            *directory.glob(f"{_LOG_FILENAME_PREFIX}-*.log"),
+            *directory.glob(f"{_LOG_FILENAME_PREFIX}-*.log.gz"),
+        ),
+        key=_month_key_from_filename,
+    )
+
+    results: list[LogLine] = []
+
+    for path in paths:
+        try:
+            handle = _open_log_file(path)
+        except OSError:
+            continue
+        with handle as fh:
+            for raw in fh:
+                raw = raw.rstrip("\n")
+                match = _LOG_LINE_RE.match(raw)
+                if match is None:
+                    if results:
+                        last = results[-1]
+                        results[-1] = LogLine(
+                            timestamp=last.timestamp,
+                            source=last.source,
+                            message=last.message + "\n" + raw,
+                        )
+                    continue
+                try:
+                    timestamp = datetime.strptime(
+                        match["asctime"], "%Y-%m-%d %H:%M:%S"
+                    )
+                except ValueError:
+                    continue
+                results.append(
+                    LogLine(
+                        timestamp=timestamp,
+                        source=match["source"],
+                        message=match["message"],
+                    )
+                )
+
+    filtered = [
+        line
+        for line in results
+        if (since is None or line.timestamp >= since)
+        and (until is None or line.timestamp <= until)
+        and (source is None or line.source == source)
+    ]
+
+    return filtered

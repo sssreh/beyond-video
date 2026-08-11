@@ -653,6 +653,7 @@
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-ls' else '' }}" href="/jobs/bv-ls">List recordings</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-scribe' else '' }}" href="/jobs/bv-scribe">Describe scenes</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-search' else '' }}" href="/jobs/bv-search">Search</a>
+    <a class="tab{{ ' active' if request.url.path.startswith('/history') else '' }}" href="/history">History</a>
     {% endif %}
   </nav>
   {% endif %}
