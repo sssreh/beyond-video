@@ -21,11 +21,11 @@ The ID identifies the camera's configuration and, through it, the local archive 
 
 `bv-gps` and `bv-live` are the odd ones out among these four: neither touches the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`/`docs/man/bv-live.md` - one prints a single GPS reading and exits, the other serves a persistent live dashboard) - they're listed here purely because they share the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because they take part in recording selection below.
 
-`bv-ls`, `bv-generate`, `bv-export`, and `bv-scribe` don't take a camera ID - they operate directly on an archive directory (the same directory `bv-download` wrote into), given as a plain path argument.
+`bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, and `bv-search` don't take a camera ID - they operate directly on an archive directory (the same directory `bv-download` wrote into), given as a plain path argument.
 
 ## Recording selection by timestamp
 
-`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, and `bv-scribe` all accept the same three timestamp options, narrowing which recordings a run considers (`bv-scribe --raw` is the one exception - it processes raw video files with no archive/recording-id structure at all, so these don't apply there; see `docs/man/bv-scribe.md`):
+`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, and `bv-search` all accept the same three timestamp options, narrowing which recordings a run considers (`bv-scribe --raw` is the one exception - it processes raw video files with no archive/recording-id structure at all, so these don't apply there; see `docs/man/bv-scribe.md`):
 
 ```text
 --from TIMESTAMP
@@ -77,6 +77,7 @@ bv-download Kirby --from 20260715
 bv-ls /path/to/archive --timestamp 20260715_14
 bv-generate /path/to/archive --from 202607 --until 202608
 bv-export /path/to/archive --target /path/to/trips --timestamp 20260715
+bv-search /path/to/archive --timestamp 20260715 --text roundabout
 ```
 
 ## What's genuinely per-command

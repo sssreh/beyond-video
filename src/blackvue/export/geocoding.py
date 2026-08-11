@@ -20,6 +20,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -32,6 +33,7 @@ from ..generate.media import MediaToolError
 from .osm_roads import USER_AGENT
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 
 # Shorter than osm_roads.py's own 60s Overpass timeout (road/area data
 # is essential to a requested map render; an address is a purely
@@ -161,3 +163,94 @@ def load_or_reverse_geocode(
         json.dumps({"display_name": display_name}), encoding="utf-8"
     )
     return display_name
+
+
+def _forward_cache_key(name: str) -> str:
+    """Deterministic cache filename for a place-name query.
+
+    Unlike _cache_key() above (a coordinate, already a bounded,
+    filesystem-safe pair of numbers), a free-text query can contain
+    arbitrary characters and length - normalized (casefolded,
+    whitespace-collapsed, so trivially different spellings of the
+    same query share a cache hit) and then hashed, rather than used
+    directly as a filename.
+    """
+
+    normalized = " ".join(name.casefold().split())
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+    return f"geocode_place_{digest}.json"
+
+
+def forward_geocode(
+    name: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+) -> tuple[float, float] | None:
+    """Look up a (lat, lon) coordinate for a free-text place name via
+    Nominatim's forward-geocoding (search) endpoint - the inverse of
+    reverse_geocode() above, for bv-search's --place option.
+
+    Returns None if Nominatim has no match for this query (a genuine,
+    cacheable "no result"). Raises MediaToolError if the request
+    itself fails (network error, malformed response), same convention
+    as reverse_geocode(). Only the single best-ranked match is used -
+    bv-search wants one search point, not a disambiguation list.
+    """
+
+    _throttle()
+
+    query = urlencode({"format": "jsonv2", "q": name, "limit": "1"})
+    request = Request(
+        f"{NOMINATIM_SEARCH_URL}?{query}",
+        headers={"User-Agent": USER_AGENT},
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except URLError as exc:
+        raise MediaToolError(
+            f"could not reach Nominatim for place-name lookup: {exc}"
+        ) from exc
+
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise MediaToolError(
+            f"could not parse Nominatim's place-name lookup response: {exc}"
+        ) from exc
+
+    if not payload:
+        return None
+
+    try:
+        return float(payload[0]["lat"]), float(payload[0]["lon"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise MediaToolError(
+            f"Nominatim's place-name lookup response was malformed: {exc}"
+        ) from exc
+
+
+def load_or_forward_geocode(
+    name: str,
+    cache_dir: Path,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[float, float] | None:
+    """Reuse a cached forward-geocode lookup for this place name if
+    one exists on disk, otherwise geocode fresh and persist the
+    result - same load-or-fetch-and-cache pattern as
+    load_or_reverse_geocode() above.
+    """
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / _forward_cache_key(name)
+
+    if cache_path.exists():
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        coordinates = payload.get("coordinates")
+        return tuple(coordinates) if coordinates is not None else None
+
+    coordinates = forward_geocode(name, timeout=timeout)
+    cache_path.write_text(
+        json.dumps({"coordinates": coordinates}), encoding="utf-8"
+    )
+    return coordinates
