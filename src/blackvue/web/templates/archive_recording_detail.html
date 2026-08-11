@@ -26,5 +26,15 @@
 {% if recording.has_gps %}
 <p><a href="/archive/{{ camera_id }}/{{ recording.id }}/location">Show start location</a></p>
 {% endif %}
+
+{% if recording.scene_texts %}
+<h3>Scene description</h3>
+{% for label, text in recording.scene_texts %}
+<div class="scene-text">
+  <p class="hint">{{ label }}</p>
+  <pre class="scene-text-body">{{ text }}</pre>
+</div>
+{% endfor %}
+{% endif %}
 </div>
 {% endblock %}

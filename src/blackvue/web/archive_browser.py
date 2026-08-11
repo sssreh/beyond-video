@@ -63,6 +63,17 @@ _SIDECARS = (
     ("G-sensor log", Asset.GSENSOR),
 )
 
+# (display label, asset), for the detail page's scene/OCR text panel
+# (task #681) - the two Asset types bv-generate --describe-scene/
+# bv-scribe write, same pair blackvue/search.py's own "scene" group
+# already searches (see TEXT_SEARCH_ASSETS there). No diarized
+# equivalent exists for scene text the way transcript/translation
+# have one, so unlike TEXT_SEARCH_ASSETS this is just the two.
+_SCENE_TEXTS = (
+    ("Front", Asset.SCENE_DESCRIPTION),
+    ("Rear", Asset.SCENE_DESCRIPTION_REAR),
+)
+
 # RecordingId.kind's single-letter codes - see recording_id.py's own
 # docstring on "A" (observed on real hardware, meaning unconfirmed).
 _KIND_LABELS = {
@@ -190,6 +201,37 @@ class ArchiveRecording:
     @property
     def has_gsensor(self) -> bool:
         return self.recording.has(Asset.GSENSOR)
+
+    @property
+    def scene_texts(self) -> list[tuple[str, str]]:
+        """(direction label, text) pairs for whichever scene/OCR
+        description(s) this recording actually has (task #681 - "the
+        only way to read a scene description is opening the file
+        directly on disk"). Empty list if neither exists - the vast
+        majority of recordings, unless bv-generate --describe-scene or
+        bv-scribe has run against this camera's archive.
+
+        A read failure (permissions, a file that vanished between the
+        directory scan and this read, a mounted archive going away
+        mid-request - the same real failure modes ArchiveRecording's
+        other read paths already tolerate) is surfaced as a bracketed
+        placeholder message rather than raising and taking down the
+        whole detail page over one unreadable text file - the video/
+        GPS/other panels on this page are independently useful even if
+        this one can't render.
+        """
+
+        result = []
+        for label, asset in _SCENE_TEXTS:
+            asset_file = self.recording.file(asset)
+            if asset_file is None:
+                continue
+            try:
+                text = asset_file.path.read_text(encoding="utf-8")
+            except OSError as exc:
+                text = f"[could not read {asset_file.name}: {exc}]"
+            result.append((label, text))
+        return result
 
     @property
     def known_filenames(self) -> frozenset[str]:

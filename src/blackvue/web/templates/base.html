@@ -360,6 +360,17 @@
       max-height: 60vh; overflow-y: auto; font-size: 0.9rem;
     }
     .job-output .echo { color: var(--link); }
+    /* archive_recording_detail.html's scene/OCR text panel (task #681) -
+       one .scene-text block per direction (Front/Rear) that has a
+       .scene.txt sidecar, .scene-text-body styled like pre.job-output's
+       own read-only text panel since both are "dump of a text file". */
+    .scene-text { margin-bottom: 1rem; }
+    .scene-text-body {
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
+      padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word;
+      max-height: 40vh; overflow-y: auto; font-size: 0.9rem; font-family: inherit;
+      margin: 0.35rem 0 0;
+    }
     .status-badge.running, .status-badge.waiting_for_input { background: var(--badge-running-bg); color: var(--badge-running-text); }
     .status-badge.succeeded { background: var(--badge-succeeded-bg); color: var(--badge-succeeded-text); }
     .status-badge.failed { background: var(--badge-failed-bg); color: var(--badge-failed-text); }

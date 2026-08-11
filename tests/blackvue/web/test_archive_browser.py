@@ -196,6 +196,71 @@ def test_gps_path_is_none_without_a_gps_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# scene_texts - added for the archive detail page's scene/OCR text panel
+# (task #681). Mirrors blackvue/search.py's own TEXT_SEARCH_ASSETS["scene"]
+# grouping: the two Asset types bv-generate --describe-scene / bv-scribe
+# write, front then rear, skipping whichever isn't present.
+# ---------------------------------------------------------------------------
+
+
+def test_scene_texts_empty_when_neither_file_exists(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_texts == []
+
+
+def test_scene_texts_includes_front_only(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(archive, "20260715_140212_N.scene.txt", content=b"A quiet street.")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_texts == [("Front", "A quiet street.")]
+
+
+def test_scene_texts_includes_front_and_rear_in_order(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(archive, "20260715_140212_N.scene.txt", content=b"Front view text.")
+    _write(archive, "20260715_140212_N.rear.scene.txt", content=b"Rear view text.")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_texts == [
+        ("Front", "Front view text."),
+        ("Rear", "Rear view text."),
+    ]
+
+
+def test_scene_texts_falls_back_to_placeholder_on_read_error(tmp_path, monkeypatch):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(archive, "20260715_140212_N.scene.txt", content=b"Front view text.")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    from pathlib import Path
+
+    real_read_text = Path.read_text
+
+    def _boom(self, *args, **kwargs):
+        if self.name.endswith(".scene.txt"):
+            raise OSError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    [(label, text)] = recording.scene_texts
+    assert label == "Front"
+    assert "could not read" in text
+    assert "20260715_140212_N.scene.txt" in text
+
+
+# ---------------------------------------------------------------------------
 # first_valid_gps_fix() - added for the archive detail page's "Show start
 # location" link (see app.py's archive_recording_location route). Fixture
 # NMEA text mirrors tests/blackvue/telemetry/test_gps_reader.py's own -
