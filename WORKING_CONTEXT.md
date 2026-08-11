@@ -8497,3 +8497,15 @@ Christer, after finding a recording of an elk via `bv-search --near`: "Print sta
 **Docs.** `docs/man/bv-search.md`: SYNOPSIS gained `[--trace]`; new paragraph in DESCRIPTION explaining both the timing lines and `--trace`'s heartbeat; new `--trace` row under General options.
 
 **Verification.** `ast.parse()` clean on both touched files. `test_bv_search.py` 27/27 (16 previous + 11 new) through the sandbox's pytest shim.
+
+## bv-search follow-up: --place resolution before the started/timed section
+
+Christer, right after the timing/--trace feature above: "I would like the --place resolution be printed before the search begins." In the version just shipped, `--place`'s Nominatim lookup and confirmation line happened *inside* the timed block, after the `started` line - correct in terms of ordering relative to the recording-matching loop, but wrong in spirit: a `--place` lookup is a one-off setup step (and, on a cache miss, a real network round-trip), not "the search" itself.
+
+**`_run()` (`cli/bv_search.py`).** The whole `--place` block (`load_or_forward_geocode()` call, its two error paths, and the `bv-search: '<name>' -> lat,lon` confirmation line) moved up to run immediately after archive-path resolution, before `started_at`/`started_monotonic` are captured and before the `bv-search: started HH:MM:SS` line prints. The `try`/`finally` wrapping "finished HH:MM:SS (N.Ns)" now starts right after the `started` line, covering only `LexicalTimeParser` parsing, the recording-selection filter, and the search loop itself - a `--place` lookup failure (not found, network/`MediaToolError`) now returns before `started`/`finished` ever print, matching the idea that a failed setup step never really became "a search run" at all. `LexicalTimeParser` parsing stayed inside the timed section, unchanged - only `--place` moved.
+
+**Tests.** `tests/blackvue/cli/test_bv_search.py`: new `test_run_place_resolution_prints_before_the_started_line`, confirming the `--place` confirmation message's index in the collected `say`/`warn` messages comes before the `started` line's index. All prior tests (`test_run_place_geocodes_then_searches`, `test_run_place_with_road_geometry_matches_along_the_whole_road`, `test_run_place_reports_error_when_not_found`, the started/finished timing tests) still pass unchanged - they check message content via `any(...)`, not exact position, so the reorder didn't require touching them.
+
+**Docs.** `docs/man/bv-search.md`: DESCRIPTION's timing paragraph reworded to explain `--place` resolves first, before the timed section begins.
+
+**Verification.** `ast.parse()` clean. `test_bv_search.py` 28/28 (27 previous + 1 new) through the sandbox pytest shim.

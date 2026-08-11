@@ -245,28 +245,70 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     injectable (default: real stdout/stderr), same pattern as every
     other bv-* CLI's own `_run()`.
 
-    Prints a "started HH:MM:SS" line right away and a "finished
-    HH:MM:SS (N.Ns)" line before returning, on every exit path
-    (wrapped in try/finally) - a search over a wide date range on a
-    big archive can take tens of seconds with nothing else printed in
-    the meantime, so both when it ran and how long it took are worth
-    knowing without instrumenting the shell yourself.
+    A --place lookup, if given, is resolved first and its
+    confirmation line printed before anything else - it's a one-off
+    setup step (and, on a cache miss, a real Nominatim network round-
+    trip), not part of "the search" itself. Only after that does
+    `_run()` print "started HH:MM:SS" and, on every exit path from
+    there on (wrapped in try/finally), "finished HH:MM:SS (N.Ns)" -
+    a search over a wide date range on a big archive can take tens of
+    seconds with nothing else printed in the meantime, so both when it
+    ran and how long it took are worth knowing without instrumenting
+    the shell yourself.
     """
 
     if args.text is None and args.near is None and args.place is None:
         warn("bv-search: give at least one of --text, --near, or --place")
         return EXIT_ARGS_ERROR
 
+    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
+    archive = Archive(archive_path)
+
+    target: tuple[float, float] | None = args.near
+    target_lines: tuple[tuple[tuple[float, float], ...], ...] = ()
+
+    if args.place is not None:
+        # Resolved up front, before the "started"/timed section below -
+        # a --place lookup is a one-off setup step (and, on a cache
+        # miss, a real network round-trip to Nominatim), not part of
+        # "the search" itself, so its confirmation line belongs before
+        # the run is announced as started, not interleaved with it.
+        #
+        # Deferred import: blackvue.export's package __init__ pulls in
+        # the whole ffmpeg/PIL/numpy-heavy export toolkit (stitching,
+        # map rendering, ...) just to get to this one small geocoding
+        # helper - not worth paying for on every bv-search run, only
+        # the ones that actually use --place. Same pattern speech.py/
+        # scene.py already use for torch/ctranslate2.
+        from ..export.geocoding import load_or_forward_geocode
+
+        cache_dir = archive_path / ".osm_cache"
+        try:
+            result = load_or_forward_geocode(args.place, cache_dir)
+        except (MediaToolError, OSError) as exc:
+            warn(f"bv-search: {exc}")
+            return EXIT_HAD_ERRORS
+        if result is None:
+            warn(f"bv-search: no place found matching {args.place!r}")
+            return EXIT_HAD_ERRORS
+        target = result.point
+        target_lines = result.lines
+        geometry_note = (
+            f" (road/area geometry, {len(target_lines)} segment(s) - "
+            "searching along the whole shape, not just this point)"
+            if target_lines
+            else ""
+        )
+        say(
+            f"bv-search: {args.place!r} -> "
+            f"{target[0]:.5f},{target[1]:.5f}{geometry_note}"
+        )
+
     started_at = datetime.now()
     started_monotonic = time.monotonic()
     say(f"bv-search: started {started_at:%H:%M:%S}")
 
     try:
-        archive_path, _camera_config = resolve_archive_path(
-            args.path, args.config_dir
-        )
-        archive = Archive(archive_path)
-
         try:
             interval = LexicalTimeParser(
                 timestamp=args.timestamp, from_=args.from_, until=args.until,
@@ -274,41 +316,6 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         except ValueError as exc:
             warn(f"bv-search: {exc}")
             return EXIT_ARGS_ERROR
-
-        target: tuple[float, float] | None = args.near
-        target_lines: tuple[tuple[tuple[float, float], ...], ...] = ()
-
-        if args.place is not None:
-            # Deferred import: blackvue.export's package __init__ pulls
-            # in the whole ffmpeg/PIL/numpy-heavy export toolkit
-            # (stitching, map rendering, ...) just to get to this one
-            # small geocoding helper - not worth paying for on every
-            # bv-search run, only the ones that actually use --place.
-            # Same pattern speech.py/scene.py already use for torch/
-            # ctranslate2.
-            from ..export.geocoding import load_or_forward_geocode
-
-            cache_dir = archive_path / ".osm_cache"
-            try:
-                result = load_or_forward_geocode(args.place, cache_dir)
-            except (MediaToolError, OSError) as exc:
-                warn(f"bv-search: {exc}")
-                return EXIT_HAD_ERRORS
-            if result is None:
-                warn(f"bv-search: no place found matching {args.place!r}")
-                return EXIT_HAD_ERRORS
-            target = result.point
-            target_lines = result.lines
-            geometry_note = (
-                f" (road/area geometry, {len(target_lines)} segment(s) - "
-                "searching along the whole shape, not just this point)"
-                if target_lines
-                else ""
-            )
-            say(
-                f"bv-search: {args.place!r} -> "
-                f"{target[0]:.5f},{target[1]:.5f}{geometry_note}"
-            )
 
         recordings = [
             recording for recording in archive.recordings

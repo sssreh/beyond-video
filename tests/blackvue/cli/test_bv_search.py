@@ -370,6 +370,49 @@ def test_run_place_with_road_geometry_matches_along_the_whole_road(
     assert any("segment" in m for m in messages)
 
 
+def test_run_place_resolution_prints_before_the_started_line(monkeypatch, tmp_path):
+    import blackvue.search as search_module
+    from datetime import datetime
+    from blackvue.telemetry.gps_reader import GpsFix
+
+    recording = Recording(id=RecordingId("20260715_129000_N"))
+    gps_path = tmp_path / "20260715_129000_N.gps"
+    gps_path.write_text("irrelevant")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    fix = GpsFix(
+        timestamp=datetime(2026, 7, 15, 12, 30, 0),
+        valid=True,
+        latitude=59.3293,
+        longitude=18.0686,
+        speed_kmh=10.0,
+        course=90.0,
+    )
+    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+
+    from blackvue.export import geocoding as geocoding_module
+    from blackvue.export.geocoding import GeocodeResult
+
+    monkeypatch.setattr(
+        geocoding_module,
+        "load_or_forward_geocode",
+        lambda name, cache_dir, **k: GeocodeResult(point=(59.3293, 18.0686)),
+    )
+
+    args = parse_args([str(tmp_path), "--place", "Stockholm", "--radius", "500"])
+    messages = []
+    bv_search._run(args, say=messages.append, warn=messages.append)
+
+    place_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-search: 'Stockholm'")
+    )
+    started_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-search: started ")
+    )
+    assert place_index < started_index
+
+
 def test_run_place_reports_error_when_not_found(monkeypatch, tmp_path):
     recording = Recording(id=RecordingId("20260715_127000_N"))
     monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
