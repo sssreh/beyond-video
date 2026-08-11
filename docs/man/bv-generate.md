@@ -13,6 +13,7 @@ bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--model-size SIZE] [--cpu] [--npu-model-dir PATH]
             [--diarize] [--hf-token TOKEN]
             [--srt] [--lrc]
+            [--describe-scene] [--scene-model MODEL]
             [--overwrite] [--dry-run] [-v]
             [PATH]
 ```
@@ -21,7 +22,7 @@ bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
 
 `bv-generate` produces derived assets for recordings already downloaded into a local archive (see `bv-download(1)`), writing each one next to its source recording so it shows up in `bv-ls(1)` and is picked up automatically by `bv-export(1)` (trip-level subtitle/transcript merging, `--get-duration`'s span feeding trip-gap detection, etc.).
 
-At least one action flag (`--extract-audio`, `--get-duration`, `--transcribe`, or `--translate`) must be given - `bv-generate` with no action does nothing.
+At least one action flag (`--extract-audio`, `--get-duration`, `--transcribe`, `--translate`, or `--describe-scene`) must be given - `bv-generate` with no action does nothing.
 
 Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - audio-dependent actions (`--extract-audio`, `--transcribe`, `--translate`) are automatically skipped for them, while `--get-duration` still works (reporting the real elapsed time span, not the timelapse video's own short playback length).
 
@@ -53,6 +54,10 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 | `--translate LANG` | Translate the transcript into `LANG` (e.g. `es`, `fr`). Saved as `<recording>.translation.txt`. |
 | `--srt` | Also write an SRT subtitle file (`<recording>.srt`) with per-segment timestamps. Requires `--transcribe` or `--translate`. If `--translate` is also given, the subtitles are in the translated language, not the original spoken one. |
 | `--lrc` | Also write an LRC timestamp file (`<recording>.lrc`), one `[mm:ss.xx]` line per segment. Requires `--transcribe` or `--translate`. If `--translate` is also given, the lines are in the translated language, not the original spoken one. |
+| `--describe-scene` | Describe the recording's contents and read its on-screen text using a local vision-language model (Qwen2.5-VL/Qwen3-VL). Saved as `<recording>.scene.txt`. Works on Parking-mode recordings too (still video, just no audio). Requires the `scene` extra: `pip install .[scene]` (plus torch installed separately - see `bv-scribe(1)` for the CUDA-build note). Uses fixed sensible defaults; see `bv-scribe(1)` for the full set of tuning flags (frame sampling, resolution, the sign-zoom sub-pipeline, batch mode, trip summaries). |
+| `--scene-model MODEL` | Vision-language model for `--describe-scene`. Default: `Qwen/Qwen2.5-VL-7B-Instruct` (~16GB download on first use, cached under `~/.cache/huggingface`). |
+
+**A note on trusting `--describe-scene`'s output.** Real-footage testing found two distinct failure modes worth knowing about before treating any of this as fact: the model can confidently misread a license plate (not flag it as illegible, just report the wrong characters), and it can invent plausible-sounding but unrelated text on an ambiguous scene (a real trip near Stockholm once got "Palm Jumeirah" - a Dubai landmark - as on-screen text, more than once). Every `--describe-scene` output ends with a disclaimer to this effect. Plate reads specifically get a mitigation: each detected plate crop is read twice (once greedy, once with sampling forced on), and reported as unverified if the two disagree rather than picked between - see `--zoom-plate-confidence-check` in `bv-scribe(1)`.
 
 ### Transcription tuning
 
@@ -150,6 +155,12 @@ Regenerate everything from scratch for a specific recording prefix:
 
 ```
 bv-generate --timestamp 20260715_1430 --extract-audio --get-duration --transcribe --overwrite
+```
+
+Describe a day's recordings alongside transcribing them:
+
+```
+bv-generate --timestamp 20260715 --transcribe --describe-scene
 ```
 
 ## SEE ALSO

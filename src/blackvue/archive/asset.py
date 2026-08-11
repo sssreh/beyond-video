@@ -37,6 +37,7 @@ class Asset(Enum):
     SUBTITLES = ("SRT",)
     LYRICS = ("LRC",)
     SUMMARY = ("Summ",)
+    SCENE_DESCRIPTION = ("Scene",)
 
     def __init__(self, label: str, group: str | None = None):
         self._label = label

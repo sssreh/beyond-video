@@ -82,6 +82,20 @@ web = [
     "python-multipart>=0.0.9",
     "Jinja2>=3.0",
 ]
+# bv-generate --describe-scene, bv-scribe. Its own group, not folded
+# into anything above - a vision-language model is a large, separate
+# dependency chain (torch + transformers + qwen-vl-utils/decord) that
+# nobody using only transcription/translation/web features has any
+# reason to install. Install torch separately first per its own
+# instructions (CUDA build selection - see docs/man/bv-scribe.md) -
+# a plain `pip install .[scene]` pulls in whatever torch is already
+# on the machine (or CPU-only torch as a transitive dependency if
+# none is), not necessarily the right CUDA build for the GPU present.
+scene = [
+    "transformers>=4.49.0",
+    "accelerate",
+    "qwen-vl-utils[decord]==0.0.8",
+]
 
 [project.scripts]
 bv-ls = "blackvue.cli.bv_ls:main"
@@ -93,6 +107,7 @@ bv-lang = "blackvue.cli.bv_lang:main"
 bv-export = "blackvue.cli.bv_export:main"
 bv-web = "blackvue.cli.bv_web:main"
 bv-live = "blackvue.cli.bv_live:main"
+bv-scribe = "blackvue.cli.bv_scribe:main"
 
 # setuptools only bundles .py files into the installed wheel by
 # default - without this, web/templates/*.html (login.html,

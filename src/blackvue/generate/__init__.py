@@ -17,6 +17,12 @@ from .media import probe
 from .media import select_source
 from .mp4_box_reader import Mp4Info
 from .mp4_box_reader import read_mp4_info
+from .scene import DEFAULT_MODEL as SCENE_DEFAULT_MODEL
+from .scene import SceneOptions
+from .scene import describe_scene
+from .scene import extract_description_section
+from .scene import summarize_trip
+from .scene import vision_gpu_available
 from .speech import DEPENDENT_MODELS
 from .speech import DIARIZATION_MODEL
 from .speech import SEGMENTATION_MODEL
@@ -38,17 +44,21 @@ from .subtitles import parse_srt
 __all__ = [
     "DEPENDENT_MODELS",
     "DIARIZATION_MODEL",
+    "SCENE_DEFAULT_MODEL",
     "SEGMENTATION_MODEL",
     "MediaInfo",
     "MediaToolError",
     "Mp4Info",
+    "SceneOptions",
     "SpeakerTurn",
     "SpeechSegment",
     "Transcript",
     "compute_span",
+    "describe_scene",
     "detect_language",
     "diarize",
     "extract_audio",
+    "extract_description_section",
     "format_diarized_transcript",
     "format_lrc",
     "format_srt",
@@ -62,6 +72,8 @@ __all__ = [
     "select_source",
     "short_code",
     "speaker_for",
+    "summarize_trip",
     "transcribe",
     "translate",
+    "vision_gpu_available",
 ]

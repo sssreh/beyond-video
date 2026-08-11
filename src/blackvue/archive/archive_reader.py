@@ -39,6 +39,7 @@ class ArchiveReader:
         (".translation.txt", Asset.TRANSLATION),
         (".srt", Asset.SUBTITLES),
         (".lrc", Asset.LYRICS),
+        (".scene.txt", Asset.SCENE_DESCRIPTION),
     )
 
     def __init__(self, path: Path):

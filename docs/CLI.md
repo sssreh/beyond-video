@@ -21,11 +21,11 @@ The ID identifies the camera's configuration and, through it, the local archive 
 
 `bv-gps` and `bv-live` are the odd ones out among these four: neither touches the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`/`docs/man/bv-live.md` - one prints a single GPS reading and exits, the other serves a persistent live dashboard) - they're listed here purely because they share the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because they take part in recording selection below.
 
-`bv-ls`, `bv-generate`, and `bv-export` don't take a camera ID - they operate directly on an archive directory (the same directory `bv-download` wrote into), given as a plain path argument.
+`bv-ls`, `bv-generate`, `bv-export`, and `bv-scribe` don't take a camera ID - they operate directly on an archive directory (the same directory `bv-download` wrote into), given as a plain path argument.
 
 ## Recording selection by timestamp
 
-`bv-download`, `bv-ls`, `bv-generate`, and `bv-export` all accept the same three timestamp options, narrowing which recordings a run considers:
+`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, and `bv-scribe` all accept the same three timestamp options, narrowing which recordings a run considers:
 
 ```text
 --from TIMESTAMP

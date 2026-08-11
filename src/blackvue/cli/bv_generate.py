@@ -18,7 +18,9 @@ from ..archive import Asset
 from ..archive.recording import Recording
 from .errors import run_cli
 from ..generate import MediaToolError
+from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import SpeechSegment
+from ..generate import describe_scene
 from ..generate import detect_language
 from ..generate import diarize
 from ..generate import extract_audio
@@ -231,6 +233,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--describe-scene",
+        action="store_true",
+        help=(
+            "Describe the recording's contents and read its on-screen "
+            "text using a local vision-language model. Saved as "
+            "<recording>.scene.txt. Works on Parking-mode recordings "
+            "too (they're still video, just no audio). Output includes "
+            "a disclaimer: reads have been observed to be confidently "
+            "wrong (a real plate came back misread, not flagged as "
+            "illegible) or to invent plausible-looking but unrelated "
+            "text on ambiguous scenes - treat every read as unverified "
+            "until checked against the source video. See bv-scribe for "
+            "the full set of tuning flags (frame sampling, resolution, "
+            "the sign-zoom sub-pipeline, batch/trip-summary mode) - "
+            "this flag uses sensible defaults for running scene "
+            "description alongside other bv-generate actions in one "
+            "pass."
+        ),
+    )
+
+    parser.add_argument(
+        "--scene-model",
+        default=None,
+        help=(
+            "Vision-language model for --describe-scene (default: "
+            f"{SCENE_DEFAULT_MODEL}). ~16GB download on first use, "
+            "cached under ~/.cache/huggingface."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -256,11 +289,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         or args.get_duration
         or args.transcribe
         or args.translate is not None
+        or args.describe_scene
     ):
         parser.error(
             "specify at least one action: --extract-audio, "
-            "--get-duration, --transcribe, or --translate"
+            "--get-duration, --transcribe, --translate, or "
+            "--describe-scene"
         )
+
+    if args.scene_model is None:
+        args.scene_model = SCENE_DEFAULT_MODEL
 
     if args.diarize and not (args.transcribe or args.translate is not None):
         parser.error("--diarize requires --transcribe or --translate")
@@ -561,6 +599,49 @@ def _do_get_duration(
         return False
 
     destination.write_text(f"{span}\n", encoding="utf-8")
+    _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
+    return False
+
+
+def _do_describe_scene(
+    recording: Recording,
+    archive_path: Path,
+    args: argparse.Namespace,
+    *,
+    say=print,
+    warn=_default_warn,
+) -> bool:
+    """Describe one recording's scene/on-screen text. Return True on
+    error. Unlike audio actions, this runs on Parking-mode recordings
+    too - they're timelapse video, not audio, so there's real content
+    for a vision model to look at."""
+
+    destination = archive_path / f"{recording.id}.scene.txt"
+
+    if not _should_write_for(destination, args, warn=warn):
+        return False
+
+    source_file = select_source(recording)
+    if source_file is None:
+        warn(f"bv-generate: {recording.id}: no front or rear video, "
+            "skipping scene description")
+        return True
+
+    if args.dry_run:
+        say(f"{recording.id}: would describe scene -> {destination.name}")
+        return False
+
+    try:
+        output_text = describe_scene(
+            source_file.path,
+            model=args.scene_model,
+            force_cpu=args.cpu,
+        )
+    except MediaToolError as exc:
+        warn(f"bv-generate: {recording.id}: {exc}")
+        return True
+
+    destination.write_text(output_text + "\n", encoding="utf-8")
     _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
     return False
 
@@ -1196,6 +1277,11 @@ def _run(
 
         if args.transcribe or args.translate is not None:
             had_error |= _do_transcribe_and_translate(
+                recording, archive_path, args, say=say, warn=warn
+            )
+
+        if args.describe_scene:
+            had_error |= _do_describe_scene(
                 recording, archive_path, args, say=say, warn=warn
             )
 

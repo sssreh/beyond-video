@@ -14,6 +14,7 @@ from blackvue.cli.bv_generate import _should_write
 from blackvue.cli.bv_generate import _translate_diarized
 from blackvue.cli.bv_generate import _translate_segments
 from blackvue.cli.bv_generate import parse_args
+from blackvue.generate import SCENE_DEFAULT_MODEL
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeakerTurn
 from blackvue.generate.speech import SpeechSegment
@@ -34,6 +35,8 @@ def _base_args(**overrides):
         hf_token=None,
         srt=False,
         lrc=False,
+        describe_scene=False,
+        scene_model=SCENE_DEFAULT_MODEL,
         overwrite=False,
         dry_run=False,
         verbose=False,
@@ -1717,3 +1720,92 @@ def test_should_write_for_falls_back_to_asking_every_time_without_a_decision(
     bv_generate._should_write_for(b_file, args)
 
     assert len(calls) == 2
+
+
+def test_parse_args_describe_scene_is_a_valid_action_by_itself():
+    args = parse_args(["/some/path", "--describe-scene"])
+
+    assert args.describe_scene is True
+    assert args.scene_model == SCENE_DEFAULT_MODEL
+
+
+def test_parse_args_scene_model_override():
+    args = parse_args([
+        "/some/path", "--describe-scene", "--scene-model", "Qwen/Qwen3-VL-8B-Instruct",
+    ])
+
+    assert args.scene_model == "Qwen/Qwen3-VL-8B-Instruct"
+
+
+def test_do_describe_scene_skips_parking_mode_ok(monkeypatch, tmp_path):
+    # Unlike the audio actions, describe-scene does NOT skip Parking
+    # recordings - they're still video. select_source() returning a
+    # real file (even for a P-mode recording) should proceed normally.
+    calls = []
+
+    def fake_describe_scene(source, *, model, force_cpu):
+        calls.append((source, model, force_cpu))
+        return "## Description\nParked, nothing notable.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+
+    recording = Recording(id=RecordingId("20260715_134010_P"))
+    video = tmp_path / "20260715_134010_PF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True, cpu=True)
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert calls == [(video, SCENE_DEFAULT_MODEL, True)]
+    written = (tmp_path / "20260715_134010_P.scene.txt").read_text(encoding="utf-8")
+    assert "Parked, nothing notable." in written
+
+
+def test_do_describe_scene_no_source_is_an_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(bv_generate, "select_source", lambda recording: None)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    args = _base_args(describe_scene=True)
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is True
+    assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
+
+
+def test_do_describe_scene_dry_run_writes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(bv_generate, "describe_scene", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    video = tmp_path / "20260715_134010_NF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True, dry_run=True)
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
+
+
+def test_do_describe_scene_propagates_media_tool_error(monkeypatch, tmp_path):
+    def fake_describe_scene(source, *, model, force_cpu):
+        raise MediaToolError("out of VRAM")
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    video = tmp_path / "20260715_134010_NF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True)
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is True
+    assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
