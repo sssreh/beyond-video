@@ -84,17 +84,22 @@ web = [
 ]
 # bv-generate --describe-scene, bv-scribe. Its own group, not folded
 # into anything above - a vision-language model is a large, separate
-# dependency chain (torch + transformers + qwen-vl-utils/decord) that
-# nobody using only transcription/translation/web features has any
-# reason to install. Install torch separately first per its own
-# instructions (CUDA build selection - see docs/man/bv-scribe.md) -
-# a plain `pip install .[scene]` pulls in whatever torch is already
-# on the machine (or CPU-only torch as a transitive dependency if
-# none is), not necessarily the right CUDA build for the GPU present.
+# dependency chain (torch + torchvision + transformers +
+# qwen-vl-utils/decord) that nobody using only transcription/
+# translation/web features has any reason to install. Install torch
+# separately first per its own instructions (CUDA build selection -
+# see docs/man/bv-scribe.md) - a plain `pip install .[scene]` pulls in
+# whatever torch is already on the machine (or CPU-only torch as a
+# transitive dependency if none is), not necessarily the right CUDA
+# build for the GPU present. torchvision is required too - qwen_vl_utils
+# imports it internally; without it, importing qwen_vl_utils itself
+# fails with "No module named 'torchvision'" even though torchvision
+# is never imported directly by this codebase's own code.
 scene = [
     "transformers>=4.49.0",
     "accelerate",
     "qwen-vl-utils[decord]==0.0.8",
+    "torchvision",
 ]
 
 [project.scripts]

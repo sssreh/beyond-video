@@ -9,7 +9,7 @@
 # exports when the PC isn't on.
 #
 # Installs the full toolchain: ffmpeg, faster-whisper, pyannote.audio,
-# argostranslate, plus transformers/accelerate/qwen-vl-utils for
+# argostranslate, plus transformers/accelerate/qwen-vl-utils/torchvision for
 # bv-generate --describe-scene - the audio libs pull in torch, so this
 # image is large and slow to build the first time; that's expected,
 # not a sign something's stuck. The NAS has no GPU, so faster-whisper/

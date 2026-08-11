@@ -235,12 +235,13 @@ class _LoadedSceneModel:
 def _load_scene_model(model_name: str, *, force_cpu: bool) -> _LoadedSceneModel:
     try:
         import torch
+        import torchvision  # noqa: F401 - qwen_vl_utils needs this importable
         from qwen_vl_utils import process_vision_info
         from transformers import AutoProcessor
     except ImportError as exc:
         raise MediaToolError(
-            "scene description needs torch, transformers, and "
-            f"qwen-vl-utils installed ({exc})"
+            "scene description needs torch, torchvision, transformers, "
+            f"and qwen-vl-utils installed ({exc})"
         ) from exc
 
     qwen3 = is_qwen3_vl(model_name)

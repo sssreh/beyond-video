@@ -11,9 +11,9 @@
 # extraction/duration, not just the pure-Python MP4-box fallback) plus
 # the speech/translate extras (faster-whisper/pyannote.audio/
 # argostranslate, and torch transitively) and the scene extra
-# (transformers/accelerate/qwen-vl-utils, for bv-scribe's scene
-# description) - same size/build-time trade-off Dockerfile.cli already
-# accepts. This image is now effectively bv-cli's image plus the web
+# (transformers/accelerate/qwen-vl-utils/torchvision, for bv-scribe's
+# scene description) - same size/build-time trade-off Dockerfile.cli
+# already accepts. This image is now effectively bv-cli's image plus the web
 # server, not a separate lightweight thing.
 FROM python:3.13-slim
 
