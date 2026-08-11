@@ -495,3 +495,61 @@ def test_run_raw_trip_summary_writes_to_directory(monkeypatch, tmp_path):
     assert exit_code == bv_scribe.EXIT_OK
     summary = (tmp_path / "trip_summary.txt").read_text(encoding="utf-8")
     assert "Raw trip narrative." in summary
+
+
+# ---------------------------------------------------------------------------
+# Start/finished timing lines - same pattern as bv-search's own _run() (see
+# test_bv_search.py). bv-scribe is the command Christer originally asked
+# for this on (a 902-recording batch with no timing output at all - see
+# WORKING_CONTEXT.md) - _run() now reports when it started and how long it
+# took, on every exit path, covering both archive mode and --raw mode
+# (see _run_dispatch()'s own docstring for why they share one wrapper).
+# ---------------------------------------------------------------------------
+
+
+def test_run_prints_started_and_finished_lines_around_an_archive_batch(tmp_path):
+    args = parse_args([str(tmp_path)])
+    messages = []
+
+    bv_scribe._run(args, say=messages.append, warn=messages.append)
+
+    assert any(m.startswith("bv-scribe: started ") for m in messages)
+    assert any(
+        m.startswith("bv-scribe: finished ") and m.rstrip().endswith("s)")
+        for m in messages
+    )
+    started_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-scribe: started ")
+    )
+    finished_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-scribe: finished ")
+    )
+    assert started_index < finished_index
+
+
+def test_run_prints_started_and_finished_lines_around_a_raw_batch(monkeypatch, tmp_path):
+    (tmp_path / "a.mp4").write_bytes(b"x")
+
+    def fake_describe_scene(source, **kwargs):
+        return "## Description\nSome view.\n\n---\ndisclaimer"
+
+    monkeypatch.setattr(bv_scribe, "describe_scene", fake_describe_scene)
+
+    args = parse_args([str(tmp_path), "--raw"])
+    messages = []
+
+    bv_scribe._run(args, say=messages.append, warn=messages.append)
+
+    assert any(m.startswith("bv-scribe: started ") for m in messages)
+    assert any(m.startswith("bv-scribe: finished ") for m in messages)
+
+
+def test_run_prints_finished_line_even_when_the_time_parser_rejects_input(tmp_path):
+    args = parse_args([str(tmp_path), "--timestamp", "abc"])
+    messages = []
+
+    exit_code = bv_scribe._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_scribe.EXIT_ARGS_ERROR
+    assert any(m.startswith("bv-scribe: started ") for m in messages)
+    assert any(m.startswith("bv-scribe: finished ") for m in messages)

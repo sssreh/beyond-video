@@ -12,6 +12,8 @@ import argparse
 import re
 import sys
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 
 from ..archive import Archive
@@ -1358,61 +1360,81 @@ def _run(
     than blocking on input()), so unlike bv_config.py's `_run()`
     there's no `ask` to thread through here - same reasoning as
     bv_gps.py's own `_run()`.
+
+    Prints a `bv-generate: started HH:MM:SS` line up front and, wrapped
+    in try/finally so every exit path from there on hits it (argument
+    errors, an empty selection, an unhandled exception), a
+    `bv-generate: finished HH:MM:SS (N.Ns)` line - same
+    started/finished pattern and placement bv-search's own `_run()`
+    uses (see its docstring). A batch run over hundreds of recordings
+    with --describe-scene/--transcribe can run for hours, and Christer
+    has already had to check file timestamps by hand to answer "how
+    long did that take" (see WORKING_CONTEXT.md's bv-scribe timing
+    note - the same gap existed here).
     """
 
     archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
     archive = Archive(archive_path)
 
+    started_at = datetime.now()
+    started_monotonic = time.monotonic()
+    say(f"bv-generate: started {started_at:%H:%M:%S}")
+
     try:
-        interval = LexicalTimeParser(
-            timestamp=args.timestamp,
-            from_=args.from_,
-            until=args.until,
-        ).parse()
-    except ValueError as exc:
-        warn(f"bv-generate: {exc}")
-        return EXIT_ARGS_ERROR
+        try:
+            interval = LexicalTimeParser(
+                timestamp=args.timestamp,
+                from_=args.from_,
+                until=args.until,
+            ).parse()
+        except ValueError as exc:
+            warn(f"bv-generate: {exc}")
+            return EXIT_ARGS_ERROR
 
-    recordings = [
-        recording
-        for recording in archive.recordings
-        if recording.id.value in interval
-    ]
+        recordings = [
+            recording
+            for recording in archive.recordings
+            if recording.id.value in interval
+        ]
 
-    if not recordings:
-        say(f"bv-generate: {archive_path} - no recordings found in "
-            "range, nothing to do.")
-        return EXIT_OK
+        if not recordings:
+            say(f"bv-generate: {archive_path} - no recordings found in "
+                "range, nothing to do.")
+            return EXIT_OK
 
-    # Shared across every _should_write() call this run, so an
-    # interactive "overwrite?" prompt is only ever asked once (on the
-    # first existing file encountered), not once per file.
-    args.overwrite_decision = _OverwriteDecision()
+        # Shared across every _should_write() call this run, so an
+        # interactive "overwrite?" prompt is only ever asked once (on
+        # the first existing file encountered), not once per file.
+        args.overwrite_decision = _OverwriteDecision()
 
-    had_error = False
+        had_error = False
 
-    for recording in recordings:
-        if args.extract_audio:
-            had_error |= _do_extract_audio(
-                recording, archive_path, args, say=say, warn=warn
-            )
+        for recording in recordings:
+            if args.extract_audio:
+                had_error |= _do_extract_audio(
+                    recording, archive_path, args, say=say, warn=warn
+                )
 
-        if args.get_duration:
-            had_error |= _do_get_duration(
-                recording, archive_path, args, say=say, warn=warn
-            )
+            if args.get_duration:
+                had_error |= _do_get_duration(
+                    recording, archive_path, args, say=say, warn=warn
+                )
 
-        if args.transcribe or args.translate is not None:
-            had_error |= _do_transcribe_and_translate(
-                recording, archive_path, args, say=say, warn=warn
-            )
+            if args.transcribe or args.translate is not None:
+                had_error |= _do_transcribe_and_translate(
+                    recording, archive_path, args, say=say, warn=warn
+                )
 
-        if args.describe_scene:
-            had_error |= _do_describe_scene(
-                recording, archive_path, args, say=say, warn=warn
-            )
+            if args.describe_scene:
+                had_error |= _do_describe_scene(
+                    recording, archive_path, args, say=say, warn=warn
+                )
 
-    return EXIT_HAD_ERRORS if had_error else EXIT_OK
+        return EXIT_HAD_ERRORS if had_error else EXIT_OK
+    finally:
+        elapsed_seconds = time.monotonic() - started_monotonic
+        finished_at = datetime.now()
+        say(f"bv-generate: finished {finished_at:%H:%M:%S} ({elapsed_seconds:.1f}s)")
 
 
 def main(argv: list[str] | None = None) -> int:

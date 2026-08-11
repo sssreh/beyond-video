@@ -36,6 +36,8 @@ bv-scribe [--raw]
 
 **One bad recording never stops the batch.** If describing a recording fails for any reason (a corrupted file, a network read error on a mounted archive, an out-of-VRAM error, ...), `bv-scribe` logs it, moves on to the next recording, and prints a summary of every failed recording at the end of the run - a multi-hour archive-scale run is never lost over one bad file.
 
+Every run prints a `bv-scribe: started HH:MM:SS` line up front and a `bv-scribe: finished HH:MM:SS (N.Ns)` line on every exit path from there on (archive mode and `--raw` mode alike) - same pattern `bv-search(1)` uses. A large archive-scale batch can run for hours (CPU-only vision-language inference is especially slow - see the CUDA note below), so both when it started and how long it took are visible without checking output-file timestamps by hand afterward.
+
 Requires the `scene` extra: `pip install .[scene]` (pulls in `transformers`, `accelerate`, `qwen-vl-utils`, and `torchvision`). Install torch separately first, per its own CUDA-build instructions for your GPU (a plain `pip install .[scene]` pulls in whatever torch resolves to from PyPI's default index, which is CPU-only, not necessarily the right CUDA build):
 
 ```

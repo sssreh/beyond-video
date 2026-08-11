@@ -2001,3 +2001,47 @@ def test_do_describe_scene_camera_both_skips_bonus_without_distinct_rear(monkeyp
     assert len(calls) == 1
     assert (tmp_path / "20260715_134010_N.scene.txt").exists()
     assert not (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Start/finished timing lines - same pattern as bv-search's own _run() (see
+# test_bv_search.py): a batch run over hundreds of recordings with
+# --describe-scene/--transcribe can take hours with nothing else printed in
+# between, so _run() reports when it started and how long it took, on every
+# exit path.
+# ---------------------------------------------------------------------------
+
+
+def test_run_prints_started_and_finished_lines_around_a_batch(tmp_path):
+    args = parse_args([str(tmp_path), "--get-duration"])
+    messages = []
+
+    bv_generate._run(args, say=messages.append, warn=messages.append)
+
+    assert any(m.startswith("bv-generate: started ") for m in messages)
+    assert any(
+        m.startswith("bv-generate: finished ") and m.rstrip().endswith("s)")
+        for m in messages
+    )
+    started_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-generate: started ")
+    )
+    finished_index = next(
+        i for i, m in enumerate(messages) if m.startswith("bv-generate: finished ")
+    )
+    assert started_index < finished_index
+
+
+def test_run_prints_finished_line_even_when_the_time_parser_rejects_input(
+    tmp_path,
+):
+    args = parse_args(
+        [str(tmp_path), "--get-duration", "--timestamp", "abc"]
+    )
+    messages = []
+
+    exit_code = bv_generate._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_generate.EXIT_ARGS_ERROR
+    assert any(m.startswith("bv-generate: started ") for m in messages)
+    assert any(m.startswith("bv-generate: finished ") for m in messages)

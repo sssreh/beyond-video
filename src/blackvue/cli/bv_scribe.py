@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 
 from ..archive import Archive
@@ -673,7 +675,34 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     """Run bv-scribe for already-parsed arguments. `say`/`warn` are
     injectable (default: real stdout/stderr) so bv-web's job runner
     can capture this command's output into a job's transcript, same
-    pattern as every other bv-* CLI's own `_run()`."""
+    pattern as every other bv-* CLI's own `_run()`.
+
+    Prints "started HH:MM:SS" up front and, wrapped in try/finally so
+    every exit path (including --raw mode and an unhandled per-
+    recording exception) hits it, "finished HH:MM:SS (N.Ns)" - same
+    pattern bv-search's own `_run()` uses. bv-scribe is the command
+    Christer originally asked for this on: a 902-recording batch ran
+    half a day+ with no timing output at all, and he ended up checking
+    .scene.txt file timestamps by hand instead (see WORKING_CONTEXT.md).
+    """
+
+    started_at = datetime.now()
+    started_monotonic = time.monotonic()
+    say(f"bv-scribe: started {started_at:%H:%M:%S}")
+
+    try:
+        return _run_dispatch(args, say=say, warn=warn)
+    finally:
+        elapsed_seconds = time.monotonic() - started_monotonic
+        finished_at = datetime.now()
+        say(f"bv-scribe: finished {finished_at:%H:%M:%S} ({elapsed_seconds:.1f}s)")
+
+
+def _run_dispatch(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
+    """The actual archive-mode/--raw-mode dispatch _run() used to do
+    directly - split out so _run() itself can wrap it in a single
+    started/finished timing block covering both modes uniformly,
+    without duplicating that wrapping inside _run_raw() too."""
 
     if args.raw:
         return _run_raw(args, say=say, warn=warn)

@@ -29,6 +29,8 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 
 `--translate` implies transcription internally - `--transcribe` doesn't need to also be given.
 
+Every run prints a `bv-generate: started HH:MM:SS` line up front and a `bv-generate: finished HH:MM:SS (N.Ns)` line on every exit path from there on (including argument errors and an empty selection) - same pattern `bv-search(1)` uses. A batch run over hundreds of recordings with `--describe-scene`/`--transcribe` can take hours with nothing else printed in between, so both when it ran and how long it took are visible without timing it yourself.
+
 ## ARGUMENTS
 
 | Argument | Description |
