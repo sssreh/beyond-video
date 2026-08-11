@@ -45,6 +45,13 @@ def test_parse_args_defaults():
     assert args.place is None
     assert args.radius == bv_search.DEFAULT_RADIUS_METERS
     assert args.trace is False
+    assert args.fov == bv_search.DEFAULT_HORIZONTAL_FOV_DEGREES
+
+
+def test_parse_args_fov_override():
+    args = parse_args(["/some/archive", "--text", "traffic", "--fov", "90"])
+
+    assert args.fov == 90.0
 
 
 def test_parse_args_trace_flag_sets_true():
@@ -384,6 +391,140 @@ def test_run_place_with_road_geometry_matches_along_the_whole_road(
     assert exit_code == bv_search.EXIT_OK
     assert any("20260715_128000_N" in m for m in messages)
     assert any("segment" in m for m in messages)
+
+
+def _make_test_video(path: Path, duration_seconds: float = 3.0) -> None:
+    import subprocess
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"testsrc=size=320x240:rate=10:duration={duration_seconds}",
+            "-pix_fmt", "yuv420p",
+            str(path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def test_run_near_renders_zoom_outputs_when_front_video_exists(monkeypatch, tmp_path):
+    import blackvue.search as search_module
+    from datetime import datetime
+    from blackvue.telemetry.gps_reader import GpsFix
+
+    recording = Recording(id=RecordingId("20260715_123000_N"))
+    gps_path = tmp_path / "20260715_123000_N.gps"
+    gps_path.write_text("irrelevant")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    front_path = tmp_path / "20260715_123000_N.mp4"
+    _make_test_video(front_path)
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_path)
+
+    # Heading north, target ~57 degrees to the right - inside the
+    # default 136-degree FOV, so a real crop/zoom should be rendered.
+    fix = GpsFix(
+        timestamp=datetime(2026, 7, 15, 12, 30, 1),
+        valid=True,
+        latitude=59.3293,
+        longitude=18.0686,
+        speed_kmh=30.0,
+        course=0.0,
+    )
+    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+
+    args = parse_args(
+        [str(tmp_path), "--near", "59.3295,18.0692", "--radius", "100"]
+    )
+    messages = []
+    exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_search.EXIT_OK
+    thumbnail_line = next(m for m in messages if "zoom thumbnail:" in m)
+    clip_line = next(m for m in messages if "zoom clip:" in m)
+    thumbnail_path = Path(thumbnail_line.split("zoom thumbnail: ", 1)[1])
+    clip_path = Path(clip_line.split("zoom clip: ", 1)[1])
+    assert thumbnail_path.exists()
+    assert clip_path.exists()
+
+
+def test_run_near_reports_zoom_skip_when_target_out_of_frame(monkeypatch, tmp_path):
+    import blackvue.search as search_module
+    from datetime import datetime
+    from blackvue.telemetry.gps_reader import GpsFix
+
+    recording = Recording(id=RecordingId("20260715_123000_N"))
+    gps_path = tmp_path / "20260715_123000_N.gps"
+    gps_path.write_text("irrelevant")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    front_path = tmp_path / "20260715_123000_N.mp4"
+    _make_test_video(front_path)
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=front_path)
+
+    # Heading north, target due south of the fix - straight behind the
+    # car, outside any forward-facing camera's field of view.
+    fix = GpsFix(
+        timestamp=datetime(2026, 7, 15, 12, 30, 1),
+        valid=True,
+        latitude=59.3293,
+        longitude=18.0686,
+        speed_kmh=30.0,
+        course=0.0,
+    )
+    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+
+    args = parse_args(
+        [str(tmp_path), "--near", "59.3290,18.0686", "--radius", "100"]
+    )
+    messages = []
+    exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_search.EXIT_OK
+    assert any("zoom: skipped" in m for m in messages)
+    assert not any("zoom thumbnail:" in m for m in messages)
+
+
+def test_run_near_reports_zoom_failure_but_keeps_the_match(monkeypatch, tmp_path):
+    import blackvue.search as search_module
+    from datetime import datetime
+    from blackvue.telemetry.gps_reader import GpsFix
+
+    recording = Recording(id=RecordingId("20260715_123000_N"))
+    gps_path = tmp_path / "20260715_123000_N.gps"
+    gps_path.write_text("irrelevant")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    # Registered as an asset, but the file doesn't actually exist -
+    # ffprobe/ffmpeg should fail cleanly (MediaToolError), not crash
+    # the whole search.
+    missing_front = tmp_path / "does_not_exist.mp4"
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=missing_front)
+
+    fix = GpsFix(
+        timestamp=datetime(2026, 7, 15, 12, 30, 1),
+        valid=True,
+        latitude=59.3293,
+        longitude=18.0686,
+        speed_kmh=30.0,
+        course=0.0,
+    )
+    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+
+    args = parse_args(
+        [str(tmp_path), "--near", "59.3295,18.0692", "--radius", "100"]
+    )
+    messages = []
+    exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_search.EXIT_HAD_ERRORS
+    assert any("20260715_123000_N" in m for m in messages)
+    assert any("GPS:" in m for m in messages)
+    assert any("zoom" in m.lower() for m in messages)
 
 
 def test_run_place_resolution_prints_before_the_started_line(monkeypatch, tmp_path):

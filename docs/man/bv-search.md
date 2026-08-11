@@ -62,6 +62,7 @@ A `--place` lookup, if given, is resolved first, printing its confirmation line 
 | `--near LAT,LON` | Only consider recordings with a GPS fix within `--radius` of this coordinate. Mutually exclusive with `--place`. |
 | `--place NAME` | Same as `--near`, but geocodes a free-text place name to a coordinate first via Nominatim. Mutually exclusive with `--near`. |
 | `--radius METERS` | Search radius for `--near`/`--place`. Default: `200`. |
+| `--fov DEGREES` | Front camera's horizontal field of view, used to crop/zoom each `--near`/`--place` match's video toward the target's own direction (see "Zoom/crop" below). Default: `136` (published BlackVue DR900S/DR900X front-camera spec). |
 
 ### General
 
@@ -70,13 +71,21 @@ A `--place` lookup, if given, is resolved first, printing its confirmation line 
 | `--trace` | Print a `.` to stdout every 25 recordings searched, so a long run shows it's still active. |
 | `-h`, `--help` | Show help and exit. |
 
+## ZOOM/CROP
+
+**Experimental.** Every `--near`/`--place` match automatically renders two extra files next to the matching recording's own video: `<recording-id>_zoom.jpg` (a single cropped, zoomed-in frame at the match's timestamp) and `<recording-id>_zoom.mp4` (a short cropped, zoomed-in clip, no audio). The idea: a proximity match only tells you the car was near the target - the target itself might just be a speck off to one side of the wide dashcam frame, easy to miss. The zoom/crop tries to point at roughly where it should be.
+
+It works from geometry, not object detection: at the matching GPS fix, the target's compass bearing (from the car's own position) is compared against the car's own heading (from GPS course-over-ground) to get a relative bearing - how far left/right of straight-ahead the target sits. That's mapped onto the front camera's own horizontal field of view (`--fov`, default 136 degrees) to pick a horizontal crop position; distance to the target picks how tight the crop is (closer needs less zoom). This is a simple rectilinear approximation, not a calibrated lens model - BlackVue doesn't publish per-model distortion data - so it gets roughly the right direction and zoom level, not pixel-precise framing.
+
+A match is reported with `zoom: skipped (...)` instead of the two file paths when no crop could be computed: no GPS heading, the car was under 5 km/h (course-over-ground is unreliable at low speed), or the target's bearing falls outside the camera's own field of view entirely (behind or to the side, out of shot no matter the crop). A `zoom: skipped (no front video for this recording)` note appears if the recording has no `Front` video at all. An ffmpeg/ffprobe failure while rendering is reported as a warning and counts toward exit status 2, but doesn't drop the match itself - its text/GPS reporting still happens.
+
 ## EXIT STATUS
 
 | Code | Meaning |
 |---|---|
 | 0 | OK (including "no matches" - that's a normal, successful search result, not an error). |
 | 1 | Argument error (e.g. no search criterion given, bad `--timestamp`, unparsable `--near`). |
-| 2 | Completed, but one or more recordings had errors (e.g. an unreadable text file), or `--place` failed to resolve. |
+| 2 | Completed, but one or more recordings had errors (e.g. an unreadable text file, or a zoom/crop render failure), or `--place` failed to resolve. |
 
 ## EXAMPLES
 

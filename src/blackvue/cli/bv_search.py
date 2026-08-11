@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..archive import Archive
+from ..archive.asset import Asset
 from .errors import run_cli
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
@@ -29,6 +30,9 @@ from ..lexicaltimeparser import LexicalTimeParser
 from ..search import TEXT_SEARCH_ASSETS
 from ..search import search_near
 from ..search import search_text
+from ..search_zoom import DEFAULT_HORIZONTAL_FOV_DEGREES
+from ..search_zoom import compute_crop_box
+from ..search_zoom import render_zoom_outputs
 
 EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
@@ -208,6 +212,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"(default: {DEFAULT_RADIUS_METERS:g})."
         ),
     )
+    parser.add_argument(
+        "--fov",
+        type=float,
+        default=DEFAULT_HORIZONTAL_FOV_DEGREES,
+        metavar="DEGREES",
+        help=(
+            "Front camera's horizontal field of view, in degrees - "
+            "used to crop/zoom each --near/--place match's video "
+            "toward the search target's own direction (default: "
+            f"{DEFAULT_HORIZONTAL_FOV_DEGREES:g}, the published "
+            "BlackVue DR900S/DR900X front-camera spec; override if a "
+            "different camera model's real horizontal FOV is known)."
+        ),
+    )
 
     parser.add_argument(
         "--trace",
@@ -368,6 +386,44 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
                 _report_text_match(say, match)
             if geo_match is not None:
                 _report_geo_match(say, geo_match)
+
+                front = recording.file(Asset.FRONT)
+                if front is None:
+                    say("  zoom: skipped (no front video for this recording)")
+                else:
+                    crop_box = compute_crop_box(
+                        car_lat=geo_match.fix.latitude,
+                        car_lon=geo_match.fix.longitude,
+                        heading=geo_match.fix.course,
+                        speed_kmh=geo_match.fix.speed_kmh,
+                        target_lat=target[0],
+                        target_lon=target[1],
+                        distance_meters=geo_match.distance_meters,
+                        fov_degrees=args.fov,
+                    )
+                    if crop_box is None:
+                        say(
+                            "  zoom: skipped (target out of frame, or no "
+                            "reliable heading at this fix)"
+                        )
+                    else:
+                        offset_seconds = (
+                            geo_match.fix.timestamp - recording.id.timestamp
+                        ).total_seconds()
+                        try:
+                            outputs = render_zoom_outputs(
+                                front.path,
+                                offset_seconds,
+                                crop_box,
+                                front.path.parent,
+                                str(recording.id),
+                            )
+                        except MediaToolError as exc:
+                            warn(f"bv-search: {recording.id}: zoom: {exc}")
+                            had_error = True
+                        else:
+                            say(f"  zoom thumbnail: {outputs.thumbnail}")
+                            say(f"  zoom clip: {outputs.clip}")
 
         if progress is not None:
             progress.finish()
