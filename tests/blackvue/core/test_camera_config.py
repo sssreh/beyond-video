@@ -7,6 +7,7 @@ from blackvue.core.camera_config import CameraConfigCache
 from blackvue.core.camera_config import CameraConfigError
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import default_config_dir
+from blackvue.core.camera_config import default_target_dir
 from blackvue.core.camera_config import list_camera_ids
 from blackvue.core.camera_config import load_camera_config
 from blackvue.core.camera_config import resolve_archive_path
@@ -55,6 +56,24 @@ def test_default_config_dir_falls_back_to_home_when_empty(monkeypatch):
 def test_validate_id_rejects(id_):
     with pytest.raises(CameraConfigError):
         validate_id(id_)
+
+
+# ---------------------------------------------------------------------------
+# default_target_dir() - the suggested [default] bv-config's wizard offers
+# for a brand-new camera's Target prompt, so creating one doesn't require
+# typing a full path by hand for the common case (see bv_config.py's
+# run_wizard()).
+# ---------------------------------------------------------------------------
+
+
+def test_default_target_dir_nests_under_home_by_camera_id():
+    assert default_target_dir("Kirby") == Path.home() / "beyond-video" / "archive" / "Kirby"
+
+
+def test_default_target_dir_differs_per_camera_id():
+    # Deliberately nested by id (unlike default_config_dir()) so two
+    # cameras' suggested defaults never collide.
+    assert default_target_dir("Kirby") != default_target_dir("Wren")
 
 
 @pytest.mark.parametrize(

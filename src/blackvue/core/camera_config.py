@@ -65,6 +65,24 @@ def config_path(config_dir: Path, id_: str) -> Path:
     return config_dir / f"{id_}.cfg"
 
 
+def default_target_dir(id_: str) -> Path:
+    """Return a suggested default archive directory for a new camera's
+    Target field - `~/beyond-video/archive/<id>`, offered as bv-config's
+    wizard's own [default] value so creating a new camera doesn't
+    require typing a full path by hand for the common case.
+
+    Deliberately nested by id (unlike default_config_dir(), which
+    holds every camera's own already-namespaced `<id>.cfg` file
+    directly) so two cameras' suggested defaults never collide.
+    Purely a suggestion: always overridable in the wizard, and this
+    function never creates the directory itself - save_camera_config()
+    doesn't touch it either; only bv-download actually writes files
+    there, and it already creates its destination as needed.
+    """
+
+    return Path.home() / "beyond-video" / "archive" / id_
+
+
 def _looks_like_path(value: str) -> bool:
     """True if `value` should be treated as a literal filesystem path
     rather than a possible camera system id - the disambiguation

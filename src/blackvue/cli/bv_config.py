@@ -17,6 +17,7 @@ from ..core.camera_config import CameraConfig
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
+from ..core.camera_config import default_target_dir
 from ..core.camera_config import load_camera_config
 from ..core.camera_config import save_camera_config
 from ..core.camera_config import validate_id
@@ -100,7 +101,9 @@ def run_wizard(
     """
 
     default_name = existing.name if existing else id_
-    default_target = str(existing.target) if existing else ""
+    default_target = (
+        str(existing.target) if existing else str(default_target_dir(id_))
+    )
     default_output = str(existing.output) if existing and existing.output else ""
     existing_endpoints = existing.endpoints if existing else []
 

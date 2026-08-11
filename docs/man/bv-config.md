@@ -21,7 +21,7 @@ Running `bv-config` again on an existing `ID` edits it interactively, defaulting
 The wizard asks, in order:
 
 1. **Name** - a free-form display name (may contain UTF-8/emoji). Must pass validation (see `validate_name`).
-2. **Target** - the local directory recordings are downloaded into. Must not be empty.
+2. **Target** - the local directory recordings are downloaded into. Must not be empty. For a brand-new camera, pre-filled with a suggested default (`~/beyond-video/archive/<ID>`, one subfolder per camera id so multiple cameras never collide) - press Enter to accept it, or type a different path.
 3. **Output** - optional local directory `bv-export` writes trip folders into by default when its own `--target` isn't given. Leave blank to require `--target` explicitly on every `bv-export` run (the behavior before this existed).
 4. **Endpoints** - reviewed one at a time if editing an existing config (Enter keeps the current address, typing `remove` drops it), then new endpoints can be appended by address until you leave one blank to stop. Endpoints are tried in the order given here, so put the most reliable/fastest one first (e.g. a local Wi-Fi hotspot before a cloud relay).
 
