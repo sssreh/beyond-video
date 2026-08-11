@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 
 from ..archive import Archive
@@ -351,7 +352,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    # sys.stdin/sys.stdout are process-wide, not per-thread - if
+    # bv-web's own server process happens to be launched attached to a
+    # real terminal (Christer's native, non-Docker setup: `bv-web
+    # serve ...` typed directly into a pwsh window), isatty() returns
+    # True even inside a background job thread, where there is no one
+    # actually watching that console for this specific prompt. Without
+    # the main-thread check below, _should_write() then calls input()
+    # on that thread, which blocks forever - the job's own output box
+    # stays empty (the prompt text goes to the server's raw console,
+    # not through say()/warn()), no error is ever raised, and the job
+    # is stuck showing "Running" indefinitely. Confirmed as the real
+    # cause of a bv-scribe web job that looked hung with zero output
+    # and no GPU usage - see WORKING_CONTEXT.md. Requiring the main
+    # thread too means only a genuine direct CLI invocation (always
+    # main-thread) can hit the interactive prompt; every bv-web job
+    # (always a background thread) now safely falls through to the
+    # warn()+skip branch below instead.
+    return (
+        sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and threading.current_thread() is threading.main_thread()
+    )
 
 
 def _default_warn(message: str) -> None:

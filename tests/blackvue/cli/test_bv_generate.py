@@ -1,4 +1,5 @@
 import argparse
+import threading
 from pathlib import Path
 
 import pytest
@@ -419,6 +420,37 @@ def test_should_write_prompts_and_defaults_to_no_when_interactive(
     monkeypatch.setattr("builtins.input", lambda prompt: "")
 
     assert _should_write(target, overwrite=False, dry_run=False) is False
+
+
+def test_interactive_requires_the_main_thread(monkeypatch):
+    """A background thread (bv-web's job runner always runs jobs on
+    one) must never be treated as interactive even if the whole
+    process happens to have a real terminal attached - isatty() is
+    process-wide, not per-thread, so without this check a bv-web job
+    would call input() and hang forever. See _interactive()'s own
+    docstring and the "Fix _interactive() false positive hanging
+    bv-web jobs" entry in WORKING_CONTEXT.md (same fix as
+    bv_scribe.py's own _interactive())."""
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(bv_generate.sys, "stdin", FakeTTY())
+    monkeypatch.setattr(bv_generate.sys, "stdout", FakeTTY())
+
+    assert bv_generate._interactive() is True
+
+    result = {}
+
+    def check():
+        result["value"] = bv_generate._interactive()
+
+    thread = threading.Thread(target=check)
+    thread.start()
+    thread.join()
+
+    assert result["value"] is False
 
 
 def test_extract_audio_skips_parking_recordings(

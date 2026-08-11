@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from blackvue.archive.asset import Asset
@@ -130,6 +131,36 @@ def test_run_writes_scene_file_per_recording(monkeypatch, tmp_path):
     assert len(calls) == 1
     written = (tmp_path / "20260715_134010_N.scene.txt").read_text(encoding="utf-8")
     assert "Routine driving." in written
+
+
+def test_interactive_requires_the_main_thread(monkeypatch):
+    """A background thread (bv-web's job runner always runs jobs on
+    one) must never be treated as interactive even if the whole
+    process happens to have a real terminal attached - isatty() is
+    process-wide, not per-thread, so without this check a bv-web job
+    would call input() and hang forever. See _interactive()'s own
+    docstring and the "Fix _interactive() false positive hanging
+    bv-web jobs" entry in WORKING_CONTEXT.md."""
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(bv_scribe.sys, "stdin", FakeTTY())
+    monkeypatch.setattr(bv_scribe.sys, "stdout", FakeTTY())
+
+    assert bv_scribe._interactive() is True
+
+    result = {}
+
+    def check():
+        result["value"] = bv_scribe._interactive()
+
+    thread = threading.Thread(target=check)
+    thread.start()
+    thread.join()
+
+    assert result["value"] is False
 
 
 def test_run_skips_existing_without_overwrite(monkeypatch, tmp_path):
