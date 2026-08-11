@@ -32,7 +32,14 @@ bv-scribe [--raw]
 
 `bv-scribe` is the batch-oriented, fully-tunable counterpart to `bv-generate --describe-scene` (see `bv-generate(1)`) - same underlying vision-language model and output (`<recording>.scene.txt`), but with the full set of tuning flags real-footage testing converged on, plus an opt-in `--trip-summary` pass. Selects recordings from a local archive the same way every other `bv-*` command does - by timestamp/`--from`/`--until`/`--timestamp` - rather than the raw file/folder arguments the original standalone scene-scribe prototype took.
 
-Requires the `scene` extra: `pip install .[scene]` (pulls in `transformers`, `accelerate`, `qwen-vl-utils`, and `torchvision`). Install torch separately first, per its own CUDA-build instructions for your GPU (a plain `pip install .[scene]` pulls in whatever torch resolves to, not necessarily the right CUDA build) - see PyTorch's own "Get Started" page.
+Requires the `scene` extra: `pip install .[scene]` (pulls in `transformers`, `accelerate`, `qwen-vl-utils`, and `torchvision`). Install torch separately first, per its own CUDA-build instructions for your GPU (a plain `pip install .[scene]` pulls in whatever torch resolves to from PyPI's default index, which is CPU-only, not necessarily the right CUDA build):
+
+```
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install .[scene]
+```
+
+Check [PyTorch's "Get Started" page](https://pytorch.org/get-started/locally/) for the current recommended `cuXXX` index tag - it changes over time and by GPU generation (e.g. RTX 50-series/Blackwell needs a build new enough to support it at all; older CUDA builds don't error on an unsupported GPU, they just silently fall back to CPU). Verify with `python -c "import torch; print(torch.cuda.is_available())"` before running anything - it should print `True`. On CPU, an 8B-parameter vision-language model can look completely hung (no output at all) for many minutes on just the first recording, which is easy to mistake for a bug rather than expected CPU slowness.
 
 **Trusting the output.** Real-footage testing surfaced two distinct failure modes: the model can confidently misread a license plate (report the wrong characters rather than flagging it illegible), and it can invent plausible-sounding but unrelated text on an ambiguous scene (a real Stockholm-area trip once got "Palm Jumeirah" - a Dubai landmark - as on-screen text, more than once, across separate runs). Every output file ends with a disclaimer to this effect - treat every read, especially plates/signs/place names, as unverified until checked against the source video. `--zoom-plate-confidence-check` (on by default) mitigates the plate case specifically: each detected plate crop is read twice (once greedy, once with sampling forced on), and reported as unverified rather than picked between if the two disagree.
 

@@ -8649,3 +8649,21 @@ Christer, while a large bv-scribe job ran on bv-web: "Is it possible for every b
 **Tests.** New `test_quote_for_replicate_*`/`test_replicate_command_line_*` unit tests, plus a `job.replicate_command` assertion added to each command's existing "wires say/warn into run" test and to the `--place`-with-a-space case (asserting the quoted form). All hand-verified against the real `JobRunner`/CLI `parse_args()` code (no pytest in this sandbox) by monkeypatching each target module's `_run()` directly and reading back `job.replicate_command` - caught two mistakes this way before they reached the committed test file: `--stitch-layout auto` is always appended (its own CLI default is a truthy string, not gated on `--stitch`), and `--asset` is built before `--place` in `start_bv_search()`'s own argv order, not after.
 
 **Verification.** `job_detail.html`/`base.html` rendered end-to-end via a real `jinja2.Environment` with a fake `Request`/`Job`/`user`, both with and without a `replicate_command` set - confirmed the copy box only appears when there's something to show. `ast.parse()` clean on `jobs.py` and the test file.
+
+## Document CUDA-index torch install for the scene extra (root cause of the bv-scribe "hung on video 1" report)
+
+Christer reported a bv-scribe job via bv-web (model `Qwen/Qwen3-VL-8B-Instruct`, 902 recordings) showing zero output for 20+ minutes - not even the first `[1/902] <recording_id>` label line bv-scribe normally prints before any model work starts.
+
+**Diagnosis.** Walked through it live with Christer rather than guessing: confirmed the label line actually was printing (so the hang was inside `describe_scene()`, not before it), then confirmed `nvidia-smi` showed no python/torch process on his RTX 5090 despite the job "running." `python -c "import torch; print(torch.cuda.is_available())"` in `beyond-video\.venv` (the exact venv both `bv-web` and `bv-scribe` use, confirmed via `where.exe bv-scribe`) printed `False` - torch was a CPU-only build. An 8B-parameter vision-language model on CPU can look completely hung for many minutes on just the first recording.
+
+The apparent contradiction - Christer said running scene description directly via `python scene_scribe.py` (a separate standalone prototype script/project, `C:\My_git\scene-scribe`, predating bv-scribe - see task #604) was fast - turned out to be the actual clue, not a contradiction. `scene-scribe`'s own `README.md` documents installing `torch`/`torchvision` from PyTorch's CUDA 12.8 wheel index *before* anything else, specifically because Christer's GPU (RTX 5090, Blackwell/sm_120) isn't supported by older CUDA wheel builds - which silently fall back to CPU instead of erroring. `scene-scribe` has its own separate venv where that step was actually done; `beyond-video`'s `pyproject.toml`/README never documented it for the `scene` extra, so `pip install -e ".[scene]"` there pulled torch from PyPI's default index (CPU-only) into `beyond-video\.venv`. Same physical GPU, two venvs, only one configured correctly.
+
+**Fix applied and confirmed working** (Christer reinstalled in `beyond-video\.venv` and re-ran the check - now prints `True`):
+```
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install -e ".[scene]"
+```
+
+**Docs.** Added a "if you have an NVIDIA GPU" callout to `README.md`'s Install section with the same two-step command, a pointer to PyTorch's own "Get Started" page for the current `cuXXX` tag (this changes over time/by GPU generation), and an explicit note that CPU inference on an 8B model can look indistinguishable from "stuck" for many minutes. Expanded `docs/man/bv-scribe.md`'s existing (vague) "install torch separately, see PyTorch's Get Started page" line into the same concrete two-command block plus the same CPU-slowness warning, since `pyproject.toml`'s `scene` extra comment already points there for CUDA-build instructions.
+
+**Not changed:** `pyproject.toml` itself - its existing comment above the `scene` group already said "install torch separately first per its own instructions (CUDA build selection - see docs/man/bv-scribe.md)," which now resolves to the concrete command. No code change needed, this was purely a documentation gap.

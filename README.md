@@ -41,6 +41,21 @@ pip install -e ".[web]"         # bv-web and bv-live
 pip install -e ".[scene]"       # bv-generate --describe-scene, bv-scribe
 ```
 
+**If you have an NVIDIA GPU and want `[scene]` to actually use it**, install `torch`/`torchvision` from PyTorch's CUDA wheel index *before* the command above, not after - a plain `pip install -e ".[scene]"` pulls torch from PyPI's default index, which is a CPU-only build. This matters most on recent GPUs (e.g. RTX 50-series/Blackwell), since older CUDA wheel builds don't support them at all and silently fall back to CPU rather than erroring:
+
+```
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install -e ".[scene]"
+```
+
+Check `https://pytorch.org/get-started/locally/` for the current recommended `cuXXX` index tag for your GPU/driver, then verify it worked before running anything scene-related:
+
+```
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+Should print `True`. An 8B-parameter vision-language model on CPU is extremely slow (can look "stuck" on the very first recording for many minutes) - if `bv-scribe`/`bv-generate --describe-scene` seems hung with no output, this is the first thing to check.
+
 ## Quick start
 
 ```
