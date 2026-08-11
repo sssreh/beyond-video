@@ -19,6 +19,7 @@
 <p class="error">{{ error }}</p>
 {% endif %}
 {% if cameras %}
+<div class="content-panel">
 <form method="post" action="/jobs/bv-export">
   <div class="option-group">
     <h3>Required</h3>
@@ -403,6 +404,7 @@
 
   <button type="submit">Start</button>
 </form>
+</div>
 <script>
   // Progressive disclosure: checking one of these core checkboxes
   // opens its matching Advanced <details> section automatically, so

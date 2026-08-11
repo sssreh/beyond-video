@@ -15,6 +15,7 @@
 <p class="error">{{ error }}</p>
 {% endif %}
 {% if cameras %}
+<div class="content-panel">
 <form method="post" action="/jobs/bv-download">
   <div class="option-group">
     <h3>Required</h3>
@@ -106,6 +107,7 @@
 
   <button type="submit">Start</button>
 </form>
+</div>
 {% else %}
 <p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
 with bv-config</a> first.</p>
