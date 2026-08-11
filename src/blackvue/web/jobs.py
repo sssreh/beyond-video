@@ -716,6 +716,161 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_scribe(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        task: str,
+        camera: str,
+        model: str | None,
+        trip_summary: bool,
+        cpu: bool,
+        overwrite: bool,
+        dry_run: bool,
+        verbose: bool,
+        username: str,
+    ) -> Job:
+        """Start bv-scribe as a job against one already-configured
+        camera's archive - a curated subset of bv-scribe's own ~40
+        flags, not full parity (unlike bv-generate/bv-export above).
+        Christer's own call when asked, given how many of those are
+        fine-tuning knobs for the zoom-detection sub-pipeline (
+        --zoom-frames, --zoom-padding, --zoom-ocr-width, and a dozen
+        more): task/camera/model, --trip-summary, --cpu, and the usual
+        overwrite/dry-run/verbose trio are exposed; every --zoom-*
+        flag and the do-sample/temperature/top-p/top-k sampling knobs
+        stay CLI-only, tuned once from a real terminal rather than
+        re-tuned per web run. --raw is also not exposed - it's an
+        escape hatch for non-archive footage with no camera id at
+        all, orthogonal to this curated-by-camera-id trigger the same
+        way bv-gps's own --host is.
+
+        `archive_path` is resolved by the caller (app.py's route, via
+        `_find_camera_archive()`) the same way start_bv_generate()'s
+        own docstring explains.
+        """
+
+        from ..cli import bv_scribe
+
+        argv: list[str] = [str(archive_path)]
+
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if task:
+            argv += ["--task", task]
+        if camera:
+            argv += ["--camera", camera]
+        if model:
+            argv += ["--model", model]
+        if trip_summary:
+            argv.append("--trip-summary")
+        if cpu:
+            argv.append("--cpu")
+        if overwrite:
+            argv.append("--overwrite")
+        if dry_run:
+            argv.append("--dry-run")
+        if verbose:
+            argv.append("--verbose")
+
+        args = bv_scribe.parse_args(argv)
+        job = self._new_job(command=f"bv-scribe {camera_id}", username=username)
+
+        def run() -> int:
+            say = job.append_output
+            return bv_scribe._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
+    def start_bv_search(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        text: str | None,
+        asset: str,
+        regex: bool,
+        case_sensitive: bool,
+        near: str | None,
+        place: str | None,
+        radius: float | None,
+        trace: bool,
+        username: str,
+    ) -> Job:
+        """Start bv-search as a job against one already-configured
+        camera's archive - full flag parity with the CLI (bv-search's
+        surface is small enough that "full parity but grouped" makes
+        sense here the same way it did for bv-generate/bv-export,
+        unlike bv-scribe's own curated subset above).
+
+        `near` is the raw "LAT,LON" text bv-search's own --near takes
+        (e.g. "59.3293,18.0686"), not two separate lat/lon fields -
+        the web form's text input matches the CLI's own syntax
+        directly rather than inventing a different shape only to
+        rejoin it into the same string here. `near`/`place` are
+        mutually exclusive and at least one of `text`/`near`/`place`
+        is required, same as the CLI's own `_run()` - app.py's route
+        re-checks both before ever calling this, so a bad web form
+        re-renders with a friendly error instead of parse_args()
+        raising SystemExit(2) inside this method, the same "small
+        number of conditions -> a plain pre-check" approach
+        start_bv_ls()/start_bv_download()'s own routes already use
+        (bv-search has nowhere near bv-export's dozens of validators).
+
+        `archive_path` is resolved by the caller (app.py's route, via
+        `_find_camera_archive()`) the same way start_bv_generate()'s
+        own docstring explains.
+        """
+
+        from ..cli import bv_search as bv_search_cli
+
+        argv: list[str] = [str(archive_path)]
+
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if text:
+            argv += ["--text", text]
+        if asset:
+            argv += ["--asset", asset]
+        if regex:
+            argv.append("--regex")
+        if case_sensitive:
+            argv.append("--case-sensitive")
+        if near:
+            argv += ["--near", near]
+        if place:
+            argv += ["--place", place]
+        if radius is not None:
+            argv += ["--radius", str(radius)]
+        if trace:
+            argv.append("--trace")
+
+        args = bv_search_cli.parse_args(argv)
+        job = self._new_job(command=f"bv-search {camera_id}", username=username)
+
+        def run() -> int:
+            say = job.append_output
+            return bv_search_cli._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
     def answer(self, job_id: str, text: str) -> bool:
         """Feed an answer to a waiting job. Returns False if the job
         doesn't exist or isn't actually waiting (see

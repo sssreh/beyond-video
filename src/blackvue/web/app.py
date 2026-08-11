@@ -13,10 +13,11 @@ roles), the trip list, and a trip detail page with video playback
 (range-request support comes for free from Starlette's own
 FileResponse) plus GPX/SRT/LRC download links. On top of that, the
 owner can now also trigger bv-config, bv-gps, bv-generate, bv-export,
-and bv-download as background jobs from the browser (see jobs.py for
-how - a real job-runner infrastructure, since any of these can run
-for a while and bv-config's wizard needs to ask questions back).
-Every bv-* pipeline command now has a browser trigger.
+bv-download, bv-ls, bv-scribe, and bv-search as background jobs from
+the browser (see jobs.py for how - a real job-runner infrastructure,
+since any of these can run for a while and bv-config's wizard needs
+to ask questions back). Every bv-* pipeline command now has a browser
+trigger.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -25,6 +26,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+from argparse import ArgumentTypeError
 from pathlib import Path
 
 from fastapi import Depends
@@ -1062,6 +1064,151 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             movement=movement,
             duration=not no_duration,
             gap_tolerance_seconds=gap_tolerance_seconds_value,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-scribe", response_class=HTMLResponse)
+    async def new_bv_scribe_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_scribe.html",
+            {"user": user, "cameras": _camera_options(), "error": None},
+        )
+
+    @app.post("/jobs/bv-scribe")
+    async def new_bv_scribe_submit(
+        request: Request,
+        id: str = Form(...),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        task: str = Form("both"),
+        camera: str = Form("front"),
+        model: str = Form(""),
+        trip_summary: bool = Form(False),
+        cpu: bool = Form(False),
+        overwrite: bool = Form(False),
+        dry_run: bool = Form(False),
+        verbose: bool = Form(False),
+        user: User = Depends(require_owner),
+    ):
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        job = app.state.job_runner.start_bv_scribe(
+            camera_id=id,
+            archive_path=archive_path,
+            from_=from_.strip() or None,
+            until=until.strip() or None,
+            timestamp=timestamp.strip() or None,
+            task=task,
+            camera=camera,
+            model=model.strip() or None,
+            trip_summary=trip_summary,
+            cpu=cpu,
+            overwrite=overwrite,
+            dry_run=dry_run,
+            verbose=verbose,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-search", response_class=HTMLResponse)
+    async def new_bv_search_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_search.html",
+            {"user": user, "cameras": _camera_options(), "error": None},
+        )
+
+    @app.post("/jobs/bv-search")
+    async def new_bv_search_submit(
+        request: Request,
+        id: str = Form(...),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        text: str = Form(""),
+        asset: str = Form("all"),
+        regex: bool = Form(False),
+        case_sensitive: bool = Form(False),
+        near: str = Form(""),
+        place: str = Form(""),
+        radius: str = Form(""),
+        trace: bool = Form(False),
+        user: User = Depends(require_owner),
+    ):
+        text = text.strip() or None
+        near = near.strip() or None
+        place = place.strip() or None
+        radius = radius.strip()
+
+        # Small number of conditions to re-check (bv-search has
+        # nowhere near bv-export's dozens of validators) - a plain
+        # pre-check, same "small number of conditions -> a plain
+        # pre-check" approach start_bv_ls()/start_bv_download()'s own
+        # routes already use, rather than a BvExportArgError-style
+        # exception class built for a much larger validator surface.
+        # Mirrors bv-search's own _run() "give at least one criterion"
+        # check and parse_args()'s --near/--place mutually-exclusive
+        # group.
+        error = None
+        if not (text or near or place):
+            error = "Give at least one of: text, near coordinates, or place."
+        elif near and place:
+            error = "Near coordinates and place are mutually exclusive."
+        elif near is not None:
+            # Deferred import - app.py otherwise never imports a cli.*
+            # module directly (that's jobs.py's job); this is a single
+            # small, private parsing helper reused as-is rather than
+            # duplicated, not a reason to import the whole module at
+            # app.py's own top level.
+            from ..cli.bv_search import _parse_coordinates
+
+            try:
+                _parse_coordinates(near)
+            except ArgumentTypeError as exc:
+                error = str(exc)
+
+        radius_value: float | None = None
+        if error is None and radius:
+            try:
+                radius_value = float(radius)
+            except ValueError:
+                error = "Radius must be a number."
+
+        if error is not None:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_search.html",
+                {"user": user, "cameras": _camera_options(), "error": error},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        job = app.state.job_runner.start_bv_search(
+            camera_id=id,
+            archive_path=archive_path,
+            from_=from_.strip() or None,
+            until=until.strip() or None,
+            timestamp=timestamp.strip() or None,
+            text=text,
+            asset=asset,
+            regex=regex,
+            case_sensitive=case_sensitive,
+            near=near,
+            place=place,
+            radius=radius_value,
+            trace=trace,
             username=user.username,
         )
         return RedirectResponse(

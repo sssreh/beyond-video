@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Describe scenes - Beyond Video{% endblock %}
+{% block content %}
+<h2 class="page-heading">Describe scenes (bv-scribe)</h2>
+<div class="command-help">
+  <p>Runs a vision-language model over one camera's archive to describe
+  what's happening in each recording and/or read visible text (signs,
+  plates) via OCR - the same actions <code>bv-scribe</code> runs from
+  the command line. A curated subset of its flags is offered here; use
+  the command line directly for the full fine-tuning surface (zoom
+  detection, sampling, etc).</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<form method="post" action="/jobs/bv-scribe">
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera's archive to describe scenes for. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="option-group">
+    <h3>Time range</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" placeholder="matches a single recording/day">
+      </div>
+      <div class="field">
+        <label class="field-label" for="from_">
+          From
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward (e.g. 20260715_120000), or a shorter prefix - 2026 matches the whole year, 20260715 matches just that day. Leave blank for the whole archive.</span></span>
+        </label>
+        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="until">
+          Until
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
+        </label>
+        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Defaults</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="task">
+          What to run
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Describe writes a scene description; OCR reads visible text (signs, plates); Both runs both.</span></span>
+        </label>
+        <select id="task" name="task">
+          <option value="both" selected>Both</option>
+          <option value="describe">Describe</option>
+          <option value="ocr">OCR</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="camera">
+          Camera direction
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which recorded camera(s) to describe - front, rear, or both.</span></span>
+        </label>
+        <select id="camera" name="camera">
+          <option value="front" selected>Front</option>
+          <option value="rear">Rear</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+    </div>
+    <label class="field-label" for="model">
+      Model
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Vision-language model to use. Leave blank for the default.</span></span>
+    </label>
+    <input type="text" id="model" name="model" placeholder="leave blank for default">
+  </div>
+
+  <div class="option-group">
+    <h3>Optional</h3>
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="trip_summary" name="trip_summary" value="true" style="width: auto; margin: 0;">
+        Also write a trip summary
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="cpu" name="cpu" value="true" style="width: auto; margin: 0;">
+        Force CPU (skip GPU)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
+        Overwrite files that already exist
+      </label>
+    </div>
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
+        Dry run (show what would be described, describe nothing)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="verbose" name="verbose" value="true" style="width: auto; margin: 0;">
+        Verbose output
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Start</button>
+</form>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}

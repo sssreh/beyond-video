@@ -30,6 +30,8 @@ from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli import bv_generate as bv_generate_module
 from blackvue.cli import bv_gps as bv_gps_module
 from blackvue.cli import bv_ls as bv_ls_module
+from blackvue.cli import bv_scribe as bv_scribe_module
+from blackvue.cli import bv_search as bv_search_module
 from blackvue.web.jobs import BvExportArgError
 from blackvue.web.jobs import Job
 from blackvue.web.jobs import JobRunner
@@ -1171,6 +1173,294 @@ def test_start_bv_ls_job_fails_when_run_returns_nonzero(monkeypatch):
 
     runner = JobRunner()
     job = runner.start_bv_ls(**_ls_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# start_bv_scribe()
+# ---------------------------------------------------------------------------
+
+
+def _scribe_kwargs(**overrides):
+    """Every start_bv_scribe() keyword, defaulted to bv-scribe's own
+    plainest possible invocation - the curated subset Christer chose
+    over full CLI parity (see JobRunner.start_bv_scribe()'s own
+    docstring), same per-test-override shape the other _*_kwargs()
+    helpers above use."""
+
+    kwargs = dict(
+        camera_id="kirby",
+        archive_path=Path("/archive/kirby"),
+        from_=None,
+        until=None,
+        timestamp=None,
+        task="both",
+        camera="front",
+        model=None,
+        trip_summary=False,
+        cpu=False,
+        overwrite=False,
+        dry_run=False,
+        verbose=False,
+        username="christer",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_start_bv_scribe_wires_say_and_warn_into_bv_scribes_run(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.path == "/archive/kirby"
+        say("bv-scribe: started 12:00:00")
+        return 0
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_scribe(**_scribe_kwargs())
+
+    assert job.command == "bv-scribe kirby"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert "bv-scribe: started 12:00:00" in output
+
+
+def test_start_bv_scribe_defaults_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_scribe(**_scribe_kwargs())
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.task == "both"
+    assert args.camera == "front"
+    assert args.trip_summary is False
+    assert args.cpu is False
+    assert args.overwrite is False
+    assert args.dry_run is False
+    assert args.verbose is False
+
+
+def test_start_bv_scribe_curated_flags_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_scribe(
+        **_scribe_kwargs(
+            from_="20260101_000000",
+            until="20260102_000000",
+            timestamp="20260101",
+            task="ocr",
+            camera="both",
+            model="a-custom-model",
+            trip_summary=True,
+            cpu=True,
+            overwrite=True,
+            dry_run=True,
+            verbose=True,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.from_ == "20260101_000000"
+    assert args.until == "20260102_000000"
+    assert args.timestamp == "20260101"
+    assert args.task == "ocr"
+    assert args.camera == "both"
+    assert args.model == "a-custom-model"
+    assert args.trip_summary is True
+    assert args.cpu is True
+    assert args.overwrite is True
+    assert args.dry_run is True
+    assert args.verbose is True
+
+
+def test_start_bv_scribe_job_fails_when_run_returns_nonzero(monkeypatch):
+    def fake_run(args, *, say, warn):
+        return 1
+
+    monkeypatch.setattr(bv_scribe_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_scribe(**_scribe_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# start_bv_search()
+# ---------------------------------------------------------------------------
+
+
+def _search_kwargs(**overrides):
+    """Every start_bv_search() keyword, defaulted to bv-search's own
+    plainest possible invocation - full CLI parity (small flag
+    surface, unlike bv-scribe above), same per-test-override shape
+    the other _*_kwargs() helpers above use."""
+
+    kwargs = dict(
+        camera_id="kirby",
+        archive_path=Path("/archive/kirby"),
+        from_=None,
+        until=None,
+        timestamp=None,
+        text=None,
+        asset="all",
+        regex=False,
+        case_sensitive=False,
+        near=None,
+        place=None,
+        radius=None,
+        trace=False,
+        username="christer",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_start_bv_search_wires_say_and_warn_into_bv_searchs_run(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.path == "/archive/kirby"
+        say("bv-search: started 12:00:00")
+        return 0
+
+    monkeypatch.setattr(bv_search_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_search(**_search_kwargs(text="roundabout"))
+
+    assert job.command == "bv-search kirby"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert "bv-search: started 12:00:00" in output
+
+
+def test_start_bv_search_text_and_asset_flags_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_search_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_search(
+        **_search_kwargs(
+            text="roundabout",
+            asset="scene",
+            regex=True,
+            case_sensitive=True,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.text == "roundabout"
+    assert args.asset == "scene"
+    assert args.regex is True
+    assert args.case_sensitive is True
+
+
+def test_start_bv_search_near_reaches_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_search_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_search(
+        **_search_kwargs(near="59.3293,18.0686", radius=150.0)
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.near[0] == pytest.approx(59.3293)
+    assert args.near[1] == pytest.approx(18.0686)
+    assert args.radius == pytest.approx(150.0)
+    assert args.place is None
+
+
+def test_start_bv_search_place_reaches_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_search_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_search(**_search_kwargs(place="Slussen, Stockholm"))
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.place == "Slussen, Stockholm"
+    assert args.near is None
+
+
+def test_start_bv_search_time_range_and_trace_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_search_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_search(
+        **_search_kwargs(
+            text="pothole",
+            from_="20260101_000000",
+            until="20260102_000000",
+            timestamp="20260101",
+            trace=True,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.from_ == "20260101_000000"
+    assert args.until == "20260102_000000"
+    assert args.timestamp == "20260101"
+    assert args.trace is True
+
+
+def test_start_bv_search_job_fails_when_run_returns_nonzero(monkeypatch):
+    def fake_run(args, *, say, warn):
+        return 1
+
+    monkeypatch.setattr(bv_search_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_search(**_search_kwargs(text="roundabout"))
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, _, _ = job.snapshot()
