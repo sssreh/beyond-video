@@ -65,6 +65,79 @@ def config_path(config_dir: Path, id_: str) -> Path:
     return config_dir / f"{id_}.cfg"
 
 
+def _looks_like_path(value: str) -> bool:
+    """True if `value` should be treated as a literal filesystem path
+    rather than a possible camera system id - the disambiguation
+    resolve_archive_path() uses, same escape-hatch shape `git` itself
+    uses for `git checkout ./file` vs. a branch of the same name.
+
+    A camera id is validated elsewhere (validate_id()) to be plain
+    ASCII alphanumeric/underscore/hyphen with no path separators at
+    all, so anything that looks path-shaped - starts with an explicit
+    "./"/"../" (POSIX or Windows spelling), is exactly "." or "..", is
+    an OS-absolute path (covers a Windows drive letter like "C:\\..."
+    via os.path.isabs()), or contains any path separator at all (e.g.
+    "some/dir" or "some\\dir" with no leading "./") - is never a valid
+    id in the first place, so treating it as a literal path can't
+    accidentally shadow a real camera.
+    """
+
+    if value in (".", ".."):
+        return True
+
+    if value.startswith(("./", "../", ".\\", "..\\")):
+        return True
+
+    if os.path.isabs(value):
+        return True
+
+    if os.sep in value or (os.altsep and os.altsep in value):
+        return True
+
+    return False
+
+
+def resolve_archive_path(
+    path_or_id: str, config_dir: Path
+) -> tuple[Path, CameraConfig | None]:
+    """Resolve a bv-* archive command's positional PATH argument -
+    either a literal archive directory, or a camera system id (the
+    same ids bv-config/bv-download/bv-gps/bv-live already take)
+    resolved to that camera's own `target` directory.
+
+    Returns `(resolved_path, camera_config)` - `camera_config` is the
+    loaded CameraConfig when `path_or_id` resolved to one (so a caller
+    like bv-export can also read its `output` field without a second
+    lookup), or None when `path_or_id` was used as a literal path.
+
+    Resolution order: if `path_or_id` already looks like a path (see
+    _looks_like_path()), it's used literally without ever touching
+    `config_dir` - the explicit escape hatch for a real directory that
+    happens to share a name with a configured camera (`./Kirby` or
+    `.\\Kirby` instead of bare `Kirby`). Otherwise, a matching camera
+    config is tried first; if none exists for that id, `path_or_id`
+    falls back to being used as a literal path anyway - the same
+    behavior every bv-* archive command already had before this
+    existed, so a bare directory name that isn't also a configured
+    camera id keeps working exactly as before.
+
+    A camera config that exists but fails to load (CameraConfigError -
+    corrupt TOML, missing required key) is not caught here; it
+    propagates to the caller rather than silently falling back to a
+    literal-path interpretation that would almost certainly also be
+    wrong (the directory named after a broken camera config is not a
+    sensible fallback archive to search).
+    """
+
+    if not _looks_like_path(path_or_id):
+        cfg_path = config_path(config_dir, path_or_id)
+        if cfg_path.exists():
+            config = load_camera_config(cfg_path)
+            return config.target, config
+
+    return Path(path_or_id), None
+
+
 def list_camera_ids(config_dir: Path) -> list[str]:
     """Return every camera system id with a config file in config_dir,
     sorted alphabetically.
@@ -138,11 +211,13 @@ def validate_name(name: str) -> None:
 
 @dataclass
 class CameraConfig:
-    """One camera system: identity, endpoints, and archive target."""
+    """One camera system: identity, endpoints, archive target, and an
+    optional default output (export) directory."""
 
     id: str
     name: str
     target: Path
+    output: Path | None = None
     endpoints: list[Endpoint] = field(default_factory=list)
 
 
@@ -160,6 +235,8 @@ def load_camera_config(path: Path) -> CameraConfig:
 
     if "target" not in data:
         raise CameraConfigError(f"{path}: missing required key 'target'")
+
+    output_value = data.get("output")
 
     endpoints: list[Endpoint] = []
 
@@ -180,6 +257,7 @@ def load_camera_config(path: Path) -> CameraConfig:
         id=id_,
         name=name,
         target=Path(data["target"]),
+        output=Path(output_value) if output_value else None,
         endpoints=endpoints,
     )
 
@@ -248,8 +326,12 @@ def save_camera_config(path: Path, config: CameraConfig) -> None:
         f"id = {_toml_string(config.id)}",
         f"name = {_toml_string(config.name)}",
         f"target = {_toml_string(str(config.target))}",
-        "",
     ]
+
+    if config.output is not None:
+        lines.append(f"output = {_toml_string(str(config.output))}")
+
+    lines.append("")
 
     for endpoint in config.endpoints:
         lines.append("[[endpoint]]")

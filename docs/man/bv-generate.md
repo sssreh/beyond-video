@@ -14,6 +14,7 @@ bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--diarize] [--hf-token TOKEN]
             [--srt] [--lrc]
             [--describe-scene] [--scene-model MODEL] [--camera {front,rear,both}]
+            [--config-dir DIR]
             [--overwrite] [--dry-run] [-v]
             [PATH]
 ```
@@ -32,7 +33,7 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 
 | Argument | Description |
 |---|---|
-| `PATH` | Archive directory. Default: current directory. |
+| `PATH` | Archive directory, or a camera system id (see `bv-config(1)`) - resolved to that camera's configured target directory. A path that looks like a real path (starts with `./`/`.\`, is `.`/`..`, is absolute, or contains a path separator) is always used literally, so `./Kirby` forces a literal directory named `Kirby` even if a camera with that id also exists. Default: current directory. |
 
 ## OPTIONS
 
@@ -40,6 +41,7 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 
 | Option | Description |
 |---|---|
+| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id. Default: the platform's standard config directory (same default as `bv-config(1)`). |
 | `--from TIMESTAMP` | Only consider recordings from this timestamp. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. |

@@ -23,6 +23,7 @@ bv-scribe [--raw]
           [--zoom-plate-confidence-check | --no-zoom-plate-confidence-check]
           [--cpu]
           [--trip-summary] [--trip-summary-max-new-tokens N]
+          [--config-dir DIR]
           [--overwrite] [--dry-run] [-v]
           [PATH]
 ```
@@ -41,7 +42,7 @@ Requires the `scene` extra: `pip install .[scene]`. Install torch separately fir
 
 | Argument | Description |
 |---|---|
-| `PATH` | Archive directory, or (with `--raw`) a raw video file or a directory of raw video files. Default: current directory. |
+| `PATH` | Archive directory, or (with `--raw`) a raw video file or a directory of raw video files. Also accepts a camera system id (see `bv-config(1)`) - resolved to that camera's configured target directory; not used with `--raw`. A path that looks like a real path (starts with `./`/`.\`, is `.`/`..`, is absolute, or contains a path separator) is always used literally, so `./Kirby` forces a literal directory named `Kirby` even if a camera with that id also exists. Default: current directory. |
 
 ## OPTIONS
 
@@ -49,6 +50,7 @@ Requires the `scene` extra: `pip install .[scene]`. Install torch separately fir
 
 | Option | Description |
 |---|---|
+| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id. Default: the platform's standard config directory (same default as `bv-config(1)`). Not used with `--raw`. |
 | `--raw` | Treat `PATH` as a raw video file or a directory of raw video files instead of a BlackVue archive. See "Raw video mode" below. |
 | `--from TIMESTAMP` | Only consider recordings from this timestamp. Not used with `--raw`. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. Not used with `--raw`. |

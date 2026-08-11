@@ -20,6 +20,8 @@ from pathlib import Path
 
 from ..archive import Archive
 from .errors import run_cli
+from ..core.camera_config import default_config_dir
+from ..core.camera_config import resolve_archive_path
 from ..generate import MediaToolError
 from ..lexicaltimeparser import LexicalTimeParser
 from ..search import TEXT_SEARCH_ASSETS
@@ -71,7 +73,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "path",
         nargs="?",
         default=".",
-        help="Archive directory.",
+        help=(
+            "Archive directory. Also accepts a camera system id (see "
+            "bv-config), resolved to that camera's archive target - "
+            "use an explicit ./name or .\\name to force a literal "
+            "directory of the same name instead."
+        ),
+    )
+
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=default_config_dir(),
+        help=(
+            "Directory camera configs live in, for resolving `path` "
+            "as a camera id (default: %(default)s)."
+        ),
     )
 
     parser.add_argument(
@@ -181,7 +198,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         warn("bv-search: give at least one of --text, --near, or --place")
         return EXIT_ARGS_ERROR
 
-    archive_path = Path(args.path)
+    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
     archive = Archive(archive_path)
 
     try:

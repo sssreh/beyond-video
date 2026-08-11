@@ -5,7 +5,32 @@ from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.cli import bv_search
+from blackvue.cli.bv_search import main
 from blackvue.cli.bv_search import parse_args
+from blackvue.core.camera_config import CameraConfig
+from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import save_camera_config
+
+
+def test_main_resolves_a_camera_id_to_its_configured_target(tmp_path, capsys):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    config_dir = tmp_path / "config"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(id="Kirby", name="Kirby", target=archive),
+    )
+
+    exit_code = main(
+        ["Kirby", "--config-dir", str(config_dir), "--text", "traffic"]
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert str(archive) in out
+    assert "no recordings found in range" in out
 
 
 def test_parse_args_defaults():

@@ -7,6 +7,8 @@ from pathlib import Path
 from blackvue.archive import Archive, Asset
 from blackvue.cli.display_group import DisplayGroup
 from blackvue.cli.errors import run_cli
+from blackvue.core.camera_config import default_config_dir
+from blackvue.core.camera_config import resolve_archive_path
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
@@ -317,7 +319,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "path",
         nargs="?",
         default=".",
-        help="Archive directory.",
+        help=(
+            "Archive directory, or a configured camera system id (see "
+            "bv-config) - resolved to that camera's own archive "
+            "directory. A path containing a separator (e.g. ./Kirby) "
+            "is always used literally, never as an id, so a real "
+            "directory sharing a camera's name is never ambiguous."
+        ),
+    )
+
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=default_config_dir(),
+        help=(
+            "Directory camera configs live in, for resolving `path` "
+            "as a camera id (default: %(default)s)."
+        ),
     )
 
     parser.add_argument(
@@ -429,8 +447,10 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
     warnings/prompts of its own, so unlike bv_config.py's `_run()`
     there's no `ask`/`warn` to thread through here."""
 
+    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
+
     return bv_ls(
-        path=args.path,
+        path=archive_path,
         all=args.all,
         from_=args.from_,
         until=args.until,

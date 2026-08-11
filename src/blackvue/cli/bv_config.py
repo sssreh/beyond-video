@@ -101,6 +101,7 @@ def run_wizard(
 
     default_name = existing.name if existing else id_
     default_target = str(existing.target) if existing else ""
+    default_output = str(existing.output) if existing and existing.output else ""
     existing_endpoints = existing.endpoints if existing else []
 
     while True:
@@ -117,12 +118,17 @@ def run_wizard(
             break
         say("  Target must not be empty.")
 
+    output = prompt(
+        "Output (bv-export destination, optional)", default=default_output, ask=ask
+    )
+
     endpoints = edit_endpoints(existing_endpoints, ask=ask, say=say)
 
     return CameraConfig(
         id=id_,
         name=name,
         target=Path(target),
+        output=Path(output) if output else None,
         endpoints=endpoints,
     )
 

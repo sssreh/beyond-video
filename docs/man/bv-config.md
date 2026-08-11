@@ -12,9 +12,9 @@ bv-config [--config-dir DIR] ID
 
 ## DESCRIPTION
 
-`bv-config` creates or edits a camera's configuration: its display **name**, one or more **endpoints** (network addresses the camera is reachable at, tried in order), and the **target** directory downloads are saved to.
+`bv-config` creates or edits a camera's configuration: its display **name**, one or more **endpoints** (network addresses the camera is reachable at, tried in order), the **target** directory downloads are saved to, and an optional **output** directory for `bv-export`.
 
-It's the first command to run for a new camera - `bv-download`, `bv-ls`, `bv-generate`, and `bv-export` all read the archive this config points at, but only `bv-config` itself needs the camera's network address.
+It's the first command to run for a new camera - `bv-download`, `bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, and `bv-search` all read the archive this config points at (each also accepts `ID` itself in place of a literal archive path - see `docs/CLI.md`), but only `bv-config` itself needs the camera's network address.
 
 Running `bv-config` again on an existing `ID` edits it interactively, defaulting every question to the value already saved. Nothing is overwritten until the wizard finishes and you confirm.
 
@@ -22,7 +22,8 @@ The wizard asks, in order:
 
 1. **Name** - a free-form display name (may contain UTF-8/emoji). Must pass validation (see `validate_name`).
 2. **Target** - the local directory recordings are downloaded into. Must not be empty.
-3. **Endpoints** - reviewed one at a time if editing an existing config (Enter keeps the current address, typing `remove` drops it), then new endpoints can be appended by address until you leave one blank to stop. Endpoints are tried in the order given here, so put the most reliable/fastest one first (e.g. a local Wi-Fi hotspot before a cloud relay).
+3. **Output** - optional local directory `bv-export` writes trip folders into by default when its own `--target` isn't given. Leave blank to require `--target` explicitly on every `bv-export` run (the behavior before this existed).
+4. **Endpoints** - reviewed one at a time if editing an existing config (Enter keeps the current address, typing `remove` drops it), then new endpoints can be appended by address until you leave one blank to stop. Endpoints are tried in the order given here, so put the most reliable/fastest one first (e.g. a local Wi-Fi hotspot before a cloud relay).
 
 ## ARGUMENTS
 

@@ -11,6 +11,7 @@ bv-search [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
           [--text PATTERN] [--asset {all,transcript,translation,scene}]
           [--regex] [--case-sensitive]
           [--near LAT,LON | --place NAME] [--radius METERS]
+          [--config-dir DIR]
           [PATH]
 ```
 
@@ -30,7 +31,7 @@ When `--place` resolves to a road or an area (rather than a point-like address/P
 
 | Argument | Description |
 |---|---|
-| `PATH` | Archive directory. Default: current directory. |
+| `PATH` | Archive directory, or a camera system id (see `bv-config(1)`) - resolved to that camera's configured target directory. A path that looks like a real path (starts with `./`/`.\`, is `.`/`..`, is absolute, or contains a path separator) is always used literally, so `./Kirby` forces a literal directory named `Kirby` even if a camera with that id also exists. Default: current directory. |
 
 ## OPTIONS
 
@@ -38,6 +39,7 @@ When `--place` resolves to a road or an area (rather than a point-like address/P
 
 | Option | Description |
 |---|---|
+| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id. Default: the platform's standard config directory (same default as `bv-config(1)`). |
 | `--from TIMESTAMP` | Only consider recordings from this timestamp. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. |

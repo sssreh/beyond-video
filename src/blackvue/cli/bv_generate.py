@@ -17,6 +17,8 @@ from ..archive import Archive
 from ..archive import Asset
 from ..archive.recording import Recording
 from .errors import run_cli
+from ..core.camera_config import default_config_dir
+from ..core.camera_config import resolve_archive_path
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import SpeechSegment
@@ -70,7 +72,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "path",
         nargs="?",
         default=".",
-        help="Archive directory.",
+        help=(
+            "Archive directory, or a configured camera system id (see "
+            "bv-config) - resolved to that camera's own archive "
+            "directory. A path containing a separator (e.g. ./Kirby) "
+            "is always used literally, never as an id, so a real "
+            "directory sharing a camera's name is never ambiguous."
+        ),
+    )
+
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=default_config_dir(),
+        help=(
+            "Directory camera configs live in, for resolving `path` "
+            "as a camera id (default: %(default)s)."
+        ),
     )
 
     parser.add_argument(
@@ -1316,7 +1334,7 @@ def _run(
     bv_gps.py's own `_run()`.
     """
 
-    archive_path = Path(args.path)
+    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
     archive = Archive(archive_path)
 
     try:

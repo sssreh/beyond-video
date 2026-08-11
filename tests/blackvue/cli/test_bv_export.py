@@ -8,6 +8,9 @@ from blackvue.archive.configuration import write_record_time_snapshot
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli.bv_export import bv_export
 from blackvue.cli.bv_export import main
+from blackvue.core.camera_config import CameraConfig
+from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import save_camera_config
 from blackvue.export import trip_export as trip_export_module
 from blackvue.export.osm_roads import Road
 from blackvue.lexicaltimeparser import LexicalTimeParser
@@ -42,6 +45,91 @@ def test_main_reports_a_missing_archive_path_cleanly(tmp_path, capsys):
     assert "bv-export" in err
     assert str(missing) in err
     assert "Traceback" not in err
+
+
+def test_main_resolves_camera_id_and_defaults_target_from_its_output(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    config_dir = tmp_path / "config"
+    output = tmp_path / "exports"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(id="Kirby", name="Kirby", target=archive, output=output),
+    )
+
+    exit_code = main(["Kirby", "--config-dir", str(config_dir)])
+
+    assert exit_code == 0
+    folder = output / "trip_20260720_100000_20260720_100000"
+    assert folder.is_dir()
+    assert (folder / "front.mp4").exists()
+
+
+def test_main_target_required_message_mentions_bv_config_when_camera_has_no_output(
+    tmp_path, capsys
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    config_dir = tmp_path / "config"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(id="Kirby", name="Kirby", target=archive),
+    )
+
+    exit_code = main(["Kirby", "--config-dir", str(config_dir)])
+
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert "--target is required" in err
+    assert "bv-config" in err
+
+
+def test_main_target_required_message_omits_bv_config_for_a_plain_path(
+    tmp_path, capsys
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    exit_code = main([str(archive)])
+
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert "--target is required" in err
+    assert "bv-config" not in err
+
+
+def test_main_explicit_target_overrides_camera_output(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    config_dir = tmp_path / "config"
+    unused_output = tmp_path / "unused_exports"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(
+            id="Kirby", name="Kirby", target=archive, output=unused_output
+        ),
+    )
+
+    explicit_target = tmp_path / "explicit_exports"
+    exit_code = main(
+        [
+            "Kirby",
+            "--config-dir", str(config_dir),
+            "--target", str(explicit_target),
+        ]
+    )
+
+    assert exit_code == 0
+    folder = explicit_target / "trip_20260720_100000_20260720_100000"
+    assert folder.is_dir()
+    assert not unused_output.exists()
 
 
 def test_bv_export_creates_a_trip_folder(tmp_path, capsys):

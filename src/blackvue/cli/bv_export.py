@@ -22,6 +22,8 @@ from blackvue.archive import Archive
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
+from blackvue.core.camera_config import default_config_dir
+from blackvue.core.camera_config import resolve_archive_path
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.map_video import DEFAULT_INTRO_SECONDS
@@ -885,14 +887,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "path",
         nargs="?",
         default=".",
-        help="Archive directory.",
+        help=(
+            "Archive directory, or a configured camera system id (see "
+            "bv-config) - resolved to that camera's own archive "
+            "directory. A path containing a separator (e.g. ./Kirby) "
+            "is always used literally, never as an id, so a real "
+            "directory sharing a camera's name is never ambiguous."
+        ),
     )
 
     parser.add_argument(
         "--target",
-        required=True,
         metavar="DIR",
-        help="Directory to create trip subfolders in.",
+        help=(
+            "Directory to create trip subfolders in. Required unless "
+            "`path` resolves to a camera id whose config has an "
+            "Output directory set (see bv-config) - that becomes the "
+            "default."
+        ),
+    )
+
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=default_config_dir(),
+        help=(
+            "Directory camera configs live in, for resolving `path` "
+            "as a camera id (default: %(default)s)."
+        ),
     )
 
     parser.add_argument(
@@ -1740,10 +1762,24 @@ def _run(
     docstring for why) has to handle it a second time.
     """
 
+    archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
+
+    target = args.target
+    if target is None and camera_config is not None:
+        target = camera_config.output
+    if target is None:
+        warn(
+            "bv-export: --target is required (no Output directory set "
+            f"in {args.path!r}'s camera config - see bv-config)"
+            if camera_config is not None
+            else "bv-export: --target is required"
+        )
+        return 1
+
     try:
         return bv_export(
-            path=args.path,
-            target=args.target,
+            path=archive_path,
+            target=target,
             prefix=args.prefix,
             from_=args.from_,
             until=args.until,

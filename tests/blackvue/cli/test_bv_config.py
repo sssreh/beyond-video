@@ -131,6 +131,7 @@ def test_run_wizard_builds_a_new_config():
         {
             "Name [mycar]: ": "Kirby",
             "Target (download path): ": "/tmp/archive",
+            "Output (bv-export destination, optional): ": "",
             "  New endpoint address: ": ["1.2.3.4", ""],
             "  Name [EP1]: ": "home",
         }
@@ -141,7 +142,23 @@ def test_run_wizard_builds_a_new_config():
     assert config.id == "mycar"
     assert config.name == "Kirby"
     assert config.target == Path("/tmp/archive")
+    assert config.output is None
     assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
+
+
+def test_run_wizard_sets_output_when_answered():
+    ask = _scripted_ask(
+        {
+            "Name [mycar]: ": "Kirby",
+            "Target (download path): ": "/tmp/archive",
+            "Output (bv-export destination, optional): ": "/tmp/exports",
+            "  New endpoint address: ": "",
+        }
+    )
+
+    config = bv_config_module.run_wizard("mycar", None, ask=ask, say=lambda t: None)
+
+    assert config.output == Path("/tmp/exports")
 
 
 def test_run_wizard_defaults_every_question_to_the_existing_config():
@@ -158,6 +175,7 @@ def test_run_wizard_defaults_every_question_to_the_existing_config():
         {
             "Name [Kirby]: ": "",
             "Target (download path) [/tmp/archive]: ": "",
+            "Output (bv-export destination, optional): ": "",
             "  Address (or 'remove') [1.2.3.4]: ": "1.2.3.4",
             "  Name [home]: ": "home",
             "  New endpoint address: ": "",
@@ -173,12 +191,37 @@ def test_run_wizard_defaults_every_question_to_the_existing_config():
     assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
 
 
+def test_run_wizard_defaults_output_to_the_existing_configs_output():
+    existing = CameraConfig(
+        id="mycar",
+        name="Kirby",
+        target=Path("/tmp/archive"),
+        output=Path("/tmp/exports"),
+        endpoints=[],
+    )
+    ask = _scripted_ask(
+        {
+            "Name [Kirby]: ": "",
+            "Target (download path) [/tmp/archive]: ": "",
+            "Output (bv-export destination, optional) [/tmp/exports]: ": "",
+            "  New endpoint address: ": "",
+        }
+    )
+
+    config = bv_config_module.run_wizard(
+        "mycar", existing, ask=ask, say=lambda t: None
+    )
+
+    assert config.output == Path("/tmp/exports")
+
+
 def test_run_wizard_reprompts_on_an_invalid_name():
     warns: list[str] = []
     ask = _scripted_ask(
         {
             "Name [mycar]: ": ["x" * 200, "GoodName"],
             "Target (download path): ": "/tmp/archive",
+            "Output (bv-export destination, optional): ": "",
             "  New endpoint address: ": "",
         }
     )
@@ -197,6 +240,7 @@ def test_run_wizard_reprompts_on_an_empty_target():
         {
             "Name [mycar]: ": "Kirby",
             "Target (download path): ": ["", "/tmp/archive"],
+            "Output (bv-export destination, optional): ": "",
             "  New endpoint address: ": "",
         }
     )
@@ -237,6 +281,7 @@ def test_run_saves_a_new_config_end_to_end(monkeypatch, tmp_path):
         {
             "Name [mycar]: ": "Kirby",
             "Target (download path): ": str(tmp_path / "archive"),
+            "Output (bv-export destination, optional): ": "",
             "  New endpoint address: ": ["1.2.3.4", ""],
             "  Name [EP1]: ": "home",
         }

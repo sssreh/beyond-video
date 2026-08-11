@@ -23,6 +23,8 @@ from pathlib import Path
 from ..archive import Archive
 from ..archive import Asset
 from .errors import run_cli
+from ..core.camera_config import default_config_dir
+from ..core.camera_config import resolve_archive_path
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import describe_scene
@@ -62,7 +64,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=".",
         help=(
             "Archive directory, or (with --raw) a raw video file or "
-            "a directory of raw video files."
+            "a directory of raw video files. Also accepts a camera "
+            "system id (see bv-config), resolved to that camera's "
+            "archive target - use an explicit ./name or .\\name to "
+            "force a literal directory of the same name instead. Not "
+            "resolved as a camera id with --raw."
+        ),
+    )
+
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=default_config_dir(),
+        help=(
+            "Directory camera configs live in, for resolving `path` "
+            "as a camera id (default: %(default)s)."
         ),
     )
 
@@ -638,7 +654,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     if args.raw:
         return _run_raw(args, say=say, warn=warn)
 
-    archive_path = Path(args.path)
+    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
     archive = Archive(archive_path)
 
     try:

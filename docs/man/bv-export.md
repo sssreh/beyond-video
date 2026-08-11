@@ -7,7 +7,7 @@
 ## SYNOPSIS
 
 ```
-bv-export --target DIR [--prefix PREFIX]
+bv-export [--target DIR] [--config-dir DIR] [--prefix PREFIX]
           [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
           [--max-gap MINUTES] [--movement] [--no-duration] [--duration-heal-archive]
           [--gap-tolerance SECONDS]
@@ -52,15 +52,16 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 
 | Argument | Description |
 |---|---|
-| `PATH` | Archive directory. Default: current directory. |
+| `PATH` | Archive directory, or a camera system id (see `bv-config(1)`) - resolved to that camera's configured target directory. A path that looks like a real path (starts with `./`/`.\`, is `.`/`..`, is absolute, or contains a path separator) is always used literally, so `./Kirby` forces a literal directory named `Kirby` even if a camera with that id also exists. Default: current directory. |
 
 ## OPTIONS
 
-### Required
+### Required (usually)
 
 | Option | Description |
 |---|---|
-| `--target DIR` | Directory to create trip subfolders in. |
+| `--target DIR` | Directory to create trip subfolders in. Required unless `PATH` resolves to a camera id whose config has an **Output** directory set (see `bv-config(1)`) - that becomes the default. An explicit `--target` always overrides a configured Output directory. |
+| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id and reading its Output directory. Default: the platform's standard config directory (same default as `bv-config(1)`). |
 
 ### Naming and selection
 

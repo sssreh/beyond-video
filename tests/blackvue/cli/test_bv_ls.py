@@ -2,6 +2,9 @@ from blackvue.archive.asset import Asset
 from blackvue.cli.bv_ls import _asset_group_spans
 from blackvue.cli.bv_ls import bv_ls
 from blackvue.cli.bv_ls import main
+from blackvue.core.camera_config import CameraConfig
+from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import save_camera_config
 
 
 def test_asset_group_spans_merges_consecutive_same_group_assets():
@@ -96,6 +99,25 @@ def test_main_reports_a_file_given_as_path_cleanly(tmp_path, capsys):
     assert "bv-ls" in err
     assert str(a_file) in err
     assert "Traceback" not in err
+
+
+def test_main_resolves_a_camera_id_to_its_configured_target(tmp_path, capsys):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "20260715_100000_NF.mp4").write_bytes(b"x")
+
+    config_dir = tmp_path / "config"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(id="Kirby", name="Kirby", target=archive),
+    )
+
+    exit_code = main(["Kirby", "--config-dir", str(config_dir)])
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "20260715_100000" in out
 
 
 def test_trips_groups_close_recordings_and_shows_one_row_each(

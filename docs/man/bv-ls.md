@@ -9,7 +9,7 @@
 ```
 bv-ls [--all] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
       [--trips] [--max-gap MINUTES] [--movement] [--no-duration]
-      [--gap-tolerance SECONDS]
+      [--gap-tolerance SECONDS] [--config-dir DIR]
       [PATH]
 ```
 
@@ -25,12 +25,13 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 
 | Argument | Description |
 |---|---|
-| `PATH` | Archive directory. Default: current directory. |
+| `PATH` | Archive directory, or a camera system id (see `bv-config(1)`) - resolved to that camera's configured target directory. A path that looks like a real path (starts with `./`/`.\`, is `.`/`..`, is absolute, or contains a path separator) is always used literally, so `./Kirby` forces a literal directory named `Kirby` even if a camera with that id also exists. Default: current directory. |
 
 ## OPTIONS
 
 | Option | Description |
 |---|---|
+| `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id. Default: the platform's standard config directory (same default as `bv-config(1)`). |
 | `--all` | Show every recording instead of grouped output. |
 | `--from TIMESTAMP` | Show recordings from this timestamp. |
 | `--until TIMESTAMP` | Show recordings up to this timestamp. |

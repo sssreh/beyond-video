@@ -9,6 +9,7 @@ from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import list_camera_ids
 from blackvue.core.camera_config import load_camera_config
+from blackvue.core.camera_config import resolve_archive_path
 from blackvue.core.camera_config import save_camera_config
 from blackvue.core.camera_config import validate_id
 from blackvue.core.camera_config import validate_name
@@ -102,6 +103,43 @@ def test_save_and_load_round_trip(tmp_path):
     loaded = load_camera_config(path)
 
     assert loaded == config
+
+
+def test_save_and_load_round_trip_with_output(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+
+    config = CameraConfig(
+        id="Kirby",
+        name="Kirby",
+        target=Path("/volume1/dashcam/Kirby"),
+        output=Path("/volume1/exports/Kirby"),
+        endpoints=[],
+    )
+
+    save_camera_config(path, config)
+
+    loaded = load_camera_config(path)
+
+    assert loaded == config
+    assert loaded.output == Path("/volume1/exports/Kirby")
+
+
+def test_output_defaults_to_none_when_omitted(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+    path.write_text('target = "/volume1/dashcam/Kirby"\n')
+
+    loaded = load_camera_config(path)
+
+    assert loaded.output is None
+
+
+def test_save_omits_output_line_when_not_set(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+
+    config = CameraConfig(id="Kirby", name="Kirby", target=Path("/x"))
+    save_camera_config(path, config)
+
+    assert "output" not in path.read_text()
 
 
 def test_load_missing_target_is_an_error(tmp_path):
@@ -255,3 +293,66 @@ def test_camera_config_cache_keys_are_per_camera_id(tmp_path, monkeypatch):
 
     assert cache.get(tmp_path, "Kirby").target == Path("/data/kirby")
     assert cache.get(tmp_path, "Volvo").target == Path("/data/volvo")
+
+
+# ---------------------------------------------------------------------------
+# resolve_archive_path() - the shared CLI-layer resolver bv-ls/bv-generate/
+# bv-export/bv-scribe/bv-search all use for their `path` positional, so a
+# bare camera id (e.g. "Kirby") resolves to that camera's own `target`
+# directory, same ids bv-config/bv-download/bv-gps/bv-live already take. A
+# literal path (relative-dot-prefixed, absolute, or containing a separator)
+# always wins as an explicit escape hatch, matching git's own ./file-vs-
+# branch-name disambiguation.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_archive_path_resolves_a_known_camera_id(tmp_path):
+    (tmp_path / "Kirby.cfg").write_text('target = "/volume1/dashcam/Kirby"\n')
+
+    path, config = resolve_archive_path("Kirby", tmp_path)
+
+    assert path == Path("/volume1/dashcam/Kirby")
+    assert config is not None
+    assert config.id == "Kirby"
+
+
+def test_resolve_archive_path_falls_back_to_literal_when_no_such_camera(tmp_path):
+    path, config = resolve_archive_path("some_bare_dir", tmp_path)
+
+    assert path == Path("some_bare_dir")
+    assert config is None
+
+
+@pytest.mark.parametrize(
+    "path_or_id",
+    ["./Kirby", ".\\Kirby", ".", "..", "/abs/Kirby", "sub/Kirby", "sub\\Kirby"],
+)
+def test_resolve_archive_path_treats_path_shaped_values_as_literal(
+    tmp_path, path_or_id
+):
+    # Even though a "Kirby" camera config exists, every one of these is
+    # explicitly path-shaped (the git-style escape hatch) and must never
+    # be resolved as the camera id.
+    (tmp_path / "Kirby.cfg").write_text('target = "/volume1/dashcam/Kirby"\n')
+
+    path, config = resolve_archive_path(path_or_id, tmp_path)
+
+    assert path == Path(path_or_id)
+    assert config is None
+
+
+def test_resolve_archive_path_propagates_a_broken_camera_config(tmp_path):
+    (tmp_path / "Kirby.cfg").write_text("this is not valid TOML {{{\n")
+
+    with pytest.raises(CameraConfigError):
+        resolve_archive_path("Kirby", tmp_path)
+
+
+def test_resolve_archive_path_exposes_camera_output_field(tmp_path):
+    (tmp_path / "Kirby.cfg").write_text(
+        'target = "/volume1/dashcam/Kirby"\noutput = "/volume1/exports/Kirby"\n'
+    )
+
+    _path, config = resolve_archive_path("Kirby", tmp_path)
+
+    assert config.output == Path("/volume1/exports/Kirby")
