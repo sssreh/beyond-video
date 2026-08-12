@@ -9316,3 +9316,36 @@ for not having to re-download after every rebuild.
 **Verification.** `python3 -c "import yaml; yaml.safe_load(...)"`
 confirms `docker-compose.yml` still parses cleanly and both services'
 `environment:` blocks carry the new variable.
+
+## Shorten bv-ls's widest column labels (2026-08-12)
+
+`bv-ls`'s grouped table (one column per `Asset`) had grown too wide to
+read comfortably in a normal terminal - the four widest columns
+(`Interior`, `Front_Thm`, `Rear_Thm`, `Interior_Thm`, 8-12 chars each)
+dwarfed everything else (mostly 3-5 chars) and accounted for a large
+chunk of total row width on their own.
+
+**Changed** (`archive/asset.py`): `INTERIOR` "Interior" -> "Int",
+`FRONT_THUMBNAIL` "Front_Thm" -> "FThm", `REAR_THUMBNAIL` "Rear_Thm"
+-> "RThm", `INTERIOR_THUMBNAIL` "Interior_Thm" -> "IThm", `AUDIO`
+"Audio" -> "Aud", `SUMMARY` "Summ" -> "Sum". A typical row (18-char
+recording id) went from 147 to 122 characters - a 25-char reduction
+just from six labels.
+
+**Not changed:** `TRANSCRIPT`/`TRANSLATION`'s "Plain"/"Diar" labels -
+their combined column width is what the "Transcript"/"Translate"
+group-header text has to fit inside (`test_full_display_order_
+group_spans_are_well_formed` in `test_bv_ls.py` enforces this), and
+"Transcript" is 10 characters - shortening "Plain" below 5 would make
+the header text wider than the two columns it sits over and break
+that alignment. `FRONT`/`REAR`/`GPS`/`DURATION`/`GPX`/`SUBTITLES`/
+`LYRICS` were already short (3-5 chars) and left as-is.
+
+**Verification.** `_asset_group_spans`/group-header-fits tests in
+`test_bv_ls.py` still pass unchanged (4/4 non-capsys tests; the
+capsys-dependent ones aren't runnable in this sandbox's harness, so
+verified the actual rendered table directly instead - built a
+synthetic recording with every asset type present and ran `bv_ls()`
+against it, confirming the header/rows still align column-by-column
+and the group-header row (`Transcript`/`Translate`/`Scene`) still
+centers correctly over its span).

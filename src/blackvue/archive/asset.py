@@ -14,19 +14,23 @@ class Asset(Enum):
     REAR = ("Rear",)
     # Interior (cabin-facing) camera - seen on some BlackVue models
     # alongside front/rear. Recognition/listing only for now; nothing
-    # in bv-export/--stitch processes interior video yet.
-    INTERIOR = ("Interior",)
+    # in bv-export/--stitch processes interior video yet. Shortened to
+    # "Int" (from "Interior") along with the three *_THUMBNAIL labels
+    # below - these four were bv-ls's widest columns by far (8-12
+    # chars vs. everything else's 3-5), the main reason the table ran
+    # so wide (see WORKING_CONTEXT.md).
+    INTERIOR = ("Int",)
 
     GPS = ("GPS",)
     GSENSOR = ("3G",)
 
-    FRONT_THUMBNAIL = ("Front_Thm",)
-    REAR_THUMBNAIL = ("Rear_Thm",)
-    INTERIOR_THUMBNAIL = ("Interior_Thm",)
+    FRONT_THUMBNAIL = ("FThm",)
+    REAR_THUMBNAIL = ("RThm",)
+    INTERIOR_THUMBNAIL = ("IThm",)
 
     # Generated assets
 
-    AUDIO = ("Audio",)
+    AUDIO = ("Aud",)
     DURATION = ("Dur",)
     GPX = ("GPX",)
 
@@ -36,7 +40,7 @@ class Asset(Enum):
     TRANSLATION_DIARIZED = ("Diar", "Translate")
     SUBTITLES = ("SRT",)
     LYRICS = ("LRC",)
-    SUMMARY = ("Summ",)
+    SUMMARY = ("Sum",)
     # Grouped like TRANSCRIPT/TRANSCRIPT_DIARIZED above - "Front"/"Rear"
     # distinguish which camera a scene description came from, "Scene"
     # is the shared two-row bv-ls header group.
