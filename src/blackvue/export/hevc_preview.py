@@ -43,6 +43,25 @@ from .media import encode_with_nvenc_fallback
 
 _HEVC_CODEC_NAMES = {"hevc", "h265"}
 
+# This preview exists purely so a browser can decode something - it's
+# never the file Christer actually watches for real, archival-quality
+# review (that's still the original recording, or a bv-export stitch).
+# So unlike every other encode_with_nvenc_fallback() caller in this
+# codebase, it deliberately does NOT use the shared default CQ/CRF 19
+# quality target: on a real 4K HEVC recording, that target alone blew
+# a 189MB HEVC source up to a 511MB H.264 preview (H.264 needs a
+# significantly higher bitrate than HEVC for equivalent quality, on
+# top of CQ 19 already being tuned for archival fidelity, not preview
+# size) - a real problem given these caches are never evicted (see
+# WORKING_CONTEXT.md, "Note: no eviction/size cap..."). Capping to a
+# fixed target bitrate instead (Christer's explicit choice: prioritize
+# smaller files) keeps 4K previews clearly watchable while landing far
+# closer to the source's own size. -b:v/-maxrate/-bufsize all set to
+# the same value is the same "cap it for real, not just target it on
+# average" pattern stitch.py's own _bitrate_args() already uses for
+# --stitch-bitrate.
+_PREVIEW_TARGET_BITRATE = "8M"
+
 
 def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     """Return a path to a browser-playable copy of `source`, using
@@ -81,6 +100,12 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     encode_with_nvenc_fallback() in this codebase has ever needed
     this (their outputs are much smaller/shorter), so it's passed
     here rather than added to that function's own defaults.
+
+    Also caps the encode to `_PREVIEW_TARGET_BITRATE` instead of the
+    shared default CQ/CRF 19 quality target every other caller of
+    encode_with_nvenc_fallback() uses - see that constant's own
+    comment for why (Christer's own numbers: a 189MB HEVC source
+    became a 511MB H.264 preview at CQ 19).
     """
 
     try:
@@ -119,7 +144,13 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
         encode_with_nvenc_fallback(
             ["-i", str(source)],
             cache_path,
-            extra_codec_args=["-c:a", "copy", "-movflags", "+faststart"],
+            extra_codec_args=[
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                "-b:v", _PREVIEW_TARGET_BITRATE,
+                "-maxrate", _PREVIEW_TARGET_BITRATE,
+                "-bufsize", _PREVIEW_TARGET_BITRATE,
+            ],
         )
     except MediaToolError as exc:
         print(

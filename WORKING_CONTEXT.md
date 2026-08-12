@@ -9073,3 +9073,13 @@ Fixed by adding `-movflags`, `+faststart` to `load_or_transcode_hevc_preview()`'
 **Caveat Christer needs to know:** the preview cache's key is derived from the *source* file's path/mtime/size, not from the encoder settings used to produce it - so his existing cached preview at that exact path predates this fix and won't pick it up automatically. He needs to delete that one file (or the whole `.hevc_preview_cache` folder) so the next request re-transcodes with `+faststart` included.
 
 Verified: updated `test_transcodes_hevc_source_and_caches_it`'s `extra_codec_args` assertion to include the new flags; all 8 `test_hevc_preview.py` tests still pass. `ast.parse()` clean.
+
+## Working: HEVC preview confirmed playable, but ballooned 189MB -> 511MB
+
+Christer confirmed the faststart fix worked - the preview plays with picture now. Immediate follow-up: "a 189MB file becomes 511MB." Root cause: the preview transcode was inheriting `encode_with_nvenc_fallback()`'s shared default quality target (CQ/CRF 19), the same setting used for full trip exports - tuned for archival fidelity, not preview size. H.264 also needs meaningfully more bitrate than HEVC for equivalent visual quality, compounding it. Given these preview files are never evicted (see the earlier "no eviction/size cap" note), a ~2.7x size-up on every HEVC recording viewed was a real, not hypothetical, disk-usage problem.
+
+Asked Christer to choose: prioritize smaller files, expose a tunable setting, or leave it matching export quality. He chose smaller files.
+
+Fixed by adding `_PREVIEW_TARGET_BITRATE = "8M"` and passing `-b:v`/`-maxrate`/`-bufsize` all set to that value in `load_or_transcode_hevc_preview()`'s `extra_codec_args` - the same "cap it for real, not just target it on average" pattern `stitch.py`'s `_bitrate_args()` already uses for `--stitch-bitrate`, and one of the flags `encode_with_nvenc_fallback()`'s own `_CALLER_RATE_CONTROL_FLAGS` check already recognizes as "caller supplied their own rate control" - so this correctly skips the shared CQ/CRF 19 default rather than fighting it. 8 Mbps is a fixed, resolution-agnostic cap chosen for "clearly watchable on a screen," not archival quality - previews of lower-resolution recordings will just come in comfortably under that ceiling.
+
+Verified: updated `test_transcodes_hevc_source_and_caches_it`'s `extra_codec_args` assertion for the new flags; all 8 `test_hevc_preview.py` tests pass. `ast.parse()` clean. Not yet reconfirmed against Christer's real file (his existing cached preview again predates this change and needs deleting to pick it up, same caveat as the faststart fix).

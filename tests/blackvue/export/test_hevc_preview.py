@@ -85,7 +85,13 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
     input_args, destination, extra_codec_args = calls[0]
     assert input_args == ["-i", str(source)]
     assert destination == expected_cache_path
-    assert extra_codec_args == ["-c:a", "copy", "-movflags", "+faststart"]
+    assert extra_codec_args == [
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        "-b:v", "8M",
+        "-maxrate", "8M",
+        "-bufsize", "8M",
+    ]
 
 
 def test_reuses_cached_copy_without_transcoding_again(monkeypatch, tmp_path):
