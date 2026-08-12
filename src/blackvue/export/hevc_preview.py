@@ -69,6 +69,18 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     The audio track is copied through as-is (`-c:a copy`) rather than
     re-encoded - it's already AAC, which every target browser already
     decodes fine, so only the video needs re-encoding.
+
+    Also passes `-movflags +faststart`, moving the `moov` atom (the
+    file's sample-table metadata) to the front of the output instead
+    of ffmpeg's default of leaving it at the end. Christer's first
+    real preview (a 515MB, ~200s 4K clip) confirmed valid via ffprobe
+    (`codec_name=h264`) but still played audio-only in Chrome - the
+    classic symptom of a browser's <video> element being unable to
+    reliably locate a moov atom parked at the very end of a large
+    file via range requests alone. No other caller of
+    encode_with_nvenc_fallback() in this codebase has ever needed
+    this (their outputs are much smaller/shorter), so it's passed
+    here rather than added to that function's own defaults.
     """
 
     try:
@@ -107,7 +119,7 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
         encode_with_nvenc_fallback(
             ["-i", str(source)],
             cache_path,
-            extra_codec_args=["-c:a", "copy"],
+            extra_codec_args=["-c:a", "copy", "-movflags", "+faststart"],
         )
     except MediaToolError as exc:
         print(
