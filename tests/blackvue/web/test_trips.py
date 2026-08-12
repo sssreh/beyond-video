@@ -178,12 +178,11 @@ def test_scan_trip_finds_map_zoom_variants(tmp_path):
     assert trip.map_zoom_videos == ("map_zoom_200m.mp4", "map_zoom_50m.mp4")
 
 
-def test_scan_trip_flags_gpx_srt_lrc_gsensor_map(tmp_path):
+def test_scan_trip_flags_gpx_srt_gsensor_map(tmp_path):
     folder = tmp_path / "trip_1"
     _write_trip_log(folder)
     (folder / "trip.gpx").write_bytes(b"")
     (folder / "trip.srt").write_bytes(b"")
-    (folder / "trip.lrc").write_bytes(b"")
     (folder / "map.mp4").write_bytes(b"")
     (folder / "gsensor.mp4").write_bytes(b"")
 
@@ -191,7 +190,6 @@ def test_scan_trip_flags_gpx_srt_lrc_gsensor_map(tmp_path):
 
     assert trip.gpx is True
     assert trip.srt is True
-    assert trip.lrc is True
     assert trip.map_video == "map.mp4"
     assert trip.gsensor_video == "gsensor.mp4"
 

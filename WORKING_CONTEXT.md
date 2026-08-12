@@ -9392,3 +9392,63 @@ just unlabeled) and rendered the real table - both columns are gone,
 every other column still correctly shows `X`, and the header still
 aligns column-by-column. Row width for a same-length recording id
 dropped further, from 122 to ~106-112 depending on content.
+
+## Remove --lrc/LRC feature entirely (2026-08-12)
+
+Christer asked for an honest assessment of the LRC subtitle format
+("pretty worthless or?") and agreed with the case against it: LRC has
+no end-time per line (just a start timestamp), it was never wired
+into bv-web's actual video-player subtitle rendering, and SRT is
+strictly more capable for every purpose LRC covered. Reply was
+"remove."
+
+**Changed:** deleted every `Asset.LYRICS`/`format_lrc`/`parse_lrc`/
+`merge_lrc` reference across the codebase - `archive/asset.py` (the
+`LYRICS` enum member), `archive/archive_reader.py` (the `.lrc` suffix
+registration), `generate/subtitles.py` (`format_lrc`/`parse_lrc`/
+`_lrc_timestamp`/`_LRC_TIME_PATTERN`, plus the module docstring),
+`export/subtitles.py` (`merge_lrc`, the LRC-specific padding-comment
+aside, the SUBTITLES-or-LYRICS docstring wording), `generate/__init__.py`
+and `export/__init__.py` (dropped exports), `cli/bv_export.py`
+(`result.lrc` from the written-paths list, the `--stitch-subtitles`
+help text's LRC parenthetical), `web/trips.py` (`TripAssets.lrc`,
+`LRC_FILENAME`, both `known_filenames()`/`scan_trip()` call sites),
+`web/templates/trip_detail.html` (the `trip.lrc` download link),
+`web/app.py` (the `lrc` form field, its cross-field transcribe/
+translate validation, the module docstring), `web/jobs.py`
+(`start_bv_generate()`'s `lrc` param and `--lrc` argv append),
+`web/templates/job_new_bv_generate.html` (the `--lrc` checkbox), and
+`web/__init__.py` (module docstring). `bv_generate.py`'s `--lrc` CLI
+flag and `need_lrc_write`/`want_segment_timing` plumbing, and
+`ExportResult.lrc`, had already been removed in an earlier pass of
+this same session before this entry's work began.
+
+Mirrored across every test file that touched any of the above:
+`test_bv_ls.py` (swapped a stray `Asset.LYRICS` placeholder for
+`Asset.SUBTITLES`), `test_archive_reader.py`, `test_bv_generate.py`
+(7 renamed/rewritten tests, 1 deleted), `test_subtitles.py` in both
+`export/` and `generate/` (the latter rewritten from scratch to keep
+only the SRT tests), `test_trip_export.py` (3 renamed/rewritten
+tests), `test_speech.py` (one stray comment), `test_jobs.py`,
+`test_trips.py`. Also fixed every doc mentioning LRC:
+`docs/man/bv-generate.md`, `docs/man/bv-export.md`, `docs/PIPELINE.md`,
+`docs/WEB_ARCHITECTURE.md`.
+
+**Not changed:** `_merge_subtitle_segments()` in `export/subtitles.py`
+stayed generic (`asset: Asset, parser: Callable`) rather than being
+hard-coded to `Asset.SUBTITLES`/`parse_srt` - it's only ever called
+with those two now, but there's no cost to leaving the parameters in
+place. SRT itself (`format_srt`/`parse_srt`, `--srt` everywhere) is
+completely untouched.
+
+**Verification.** Full-repo `grep -rliE "lrc|lyrics" src/ tests/
+--include="*.py" --include="*.html"` and `grep -rniE "lrc|lyrics"
+docs/ --include="*.md"` both return zero matches. Ran every test
+module that referenced LRC through the sandbox harness: `test_bv_ls`
+(4/4), `test_archive_reader` (15/15), `test_bv_generate` (87/87),
+`export/test_subtitles` (8/8), `test_trip_export` (133/133),
+`generate/test_speech` (17/17 - the module's other 26 failures are a
+pre-existing harness limitation, `FakeMonkeypatch` not implementing
+`setitem`/`delitem`, unrelated to this change and present before it
+too), `generate/test_subtitles` (9/9), `test_jobs` (77/77),
+`test_trips` (22/22). 372 passed, 0 real failures.

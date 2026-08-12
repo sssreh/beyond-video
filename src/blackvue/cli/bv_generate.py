@@ -32,7 +32,6 @@ from ..generate import detect_language
 from ..generate import diarize
 from ..generate import extract_audio
 from ..generate import format_diarized_transcript
-from ..generate import format_lrc
 from ..generate import format_srt
 from ..generate import get_span
 from ..generate import gpu_available
@@ -246,16 +245,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--lrc",
-        action="store_true",
-        help=(
-            "Also write an LRC timestamp file (<recording>.lrc), one "
-            "[mm:ss.xx] line per transcript segment. Requires "
-            "--transcribe or --translate."
-        ),
-    )
-
-    parser.add_argument(
         "--describe-scene",
         action="store_true",
         help=(
@@ -352,10 +341,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "backend cannot auto-detect the spoken language"
         )
 
-    if (args.srt or args.lrc) and not (
-        args.transcribe or args.translate is not None
-    ):
-        parser.error("--srt/--lrc require --transcribe or --translate")
+    if args.srt and not (args.transcribe or args.translate is not None):
+        parser.error("--srt requires --transcribe or --translate")
 
     # --language/--translate accept either the 2-letter code Whisper
     # and argos-translate use, or the 3-letter code generated
@@ -823,14 +810,14 @@ def _translate_segments(
     (whole text) and _translate_diarized() (line-by-line "[SPEAKER_XX]
     text") above.
 
-    Used so --srt/--lrc reflect --translate's target language instead
-    of always being in the transcript's original spoken language -
-    the whole point of asking for subtitles alongside a translation is
-    to get them in the target language. Diarization speaker labels
-    aren't part of segment.text (format_srt()/format_lrc() add them
-    separately via speaker_for(), matched by each segment's own
-    start/end, which this leaves untouched), so this works the same
-    whether or not --diarize was also given.
+    Used so --srt reflects --translate's target language instead of
+    always being in the transcript's original spoken language - the
+    whole point of asking for subtitles alongside a translation is to
+    get them in the target language. Diarization speaker labels
+    aren't part of segment.text (format_srt() adds them separately via
+    speaker_for(), matched by each segment's own start/end, which this
+    leaves untouched), so this works the same whether or not --diarize
+    was also given.
     """
 
     return tuple(
@@ -890,8 +877,8 @@ def _do_translate_only(
     .transcript.txt files behind too, so the next run (of this or
     --transcribe) doesn't redo that work.
 
-    Exception: if --srt/--lrc are given and actually need (re)writing,
-    the existing-transcript reuse is skipped and Whisper always runs
+    Exception: if --srt is given and actually needs (re)writing, the
+    existing-transcript reuse is skipped and Whisper always runs
     fresh - a cached plain-text transcript has no per-segment timing,
     so reusing it would produce no subtitles at all.
     """
@@ -905,20 +892,15 @@ def _do_translate_only(
     need_translation_write = _should_write_for(translation_destination, args, warn=warn)
 
     # Computed up front (like _do_transcribe_with_optional_translate)
-    # so a missing/needs-refresh .srt or .lrc alone is enough to keep
-    # this recording from being skipped, even when translation.txt
-    # itself is already up to date - that's the bug Christer hit:
+    # so a missing/needs-refresh .srt alone is enough to keep this
+    # recording from being skipped, even when translation.txt itself
+    # is already up to date - that's the bug Christer hit:
     # translation.txt already existed from an earlier run, so the old
     # single-destination gate below returned early before ever
-    # reaching the srt/lrc-writing code.
+    # reaching the srt-writing code.
     srt_destination = archive_path / f"{recording.id}.srt" if args.srt else None
     need_srt_write = (
         _should_write_for(srt_destination, args, warn=warn) if args.srt else False
-    )
-
-    lrc_destination = archive_path / f"{recording.id}.lrc" if args.lrc else None
-    need_lrc_write = (
-        _should_write_for(lrc_destination, args, warn=warn) if args.lrc else False
     )
 
     if args.dry_run:
@@ -927,11 +909,9 @@ def _do_translate_only(
                 f"{translation_destination.name}")
         if need_srt_write:
             say(f"{recording.id}: would write {srt_destination.name}")
-        if need_lrc_write:
-            say(f"{recording.id}: would write {lrc_destination.name}")
         return False
 
-    if not (need_translation_write or need_srt_write or need_lrc_write):
+    if not (need_translation_write or need_srt_write):
         return False
 
     transcript_text: str | None = None
@@ -943,11 +923,11 @@ def _do_translate_only(
     #    needs, so reuse it instead of re-running Whisper. Diarized
     #    and plain transcripts are tracked as separate assets, so
     #    this looks at whichever one matches what this run wants.
-    #    Skipped entirely when an .srt/.lrc actually needs writing: a
+    #    Skipped entirely when an .srt actually needs writing: a
     #    cached plain-text transcript has no per-segment timing, so
     #    reusing it would silently produce no subtitles - forcing a
     #    fresh transcribe() is the only way to actually satisfy that.
-    want_segment_timing = need_srt_write or need_lrc_write
+    want_segment_timing = need_srt_write
     existing_transcript = (
         None
         if want_segment_timing
@@ -1032,21 +1012,21 @@ def _do_translate_only(
             )
             _report(say, args.verbose, f"{recording.id}: wrote {transcript_destination.name}")
 
-        # SRT/LRC need per-segment timing, which only exists right
-        # after a fresh transcribe() call (this branch) - a reused
-        # cached transcript (above) has no segments to draw from, so
-        # this is deliberately skipped in that case. need_srt_write/
-        # need_lrc_write were already computed up front, before it
-        # was known whether this branch would even run - reused here
-        # rather than re-checking _should_write a second time.
+        # SRT needs per-segment timing, which only exists right after
+        # a fresh transcribe() call (this branch) - a reused cached
+        # transcript (above) has no segments to draw from, so this is
+        # deliberately skipped in that case. need_srt_write was
+        # already computed up front, before it was known whether this
+        # branch would even run - reused here rather than
+        # re-checking _should_write a second time.
         #
         # This whole function only ever runs with --translate given
         # (see _do_transcribe_and_translate's dispatch above), so
-        # unlike _do_transcribe_with_optional_translate's own SRT/LRC
+        # unlike _do_transcribe_with_optional_translate's own SRT
         # block, there's no "no translation requested" case to weigh
         # against - subtitles here always reflect args.translate's
         # target language, never the original spoken one.
-        if need_srt_write or need_lrc_write:
+        if need_srt_write:
             try:
                 subtitle_segments = _translate_segments(
                     segments,
@@ -1057,23 +1037,15 @@ def _do_translate_only(
                 warn(f"bv-generate: {recording.id}: {exc}")
                 return True
 
-            if need_srt_write:
-                srt_destination.write_text(
-                    format_srt(subtitle_segments, turns) + "\n",
-                    encoding="utf-8",
-                )
-                _report(say, args.verbose, f"{recording.id}: wrote {srt_destination.name}")
-
-            if need_lrc_write:
-                lrc_destination.write_text(
-                    format_lrc(subtitle_segments, turns) + "\n",
-                    encoding="utf-8",
-                )
-                _report(say, args.verbose, f"{recording.id}: wrote {lrc_destination.name}")
+            srt_destination.write_text(
+                format_srt(subtitle_segments, turns) + "\n",
+                encoding="utf-8",
+            )
+            _report(say, args.verbose, f"{recording.id}: wrote {srt_destination.name}")
 
     # Gated on need_translation_write, not just "did we get this far":
-    # this point is also reached when only --srt/--lrc needed
-    # (re)writing and translation.txt was already up to date - without
+    # this point is also reached when only --srt needed (re)writing
+    # and translation.txt was already up to date - without
     # this check, that case would re-translate and silently overwrite
     # an already-good translation.txt, bypassing the overwrite policy
     # for a file that didn't need touching.
@@ -1137,21 +1109,14 @@ def _do_transcribe_with_optional_translate(
         )
         need_translation_write = _should_write_for(translation_destination, args, warn=warn)
 
-    # SRT/LRC filenames don't depend on language, so - like the
-    # translation destination above - they can be checked up front.
+    # SRT's filename doesn't depend on language, so - like the
+    # translation destination above - it can be checked up front.
     srt_destination = None
     need_srt_write = False
 
     if args.srt:
         srt_destination = archive_path / f"{recording.id}.srt"
         need_srt_write = _should_write_for(srt_destination, args, warn=warn)
-
-    lrc_destination = None
-    need_lrc_write = False
-
-    if args.lrc:
-        lrc_destination = archive_path / f"{recording.id}.lrc"
-        need_lrc_write = _should_write_for(lrc_destination, args, warn=warn)
 
     # The transcript filename depends on the *spoken* language. If
     # --language was given, that's already known. Otherwise it has
@@ -1217,15 +1182,12 @@ def _do_transcribe_with_optional_translate(
                 f"{translation_destination.name}")
         if need_srt_write:
             say(f"{recording.id}: would write {srt_destination.name}")
-        if need_lrc_write:
-            say(f"{recording.id}: would write {lrc_destination.name}")
         return False
 
     if not (
         need_transcript_write
         or need_translation_write
         or need_srt_write
-        or need_lrc_write
     ):
         return False
 
@@ -1286,7 +1248,7 @@ def _do_transcribe_with_optional_translate(
         )
         _report(say, args.verbose, f"{recording.id}: wrote {transcript_destination.name}")
 
-    # SRT/LRC reflect --translate's target language when it was given,
+    # SRT reflects --translate's target language when it was given,
     # not the original spoken one - matching bv-generate.md's own
     # "transcribe and translate, with subtitles" example. The whole
     # point of asking for subtitles alongside a translation is to get
@@ -1298,7 +1260,7 @@ def _do_transcribe_with_optional_translate(
     subtitle_segments = transcript.segments
     subtitle_translation_failed = False
 
-    if want_translation_file and (need_srt_write or need_lrc_write):
+    if want_translation_file and need_srt_write:
         try:
             subtitle_segments = _translate_segments(
                 transcript.segments,
@@ -1315,12 +1277,6 @@ def _do_transcribe_with_optional_translate(
             format_srt(subtitle_segments, turns) + "\n", encoding="utf-8"
         )
         _report(say, args.verbose, f"{recording.id}: wrote {srt_destination.name}")
-
-    if need_lrc_write and not subtitle_translation_failed:
-        lrc_destination.write_text(
-            format_lrc(subtitle_segments, turns) + "\n", encoding="utf-8"
-        )
-        _report(say, args.verbose, f"{recording.id}: wrote {lrc_destination.name}")
 
     if need_translation_write:
         translate_fn = (

@@ -36,9 +36,7 @@ from .speech import gpu_available
 from .speech import speaker_for
 from .speech import transcribe
 from .speech import translate
-from .subtitles import format_lrc
 from .subtitles import format_srt
-from .subtitles import parse_lrc
 from .subtitles import parse_srt
 
 __all__ = [
@@ -60,12 +58,10 @@ __all__ = [
     "extract_audio",
     "extract_description_section",
     "format_diarized_transcript",
-    "format_lrc",
     "format_srt",
     "get_span",
     "gpu_available",
     "normalize_language",
-    "parse_lrc",
     "parse_srt",
     "probe",
     "read_mp4_info",

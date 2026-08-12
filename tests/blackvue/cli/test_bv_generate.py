@@ -60,7 +60,6 @@ def _base_args(**overrides):
         diarize=False,
         hf_token=None,
         srt=False,
-        lrc=False,
         describe_scene=False,
         scene_model=SCENE_DEFAULT_MODEL,
         camera="front",
@@ -1204,19 +1203,13 @@ def test_parse_args_srt_requires_transcribe_or_translate():
         parse_args(["/some/path", "--extract-audio", "--srt"])
 
 
-def test_parse_args_lrc_requires_transcribe_or_translate():
-    with pytest.raises(SystemExit):
-        parse_args(["/some/path", "--extract-audio", "--lrc"])
-
-
-def test_parse_args_srt_lrc_allowed_with_transcribe():
-    args = parse_args(["/some/path", "--transcribe", "--srt", "--lrc"])
+def test_parse_args_srt_allowed_with_transcribe():
+    args = parse_args(["/some/path", "--transcribe", "--srt"])
 
     assert args.srt is True
-    assert args.lrc is True
 
 
-def test_transcribe_writes_srt_and_lrc_when_requested(tmp_path, monkeypatch):
+def test_transcribe_writes_srt_when_requested(tmp_path, monkeypatch):
     monkeypatch.setattr(
         bv_generate,
         "extract_audio",
@@ -1238,7 +1231,7 @@ def test_transcribe_writes_srt_and_lrc_when_requested(tmp_path, monkeypatch):
         asset=Asset.FRONT, path=video_path
     )
 
-    args = _base_args(transcribe=True, srt=True, lrc=True)
+    args = _base_args(transcribe=True, srt=True)
 
     had_error = bv_generate._do_transcribe_with_optional_translate(
         recording, tmp_path, args
@@ -1248,8 +1241,6 @@ def test_transcribe_writes_srt_and_lrc_when_requested(tmp_path, monkeypatch):
     srt_text = (tmp_path / "20260715_200000_N.srt").read_text()
     assert "00:00:00,000 --> 00:00:01,000" in srt_text
     assert "hello world" in srt_text
-    lrc_text = (tmp_path / "20260715_200000_N.lrc").read_text()
-    assert "[00:00.00] hello world" in lrc_text
 
 
 def test_transcribe_srt_reflects_translate_language(tmp_path, monkeypatch):
@@ -1421,7 +1412,7 @@ def test_transcribe_srt_translation_failure_skips_srt_and_reports_error(
 def test_translate_only_srt_reflects_translate_language(tmp_path, monkeypatch):
     """Same fix, the _do_translate_only path (--translate without
     --transcribe) - this function only ever runs with --translate
-    given, so its .srt/.lrc must always be in the target language."""
+    given, so its .srt must always be in the target language."""
 
     monkeypatch.setattr(
         bv_generate,
@@ -1510,7 +1501,7 @@ def test_transcribe_srt_only_still_transcribes_when_transcript_up_to_date(
     assert transcript_path.read_text() == "already here"
 
 
-def test_translate_only_writes_srt_lrc_on_fresh_transcribe(
+def test_translate_only_writes_srt_on_fresh_transcribe(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
@@ -1530,25 +1521,24 @@ def test_translate_only_writes_srt_lrc_on_fresh_transcribe(
         asset=Asset.AUDIO, path=audio_path
     )
 
-    args = _base_args(translate="sv", srt=True, lrc=True)
+    args = _base_args(translate="sv", srt=True)
 
     had_error = bv_generate._do_translate_only(recording, tmp_path, args)
 
     assert had_error is False
     assert (tmp_path / "20260715_220000_N.srt").exists()
-    assert (tmp_path / "20260715_220000_N.lrc").exists()
 
 
-def test_translate_only_srt_lrc_forces_a_fresh_transcribe_over_the_cache(
+def test_translate_only_srt_forces_a_fresh_transcribe_over_the_cache(
     tmp_path, monkeypatch
 ):
-    # A cached plain-text transcript has no segment timing, so --srt/
-    # --lrc can't be satisfied by the normal cache-first --translate
-    # path. Reported by Christer against a real archive: --translate
-    # --srt --lrc silently produced no subtitles when a transcript
-    # already existed. Fixed by bypassing the transcript-reuse cache
-    # entirely whenever --srt/--lrc are requested, so Whisper always
-    # runs and there's real segment timing to draw from.
+    # A cached plain-text transcript has no segment timing, so --srt
+    # can't be satisfied by the normal cache-first --translate path.
+    # Reported by Christer against a real archive: --translate --srt
+    # silently produced no subtitles when a transcript already
+    # existed. Fixed by bypassing the transcript-reuse cache entirely
+    # whenever --srt is requested, so Whisper always runs and there's
+    # real segment timing to draw from.
     calls = []
     monkeypatch.setattr(
         bv_generate, "transcribe", _fake_transcribe_factory(calls)
@@ -1572,20 +1562,19 @@ def test_translate_only_srt_lrc_forces_a_fresh_transcribe_over_the_cache(
         asset=Asset.AUDIO, path=audio_path
     )
 
-    args = _base_args(translate="sv", srt=True, lrc=True)
+    args = _base_args(translate="sv", srt=True)
 
     had_error = bv_generate._do_translate_only(recording, tmp_path, args)
 
     assert had_error is False
     assert calls == [audio_path], "should re-transcribe, not reuse the cache"
     assert (tmp_path / "20260715_230000_N.srt").exists()
-    assert (tmp_path / "20260715_230000_N.lrc").exists()
 
 
-def test_translate_only_without_srt_lrc_still_reuses_cached_transcript(
+def test_translate_only_without_srt_still_reuses_cached_transcript(
     tmp_path, monkeypatch
 ):
-    # Regression check: plain --translate (no --srt/--lrc) keeps the
+    # Regression check: plain --translate (no --srt) keeps the
     # original cache-first behaviour - the fix above only bypasses the
     # cache when subtitle timing is actually needed.
     monkeypatch.setattr(bv_generate, "transcribe", _refuse)
@@ -1614,24 +1603,24 @@ def test_translate_only_without_srt_lrc_still_reuses_cached_transcript(
     assert out.read_text().strip() == "[th->sv] hej da"
 
 
-def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
+def test_translate_only_srt_still_generated_when_translation_already_exists(
     tmp_path, monkeypatch
 ):
     # The exact scenario Christer hit: he'd already run --translate
     # once (translation.txt exists on disk), then re-ran with --srt
-    # --lrc added. The old code gated the *entire* function on
+    # added. The old code gated the *entire* function on
     # translation.txt's own _should_write check - since translation.txt
     # already existed and --overwrite wasn't passed, the function
-    # returned before ever reaching the srt/lrc-writing code, so
-    # nothing was generated even after the cache-bypass fix above.
-    # need_srt_write/need_lrc_write must now be checked independently.
+    # returned before ever reaching the srt-writing code, so nothing
+    # was generated even after the cache-bypass fix above.
+    # need_srt_write must now be checked independently.
     #
     # Also covers a second, related fix: translate() *is* now called
-    # here (unlike before) - the SRT/LRC need their own translated
-    # segments regardless of whether translation.txt itself needs
-    # rewriting, since format_srt()/format_lrc() previously always
-    # used the *untranslated* segments even under --translate. Only
-    # translation.txt's own write is skipped (already up to date).
+    # here (unlike before) - the SRT needs its own translated segments
+    # regardless of whether translation.txt itself needs rewriting,
+    # since format_srt() previously always used the *untranslated*
+    # segments even under --translate. Only translation.txt's own
+    # write is skipped (already up to date).
     calls = []
     monkeypatch.setattr(
         bv_generate, "transcribe", _fake_transcribe_factory(calls)
@@ -1658,7 +1647,7 @@ def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
     translation_path = tmp_path / "20260715_233000_N_swe.translation.txt"
     translation_path.write_text("already translated, from an earlier run")
 
-    args = _base_args(translate="sv", srt=True, lrc=True)
+    args = _base_args(translate="sv", srt=True)
 
     had_error = bv_generate._do_translate_only(recording, tmp_path, args)
 
@@ -1667,11 +1656,7 @@ def test_translate_only_srt_lrc_still_generated_when_translation_already_exists(
     srt_text = (tmp_path / "20260715_233000_N.srt").read_text(
         encoding="utf-8"
     )
-    lrc_text = (tmp_path / "20260715_233000_N.lrc").read_text(
-        encoding="utf-8"
-    )
     assert "HELLO WORLD" in srt_text
-    assert "HELLO WORLD" in lrc_text
     # translation.txt itself was already up to date and --overwrite
     # wasn't given, so it should be left untouched.
     assert (

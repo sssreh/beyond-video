@@ -15,7 +15,7 @@ def test_asset_group_spans_merges_consecutive_same_group_assets():
             Asset.TRANSCRIPT_DIARIZED,
             Asset.TRANSLATION,
             Asset.TRANSLATION_DIARIZED,
-            Asset.LYRICS,
+            Asset.SUBTITLES,
         ]
     )
 
@@ -23,7 +23,7 @@ def test_asset_group_spans_merges_consecutive_same_group_assets():
         (None, [Asset.DURATION]),
         ("Transcript", [Asset.TRANSCRIPT, Asset.TRANSCRIPT_DIARIZED]),
         ("Translate", [Asset.TRANSLATION, Asset.TRANSLATION_DIARIZED]),
-        (None, [Asset.LYRICS]),
+        (None, [Asset.SUBTITLES]),
     ]
 
 

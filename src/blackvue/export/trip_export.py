@@ -74,7 +74,6 @@ from .stitch import DEFAULT_MIRROR_ZOOM_PERCENT
 from .stitch import map_zoom_dimensions
 from .stitch import pick_stitch_layout
 from .stitch import stitch_cameras
-from .subtitles import merge_lrc
 from .subtitles import merge_srt
 from .text import merge_text_assets
 from .trip_log import TripLog
@@ -109,7 +108,6 @@ class ExportResult:
     gsensor_graph_video: Path | None = None
     stitch: Path | None = None
     srt: Path | None = None
-    lrc: Path | None = None
     text: tuple[Path, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -2010,13 +2008,12 @@ def export_trip(
 
     `stitch_subtitles=True` (also requires `stitch_layout`) burns this
     same call's own trip.srt (see `srt_path` above) into stitch.mp4's
-    final frame, after any gsensor overlay/map panel - never
-    trip.lrc, which has no real per-line duration (merge_lrc() always
-    sets `end == start`). Unlike `stitch_gsensor`, there's no "go
-    render it first" step: trip.srt is written earlier in this same
-    call whenever the trip has any transcript data at all, not gated
-    behind its own flag, so it's always fresh for this run's
-    recordings by the time this check runs. If the trip has no
+    final frame, after any gsensor overlay/map panel. Unlike
+    `stitch_gsensor`, there's no "go render it first" step: trip.srt
+    is written earlier in this same call whenever the trip has any
+    transcript data at all, not gated behind its own flag, so it's
+    always fresh for this run's recordings by the time this check
+    runs. If the trip has no
     transcript data (srt_path stays None), the burn-in is skipped with
     a warning rather than failing the stitch.
     `stitch_subtitles_background` (default True) draws a solid, semi
@@ -2358,7 +2355,7 @@ def export_trip(
     # before the video does. This also feeds map.mp4/map_zoom's own
     # frame_count math and the --stitch map/graph panel durations
     # below - the trip's own real video length, not just subtitle
-    # padding, so getting it right matters well beyond trip.srt/.lrc.
+    # padding, so getting it right matters well beyond trip.srt.
     #
     # Preferring summed_video_duration_seconds (computed above, while
     # duration_overrides' own trimmed paths were still valid) over
@@ -2400,19 +2397,6 @@ def export_trip(
         log.step("merged trip.srt")
     else:
         log.step("no transcript data for this trip - trip.srt skipped")
-
-    lrc_path = None
-    merged_lrc = merge_lrc(
-        trip,
-        total_duration_seconds=video_duration_seconds,
-        video_offsets=video_offsets,
-    )
-    if merged_lrc is not None:
-        lrc_path = destination / "trip.lrc"
-        lrc_path.write_text(merged_lrc + "\n", encoding="utf-8")
-        log.step("merged trip.lrc")
-    else:
-        log.step("no transcript data for this trip - trip.lrc skipped")
 
     gpx_path = None
     fixes = _merge_gps(trip)
@@ -2968,7 +2952,6 @@ def export_trip(
         gsensor_graph_video=gsensor_graph_video_path,
         stitch=stitch_path,
         srt=srt_path,
-        lrc=lrc_path,
         text=tuple(text_paths),
         warnings=tuple(warnings),
     )

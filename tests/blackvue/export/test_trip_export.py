@@ -35,7 +35,6 @@ from blackvue.export.text import merge_text_assets
 from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeechSegment
-from blackvue.generate.subtitles import format_lrc
 from blackvue.generate.subtitles import format_srt
 from blackvue.telemetry.gps_reader import GpsFix
 from blackvue.telemetry.gsensor_reader import read_gsensor
@@ -3225,7 +3224,7 @@ def test_export_trip_video_duration_uses_summed_sources_not_corrupted_concat_pro
     # manufacturing here - by monkeypatching probe() to return a
     # wildly inflated duration specifically for the concatenated
     # front.mp4, and confirms video_duration_seconds (what feeds
-    # map.mp4's own frame_count, and trip.srt/.lrc padding) comes from
+    # map.mp4's own frame_count, and trip.srt padding) comes from
     # the reliable per-source sum instead of that corrupted number.
     monkeypatch.setattr(
         trip_export_module, "load_or_reverse_geocode", _fake_geocode
@@ -3999,7 +3998,7 @@ def test_export_trip_stitch_subtitles_warns_when_no_transcript_data(
     assert "no transcript data" in result.warnings[0]
 
 
-def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
+def test_export_trip_merges_srt_with_rebased_timestamps(tmp_path):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -4008,30 +4007,22 @@ def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
     srt_a.write_text(
         format_srt((SpeechSegment(0.0, 2.0, "first recording"),))
     )
-    lrc_a = source_dir / "a.lrc"
-    lrc_a.write_text(format_lrc((SpeechSegment(0.0, 0.0, "first recording"),)))
 
     srt_b = source_dir / "b.srt"
     srt_b.write_text(
         format_srt((SpeechSegment(0.0, 1.0, "second recording"),))
-    )
-    lrc_b = source_dir / "b.lrc"
-    lrc_b.write_text(
-        format_lrc((SpeechSegment(0.0, 0.0, "second recording"),))
     )
 
     first = Recording(
         id=RecordingId("20260720_100000_N"),
         assets={
             Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_a),
-            Asset.LYRICS: AssetFile(Asset.LYRICS, lrc_a),
         },
     )
     second = Recording(
         id=RecordingId("20260720_100100_N"),
         assets={
             Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_b),
-            Asset.LYRICS: AssetFile(Asset.LYRICS, lrc_b),
         },
     )
     trip = Trip((first, second))
@@ -4046,22 +4037,15 @@ def test_export_trip_merges_srt_and_lrc_with_rebased_timestamps(tmp_path):
     assert "00:01:00,000 --> 00:01:01,000" in srt_text
     assert "second recording" in srt_text
 
-    assert result.lrc == dest_dir / "trip.lrc"
-    lrc_text = result.lrc.read_text()
-    assert "[00:00.00] first recording" in lrc_text
-    assert "[01:00.00] second recording" in lrc_text
 
-
-def test_export_trip_skips_srt_lrc_when_no_recording_has_them(tmp_path):
+def test_export_trip_skips_srt_when_no_recording_has_them(tmp_path):
     dest_dir = tmp_path / "export"
     trip = Trip((Recording(id=RecordingId("20260720_100000_N")),))
 
     result = export_trip(trip, dest_dir)
 
     assert result.srt is None
-    assert result.lrc is None
     assert not (dest_dir / "trip.srt").exists()
-    assert not (dest_dir / "trip.lrc").exists()
 
 
 def test_export_trip_always_writes_a_trip_log(tmp_path):
@@ -4166,11 +4150,11 @@ def test_export_trip_logs_a_starting_line_before_the_stitch_render(tmp_path):
     assert "rendered stitch.mp4" in log_text
 
 
-def test_export_trip_pads_srt_lrc_to_match_the_real_video_length(tmp_path):
+def test_export_trip_pads_srt_to_match_the_real_video_length(tmp_path):
     # Christer's real-world case: the last stretch of a trip is quiet,
-    # so Whisper's segments (and the resulting .srt/.lrc) end well
-    # before the video actually does. export_trip() should pad the
-    # merged subtitle files out to the concatenated video's real
+    # so Whisper's segments (and the resulting .srt) end well before
+    # the video actually does. export_trip() should pad the merged
+    # subtitle file out to the concatenated video's real
     # (ffprobe-measured) length.
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
@@ -4183,17 +4167,12 @@ def test_export_trip_pads_srt_lrc_to_match_the_real_video_length(tmp_path):
     srt_path.write_text(
         format_srt((SpeechSegment(0.0, 1.0, "hello"),))
     )
-    lrc_path = source_dir / "a.lrc"
-    lrc_path.write_text(
-        format_lrc((SpeechSegment(0.0, 0.0, "hello"),))
-    )
 
     recording = Recording(
         id=RecordingId("20260720_100000_N"),
         assets={
             Asset.FRONT: AssetFile(Asset.FRONT, video_path),
             Asset.SUBTITLES: AssetFile(Asset.SUBTITLES, srt_path),
-            Asset.LYRICS: AssetFile(Asset.LYRICS, lrc_path),
         },
     )
     trip = Trip((recording,))
@@ -4206,12 +4185,6 @@ def test_export_trip_pads_srt_lrc_to_match_the_real_video_length(tmp_path):
     # video's real 5s length - not stopping at 1s where "hello" ended.
     assert "\n2\n" in srt_text
     assert "--> 00:00:05,000" in srt_text
-
-    lrc_text = result.lrc.read_text()
-    lines = lrc_text.splitlines()
-    assert lines[0] == "[00:00.00] hello"
-    assert len(lines) == 2
-    assert lines[1].startswith("[00:0")  # padding line near the 5s mark
 
 
 # _replace_with_retry() - front.mp4's audio-remux swap. Christer hit a

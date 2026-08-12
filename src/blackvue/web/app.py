@@ -11,7 +11,7 @@ web/__init__.py's docstring for why that matters.
 The core of this app is still browse/watch: login (owner/viewer
 roles), the trip list, and a trip detail page with video playback
 (range-request support comes for free from Starlette's own
-FileResponse) plus GPX/SRT/LRC download links. On top of that, the
+FileResponse) plus GPX/SRT download links. On top of that, the
 owner can now also trigger bv-config, bv-gps, bv-generate, bv-export,
 bv-download, bv-ls, bv-scribe, and bv-search as background jobs from
 the browser (see jobs.py for how - a real job-runner infrastructure,
@@ -763,7 +763,6 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         diarize: bool = Form(False),
         hf_token: str = Form(""),
         srt: bool = Form(False),
-        lrc: bool = Form(False),
         overwrite: bool = Form(False),
         dry_run: bool = Form(False),
         from_: str = Form(""),
@@ -797,8 +796,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
         elif diarize and not (transcribe or translate):
             error = "Label speakers requires transcribe or translate."
-        elif (srt or lrc) and not (transcribe or translate):
-            error = "SRT/LRC require transcribe or translate."
+        elif srt and not (transcribe or translate):
+            error = "SRT requires transcribe or translate."
 
         if error is not None:
             return templates.TemplateResponse(
@@ -825,7 +824,6 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             diarize=diarize,
             hf_token=hf_token,
             srt=srt,
-            lrc=lrc,
             overwrite=overwrite,
             dry_run=dry_run,
             username=user.username,

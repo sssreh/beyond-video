@@ -62,7 +62,7 @@ bv-lang install en sv
 
 ### 5. `bv-generate` - enrich recordings (optional)
 
-Produces derived assets from each recording's own video/audio: extracted audio, real-world duration, transcript, translation, and subtitle files. Entirely optional - `bv-export` works without it - but running it first makes the export noticeably better: `--get-duration`'s span feeds trip-gap detection (so a long recording isn't mistaken for a gap to the next one), and transcript/subtitle files get merged automatically into each trip's own `trip.srt`/`trip.lrc`, available to `--stitch-subtitles`.
+Produces derived assets from each recording's own video/audio: extracted audio, real-world duration, transcript, translation, and subtitle files. Entirely optional - `bv-export` works without it - but running it first makes the export noticeably better: `--get-duration`'s span feeds trip-gap detection (so a long recording isn't mistaken for a gap to the next one), and transcript/subtitle files get merged automatically into each trip's own `trip.srt`, available to `--stitch-subtitles`.
 
 ```
 bv-generate /path/to/archive --get-duration --transcribe --srt

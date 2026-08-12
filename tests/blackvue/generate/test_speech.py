@@ -108,9 +108,8 @@ def test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration(
     # segment's end (or even start) timestamp can land past the
     # audio's real length (info.duration, measured from the same
     # decode) - this is what showed up as Christer's merged trip.srt
-    # running a couple of seconds longer than the actual video and
-    # trip.lrc: the last cue's end (121.5s) overran the real 120.0s of
-    # audio.
+    # running a couple of seconds longer than the actual video: the
+    # last cue's end (121.5s) overran the real 120.0s of audio.
     raw_segments = (
         _FakeRawSegment(0.0, 5.0, "hello"),
         _FakeRawSegment(118.0, 121.5, "goodbye"),

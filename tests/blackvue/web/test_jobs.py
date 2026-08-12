@@ -634,7 +634,6 @@ def _generate_kwargs(**overrides):
         diarize=False,
         hf_token=None,
         srt=False,
-        lrc=False,
         overwrite=False,
         dry_run=False,
         username="christer",
@@ -689,7 +688,6 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
             diarize=True,
             hf_token="hf_secret",
             srt=True,
-            lrc=True,
             overwrite=True,
             dry_run=True,
             from_="20260101_000000",
@@ -706,7 +704,6 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
     assert args.diarize is True
     assert args.hf_token == "hf_secret"
     assert args.srt is True
-    assert args.lrc is True
     assert args.overwrite is True
     assert args.dry_run is True
     assert args.from_ == "20260101_000000"

@@ -1,21 +1,15 @@
 """
-SRT and LRC subtitle/lyric export.
+SRT subtitle export.
 
 Whisper's SpeechSegment and pyannote's SpeakerTurn already carry
 start/end timestamps (see speech.py) - this module just formats them
-into two standard, widely-supported sidecar formats instead of
-beyond-video inventing its own timestamp notation:
+into SRT (SubRip): numbered cues with a start --> end range per line,
+the common video-subtitle format almost every player understands,
+instead of beyond-video inventing its own timestamp notation.
 
-  - SRT (SubRip): numbered cues with a start --> end range per line,
-    the common video-subtitle format almost every player understands.
-  - LRC: a single [mm:ss.xx] timestamp per line, the format karaoke/
-    lyrics-sync players use - a lighter-weight alternative when you
-    just want a per-line timestamp to scrub through a conversation,
-    not full subtitle-file semantics.
-
-Both formats optionally take a diarized speaker label as a
-"[SPEAKER_XX] " prefix on the cue text, matching the convention
-format_diarized_transcript already uses for plain-text output.
+Optionally takes a diarized speaker label as a "[SPEAKER_XX] " prefix
+on the cue text, matching the convention format_diarized_transcript
+already uses for plain-text output.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -33,7 +27,6 @@ from .speech import speaker_for
 _SRT_TIME_PATTERN = re.compile(
     r"(\d+):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2}),(\d{3})"
 )
-_LRC_TIME_PATTERN = re.compile(r"^\[(\d+):(\d{2})\.(\d{2})\]\s?(.*)$")
 
 
 def _cue_text(segment: SpeechSegment, turns: tuple[SpeakerTurn, ...] | None) -> str:
@@ -57,16 +50,6 @@ def _srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
 
 
-def _lrc_timestamp(seconds: float) -> str:
-    """Format seconds as LRC's [mm:ss.xx] timestamp."""
-
-    total_hundredths = round(seconds * 100)
-    minutes, remainder_hundredths = divmod(total_hundredths, 6_000)
-    secs, hundredths = divmod(remainder_hundredths, 100)
-
-    return f"[{minutes:02d}:{secs:02d}.{hundredths:02d}]"
-
-
 def format_srt(
     segments: tuple[SpeechSegment, ...],
     turns: tuple[SpeakerTurn, ...] | None = None,
@@ -87,25 +70,6 @@ def format_srt(
         )
 
     return "\n".join(blocks)
-
-
-def format_lrc(
-    segments: tuple[SpeechSegment, ...],
-    turns: tuple[SpeakerTurn, ...] | None = None,
-) -> str:
-    """Format transcript segments as an LRC lyric/timestamp file - one
-    [mm:ss.xx] line per segment, timestamped at the segment's start.
-
-    If turns is given, each line is prefixed with the speaker
-    attributed to that segment (see speaker_for()).
-    """
-
-    lines = [
-        f"{_lrc_timestamp(segment.start)} {_cue_text(segment, turns)}"
-        for segment in segments
-    ]
-
-    return "\n".join(lines)
 
 
 def _seconds_from_srt_match(match: re.Match) -> tuple[float, float]:
@@ -145,29 +109,5 @@ def parse_srt(text: str) -> tuple[SpeechSegment, ...]:
         cue_text = "\n".join(lines[timing_index + 1:]).strip()
 
         segments.append(SpeechSegment(start=start, end=end, text=cue_text))
-
-    return tuple(segments)
-
-
-def parse_lrc(text: str) -> tuple[SpeechSegment, ...]:
-    """Parse an LRC file's lines back into SpeechSegments.
-
-    The inverse of format_lrc(). LRC has no explicit end time, so
-    each segment's end is set equal to its start - format_lrc() only
-    ever reads segment.start, so this round-trips cleanly; anything
-    that does care about a duration should use SRT instead.
-    """
-
-    segments = []
-
-    for line in text.splitlines():
-        match = _LRC_TIME_PATTERN.match(line)
-        if match is None:
-            continue
-
-        minutes, secs, hundredths, cue_text = match.groups()
-        start = int(minutes) * 60 + int(secs) + int(hundredths) / 100
-
-        segments.append(SpeechSegment(start=start, end=start, text=cue_text))
 
     return tuple(segments)

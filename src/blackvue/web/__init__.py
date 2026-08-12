@@ -2,7 +2,7 @@
 blackvue.web - the Beyond Video web app (bv-web).
 
 Browses and plays back the folders bv-export writes (front/rear/
-stitch video, map/gsensor overlays, GPX/SRT/LRC) from a browser,
+stitch video, map/gsensor overlays, GPX/SRT) from a browser,
 behind a simple two-role login: "owner" (Christer - can also trigger
 download/generate/export once that's built; not yet in this
 increment) and "viewer" (family members - browse/watch only). A third

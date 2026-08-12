@@ -1,12 +1,12 @@
 """
-Trip-level SRT/LRC merging for bv-export.
+Trip-level SRT merging for bv-export.
 
-Each recording already has its own .srt/.lrc (bv-generate --srt/--lrc,
-timestamps relative to that recording's own start). This rebases every
-recording's cues onto the trip's timeline - the same offset-rebasing
-pattern trip_export.py already uses for g-sensor samples in .3gf - then
-re-numbers/re-formats the combined cues as one trip.srt / trip.lrc, the
-same way merge_text_assets() combines transcript.txt across a trip.
+Each recording already has its own .srt (bv-generate --srt, timestamps
+relative to that recording's own start). This rebases every recording's
+cues onto the trip's timeline - the same offset-rebasing pattern
+trip_export.py already uses for g-sensor samples in .3gf - then
+re-numbers/re-formats the combined cues as one trip.srt, the same way
+merge_text_assets() combines transcript.txt across a trip.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -20,9 +20,7 @@ from collections.abc import Callable
 from ..archive.asset import Asset
 from ..archive.recording_id import RecordingId
 from ..generate.speech import SpeechSegment
-from ..generate.subtitles import format_lrc
 from ..generate.subtitles import format_srt
-from ..generate.subtitles import parse_lrc
 from ..generate.subtitles import parse_srt
 from ..trip.trip import Trip
 
@@ -41,8 +39,8 @@ def _merge_subtitle_segments(
     parser: Callable[[str], tuple[SpeechSegment, ...]],
     video_offsets: dict[RecordingId, float] | None = None,
 ) -> tuple[SpeechSegment, ...]:
-    """Merge every recording's own `asset` (SUBTITLES or LYRICS) into
-    one trip-relative sequence of SpeechSegments.
+    """Merge every recording's own `asset` into one trip-relative
+    sequence of SpeechSegments.
 
     `video_offsets`, if given (see trip_export.py's
     `_recording_video_offsets()`), rebases a recording present in it
@@ -112,10 +110,7 @@ def _pad_to_duration(
 
     # Starts within the final second (but never before the last real
     # cue ends) rather than exactly at total_duration_seconds, so SRT
-    # players that dislike a zero-duration cue still get a sane one -
-    # and for LRC, whose format only has a start time, this puts the
-    # empty marker right at the end of the video rather than
-    # redundantly at the same spot as the last real line.
+    # players that dislike a zero-duration cue still get a sane one.
     padding_start = max(last_end, total_duration_seconds - 1.0)
 
     return segments + (
@@ -151,33 +146,3 @@ def merge_srt(
         return None
     segments = _pad_to_duration(segments, total_duration_seconds)
     return format_srt(segments)
-
-
-def merge_lrc(
-    trip: Trip,
-    *,
-    total_duration_seconds: float | None = None,
-    video_offsets: dict[RecordingId, float] | None = None,
-) -> str | None:
-    """Merge every recording's .lrc in the trip into one trip-relative
-    LRC string, sorted by start time. Returns None if no recording in
-    the trip has an .lrc.
-
-    If total_duration_seconds is given and the merged cues end before
-    it, an empty trailing line is appended near the end of the video
-    (see _pad_to_duration).
-
-    `video_offsets`, if given, positions each recording's cues by its
-    own real position in the concatenated video rather than its ID
-    -timestamp gap from the trip's start - see
-    `_merge_subtitle_segments()`'s own docstring for why that matters
-    whenever a Parking recording sits mid-trip.
-    """
-
-    segments = _merge_subtitle_segments(
-        trip, Asset.LYRICS, parse_lrc, video_offsets
-    )
-    if not segments:
-        return None
-    segments = _pad_to_duration(segments, total_duration_seconds)
-    return format_lrc(segments)

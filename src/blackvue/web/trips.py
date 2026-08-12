@@ -53,7 +53,6 @@ MAP_FILENAME = "map.mp4"
 GSENSOR_VIDEO_FILENAME = "gsensor.mp4"
 GPX_FILENAME = "trip.gpx"
 SRT_FILENAME = "trip.srt"
-LRC_FILENAME = "trip.lrc"
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,6 @@ class TripAssets:
     gsensor_video: str | None = None
     gpx: bool = False
     srt: bool = False
-    lrc: bool = False
 
     @property
     def id(self) -> str:
@@ -131,8 +129,6 @@ class TripAssets:
             names.add(GPX_FILENAME)
         if self.srt:
             names.add(SRT_FILENAME)
-        if self.lrc:
-            names.add(LRC_FILENAME)
         return frozenset(names)
 
 
@@ -205,7 +201,6 @@ def scan_trip(folder: Path) -> TripAssets | None:
         ),
         gpx=(folder / GPX_FILENAME).is_file(),
         srt=(folder / SRT_FILENAME).is_file(),
-        lrc=(folder / LRC_FILENAME).is_file(),
     )
 
 
@@ -236,9 +231,9 @@ class TripCache:
     buffering - many per second during active playback - and every
     one of those hits app.py's trip_file() route, which resolves the
     same trip_id via _find_trip() on every single call. scan_trip()
-    itself does around nine stat()/open() calls (trip.log, up to
+    itself does several stat()/open() calls (trip.log, up to
     three video filenames, a map_zoom_*.mp4 glob, map/gsensor/gpx/
-    srt/lrc checks) against the trip's own folder - cheap in
+    srt checks) against the trip's own folder - cheap in
     isolation, but repeated identically on every range request in a
     burst adds up to real, felt latency, especially against a
     Synology bind-mounted volume where each syscall can cost more

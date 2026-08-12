@@ -390,7 +390,7 @@ class JobRunner:
         out). Full flag parity with the CLI, same as
         start_bv_generate()/start_bv_export() above - bv-ls has no
         cross-field validation to re-check (unlike bv-generate's
-        diarize/srt/lrc rules) and nothing destructive or slow, so
+        diarize/srt rules) and nothing destructive or slow, so
         there was no reason to curate a subset the way
         bv-config/bv-gps's id-only triggers do.
 
@@ -454,7 +454,6 @@ class JobRunner:
         diarize: bool,
         hf_token: str | None,
         srt: bool,
-        lrc: bool,
         overwrite: bool,
         dry_run: bool,
         username: str,
@@ -476,7 +475,7 @@ class JobRunner:
         lookup.
 
         argparse's own cross-field validation (at least one action;
-        --diarize/--srt/--lrc require --transcribe or --translate) is
+        --diarize/--srt require --transcribe or --translate) is
         deliberately re-checked by app.py's route *before* this is
         ever called, so a bad web form re-renders with a friendly
         error instead of parse_args() raising SystemExit(2) - a
@@ -512,8 +511,6 @@ class JobRunner:
             argv += ["--hf-token", hf_token]
         if srt:
             argv.append("--srt")
-        if lrc:
-            argv.append("--lrc")
         if overwrite:
             argv.append("--overwrite")
         if dry_run:

@@ -221,7 +221,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 | `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a Parking-mode recording is left out entirely unless `--include-parking` is given; a recording whose own front/rear durations differ at all has its longer side auto-trimmed to match (see "Front/rear duration alignment" above) |
 | `trip.gpx` | always, if GPS data exists |
 | `trip.3gf` | always, if g-sensor data exists |
-| `trip.srt`, `trip.lrc` | always, if transcript data exists |
+| `trip.srt` | always, if transcript data exists |
 | `transcript.txt`, `transcript.diarized.txt`, `translation.txt`, `translation.diarized.txt` | always, if the corresponding per-recording `bv-generate(1)` output exists - each recording's text concatenated in order, under a `# <recording_id>` header per block |
 | `scene.txt`, `scene.rear.txt` | always, if the corresponding per-recording `bv-generate --describe-scene`/`bv-scribe(1)` output exists - same concatenation as the transcript/translation files above |
 | `trip.log` | always - the exact command line used, trip membership reasoning, and (with `--debug`) phase timings |

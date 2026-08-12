@@ -838,7 +838,7 @@ def bv_export(
                 result.front_video, result.rear_video, result.audio,
                 result.gpx, result.gsensor, result.map, result.map_zoom,
                 result.gsensor_video, result.gsensor_graph_video,
-                result.stitch, result.srt, result.lrc,
+                result.stitch, result.srt,
             )
             if written_path is not None
         ] + list(result.text)
@@ -1622,8 +1622,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Also burn this trip's own trip.srt into stitch.mp4's "
-            "final frame (never trip.lrc, which has no real per-line "
-            "duration) - centered, near the bottom, after any "
+            "final frame - centered, near the bottom, after any "
             "g-sensor overlay/map panel. Unlike --stitch-gsensor, "
             "there's nothing to render first: trip.srt is written "
             "automatically whenever the trip has any transcript data "

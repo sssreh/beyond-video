@@ -38,7 +38,6 @@ class Asset(Enum):
     TRANSLATION = ("Plain", "Translate")
     TRANSLATION_DIARIZED = ("Diar", "Translate")
     SUBTITLES = ("SRT",)
-    LYRICS = ("LRC",)
     # Grouped like TRANSCRIPT/TRANSCRIPT_DIARIZED above - "Front"/"Rear"
     # distinguish which camera a scene description came from, "Scene"
     # is the shared two-row bv-ls header group.

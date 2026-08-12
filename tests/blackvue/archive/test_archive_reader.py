@@ -110,18 +110,16 @@ def test_archive_reader_detects_interior_camera_video_and_thumbnail(tmp_path):
     assert recording.has(Asset.INTERIOR_THUMBNAIL)
 
 
-def test_archive_reader_detects_srt_and_lrc(tmp_path):
+def test_archive_reader_detects_srt(tmp_path):
     (tmp_path / "20260715_133255_N.srt").write_text(
         "1\n00:00:00,000 --> 00:00:01,000\nhello\n"
     )
-    (tmp_path / "20260715_133255_N.lrc").write_text("[00:00.00] hello")
 
     recordings = ArchiveReader(tmp_path).read()
 
     recording = recordings[0]
 
     assert recording.has(Asset.SUBTITLES)
-    assert recording.has(Asset.LYRICS)
 
 
 # ---------------------------------------------------------------------------
