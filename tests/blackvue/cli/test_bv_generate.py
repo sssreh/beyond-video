@@ -1657,6 +1657,166 @@ def test_translate_only_srt_still_generated_when_translation_already_exists(
         encoding="utf-8"
     )
     assert "HELLO WORLD" in srt_text
+
+
+def test_extract_audio_deletes_and_skips_a_silent_track(
+    tmp_path, monkeypatch, capsys
+):
+    # BlackVue cameras keep a real AAC stream in the container even
+    # with in-camera voice recording turned off - extract_audio()
+    # faithfully extracts that silent-but-real stream, so
+    # _do_extract_audio has to check loudness itself and throw the
+    # result away rather than leaving a silent junk .aac behind.
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"silent"),
+    )
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: True)
+
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    video_path = tmp_path / "20260715_133255_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(extract_audio=True, verbose=True)
+
+    had_error = bv_generate._do_extract_audio(recording, tmp_path, args)
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_133255_N.aac").exists()
+    assert "silent" in capsys.readouterr().out
+
+
+def test_extract_audio_keeps_the_file_if_the_silence_probe_itself_fails(
+    tmp_path, monkeypatch
+):
+    # extract_audio() just succeeded, which normally means ffmpeg is
+    # available - but if is_audio_silent()'s own ffmpeg probe still
+    # fails for some reason (missing PATH in an unusual environment,
+    # etc.), that's no reason to throw away audio that might be real.
+    # Must not crash the whole recording either.
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"real audio"),
+    )
+
+    def raise_probe_failure(path):
+        raise MediaToolError("ffmpeg not found on PATH")
+
+    monkeypatch.setattr(bv_generate, "is_audio_silent", raise_probe_failure)
+
+    recording = Recording(id=RecordingId("20260715_133310_N"))
+    video_path = tmp_path / "20260715_133310_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(extract_audio=True)
+
+    warnings = []
+    had_error = bv_generate._do_extract_audio(
+        recording, tmp_path, args, warn=warnings.append
+    )
+
+    assert had_error is False
+    assert (tmp_path / "20260715_133310_N.aac").read_bytes() == b"real audio"
+    assert any("couldn't check audio loudness" in w for w in warnings)
+
+
+def test_extract_audio_keeps_a_non_silent_track(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"real audio"),
+    )
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: False)
+
+    recording = Recording(id=RecordingId("20260715_133300_N"))
+    video_path = tmp_path / "20260715_133300_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(extract_audio=True)
+
+    had_error = bv_generate._do_extract_audio(recording, tmp_path, args)
+
+    assert had_error is False
+    assert (tmp_path / "20260715_133300_N.aac").read_bytes() == b"real audio"
+
+
+def test_translate_only_skips_silent_freshly_extracted_audio(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+
+    extracted = []
+
+    def fake_extract_audio(source, destination):
+        extracted.append((source, destination))
+        destination.write_bytes(b"silent")
+
+    monkeypatch.setattr(bv_generate, "extract_audio", fake_extract_audio)
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: True)
+
+    recording = Recording(id=RecordingId("20260715_140000_N"))
+    video_path = tmp_path / "20260715_140000_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(translate="sv")
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    audio_destination = tmp_path / "20260715_140000_N.aac"
+    assert extracted == [(video_path, audio_destination)]
+    assert not audio_destination.exists()
+    assert not (tmp_path / "20260715_140000_N_swe.translation.txt").exists()
+
+
+def test_transcribe_skips_silent_freshly_extracted_audio(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "detect_language", _refuse)
+
+    extracted = []
+
+    def fake_extract_audio(source, destination):
+        extracted.append((source, destination))
+        destination.write_bytes(b"silent")
+
+    monkeypatch.setattr(bv_generate, "extract_audio", fake_extract_audio)
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: True)
+
+    recording = Recording(id=RecordingId("20260715_150000_N"))
+    video_path = tmp_path / "20260715_150000_NF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True, language="sv")
+
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    audio_destination = tmp_path / "20260715_150000_N.aac"
+    assert extracted == [(video_path, audio_destination)]
+    assert not audio_destination.exists()
+    assert not (tmp_path / "20260715_150000_N.transcript.txt").exists()
     # translation.txt itself was already up to date and --overwrite
     # wasn't given, so it should be left untouched.
     assert (

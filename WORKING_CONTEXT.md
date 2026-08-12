@@ -9516,3 +9516,88 @@ confirmed programmatically (not just eyeballed). `test_bv_ls.py`
 (5/5 non-capsys tests pass, including the new regression test - the
 other 4 never happened to cover a recording id longer than
 "Recording", which is exactly why this shipped unnoticed).
+
+## Skip silent audio tracks instead of extracting/transcribing them (2026-08-12)
+
+Christer noticed `bv-generate` was still creating `.aac` files for
+recordings where he'd had the camera's in-camera mic turned off, and
+paired it with `ffprobe` output he'd run himself: `hevc,video` /
+`aac,audio` - a genuine `aac` audio stream reported present on a
+recording he knew had no mic input. Root cause: some BlackVue models
+(confirmed on Christer's) keep a real AAC stream in the MP4 container
+regardless of the in-camera voice-recording toggle - the track
+exists, it's just silent. `probe_audio_codec()` (`generate/media.py`)
+only ever checked stream *presence*, never loudness, so
+`extract_audio()` faithfully extracted that silent-but-real track
+every time, leaving a useless `.aac` behind and, worse, handing it to
+Whisper for transcription (which happily "transcribes" near-silence
+into hallucinated text or wastes real GPU/CPU time producing nothing
+useful).
+
+**Added:** `is_audio_silent(path, *, threshold_db=SILENCE_THRESHOLD_DB)`
+in `generate/media.py` - runs `ffmpeg -i <path> -af volumedetect -f
+null -` (a full decode pass) and parses the `mean_volume: X dB` line
+out of ffmpeg's stderr via regex, returning `True` if the mean volume
+is at or below `SILENCE_THRESHOLD_DB` (`-50.0` dB, a conservative cutoff
+picked to sit well below real speech/road/wind/engine noise but above
+a "recorded, nothing audible" track's noise floor - not tuned against
+a large sample of real silent tracks, so worth revisiting if it ever
+misfires). If the `mean_volume` line can't be parsed at all (e.g. a
+different ffmpeg version or an odd failure that still exits 0), it
+returns `False` (not silent) - same "when in doubt, keep it" bias the
+rest of this module already uses for cache self-healing. Exported
+from `generate/__init__.py` alongside the new `SILENCE_THRESHOLD_DB`
+constant.
+
+**Wired into all three places `bv_generate.py` creates a fresh
+`.aac`:** `_do_extract_audio()` (the standalone `--extract-audio`
+action), the `--translate` cascade's fresh-extraction branch (inside
+`_do_translate_only()`), and the `--transcribe` cascade's
+fresh-extraction branch (inside
+`_do_transcribe_with_optional_translate()`). In each case, right
+after `extract_audio()` succeeds, the new code checks loudness and,
+if silent, deletes the just-written `.aac` and reports/warns instead
+of proceeding - `--extract-audio` alone just skips quietly (same
+tone as the existing Parking-mode skip message), while
+`--translate`/`--transcribe` also skip the transcription step
+entirely for that recording rather than running Whisper against
+near-silence. Cached/already-existing `.aac` files (the
+`_has_usable_audio()` reuse path) are deliberately left alone here -
+this only guards *freshly extracted* audio, matching what Christer
+actually asked about.
+
+Added `_is_audio_silent_safe()`, a small wrapper around
+`is_audio_silent()` used at all three call sites instead of calling
+it directly - `extract_audio()` having just succeeded normally means
+ffmpeg is available, but a probe failure (`MediaToolError`, e.g. an
+unusual environment where ffmpeg vanishes between the two calls)
+would otherwise propagate straight out of `_do_extract_audio()` /
+`_do_translate_only()` / `_do_transcribe_with_optional_translate()`
+uncaught. The wrapper catches `MediaToolError`, warns, and defaults
+to "not silent" (keep the audio) - caught this myself while manually
+verifying the three call sites: an early version called
+`is_audio_silent()` directly, and a fake `is_audio_silent` raising
+`MediaToolError` in a test crashed the whole recording instead of
+degrading gracefully.
+
+**Verification.** No real pytest in this sandbox (network-restricted,
+no `tomllib` on the sandbox's Python 3.10 either - stubbed a minimal
+`tomllib` shim just to import `bv_generate.py` for manual checks).
+Wrote the real tests anyway for CI (`tests/blackvue/generate/
+test_media.py`: 7 new tests for `is_audio_silent()` covering below/
+above/exact-threshold, a custom `threshold_db`, an unparseable
+`mean_volume` line, and a missing-ffmpeg `MediaToolError`;
+`tests/blackvue/cli/test_bv_generate.py`: 6 new tests covering the
+`_do_extract_audio()` silent-delete and non-silent-keep cases, the
+`--translate` and `--transcribe` fresh-extraction skips, and the
+`_is_audio_silent_safe()` probe-failure fallback), then independently
+re-implemented and ran each test's logic standalone against the real
+source (bypassing the tests/ package's relative imports, which need
+real pytest to resolve) - all 13 `is_audio_silent()`/call-site checks
+and the probe-failure-fallback check passed. Also ran a real,
+unmocked `_do_translate_only()` end-to-end call with `extract_audio()`
+faked but `is_audio_silent()` untouched, confirming real ffmpeg
+(installed in this sandbox) correctly treats a tiny garbage byte
+string as "not silent" (fails to parse a `mean_volume` line) rather
+than crashing or hanging - existing tests that fake `extract_audio()`
+without mocking `is_audio_silent()` are unaffected by this change.

@@ -35,6 +35,7 @@ from ..generate import format_diarized_transcript
 from ..generate import format_srt
 from ..generate import get_span
 from ..generate import gpu_available
+from ..generate import is_audio_silent
 from ..generate import normalize_language
 from ..generate import select_source
 from ..generate import short_code
@@ -525,6 +526,25 @@ def _has_usable_audio(path: Path) -> bool:
         return False
 
 
+def _is_audio_silent_safe(path: Path, recording_id, warn) -> bool:
+    """is_audio_silent(), but never lets a probe failure (e.g. ffmpeg
+    missing) propagate out of a bv-generate call site.
+
+    extract_audio() just succeeded when this is called, which normally
+    means ffmpeg is available - but tests and unusual environments can
+    still hit this, and a probe failure is no reason to throw away
+    audio that might be real. Same "err toward keeping it" default
+    is_audio_silent() itself uses for an unparseable result.
+    """
+
+    try:
+        return is_audio_silent(path)
+    except MediaToolError as exc:
+        warn(f"bv-generate: {recording_id}: couldn't check audio "
+            f"loudness, keeping it: {exc}")
+        return False
+
+
 def _report(say, verbose: bool, message: str) -> None:
     if verbose:
         say(message)
@@ -613,6 +633,16 @@ def _do_extract_audio(
     except MediaToolError as exc:
         warn(f"bv-generate: {recording.id}: {exc}")
         return True
+
+    if _is_audio_silent_safe(destination, recording.id, warn):
+        destination.unlink(missing_ok=True)
+        _report(
+            say,
+            args.verbose,
+            f"{recording.id}: audio track is silent, skipping -> "
+            f"{destination.name}",
+        )
+        return False
 
     _report(say, args.verbose, f"{recording.id}: extracted audio -> {destination.name}")
     return False
@@ -968,6 +998,12 @@ def _do_translate_only(
                 warn(f"bv-generate: {recording.id}: {exc}")
                 return True
 
+            if _is_audio_silent_safe(audio_destination, recording.id, warn):
+                audio_destination.unlink(missing_ok=True)
+                warn(f"bv-generate: {recording.id}: audio track is "
+                    "silent, skipping translation")
+                return False
+
             _report(say, args.verbose, f"{recording.id}: extracted audio -> "
                 f"{audio_destination.name}")
             audio_source = audio_destination
@@ -1212,6 +1248,12 @@ def _do_transcribe_with_optional_translate(
         except MediaToolError as exc:
             warn(f"bv-generate: {recording.id}: {exc}")
             return True
+
+        if _is_audio_silent_safe(audio_destination, recording.id, warn):
+            audio_destination.unlink(missing_ok=True)
+            warn(f"bv-generate: {recording.id}: audio track is silent, "
+                "skipping transcription")
+            return False
 
         _report(say, args.verbose, f"{recording.id}: extracted audio -> {audio_destination.name}")
         audio_source = audio_destination

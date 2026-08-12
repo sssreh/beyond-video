@@ -14,6 +14,7 @@ from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import compute_span
 from blackvue.generate.media import extract_audio
 from blackvue.generate.media import get_span
+from blackvue.generate.media import is_audio_silent
 from blackvue.generate.media import load_or_compute_duration
 from blackvue.generate.media import probe_audio_codec
 from blackvue.generate.media import probe_audio_format
@@ -567,3 +568,78 @@ def test_extract_audio_end_to_end_transcodes_mp3_source_to_playable_aac(
 
     assert destination.exists()
     assert probe_audio_codec(destination) == "aac"
+
+
+def test_is_audio_silent_returns_true_below_threshold(monkeypatch, tmp_path):
+    def fake_run(cmd, **_kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="",
+            stderr="[Parsed_volumedetect_0 @ 0x0] mean_volume: -70.0 dB\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert is_audio_silent(tmp_path / "x.aac") is True
+
+
+def test_is_audio_silent_returns_false_above_threshold(monkeypatch, tmp_path):
+    def fake_run(cmd, **_kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="",
+            stderr="[Parsed_volumedetect_0 @ 0x0] mean_volume: -18.4 dB\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert is_audio_silent(tmp_path / "x.aac") is False
+
+
+def test_is_audio_silent_treats_exact_threshold_as_silent(monkeypatch, tmp_path):
+    # <= threshold, not strictly less than - a track sitting exactly at
+    # the cutoff should be skipped, not kept "just in case".
+    def fake_run(cmd, **_kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="",
+            stderr="mean_volume: -50.0 dB\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert is_audio_silent(tmp_path / "x.aac") is True
+
+
+def test_is_audio_silent_honors_a_custom_threshold(monkeypatch, tmp_path):
+    def fake_run(cmd, **_kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="", stderr="mean_volume: -30.0 dB\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert is_audio_silent(tmp_path / "x.aac", threshold_db=-50.0) is False
+    assert is_audio_silent(tmp_path / "x.aac", threshold_db=-20.0) is True
+
+
+def test_is_audio_silent_returns_false_when_mean_volume_is_unparseable(
+    monkeypatch, tmp_path
+):
+    # If ffmpeg's output doesn't contain the line we expect (a
+    # different ffmpeg version, an unexpected failure that still
+    # exits 0, etc.), err toward "not silent" rather than throwing
+    # away audio that might actually have something on it.
+    def fake_run(cmd, **_kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert is_audio_silent(tmp_path / "x.aac") is False
+
+
+def test_is_audio_silent_raises_when_ffmpeg_is_missing(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        is_audio_silent(tmp_path / "x.aac")

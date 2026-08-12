@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -413,3 +414,65 @@ def extract_audio(source: Path, destination: Path) -> None:
         raise MediaToolError(
             f"ffmpeg failed for {source.name}: {exc.stderr.strip()}"
         ) from exc
+
+
+# Mean-volume threshold (dBFS) at or below which is_audio_silent()
+# treats an audio track as effectively silent. -50 dB is well below
+# any real speech or road/wind/engine noise, but comfortably above
+# the noise floor a "recorded, but nothing audible" track tends to
+# sit at - chosen as a conservative cutoff, not tuned against a large
+# sample of real silent tracks.
+SILENCE_THRESHOLD_DB = -50.0
+
+_MEAN_VOLUME_PATTERN = re.compile(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB")
+
+
+def is_audio_silent(
+    path: Path, *, threshold_db: float = SILENCE_THRESHOLD_DB
+) -> bool:
+    """Return True if `path`'s audio has a mean volume at or below
+    `threshold_db` dBFS - i.e. effectively silent.
+
+    Exists because probe_audio_codec() alone can't distinguish "no
+    mic" from "recorded, just nothing audible": some BlackVue models
+    keep a real AAC audio stream in every recording even with
+    in-camera voice recording turned off - confirmed via `ffprobe`
+    reporting a genuine `aac` stream on a recording Christer knew had
+    the mic disabled. extract_audio() faithfully extracts that
+    silent-but-real stream, which isn't wrong, just not worth the
+    Whisper time downstream - this is what lets bv-generate tell the
+    difference and skip it.
+
+    Uses ffmpeg's own `volumedetect` audio filter (a full decode pass,
+    reported via its `mean_volume: X dB` stderr line) rather than
+    inspecting sample data directly - simplest way to get an accurate
+    answer without a numpy/audio-analysis dependency.
+
+    Returns False (not silent) if the mean volume can't be parsed out
+    at all, e.g. ffmpeg itself failed - erring toward treating
+    uncertain audio as real. A false negative here just costs a
+    little wasted transcription time on near-silence; a false
+    positive would silently throw away audio that might have had
+    something on it.
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i", str(path),
+                "-af", "volumedetect",
+                "-f", "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+
+    match = _MEAN_VOLUME_PATTERN.search(result.stderr)
+    if match is None:
+        return False
+
+    return float(match.group(1)) <= threshold_db

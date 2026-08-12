@@ -8,11 +8,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from .language_codes import normalize_language
 from .language_codes import short_code
+from .media import SILENCE_THRESHOLD_DB
 from .media import MediaInfo
 from .media import MediaToolError
 from .media import compute_span
 from .media import extract_audio
 from .media import get_span
+from .media import is_audio_silent
 from .media import probe
 from .media import select_source
 from .mp4_box_reader import Mp4Info
@@ -44,6 +46,7 @@ __all__ = [
     "DIARIZATION_MODEL",
     "SCENE_DEFAULT_MODEL",
     "SEGMENTATION_MODEL",
+    "SILENCE_THRESHOLD_DB",
     "MediaInfo",
     "MediaToolError",
     "Mp4Info",
@@ -61,6 +64,7 @@ __all__ = [
     "format_srt",
     "get_span",
     "gpu_available",
+    "is_audio_silent",
     "normalize_language",
     "parse_srt",
     "probe",

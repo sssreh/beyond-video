@@ -27,6 +27,8 @@ At least one action flag (`--extract-audio`, `--get-duration`, `--transcribe`, `
 
 Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - audio-dependent actions (`--extract-audio`, `--transcribe`, `--translate`) are automatically skipped for them, while `--get-duration` still works (reporting the real elapsed time span, not the timelapse video's own short playback length).
 
+Some BlackVue cameras keep a real AAC audio stream in every recording even with in-camera voice recording turned off - the track exists, it's just silent. `bv-generate` checks the mean volume of every audio track it extracts (fresh, via `--extract-audio`, or as an internal step of `--transcribe`/`--translate`) and, if it's at or below a fixed loudness threshold, discards the `.aac` and skips transcription for that recording instead of keeping a silent file or wasting Whisper time on it. If the loudness check itself can't run (e.g. ffmpeg unexpectedly unavailable), the audio is kept rather than risk discarding something real.
+
 `--translate` implies transcription internally - `--transcribe` doesn't need to also be given.
 
 Every run prints a `bv-generate: started HH:MM:SS` line up front and a `bv-generate: finished HH:MM:SS (N.Ns)` line on every exit path from there on (including argument errors and an empty selection) - same pattern `bv-search(1)` uses. A batch run over hundreds of recordings with `--describe-scene`/`--transcribe` can take hours with nothing else printed in between, so both when it ran and how long it took are visible without timing it yourself.
@@ -52,7 +54,7 @@ Every run prints a `bv-generate: started HH:MM:SS` line up front and a `bv-gener
 
 | Option | Description |
 |---|---|
-| `--extract-audio` | Extract the audio track from the front camera video (or rear, if there's no front). Saved as `<recording>.aac`. |
+| `--extract-audio` | Extract the audio track from the front camera video (or rear, if there's no front). Saved as `<recording>.aac`. Skipped (and any extracted file removed) if the track is effectively silent - see below. |
 | `--get-duration` | Compute the real-world duration in seconds. Saved as `<recording>.duration.txt`. |
 | `--transcribe` | Transcribe the recording's audio to text. Saved as `<recording>.transcript.txt`. |
 | `--translate LANG` | Translate the transcript into `LANG` (e.g. `es`, `fr`). Saved as `<recording>.translation.txt`. |
