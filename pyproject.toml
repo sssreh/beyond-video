@@ -96,7 +96,11 @@ web = [
 # fails with "No module named 'torchvision'" even though torchvision
 # is never imported directly by this codebase's own code.
 scene = [
-    "transformers>=4.49.0",
+    # >=4.57.0 (not the older 4.49.0 floor Qwen2.5-VL alone needed) -
+    # generate/scene.py's DEFAULT_MODEL is now Qwen3-VL-8B-Instruct,
+    # which needs Qwen3VLForConditionalGeneration, only importable
+    # from this version onward.
+    "transformers>=4.57.0",
     "accelerate",
     "qwen-vl-utils[decord]==0.0.8",
     "torchvision",

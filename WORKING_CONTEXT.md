@@ -9232,3 +9232,45 @@ Sandbox harness: 27 tests across `test_cache_utils.py` (6),
 `test_mp4_repair.py` (9, including the pre-existing real-ffprobe
 repair tests - ffprobe is available in this sandbox), and
 `test_hevc_preview.py` (12) all pass.
+
+## Switch scene-description default model to Qwen3-VL-8B-Instruct (2026-08-12)
+
+Christer, planning tonight's `bv-generate Kirby_2019 --extract-audio
+--get-duration --transcribe --srt --lrc --describe-scene --scene-model
+Qwen/Qwen3-VL-8B-Instruct --scene-model Qwen/Qwen3-VL-8B-Instruct`:
+"why isnt Qwen/Qwen3-VL-8B-Instruct default" - a fair question, since
+he'd been passing it explicitly all along.
+
+Answer: no real reason. `DEFAULT_MODEL` in `generate/scene.py` was
+`Qwen/Qwen2.5-VL-7B-Instruct`, inherited straight from the standalone
+scene-scribe prototype's own original default (see task #604) -
+Qwen3-VL support (`is_qwen3_vl()`/`_patch_factor_for()`/the model
+-class swap in `_load_scene_model()`) was added to this codebase
+*later*, as an option, but nobody had flipped the constant to match
+once it landed.
+
+**Changed:** `DEFAULT_MODEL = "Qwen/Qwen3-VL-8B-Instruct"` in
+`generate/scene.py`. Bumped the `scene` extra's `transformers` floor
+in `pyproject.toml` from `>=4.49.0` to `>=4.57.0` (the version
+`Qwen3VLForConditionalGeneration` actually needs - `_load_scene_model()`
+already raised a clear `MediaToolError` naming this requirement if an
+older install hit the Qwen3-VL path, but a fresh `pip install
+.[scene]` should just work against the new default without hitting
+that error at all). Updated `docs/man/bv-generate.md` and
+`docs/man/bv-scribe.md`'s `--scene-model`/`--model` rows to match,
+keeping a note that `Qwen/Qwen2.5-VL-7B-Instruct` remains available
+via an explicit override and is still the more real-footage-tested
+option (the plate-disagreement/hallucination findings that shaped
+this module's confidence-check mitigations were found against it,
+not Qwen3-VL).
+
+**Not changed:** the confidence-check/disclaimer machinery itself
+(`zoom_into_signs()`'s plate double-read, the `DISCLAIMER` footer) -
+model-agnostic, applies the same regardless of which Qwen family is
+loaded.
+
+**Verification.** All call sites reference `DEFAULT_MODEL`/
+`SCENE_DEFAULT_MODEL` symbolically (never a hardcoded string), so no
+other code needed touching. `ast.parse()` clean on `scene.py`.
+Sandbox harness: `test_scene.py` (18), `test_bv_generate.py` (88),
+`test_bv_scribe.py` (26) - 132 passed, 0 failed.

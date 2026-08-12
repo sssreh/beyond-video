@@ -75,7 +75,7 @@ Check [PyTorch's "Get Started" page](https://pytorch.org/get-started/locally/) f
 | Option | Description |
 |---|---|
 | `--task {describe,ocr,both}` | `describe` for what's happening, `ocr` for on-screen text only, `both` for a single combined pass. Default: `both`. |
-| `--model MODEL` | Hugging Face model id. Default: `Qwen/Qwen2.5-VL-7B-Instruct` (~16GB download on first use, cached under `~/.cache/huggingface`). A smaller Qwen2.5-VL or a quantized (`-AWQ`) variant trades accuracy for speed/VRAM. Qwen3-VL (any id containing `qwen3-vl`) is also supported but less tested against real footage - requires `transformers>=4.57.0`. |
+| `--model MODEL` | Hugging Face model id. Default: `Qwen/Qwen3-VL-8B-Instruct` (~16GB download on first use, cached under `~/.cache/huggingface`; requires `transformers>=4.57.0`, already the `scene` extra's own floor). A smaller or quantized (`-AWQ`) variant trades accuracy for speed/VRAM - `Qwen/Qwen2.5-VL-7B-Instruct` (this feature's original default, `transformers>=4.49.0`) remains a solid fallback if you want the more real-footage-tested option instead. |
 | `--cpu` | Force CPU inference. Extremely slow for a 7B+ video model - mainly useful to confirm the pipeline runs at all without a working CUDA setup. |
 
 ### Frame sampling / resolution

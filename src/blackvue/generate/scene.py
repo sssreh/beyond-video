@@ -46,7 +46,19 @@ from pathlib import Path
 
 from .media import MediaToolError
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+# Was Qwen/Qwen2.5-VL-7B-Instruct (the standalone scene-scribe
+# prototype's own original default, ported straight over when this
+# module was built - see WORKING_CONTEXT.md, task #604) until
+# Christer asked directly why Qwen3-VL-8B-Instruct - which he'd been
+# passing explicitly via --scene-model all along - wasn't the
+# default. There was no actual reason: Qwen3-VL support (is_qwen3_vl()/
+# _patch_factor_for()/the model-class swap below) was added later as
+# an *option*, but nobody had flipped this constant to match. Requires
+# transformers>=4.57.0 for Qwen3VLForConditionalGeneration (see
+# pyproject.toml's own scene extra) - _load_scene_model() below raises
+# a clear MediaToolError naming that requirement if an older install
+# hits this path.
+DEFAULT_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
 # See set_patch_factor_for() below - Qwen2.5-VL patchifies in 28px
 # steps (14px patch * 2x2 merge), Qwen3-VL in 32px steps (16px patch).
