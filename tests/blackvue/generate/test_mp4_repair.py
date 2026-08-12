@@ -1,5 +1,7 @@
 import subprocess
 
+from blackvue.generate import mp4_repair as mp4_repair_module
+from blackvue.generate.mp4_repair import load_or_repair_parking_video
 from blackvue.generate.mp4_repair import repair_parking_container
 
 
@@ -251,3 +253,90 @@ def test_repair_returns_false_for_a_file_with_no_moov_box(tmp_path):
 
     assert result is False
     assert not destination.exists()
+
+
+def test_load_or_repair_enforces_the_cache_size_cap_after_a_successful_repair(
+    monkeypatch, tmp_path
+):
+    """Same eviction-wiring guarantee as hevc_preview.py's own cache
+    (see test_hevc_preview.py) - the eviction *policy* is covered by
+    test_cache_utils.py, this only confirms load_or_repair_parking_
+    video() actually calls it, with this cache's own directory, after
+    a real repair happened."""
+
+    source = tmp_path / "20260726_144116_PF.mp4"
+    source.write_bytes(b"parking recording bytes")
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(
+        mp4_repair_module,
+        "repair_parking_container",
+        lambda _source, destination: destination.write_bytes(b"repaired") or True,
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        mp4_repair_module,
+        "enforce_cache_size_cap",
+        lambda cache_dir_arg, max_bytes: calls.append((cache_dir_arg, max_bytes)),
+    )
+
+    load_or_repair_parking_video(source, cache_dir)
+
+    assert calls == [(cache_dir, mp4_repair_module._MAX_CACHE_BYTES)]
+
+
+def test_load_or_repair_does_not_enforce_the_cache_size_cap_when_nothing_needed_fixing(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "20260726_144116_NF.mp4"
+    source.write_bytes(b"already-fine recording bytes")
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(
+        mp4_repair_module, "repair_parking_container", lambda _source, _destination: False
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        mp4_repair_module,
+        "enforce_cache_size_cap",
+        lambda cache_dir_arg, max_bytes: calls.append((cache_dir_arg, max_bytes)),
+    )
+
+    result = load_or_repair_parking_video(source, cache_dir)
+
+    assert result == source
+    assert calls == []
+
+
+def test_load_or_repair_does_not_enforce_the_cache_size_cap_on_a_cache_hit(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "20260726_144116_PF.mp4"
+    source.write_bytes(b"parking recording bytes")
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    stat = source.stat()
+    import hashlib
+
+    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
+    existing_cache_path = cache_dir / f"{digest}-{stat.st_mtime_ns}-{stat.st_size}.mp4"
+    existing_cache_path.write_bytes(b"already repaired")
+
+    def fail_repair(*_args, **_kwargs):
+        raise AssertionError("should reuse the cached copy, not repair again")
+
+    monkeypatch.setattr(mp4_repair_module, "repair_parking_container", fail_repair)
+
+    calls = []
+    monkeypatch.setattr(
+        mp4_repair_module,
+        "enforce_cache_size_cap",
+        lambda cache_dir_arg, max_bytes: calls.append((cache_dir_arg, max_bytes)),
+    )
+
+    result = load_or_repair_parking_video(source, cache_dir)
+
+    assert result == existing_cache_path
+    assert calls == []

@@ -39,11 +39,24 @@ import sys
 import uuid
 from pathlib import Path
 
+from ..generate.cache_utils import enforce_cache_size_cap
 from ..generate.media import MediaToolError
 from ..generate.media import probe_video_codec
 from .media import encode_with_nvenc_fallback
 
 _HEVC_CODEC_NAMES = {"hevc", "h265"}
+
+# Enforced via enforce_cache_size_cap() right after every new cache
+# write - see that function's own module docstring for the eviction
+# policy itself (LRU by mtime, opportunistic, .tmp-safe). 5GiB is
+# generous for "a handful of early recordings from when the camera
+# was new" (see this module's own background paragraph - only a small
+# fraction of Christer's archive is even HEVC to begin with), while
+# still being a real, enforced bound rather than the "never evicted,
+# clear it by hand" posture this cache had before Christer reported
+# it "still needed to be purged after a while" even after the bitrate
+# cap shrank individual previews to ~10% of their prior size.
+_MAX_CACHE_BYTES = 5 * 1024 ** 3
 
 # This preview exists purely so a browser can decode something - it's
 # never the file Christer actually watches for real, archival-quality
@@ -83,9 +96,9 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     The cache file name is derived from `source`'s own resolved path
     plus its mtime and size (not just its filename), so a re-
     downloaded or re-encoded recording never serves a stale preview.
-    Never evicted - left for a human to clear manually if it ever
-    grows large enough to matter, same as this codebase's other small
-    on-disk derived-artifact caches.
+    Bounded to `_MAX_CACHE_BYTES` total, via `enforce_cache_size_cap()`
+    right after every new entry is written - see that function's own
+    docstring for the eviction policy (oldest-by-mtime first).
 
     The audio track is copied through as-is (`-c:a copy`) rather than
     re-encoded - it's already AAC, which every target browser already
@@ -197,4 +210,5 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
         tmp_path.unlink(missing_ok=True)
 
     print(f"HEVC preview: transcode finished, cached as {cache_path.name}", file=sys.stderr)
+    enforce_cache_size_cap(cache_dir, _MAX_CACHE_BYTES)
     return cache_path

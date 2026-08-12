@@ -168,6 +168,86 @@ def test_encode_failure_leaves_no_stray_temp_file_behind(monkeypatch, tmp_path):
     assert list(cache_dir.iterdir()) == []
 
 
+def test_enforces_the_cache_size_cap_after_a_successful_transcode(monkeypatch, tmp_path):
+    """Christer, after the bitrate cap already shrank individual
+    previews to ~10% of their prior size: the cache directory itself
+    still "needed to be purged after a while." Confirms
+    load_or_transcode_hevc_preview() actually calls the shared
+    eviction helper (see cache_utils.enforce_cache_size_cap()) with
+    this cache's own directory - the eviction *policy* itself is
+    covered by test_cache_utils.py, not re-tested here."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+
+    def fake_encode(_input_args, destination, extra_codec_args=None):
+        destination.write_bytes(b"transcoded")
+
+    monkeypatch.setattr(hevc_preview_module, "encode_with_nvenc_fallback", fake_encode)
+
+    calls = []
+    monkeypatch.setattr(
+        hevc_preview_module,
+        "enforce_cache_size_cap",
+        lambda cache_dir_arg, max_bytes: calls.append((cache_dir_arg, max_bytes)),
+    )
+
+    load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert calls == [(cache_dir, hevc_preview_module._MAX_CACHE_BYTES)]
+
+
+def test_does_not_enforce_the_cache_size_cap_on_a_cache_hit(monkeypatch, tmp_path):
+    """A cache hit does no new I/O at all - re-sweeping the whole
+    directory on every single playback request would be wasteful, and
+    unnecessary: the cap is already enforced, since the only way an
+    entry could exist is a prior write that already ran the sweep."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    expected_cache_path = _expected_cache_path(source, cache_dir)
+    expected_cache_path.write_bytes(b"already transcoded")
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+
+    calls = []
+    monkeypatch.setattr(
+        hevc_preview_module,
+        "enforce_cache_size_cap",
+        lambda cache_dir_arg, max_bytes: calls.append((cache_dir_arg, max_bytes)),
+    )
+
+    load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert calls == []
+
+
+def test_does_not_enforce_the_cache_size_cap_on_a_failed_transcode(monkeypatch, tmp_path):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+
+    def fake_encode(*_args, **_kwargs):
+        raise MediaToolError("ffmpeg encode failed")
+
+    monkeypatch.setattr(hevc_preview_module, "encode_with_nvenc_fallback", fake_encode)
+
+    calls = []
+    monkeypatch.setattr(
+        hevc_preview_module,
+        "enforce_cache_size_cap",
+        lambda cache_dir_arg, max_bytes: calls.append((cache_dir_arg, max_bytes)),
+    )
+
+    load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert calls == []
+
+
 def test_h265_codec_name_is_also_treated_as_hevc(monkeypatch, tmp_path):
     source = _make_source(tmp_path)
     cache_dir = tmp_path / "cache"

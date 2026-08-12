@@ -9167,3 +9167,68 @@ confirms the fix targets the right failure.
 
 Caveat for Christer: same as every fix in this feature so far - worth
 trying again on the same file once bv-web picks this up.
+
+## Built: size-cap/LRU eviction for the HEVC-preview and Parking-repair caches (2026-08-12)
+
+Answers Christer's "Do you have any suggestion on how we handle cache
+files" - the follow-up to "Yes almost only 10% of previous size, but
+still needed to be purged after a while" (the bitrate cap shrank
+individual HEVC previews, but the cache *directory* itself was still
+unbounded, and both this cache and the separate Parking-repair cache
+had been "never evicted, clear it by hand" since they were built -
+see the earlier "Note: no eviction/size cap..." entry).
+
+Went with a size cap + LRU eviction over a simpler age-based expiry:
+a byte cap directly answers "how big can this get", where an age
+cutoff only bounds staleness, not disk usage - a burst of browsing
+could still blow past whatever's comfortable. Enforced opportunistically
+right after each new cache write (no background thread/scheduler),
+matching every other "check/fix at the point of use" pattern already
+in this codebase (self-healing `.duration.txt`, sidecar probing).
+
+**New module: `src/blackvue/generate/cache_utils.py`** -
+`enforce_cache_size_cap(cache_dir, max_bytes)`, shared by both cache
+modules rather than implemented twice (both already follow the same
+"check cache_dir, write on miss" shape). LRU by *mtime*, not atime -
+this codebase never touches `st_atime`, and many real deployments
+mount with `noatime` anyway, which would make atime-based eviction
+silently do nothing. Explicitly skips any file ending in `.tmp` - a
+sweep running concurrently with another request's in-flight
+transcode (hevc_preview.py's own atomic-rename fix, see the last
+entry) must never delete a temp file out from under it. Best-effort:
+a file that fails to delete (e.g. a transient Windows lock - see
+trip_export.py's own precedent) is skipped, not raised, so the
+caller's own just-completed request isn't failed over housekeeping.
+
+**Wired into both callers:**
+- `export/hevc_preview.py`: `_MAX_CACHE_BYTES = 5 * 1024**3` (5GiB) -
+  called right after the atomic rename into `cache_path` succeeds.
+- `generate/mp4_repair.py`: `_MAX_CACHE_BYTES = 2 * 1024**3` (2GiB,
+  smaller - a repaired copy never shrinks the way an HEVC-to-H.264
+  transcode does, but Parking recordings needing this specific fix
+  are comparatively rare) - called right after `repair_parking_container()`
+  reports a real repair happened.
+
+Neither cache's cap is configurable yet (no CLI/config surface) -
+just sane hardcoded defaults, documented in-line. The OSM road/geocode
+caches under `.osm_cache` are unaffected - they're keyed by map
+area/address, not a specific source recording, so this eviction
+policy doesn't directly apply to them.
+
+**Tests.** `tests/blackvue/generate/test_cache_utils.py` (new): the
+eviction policy itself - no-op on a missing cache dir, no-op when
+already under cap, oldest-first eviction stopping as soon as the cap
+is satisfied (not over-evicting), a `.tmp` file always surviving
+regardless of cap/age, and subdirectories being skipped rather than
+crashing the sweep. `test_hevc_preview.py`/`test_mp4_repair.py`: new
+wiring tests confirming each `load_or_*()` function actually calls
+`enforce_cache_size_cap()` with its own cache dir and constant after
+a real write, and does *not* call it on a cache hit or a failed
+transcode/repair (monkeypatched, so these don't re-test the eviction
+policy itself - that's `test_cache_utils.py`'s job).
+
+**Verification.** `ast.parse()` clean on all 6 changed/new files.
+Sandbox harness: 27 tests across `test_cache_utils.py` (6),
+`test_mp4_repair.py` (9, including the pre-existing real-ffprobe
+repair tests - ffprobe is available in this sandbox), and
+`test_hevc_preview.py` (12) all pass.

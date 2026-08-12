@@ -47,9 +47,23 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from .cache_utils import enforce_cache_size_cap
 from .mp4_box_reader import _find_box
 from .mp4_box_reader import _parse_hdlr_type
 from .mp4_box_reader import _read_box_header
+
+# Enforced via enforce_cache_size_cap() right after every new cache
+# write - see that function's own module docstring for the eviction
+# policy (LRU by mtime, opportunistic, .tmp-safe). Smaller than
+# hevc_preview.py's own 5GiB cap: a repaired copy is a near-verbatim
+# byte-for-byte copy of its source Parking recording (only the small
+# 'moov' box is rewritten - see repair_parking_container()'s own
+# docstring), so it never gets any *smaller* than the original the
+# way an HEVC-to-H.264 preview does, but Parking recordings are also
+# comparatively rare and this cache only grows for the specific
+# broken-audio-track shape this module knows how to fix - 2GiB is a
+# reasonable bound for that narrower case.
+_MAX_CACHE_BYTES = 2 * 1024 ** 3
 
 
 def _iter_top_level_boxes(path: Path):
@@ -281,10 +295,13 @@ def load_or_repair_parking_video(source: Path, cache_dir: Path) -> Path:
     bytes) never serves a stale repaired copy; and two different
     cameras/archives that happen to produce a recording with the same
     id (an unlikely but not impossible timestamp coincidence) never
-    collide in the shared cache. Never evicted - same as this
-    codebase's other small on-disk derived-artifact caches (the OSM
-    road/geocode caches under .osm_cache), left for a human to clear
-    manually if it ever grows large enough to matter.
+    collide in the shared cache. Bounded to `_MAX_CACHE_BYTES` total,
+    via `enforce_cache_size_cap()` right after every new entry is
+    written - see that function's own docstring for the eviction
+    policy (oldest-by-mtime first). The OSM road/geocode caches under
+    `.osm_cache` are a separate concern, not covered by this - they're
+    keyed by map area/address, not by a specific source recording, so
+    the same per-recording eviction policy doesn't directly apply.
     """
 
     stat = source.stat()
@@ -296,4 +313,6 @@ def load_or_repair_parking_video(source: Path, cache_dir: Path) -> Path:
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     repaired = repair_parking_container(source, cache_path)
+    if repaired:
+        enforce_cache_size_cap(cache_dir, _MAX_CACHE_BYTES)
     return cache_path if repaired else source
