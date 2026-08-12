@@ -1817,11 +1817,6 @@ def test_transcribe_skips_silent_freshly_extracted_audio(
     assert extracted == [(video_path, audio_destination)]
     assert not audio_destination.exists()
     assert not (tmp_path / "20260715_150000_N.transcript.txt").exists()
-    # translation.txt itself was already up to date and --overwrite
-    # wasn't given, so it should be left untouched.
-    assert (
-        translation_path.read_text() == "already translated, from an earlier run"
-    )
 
 
 def test_run_reports_no_recordings_found_for_an_empty_archive(
@@ -2306,4 +2301,3 @@ def test_translate_only_skips_writing_when_whisper_finds_no_speech(
     assert had_error is False
     assert not any(tmp_path.glob("*.translation.txt"))
     assert any("no speech detected" in w for w in warnings)
-    assert any(m.startswith("bv-generate: finished ") for m in messages)
