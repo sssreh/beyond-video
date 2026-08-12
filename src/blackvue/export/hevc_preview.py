@@ -34,6 +34,7 @@ about.
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 
 from ..generate.media import MediaToolError
@@ -72,7 +73,12 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
 
     try:
         codec = probe_video_codec(source)
-    except MediaToolError:
+    except MediaToolError as exc:
+        print(
+            f"HEVC preview: codec probe failed for {source.name}, "
+            f"serving the original file unchanged: {exc}",
+            file=sys.stderr,
+        )
         return source
 
     if codec is None or codec.lower() not in _HEVC_CODEC_NAMES:
@@ -83,8 +89,19 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     cache_path = cache_dir / f"{digest}-{stat.st_mtime_ns}-{stat.st_size}.mp4"
 
     if cache_path.is_file():
+        print(
+            f"HEVC preview: reusing cached preview for {source.name} "
+            f"({cache_path.name})",
+            file=sys.stderr,
+        )
         return cache_path
 
+    print(
+        f"HEVC preview: {source.name} is {codec} - transcoding to H.264 "
+        f"(this can take a while for a large file, and blocks this request "
+        f"until it finishes)...",
+        file=sys.stderr,
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     try:
         encode_with_nvenc_fallback(
@@ -92,7 +109,13 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
             cache_path,
             extra_codec_args=["-c:a", "copy"],
         )
-    except MediaToolError:
+    except MediaToolError as exc:
+        print(
+            f"HEVC preview: transcode failed for {source.name}, serving "
+            f"the original (audio-only-playable) file unchanged: {exc}",
+            file=sys.stderr,
+        )
         return source
 
+    print(f"HEVC preview: transcode finished, cached as {cache_path.name}", file=sys.stderr)
     return cache_path
