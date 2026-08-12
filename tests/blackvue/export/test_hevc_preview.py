@@ -100,6 +100,7 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
         "-b:v", "8M",
         "-maxrate", "8M",
         "-bufsize", "8M",
+        "-f", "mp4",
     ]
 
 

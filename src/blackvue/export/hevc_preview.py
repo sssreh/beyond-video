@@ -124,6 +124,17 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     the worst case is wasted duplicate encoding work, never a broken
     cache entry - `cache_path` is always either fully absent or fully
     valid.
+
+    Passes `-f mp4` explicitly for this same reason: the temp file's
+    own name ends in `.tmp`, not `.mp4`, and ffmpeg normally infers
+    its output *muxer* (container format) from the destination
+    filename's extension - given a `.tmp` name it can't guess at all
+    and refuses to write anything ("Unable to choose an output format
+    ... use a standard extension ... or specify the format manually" -
+    exactly the error Christer hit on his very first real HEVC source
+    after this temp-file rename landed). `-f mp4` sidesteps that by
+    telling ffmpeg the container format directly, regardless of what
+    the destination happens to be named.
     """
 
     try:
@@ -170,6 +181,7 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
                     "-b:v", _PREVIEW_TARGET_BITRATE,
                     "-maxrate", _PREVIEW_TARGET_BITRATE,
                     "-bufsize", _PREVIEW_TARGET_BITRATE,
+                    "-f", "mp4",
                 ],
             )
         except MediaToolError as exc:

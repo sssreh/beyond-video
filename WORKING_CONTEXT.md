@@ -9131,3 +9131,39 @@ Still not addressed (unchanged from the earlier entry): the
 is a blocking `subprocess.run()` call, so a transcode still blocks
 the whole event loop, not just the requesting connection, for its
 full duration. Out of scope for this fix.
+
+## Fix: HEVC preview transcode broken by the temp-file rename fix itself (2026-08-12)
+
+Regression in the previous entry's own fix, caught immediately from
+Christer's real ffmpeg output:
+
+    [AVFormatContext] Unable to choose an output format for
+    '...\.hevc_preview_cache\fc20473454ac581c-...-191039539.f07eaf0a.tmp';
+    use a standard extension for the filename or specify the format
+    manually.
+    Error initializing the muxer ...: Invalid argument
+
+Root cause: ffmpeg infers its output *muxer* (container format) from
+the destination filename's own extension when none is given
+explicitly. The atomic-rename fix's temp file
+(`{cache_path.stem}.{uuid4hex8}.tmp`) ends in `.tmp`, not `.mp4` -
+ffmpeg couldn't guess a container from that and refused to write
+anything at all, so every single HEVC transcode attempt failed
+outright after that fix landed (not just under concurrent-request
+races - unconditionally, every time).
+
+Fix: added `-f mp4` to `hevc_preview.py`'s own `extra_codec_args`,
+forcing the mp4 muxer explicitly regardless of the temp file's own
+extension. Scoped to this one caller only, same as `-movflags
++faststart` before it - no other `encode_with_nvenc_fallback()` caller
+in this codebase writes to a temp path with a non-matching extension,
+so none of them need this.
+
+Verified against the real ffmpeg log Christer posted: `Found
+duplicated MOOV Atom. Skipped it` on the *input* side (a harmless
+ffmpeg note about this particular source file, not the actual
+failure) followed by the muxer-selection error on the *output* side -
+confirms the fix targets the right failure.
+
+Caveat for Christer: same as every fix in this feature so far - worth
+trying again on the same file once bv-web picks this up.
