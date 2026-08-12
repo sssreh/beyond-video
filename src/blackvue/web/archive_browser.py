@@ -93,6 +93,26 @@ def _extract_legible_sign_reads(text: str) -> list[str]:
     section isn't present at all (task="ocr"-without-zoom-signs, or
     zoom_signs never found anything to crop).
 
+    A single bullet's read text can itself span multiple raw lines -
+    zoom_into_signs() writes `f"- [t=...] {label}: {read_text}"` with
+    read_text taken verbatim from the model, and a multi-row sign (e.g.
+    several destinations stacked on one board) comes back as a read
+    with embedded newlines, e.g.:
+
+        - [t=40.6s] blue road sign with white text: 227 DALARO
+        259 HUDDINGE
+        JORDBRO
+        500
+
+    An earlier version of this function only kept the "- [t=...]" line
+    itself and silently dropped every continuation line below it -
+    Christer caught this from a real scene.txt where "259 HUDDINGE" /
+    "JORDBRO" / "500" vanished from the summary entirely (see
+    WORKING_CONTEXT.md). Any non-bullet, non-blank line encountered
+    while inside the section is now folded into the read currently
+    being built, joined with a space, until the next "- " bullet (or
+    the section ends) closes it off.
+
     Stops at the next '#' heading or the disclaimer footer's '---'
     divider, whichever comes first - describe_scene() always appends
     DISCLAIMER right after this section, and it doesn't start with '#'
@@ -103,17 +123,34 @@ def _extract_legible_sign_reads(text: str) -> list[str]:
     lines = text.splitlines()
     in_section = False
     reads: list[str] = []
+    current: str | None = None
+
+    def _flush() -> None:
+        nonlocal current
+        if current is not None:
+            content = current.strip()
+            if content and _NOT_LEGIBLE not in content.lower():
+                reads.append(content)
+            current = None
+
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("#") and "zoomed sign reads" in stripped.lower():
             in_section = True
             continue
         if in_section and (stripped.startswith("#") or stripped.startswith("---")):
+            _flush()
             break
-        if in_section and stripped.startswith("- "):
-            content = stripped[2:].strip()
-            if _NOT_LEGIBLE not in content.lower():
-                reads.append(content)
+        if not in_section:
+            continue
+        if stripped.startswith("- "):
+            _flush()
+            current = stripped[2:].strip()
+        elif stripped and current is not None:
+            current += " " + stripped
+    else:
+        _flush()
+
     return reads
 
 # RecordingId.kind's single-letter codes - see recording_id.py's own

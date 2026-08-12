@@ -368,6 +368,40 @@ def test_scene_summary_ocr_only_pass_has_no_description_but_keeps_legible_reads(
     assert legible_reads == ["[t=119.5s] shop/storefront sign: MALL OF SCANDINAVIA"]
 
 
+def test_scene_summary_keeps_a_multi_line_sign_read_intact(tmp_path):
+    # Christer, from a real scene.txt: a sign whose OCR read itself
+    # spans several lines (a stacked destination board) had everything
+    # after the first line silently dropped - "but i only got" a
+    # summary missing "259 HUDDINGE" / "JORDBRO" / "500" (see
+    # WORKING_CONTEXT.md). The continuation lines below a "- [t=...]"
+    # bullet must be folded into that same read, not discarded.
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=(
+            "## On-Screen Text\n"
+            "327 BERGEN\n359 JORDBRØ\n600\n\n"
+            "## Zoomed sign reads\n"
+            "- [t=0.0s] vehicle license plate: not legible\n"
+            "- [t=40.6s] blue road sign with white text: 227 DALARÖ\n"
+            "259 HUDDINGE\nJORDBRÖ\n500\n"
+            "- [t=40.6s] green road sign with white text: not legible\n"
+            "- [t=40.6s] vehicle license plate: not legible\n"
+        ).encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    [(label, description, legible_reads)] = recording.scene_summary
+    assert label == "Front"
+    assert description == ""
+    assert legible_reads == [
+        "[t=40.6s] blue road sign with white text: 227 DALARÖ "
+        "259 HUDDINGE JORDBRÖ 500"
+    ]
+
+
 def test_scene_summary_skips_direction_with_nothing_legible_and_no_description(tmp_path):
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.mp4")
