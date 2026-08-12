@@ -34,7 +34,9 @@ about.
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
+import uuid
 from pathlib import Path
 
 from ..generate.media import MediaToolError
@@ -106,6 +108,22 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     encode_with_nvenc_fallback() uses - see that constant's own
     comment for why (Christer's own numbers: a 189MB HEVC source
     became a 511MB H.264 preview at CQ 19).
+
+    Transcodes into a private per-call temp file inside `cache_dir`,
+    then atomically renames it to `cache_path` only once the encode
+    has fully finished - never writes directly to `cache_path` itself.
+    Christer hit exactly the failure mode this guards against: a
+    browser issues several overlapping requests for the same video
+    while buffering/seeking, so two requests can both see no cache
+    file yet and both start transcoding; without this, they'd race to
+    write the same destination and could leave a corrupted or half-
+    written file sitting at `cache_path` forever (nothing re-checks an
+    existing cache file's validity, so it'd keep getting served,
+    audio-only-again, until someone noticed and deleted it by hand -
+    which is exactly what he had to do). With the temp-file rename,
+    the worst case is wasted duplicate encoding work, never a broken
+    cache entry - `cache_path` is always either fully absent or fully
+    valid.
     """
 
     try:
@@ -140,25 +158,31 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
         file=sys.stderr,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_name(f"{cache_path.stem}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        encode_with_nvenc_fallback(
-            ["-i", str(source)],
-            cache_path,
-            extra_codec_args=[
-                "-c:a", "copy",
-                "-movflags", "+faststart",
-                "-b:v", _PREVIEW_TARGET_BITRATE,
-                "-maxrate", _PREVIEW_TARGET_BITRATE,
-                "-bufsize", _PREVIEW_TARGET_BITRATE,
-            ],
-        )
-    except MediaToolError as exc:
-        print(
-            f"HEVC preview: transcode failed for {source.name}, serving "
-            f"the original (audio-only-playable) file unchanged: {exc}",
-            file=sys.stderr,
-        )
-        return source
+        try:
+            encode_with_nvenc_fallback(
+                ["-i", str(source)],
+                tmp_path,
+                extra_codec_args=[
+                    "-c:a", "copy",
+                    "-movflags", "+faststart",
+                    "-b:v", _PREVIEW_TARGET_BITRATE,
+                    "-maxrate", _PREVIEW_TARGET_BITRATE,
+                    "-bufsize", _PREVIEW_TARGET_BITRATE,
+                ],
+            )
+        except MediaToolError as exc:
+            print(
+                f"HEVC preview: transcode failed for {source.name}, serving "
+                f"the original (audio-only-playable) file unchanged: {exc}",
+                file=sys.stderr,
+            )
+            return source
+
+        os.replace(tmp_path, cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
     print(f"HEVC preview: transcode finished, cached as {cache_path.name}", file=sys.stderr)
     return cache_path

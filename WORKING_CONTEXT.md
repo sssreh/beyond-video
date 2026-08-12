@@ -9083,3 +9083,51 @@ Asked Christer to choose: prioritize smaller files, expose a tunable setting, or
 Fixed by adding `_PREVIEW_TARGET_BITRATE = "8M"` and passing `-b:v`/`-maxrate`/`-bufsize` all set to that value in `load_or_transcode_hevc_preview()`'s `extra_codec_args` - the same "cap it for real, not just target it on average" pattern `stitch.py`'s `_bitrate_args()` already uses for `--stitch-bitrate`, and one of the flags `encode_with_nvenc_fallback()`'s own `_CALLER_RATE_CONTROL_FLAGS` check already recognizes as "caller supplied their own rate control" - so this correctly skips the shared CQ/CRF 19 default rather than fighting it. 8 Mbps is a fixed, resolution-agnostic cap chosen for "clearly watchable on a screen," not archival quality - previews of lower-resolution recordings will just come in comfortably under that ceiling.
 
 Verified: updated `test_transcodes_hevc_source_and_caches_it`'s `extra_codec_args` assertion for the new flags; all 8 `test_hevc_preview.py` tests pass. `ast.parse()` clean. Not yet reconfirmed against Christer's real file (his existing cached preview again predates this change and needs deleting to pick it up, same caveat as the faststart fix).
+
+## Fix: HEVC preview cache could get corrupted and needed manual purging (2026-08-12)
+
+Christer, after the bitrate-cap fix landed: "Yes almost only 10% of
+previous size, but still needed to be purged after a while."
+
+Root cause: `load_or_transcode_hevc_preview()` (src/blackvue/export/hevc_preview.py)
+transcoded directly into `cache_path` - the same file it later serves
+and checks for existence. A browser buffering/seeking a video issues
+several overlapping Range requests for the same URL; each one could
+see no cache file yet and start its own transcode, racing to write
+the same destination. An interrupted transcode (killed job, crashed
+ffmpeg, browser disconnect) could also leave a truncated/corrupted
+file sitting at `cache_path`. Since the function only checks
+`cache_path.is_file()` and never re-validates an existing entry, a
+corrupted file would then get served (audio-only-again) forever,
+until someone noticed and deleted it by hand - exactly what Christer
+had been doing.
+
+This was already flagged as a known, unfixed risk in the earlier
+"Log HEVC preview transcode attempts/failures" WORKING_CONTEXT.md
+entry.
+
+Fix: transcode into a private, uniquely-named temp file inside
+`cache_dir` (`{cache_path.stem}.{uuid4 hex8}.tmp`), and only
+`os.replace()` it into `cache_path` once the encode has fully
+succeeded. A `finally` block unlinks the temp file (`missing_ok=True`)
+whether the encode succeeded, failed, or raised - so a failed/
+interrupted transcode leaves nothing behind at all, and `cache_path`
+itself is always either fully absent or fully valid. Overlapping
+racers now just duplicate encoding work in the worst case, never
+corrupt the shared cache entry.
+
+Added a regression test (`test_encode_failure_leaves_no_stray_temp_file_behind`)
+asserting `cache_dir` is empty after a simulated failed encode that
+writes a partial file before raising, matching real ffmpeg behavior
+(it creates/truncates its output file before it can fail).
+
+Caveat for Christer: this only prevents *future* corruption. If he
+still has an old corrupted/undersized cache file left over from
+before this fix, it needs one more manual delete - same as the
+faststart and bitrate-cap fixes before it.
+
+Still not addressed (unchanged from the earlier entry): the
+`archive_recording_file()` route is `async def` but the encode itself
+is a blocking `subprocess.run()` call, so a transcode still blocks
+the whole event loop, not just the requesting connection, for its
+full duration. Out of scope for this fix.

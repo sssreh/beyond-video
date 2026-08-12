@@ -81,10 +81,19 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
     expected_cache_path = _expected_cache_path(source, cache_dir)
     assert result == expected_cache_path
     assert result.is_file()
+    assert result.read_bytes() == b"transcoded"
     assert len(calls) == 1
     input_args, destination, extra_codec_args = calls[0]
     assert input_args == ["-i", str(source)]
-    assert destination == expected_cache_path
+    # Encodes into a private temp file, not the final cache path
+    # directly - only renamed into place once the encode finishes (see
+    # the function's own docstring on why: avoiding a corrupted cache
+    # entry from concurrent/interrupted transcodes).
+    assert destination != expected_cache_path
+    assert destination.parent == cache_dir
+    assert destination.name.startswith(expected_cache_path.stem)
+    assert destination.suffix == ".tmp"
+    assert not destination.exists()  # renamed away by the time we check
     assert extra_codec_args == [
         "-c:a", "copy",
         "-movflags", "+faststart",
@@ -128,6 +137,34 @@ def test_returns_source_unchanged_when_encode_fails(monkeypatch, tmp_path):
     result = load_or_transcode_hevc_preview(source, cache_dir)
 
     assert result == source
+
+
+def test_encode_failure_leaves_no_stray_temp_file_behind(monkeypatch, tmp_path):
+    """Christer hit exactly the corruption this guards against: a
+    transcode that got interrupted (or raced by an overlapping browser
+    request) left a broken file sitting at the cache path, and it just
+    kept getting served - audio-only-again - until he noticed and
+    deleted it by hand. A failed/partial encode should leave the cache
+    directory clean, not a half-written .tmp file that could later be
+    mistaken for something worth keeping."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+
+    def fake_encode(_input_args, destination, extra_codec_args=None):
+        # Mimic ffmpeg's real behavior: the output file gets created/
+        # truncated before the command fails.
+        destination.write_bytes(b"")
+        raise MediaToolError("ffmpeg encode failed")
+
+    monkeypatch.setattr(hevc_preview_module, "encode_with_nvenc_fallback", fake_encode)
+
+    result = load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert result == source
+    assert list(cache_dir.iterdir()) == []
 
 
 def test_h265_codec_name_is_also_treated_as_hevc(monkeypatch, tmp_path):
