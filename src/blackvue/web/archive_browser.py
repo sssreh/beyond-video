@@ -37,6 +37,7 @@ from ..archive import ArchiveReader
 from ..archive import Asset
 from ..archive import Recording
 from ..archive import RecordingId
+from ..generate.scene import extract_description_section
 from ..lexicaltimeparser import TimeInterval
 from ..telemetry.gps_reader import GpsFix
 from ..telemetry.gps_reader import read_gps
@@ -73,6 +74,47 @@ _SCENE_TEXTS = (
     ("Front", Asset.SCENE_DESCRIPTION),
     ("Rear", Asset.SCENE_DESCRIPTION_REAR),
 )
+
+# Substring a "## Zoomed sign reads" bullet line's read text is
+# checked against (case-insensitively) to drop it from scene_summary
+# below - see that property's own docstring for why "not legible" is
+# noise for a human-readable summary even though it's worth keeping in
+# the raw file scene_texts still shows in full.
+_NOT_LEGIBLE = "not legible"
+
+
+def _extract_legible_sign_reads(text: str) -> list[str]:
+    """Pull the '## Zoomed sign reads' bullet lines (see
+    generate/scene.py's zoom_into_signs()) out of a scene.txt/
+    rear.scene.txt body, keeping only the ones that actually read
+    something - a "not legible" line means the detection pipeline
+    found a real sign/plate but couldn't read it, which is exactly the
+    kind of line scene_summary wants to drop. Returns [] if the
+    section isn't present at all (task="ocr"-without-zoom-signs, or
+    zoom_signs never found anything to crop).
+
+    Stops at the next '#' heading or the disclaimer footer's '---'
+    divider, whichever comes first - describe_scene() always appends
+    DISCLAIMER right after this section, and it doesn't start with '#'
+    so a naive "stop at the next heading" scan would otherwise swallow
+    it as if it were more bullet lines.
+    """
+
+    lines = text.splitlines()
+    in_section = False
+    reads: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#") and "zoomed sign reads" in stripped.lower():
+            in_section = True
+            continue
+        if in_section and (stripped.startswith("#") or stripped.startswith("---")):
+            break
+        if in_section and stripped.startswith("- "):
+            content = stripped[2:].strip()
+            if _NOT_LEGIBLE not in content.lower():
+                reads.append(content)
+    return reads
 
 # RecordingId.kind's single-letter codes - see recording_id.py's own
 # docstring on "A" (observed on real hardware, meaning unconfirmed).
@@ -231,6 +273,38 @@ class ArchiveRecording:
             except OSError as exc:
                 text = f"[could not read {asset_file.name}: {exc}]"
             result.append((label, text))
+        return result
+
+    @property
+    def scene_summary(self) -> list[tuple[str, str, list[str]]]:
+        """(direction label, description, legible sign reads) triples -
+        a cleaner read of whatever scene_texts already has, for
+        someone who just wants "what happened + what signs said"
+        without wading through the raw on-screen-text dump or the
+        "not legible" clutter in the zoomed-sign-reads section.
+        Christer, after seeing how much of a real scene.txt is "not
+        legible" noise for his bv-search use case: "maybe i just want
+        a report on the scene files for human reading" -> "like a
+        trip-summary but per recording, could be shown when you look
+        at a video... only freshly generated and not a new file" (see
+        WORKING_CONTEXT.md). Computed live from the same files
+        scene_texts reads on every call - no new asset file is ever
+        written, and unlike --trip-summary this doesn't call the
+        vision model again, it just re-parses text already on disk.
+
+        Skips any direction where neither a description nor a single
+        legible sign read was found - e.g. a rear file generated
+        alongside --camera both, whose forced OCR-only pass has no
+        '## Description' section at all and may have nothing legible
+        in it either, so there'd be nothing worth showing.
+        """
+
+        result = []
+        for label, text in self.scene_texts:
+            description = extract_description_section(text)
+            legible_reads = _extract_legible_sign_reads(text)
+            if description or legible_reads:
+                result.append((label, description, legible_reads))
         return result
 
     @property

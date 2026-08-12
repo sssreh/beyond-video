@@ -27,8 +27,28 @@
 <p><a href="/archive/{{ camera_id }}/{{ recording.id }}/location">Show start location</a></p>
 {% endif %}
 
+{% if recording.scene_summary %}
+<h3>Scene summary</h3>
+<p class="hint">Description and legible sign/plate reads only, parsed fresh from the files below - not a separate file, and "not legible" reads are left out. <a href="#full-scene-text">See the full text</a> for everything, including the raw on-screen-text dump.</p>
+{% for label, description, legible_reads in recording.scene_summary %}
+<div class="scene-text">
+  <p class="hint">{{ label }}</p>
+  {% if description %}
+  <p>{{ description }}</p>
+  {% endif %}
+  {% if legible_reads %}
+  <ul class="sign-reads">
+    {% for read in legible_reads %}
+    <li>{{ read }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
 {% if recording.scene_texts %}
-<h3>Scene description</h3>
+<h3 id="full-scene-text">Full scene text (raw)</h3>
 {% for label, text in recording.scene_texts %}
 <div class="scene-text">
   <p class="hint">{{ label }}</p>

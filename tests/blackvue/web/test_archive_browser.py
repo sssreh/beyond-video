@@ -261,6 +261,157 @@ def test_scene_texts_falls_back_to_placeholder_on_read_error(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
+# scene_summary - a cleaner "description + legible sign reads only"
+# view derived live from the same files scene_texts reads (no new file,
+# no model call). Christer, after seeing how much of a real scene.txt
+# is "not legible" noise: "maybe i just want a report on the scene
+# files for human reading" -> "like a trip-summary but per recording,
+# could be shown when you look at a video... only freshly generated
+# and not a new file" (see WORKING_CONTEXT.md).
+# ---------------------------------------------------------------------------
+
+_COMBINED_SCENE_TEXT = (
+    "## Description\n"
+    "A quiet residential street, clear weather, light traffic.\n\n"
+    "## On-screen text\n"
+    "Speed 42 km/h, timestamp overlay visible.\n\n"
+    "## Zoomed sign reads\n"
+    "- [t=0.0s] road sign: not legible\n"
+    "- [t=0.0s] shop/storefront sign: SOLNA♥DENTAL\n"
+    "- [t=59.8s] vehicle license plate: not legible\n\n"
+    "---\n"
+    "Note: the reads above ... Treat every read here as unverified "
+    "until checked against the source video."
+)
+
+# What bv-scribe/bv-generate's --camera both rear pass actually writes
+# (task forced to "ocr" - see WORKING_CONTEXT.md's "cleaner description
+# + legible signs only" note and the earlier "What type is this?"
+# exchange): no "## Description" section at all.
+_OCR_ONLY_SCENE_TEXT = (
+    "SOLNA DENTAL\nMALL OF SCANDINAVIA\n\n"
+    "## Zoomed sign reads\n"
+    "- [t=0.0s] road sign: not legible\n"
+    "- [t=119.5s] shop/storefront sign: MALL OF SCANDINAVIA\n\n"
+    "---\n"
+    "Note: unverified disclaimer text."
+)
+
+_ALL_NOT_LEGIBLE_SCENE_TEXT = (
+    "## Zoomed sign reads\n"
+    "- [t=0.0s] road sign: not legible\n"
+    "- [t=59.8s] vehicle license plate: not legible\n\n"
+    "---\n"
+    "Note: unverified disclaimer text."
+)
+
+
+def test_scene_summary_empty_when_neither_file_exists(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_summary == []
+
+
+def test_scene_summary_extracts_description_and_drops_not_legible_reads(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_summary == [
+        (
+            "Front",
+            "A quiet residential street, clear weather, light traffic.",
+            ["[t=0.0s] shop/storefront sign: SOLNA♥DENTAL"],
+        )
+    ]
+
+
+def test_scene_summary_front_and_rear_in_order(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_OCR_ONLY_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    labels = [label for label, _description, _reads in recording.scene_summary]
+    assert labels == ["Front", "Rear"]
+
+
+def test_scene_summary_ocr_only_pass_has_no_description_but_keeps_legible_reads(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_OCR_ONLY_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    [(label, description, legible_reads)] = recording.scene_summary
+    assert label == "Rear"
+    assert description == ""
+    assert legible_reads == ["[t=119.5s] shop/storefront sign: MALL OF SCANDINAVIA"]
+
+
+def test_scene_summary_skips_direction_with_nothing_legible_and_no_description(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_ALL_NOT_LEGIBLE_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_summary == []
+
+
+def test_scene_summary_skips_direction_on_read_error_placeholder(tmp_path, monkeypatch):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    from pathlib import Path
+
+    real_read_text = Path.read_text
+
+    def _boom(self, *args, **kwargs):
+        if self.name.endswith(".scene.txt"):
+            raise OSError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    # scene_texts still surfaces the bracketed error message in full
+    # (unaffected by this feature); scene_summary just finds neither a
+    # "## Description" heading nor a legible sign read in that
+    # placeholder text, so it drops the direction rather than showing
+    # a broken/empty entry.
+    assert "could not read" in recording.scene_texts[0][1]
+    assert recording.scene_summary == []
+
+
+# ---------------------------------------------------------------------------
 # first_valid_gps_fix() - added for the archive detail page's "Show start
 # location" link (see app.py's archive_recording_location route). Fixture
 # NMEA text mirrors tests/blackvue/telemetry/test_gps_reader.py's own -
