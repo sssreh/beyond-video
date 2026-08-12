@@ -289,7 +289,7 @@ def bv_ls(
     )
 
     for group in groups:
-        row = f"{group.label:<{recording_width}}" + " "
+        row = f"{group.label:<{recording_width}}" + "  "
 
         for asset in assets:
             mark = "X" if group.has(asset) else ""

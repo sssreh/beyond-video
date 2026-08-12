@@ -72,6 +72,61 @@ def test_full_display_order_group_spans_are_well_formed():
         assert len(label) <= span_width
 
 
+def test_asset_table_marks_line_up_under_their_own_header_column(tmp_path):
+    # Regression test for a real off-by-one bug Christer spotted in a
+    # live bv-ls run: the header row's prefix ("Recording" padded,
+    # then two spaces) and each data row's prefix (the recording id
+    # padded, then a space) used to differ by one character whenever
+    # a recording id was longer than the word "Recording" - which is
+    # every real recording id - silently shifting every X mark one
+    # column early. Uses bv_ls()'s injectable `say` (no capsys needed)
+    # so this can run in any harness.
+    recording_id = "20260715_133255_N"
+    assert len(recording_id) > len("Recording")
+
+    (tmp_path / f"{recording_id}F.mp4").write_bytes(b"x")
+    (tmp_path / f"{recording_id}I.mp4").write_bytes(b"x")
+    (tmp_path / f"{recording_id}.3gf").write_bytes(b"x")
+    (tmp_path / f"{recording_id}F.thm").write_bytes(b"x")
+    (tmp_path / f"{recording_id}.aac").write_bytes(b"x")
+    (tmp_path / f"{recording_id}.duration.txt").write_text("300")
+    (tmp_path / f"{recording_id}.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), say=lines.append)
+
+    assert exit_code == 0
+
+    asset_header = lines[1]
+    row = lines[3]
+
+    # The decisive check: header and row are built from the same
+    # recording_width + column widths + separators, so if their
+    # prefixes are the same length, their total lengths must match
+    # too. This is what actually catches the one-character prefix
+    # mismatch - a per-column "is there an X somewhere nearby" check
+    # can pass by accident when a shift-by-one still lands inside a
+    # wide-enough neighboring column.
+    assert len(row) == len(asset_header), (
+        f"row and header lengths differ ({len(row)} vs "
+        f"{len(asset_header)}) - their column prefixes are out of "
+        f"sync:\nheader: {asset_header!r}\nrow:    {row!r}"
+    )
+
+    # Belt and braces: every asset label present in asset_header
+    # should have its X (if any) exactly centered in that column's
+    # own character span, not merely somewhere near it.
+    for label in ("Int", "3G", "FThm", "Aud", "Dur", "SRT"):
+        start = asset_header.index(label)
+        end = start + len(label)
+        column = row[start:end]
+        assert "X" in column, (
+            f"expected an X somewhere in {row[start:end]!r} "
+            f"(column {label!r} at {start}:{end}) - full header:\n"
+            f"{asset_header!r}\nfull row:\n{row!r}"
+        )
+
+
 def test_main_reports_a_missing_path_cleanly_instead_of_a_traceback(
     tmp_path, capsys
 ):

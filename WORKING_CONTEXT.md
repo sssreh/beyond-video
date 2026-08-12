@@ -9452,3 +9452,67 @@ pre-existing harness limitation, `FakeMonkeypatch` not implementing
 `setitem`/`delitem`, unrelated to this change and present before it
 too), `generate/test_subtitles` (9/9), `test_jobs` (77/77),
 `test_trips` (22/22). 372 passed, 0 real failures.
+
+## Fix bv-ls data-row column misalignment (2026-08-12)
+
+Christer spotted it directly from a real `bv-ls --timestamp` run: the
+`X` marks in the asset table didn't line up under their own header
+labels - an `X` meant for "Int" landed on the "I", one meant for
+"SRT" landed on the "S", and so on for every column. Not something
+done on purpose, and not related to the LRC removal above - traced
+to a one-character prefix mismatch introduced back in the 2026-08-06
+"shorten bv-ls's widest column labels" commit.
+
+`_run()`'s asset-table code (`cli/bv_ls.py`) builds the header prefix
+as `f'{"Recording":<{recording_width}}' + "  "` (recording label
+field, then **two** spaces before the first asset column) but built
+each data row's prefix as `f"{group.label:<{recording_width}}" + " "`
+(only **one** space). Since `recording_width` is `max(len("Recording"),
+longest recording/trip label)`, and every real recording id is far
+longer than the 9-character word "Recording", `recording_width` is
+always set by the data, not the header - so the header's own label
+gets padded out with extra fill spaces to match, while a row whose
+label already fills `recording_width` gets none. The header therefore
+always started its asset columns exactly one character later than
+every data row's, silently shifting every mark left by one column
+width's worth of visual real estate once you account for the string
+padding actually distributed - anywhere a recording id was longer
+than "Recording" (i.e. always), which meant every `bv-ls` run in
+practice.
+
+**Changed:** `cli/bv_ls.py`'s row-prefix line now also uses `"  "`
+(two spaces) instead of `" "`, matching the header.
+
+**Not changed:** the header-building code and the separator-dash-line
+width math were already correct (they were the reference point this
+bug was measured against) - only the one row-prefix line needed to
+change.
+
+Added a permanent regression test,
+`test_asset_table_marks_line_up_under_their_own_header_column` in
+`test_bv_ls.py`, using `bv_ls()`'s injectable `say` (no `capsys`
+needed, so this one runs in every harness including the sandbox
+one) against a real archive with a recording id longer than
+"Recording" (true of every real recording id). Its decisive
+assertion is `len(row) == len(asset_header)` - a per-column "is
+there an X somewhere nearby" check alone isn't reliable, since a
+one-character shift can still land inside a wide-enough neighboring
+column by accident (confirmed this the hard way: an earlier draft of
+this test using only that check passed even with the bug still
+present). Verified the test actually catches the bug by temporarily
+reverting the fix and confirming it fails with the exact "105 vs
+106" length mismatch, then restored the fix and confirmed it passes
+again.
+
+**Verification.** Reproduced the bug standalone first: built a
+synthetic recording with `INTERIOR`/`GSENSOR`/`FRONT_THUMBNAIL`/
+`AUDIO`/`DURATION`/`SUBTITLES` set (mirroring the exact archive
+Christer's paste showed) and rendered the real header+row logic byte
+for byte - confirmed each `X`'s character index fell one column early
+relative to its intended header label's span. Applied the one-line
+fix and reran the same repro: every `X` for `Int`/`3G`/`FThm`/`Aud`/
+`Dur`/`SRT` now falls inside its own header label's character span,
+confirmed programmatically (not just eyeballed). `test_bv_ls.py`
+(5/5 non-capsys tests pass, including the new regression test - the
+other 4 never happened to cover a recording id longer than
+"Recording", which is exactly why this shipped unnoticed).
