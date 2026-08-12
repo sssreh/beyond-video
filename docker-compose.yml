@@ -50,6 +50,24 @@ services:
       # covers every invocation path, matching how BEYOND_VIDEO_CONFIG_DIR
       # already unifies camera configs across bv-web/bv-cli/Christer's PC.
       - BEYOND_VIDEO_LOGS_DIR=/data/logs
+      # argostranslate (bv-generate --translate/bv-lang, both triggerable
+      # from bv-web's job runner) manages its own storage entirely on its
+      # own - Beyond Video's code never configures it, just calls the
+      # library's API directly (see generate/speech.py, cli/bv_lang.py).
+      # Left alone, that storage lands in the container's own ephemeral
+      # $HOME (~/.local/share/argos-translate/packages, the downloaded
+      # language models - the big part) - gone on every rebuild, so
+      # `bv-lang install ...` run once would need re-running after every
+      # `docker-compose build`. ARGOS_PACKAGES_DIR is argostranslate's own
+      # documented override for that one path (see
+      # https://github.com/argosopentech/argos-translate/blob/master/docs/settings.md) -
+      # pointed at the mounted volume below, same persistence pattern as
+      # BEYOND_VIDEO_USERS_FILE/BEYOND_VIDEO_LOGS_DIR above. Note this only
+      # relocates the packages dir - argostranslate also creates its own
+      # small ~/.config/argos-translate and ~/.local/cache/argos-translate
+      # on import, with no equivalent override documented for either, so
+      # those still land in the container's ephemeral $HOME regardless.
+      - ARGOS_PACKAGES_DIR=/data/argos-translate/packages
     volumes:
       # The trip archive bv-export writes into (--target). Read-write:
       # bv-web's own job runner can trigger bv-export directly (its
@@ -93,6 +111,14 @@ services:
       # `docker-compose run bv-cli ...` both append to the same
       # rotating monthly transcript.
       - ./data/logs:/data/logs
+      # argostranslate's downloaded language packages (see the
+      # ARGOS_PACKAGES_DIR environment variable above) - the SAME host
+      # folder bv-cli's own ./data/argos-translate mount below points at,
+      # so a language pack installed via `bv-lang install` from either
+      # container (or bv-web's own --translate job trigger) is visible to
+      # both, and survives `docker-compose build`/container recreation
+      # either way.
+      - ./data/argos-translate:/data/argos-translate
 
   # The full bv-* pipeline (bv-config, bv-download, bv-generate,
   # bv-lang, bv-export) - see docs/DEPLOY.md's "Feeding it real trips"
@@ -141,5 +167,13 @@ services:
       # removes it, same class of bug BEYOND_VIDEO_CONFIG_DIR already
       # fixed for camera configs above.
       - ./data/logs:/data/logs
+      # argostranslate's downloaded language packages - the SAME host
+      # folder bv-web's own ./data/argos-translate mount above points at
+      # (see that mount's own comment, and the ARGOS_PACKAGES_DIR
+      # environment variable below).
+      - ./data/argos-translate:/data/argos-translate
     environment:
       - BEYOND_VIDEO_LOGS_DIR=/data/logs
+      # See bv-web service's own comment on this same variable above -
+      # bv-lang/bv-generate --translate run through this service too.
+      - ARGOS_PACKAGES_DIR=/data/argos-translate/packages

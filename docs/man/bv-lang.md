@@ -15,6 +15,8 @@ bv-lang install SOURCE TARGET
 
 `bv-lang` manages the offline translation language packages `bv-generate --translate` depends on. `--translate` translates a transcript from its spoken/detected language into a target language using argos-translate, which needs the matching source→target package installed locally first.
 
+Installed packages are stored by argos-translate itself, not by Beyond Video - by default under `~/.local/share/argos-translate/packages` (Linux) or the equivalent per-OS user data directory. Set the `ARGOS_PACKAGES_DIR` environment variable (argos-translate's own, documented at <https://github.com/argosopentech/argos-translate/blob/master/docs/settings.md>) before running `bv-lang install`/`bv-generate --translate` to store packages somewhere else instead - e.g. to keep them alongside the rest of Beyond Video's data, or to persist them across container rebuilds (see `docker-compose.yml`, which sets this for both the `bv-web` and `bv-cli` services). This applies identically whether `bv-lang`/`bv-generate` run directly on the command line or inside a container - it's a plain environment variable, nothing Docker-specific about it.
+
 ## SUBCOMMANDS
 
 ### `bv-lang list [--available]`

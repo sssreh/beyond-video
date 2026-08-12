@@ -9274,3 +9274,45 @@ loaded.
 other code needed touching. `ast.parse()` clean on `scene.py`.
 Sandbox harness: `test_scene.py` (18), `test_bv_generate.py` (88),
 `test_bv_scribe.py` (26) - 132 passed, 0 failed.
+
+## Persist argos-translate's storage under the data folder (2026-08-12)
+
+`bv-generate --translate`/`bv-lang install` (both triggerable from
+bv-web's job runner too) depend on argos-translate, which manages its
+own package storage entirely on its own - Beyond Video's code never
+configures it, just calls the library's API directly
+(`generate/speech.py`, `cli/bv_lang.py`). Left alone inside a
+container, that storage (`~/.local/share/argos-translate/packages` -
+the downloaded language models, the large part) lands in the
+container's own ephemeral `$HOME` and is lost on every
+`docker-compose build`/container recreation, the same class of bug
+`BEYOND_VIDEO_USERS_FILE` (see above) fixed for the accounts file.
+
+Confirmed via argos-translate's own `docs/settings.md`
+(https://github.com/argosopentech/argos-translate/blob/master/docs/settings.md)
+that it supports exactly this: `ARGOS_PACKAGES_DIR`, a plain
+environment variable it reads at import time to relocate just the
+packages directory. Wired it into `docker-compose.yml` for both the
+`bv-web` and `bv-cli` services (`ARGOS_PACKAGES_DIR=/data/argos-translate/packages`,
+plus a new shared `./data/argos-translate:/data/argos-translate`
+volume on each), baked the directory into both `Dockerfile` and
+`Dockerfile.cli`'s `mkdir -p` line, and documented the variable in
+`docs/man/bv-lang.md` and the new data-folder in `docs/DEPLOY.md`'s
+step 3.
+
+Being a plain environment variable, this applies identically to a
+bare CLI invocation (`bv-generate --translate`, `bv-lang install`) as
+it does inside a container - no Beyond Video code involved either
+way, just set it in the shell/profile instead of docker-compose.yml.
+
+**Not fixed:** argos-translate also creates its own small
+`~/.config/argos-translate` and `~/.local/cache/argos-translate` on
+import, with no documented override for either - those still land
+wherever the process's normal `$HOME` is (a container's ephemeral one,
+if running there). `ARGOS_PACKAGES_DIR` only covers the actual
+downloaded models, which is the part that matters for both size and
+for not having to re-download after every rebuild.
+
+**Verification.** `python3 -c "import yaml; yaml.safe_load(...)"`
+confirms `docker-compose.yml` still parses cleanly and both services'
+`environment:` blocks carry the new variable.

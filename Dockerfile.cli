@@ -44,5 +44,7 @@ RUN pip install --no-cache-dir ".[speech,translate,scene]"
 # bv-download's target (raw recordings) and bv-config's "Target
 # (download path)" answer, /data/trips is bv-export's --target
 # (shared with the bv-web service, read-write here), /data/config is
-# where camera .cfg files go (bv-config --config-dir).
-RUN mkdir -p /data/archive /data/trips /data/config
+# where camera .cfg files go (bv-config --config-dir), /data/argos-translate
+# is where argostranslate's downloaded language packages persist (see
+# docker-compose.yml's ARGOS_PACKAGES_DIR environment variable).
+RUN mkdir -p /data/archive /data/trips /data/config /data/argos-translate

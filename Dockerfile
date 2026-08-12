@@ -50,7 +50,7 @@ RUN pip install --no-cache-dir ".[web,speech,translate,scene]"
 # found" rather than erroring on a missing path - the same "missing
 # directory reads as empty, not an error" convention used everywhere
 # else in this app.
-RUN mkdir -p /data/archive /data/trips /data/config /data/camera-config
+RUN mkdir -p /data/archive /data/trips /data/config /data/camera-config /data/argos-translate
 
 EXPOSE 19373
 
