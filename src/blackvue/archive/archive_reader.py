@@ -27,7 +27,6 @@ class ArchiveReader:
         ("R.thm", Asset.REAR_THUMBNAIL),
         ("I.thm", Asset.INTERIOR_THUMBNAIL),
         (".aac", Asset.AUDIO),
-        (".gpx", Asset.GPX),
         (".duration.txt", Asset.DURATION),
         # The diarized suffixes must be checked before the plain
         # ones below - ".diarized.transcript.txt" also ends with

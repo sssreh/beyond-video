@@ -15,7 +15,7 @@ def test_asset_group_spans_merges_consecutive_same_group_assets():
             Asset.TRANSCRIPT_DIARIZED,
             Asset.TRANSLATION,
             Asset.TRANSLATION_DIARIZED,
-            Asset.SUMMARY,
+            Asset.LYRICS,
         ]
     )
 
@@ -23,18 +23,18 @@ def test_asset_group_spans_merges_consecutive_same_group_assets():
         (None, [Asset.DURATION]),
         ("Transcript", [Asset.TRANSCRIPT, Asset.TRANSCRIPT_DIARIZED]),
         ("Translate", [Asset.TRANSLATION, Asset.TRANSLATION_DIARIZED]),
-        (None, [Asset.SUMMARY]),
+        (None, [Asset.LYRICS]),
     ]
 
 
 def test_asset_group_spans_keeps_ungrouped_assets_separate():
     # Two consecutive ungrouped assets must not be merged into one
     # span just because they're both group=None.
-    spans = _asset_group_spans([Asset.DURATION, Asset.GPX])
+    spans = _asset_group_spans([Asset.DURATION, Asset.GPS])
 
     assert spans == [
         (None, [Asset.DURATION]),
-        (None, [Asset.GPX]),
+        (None, [Asset.GPS]),
     ]
 
 

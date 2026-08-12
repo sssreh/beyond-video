@@ -9349,3 +9349,46 @@ synthetic recording with every asset type present and ran `bv_ls()`
 against it, confirming the header/rows still align column-by-column
 and the group-header row (`Transcript`/`Translate`/`Scene`) still
 centers correctly over its span).
+
+## Remove dead GPX/SUMMARY columns from bv-ls (2026-08-12)
+
+Both of bv-ls's `GPX` and `Sum` columns could never actually show an
+`X` - traced down after Christer asked who generates a `.gpx` file in
+an archive before letting these get removed blind.
+
+`Asset.SUMMARY` had no suffix registered in `ArchiveReader.ASSETS` at
+all - nothing in the codebase ever wrote a `<recording>.summary.txt`
+file matching it, so the column was always blank by construction.
+
+`Asset.GPX` *was* registered (`.gpx` -> `Asset.GPX`), but nothing
+ever writes a `.gpx` file into the archive directory `ArchiveReader`
+scans - `write_gpx()` (`export/gpx_writer.py`) is only ever called
+once in the whole codebase, from `trip_export.py`, and it writes
+`trip.gpx` into the trip's own *export destination* folder
+(`data/trips/<trip>/trip.gpx`), a completely different directory
+tree bv-ls never looks at. So the column was equally always blank,
+just for a "right suffix, wrong directory" reason instead of "no
+writer at all."
+
+**Changed:** removed both `Asset.GPX` and `Asset.SUMMARY` from
+`archive/asset.py`, and the `(".gpx", Asset.GPX)` entry from
+`ArchiveReader.ASSETS` in `archive/archive_reader.py`. Updated
+`test_bv_ls.py`'s `_asset_group_spans` unit tests, which had used
+`Asset.GPX`/`Asset.SUMMARY` as arbitrary ungrouped-asset examples, to
+use `Asset.GPS`/`Asset.LYRICS` instead - the tests were never about
+GPX/SUMMARY specifically.
+
+**Not changed:** `trip.gpx` itself (`gpx_writer.py`, `bv-export`,
+the web UI's KML export, "Show start location", etc.) - all of that
+is real, working, unaffected by this. Only the archive-level `Asset`
+enum member and its dead bv-ls column are gone.
+
+**Verification.** `test_bv_ls.py` (4/4 non-capsys tests, including
+the group-span-width sanity check), `test_archive_reader.py` (15/15),
+`test_archive.py` (5/5) all pass. Built a synthetic recording with
+every remaining asset type present (plus a stray `.gpx` and
+`.summary.txt` file to confirm they're now silently ignored, not
+just unlabeled) and rendered the real table - both columns are gone,
+every other column still correctly shows `X`, and the header still
+aligns column-by-column. Row width for a same-length recording id
+dropped further, from 122 to ~106-112 depending on content.

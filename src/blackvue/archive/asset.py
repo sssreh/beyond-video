@@ -32,7 +32,6 @@ class Asset(Enum):
 
     AUDIO = ("Aud",)
     DURATION = ("Dur",)
-    GPX = ("GPX",)
 
     TRANSCRIPT = ("Plain", "Transcript")
     TRANSCRIPT_DIARIZED = ("Diar", "Transcript")
@@ -40,7 +39,6 @@ class Asset(Enum):
     TRANSLATION_DIARIZED = ("Diar", "Translate")
     SUBTITLES = ("SRT",)
     LYRICS = ("LRC",)
-    SUMMARY = ("Sum",)
     # Grouped like TRANSCRIPT/TRANSCRIPT_DIARIZED above - "Front"/"Rear"
     # distinguish which camera a scene description came from, "Scene"
     # is the shared two-row bv-ls header group.
