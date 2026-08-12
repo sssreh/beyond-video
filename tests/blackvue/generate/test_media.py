@@ -17,6 +17,7 @@ from blackvue.generate.media import get_span
 from blackvue.generate.media import load_or_compute_duration
 from blackvue.generate.media import probe_audio_codec
 from blackvue.generate.media import probe_audio_format
+from blackvue.generate.media import probe_video_codec
 from blackvue.generate.media import read_duration_seconds
 from blackvue.generate.media import select_source
 from blackvue.generate.mp4_box_reader import Mp4Info
@@ -345,6 +346,46 @@ def test_probe_audio_codec_raises_when_ffprobe_fails(monkeypatch, tmp_path):
 
     with pytest.raises(MediaToolError):
         probe_audio_codec(tmp_path / "x.mp4")
+
+
+def test_probe_video_codec_returns_the_codec_name(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, stdout="hevc\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert probe_video_codec(tmp_path / "x.mp4") == "hevc"
+
+
+def test_probe_video_codec_returns_none_without_a_video_stream(
+    monkeypatch, tmp_path
+):
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert probe_video_codec(tmp_path / "x.mp4") is None
+
+
+def test_probe_video_codec_raises_when_ffprobe_is_missing(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        probe_video_codec(tmp_path / "x.mp4")
+
+
+def test_probe_video_codec_raises_when_ffprobe_fails(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["ffprobe"], stderr="broken file")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        probe_video_codec(tmp_path / "x.mp4")
 
 
 def test_probe_audio_format_returns_sample_rate_and_channels(monkeypatch, tmp_path):

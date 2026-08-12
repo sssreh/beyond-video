@@ -82,6 +82,7 @@ from ..core.camera_config import default_config_dir
 from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
 from ..export.geocoding import load_or_reverse_geocode
+from ..export.hevc_preview import load_or_transcode_hevc_preview
 from ..export.kml_writer import gpx_to_kml
 from ..generate.media import MediaToolError
 from ..generate.mp4_repair import load_or_repair_parking_video
@@ -651,6 +652,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
             )
 
+        is_video_file = filename in {
+            video_filename for _, video_filename in recording.videos
+        }
+
         # Parking-mode recordings' own video files fail ffmpeg's/
         # browsers' strict MP4 container validation outright (a known
         # BlackVue quirk - see WORKING_CONTEXT.md, "Correction: the
@@ -665,11 +670,24 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # to try. Only for a Parking (P) recording's own video files,
         # never its GPS/g-sensor sidecars or another kind's video,
         # which were never affected by this quirk in the first place.
-        if recording.recording.id.kind == "P" and filename in {
-            video_filename for _, video_filename in recording.videos
-        }:
+        if recording.recording.id.kind == "P" and is_video_file:
             cache_dir = default_config_dir() / ".parking_repair_cache"
             path = load_or_repair_parking_video(path, cache_dir)
+
+        # Some recordings - a handful from when Christer's camera was
+        # new and he was experimenting with HEVC/H.265 (see
+        # WORKING_CONTEXT.md, task #704) - are HEVC, which Chrome/
+        # Firefox's built-in <video> decoder can't play at all
+        # (regardless of OS codec packs); the browser still plays the
+        # file's audio track fine, which is exactly the "sound only,
+        # no picture" symptom he reported. Transparently swap in a
+        # transcoded, cached H.264 copy for just this case -
+        # load_or_transcode_hevc_preview() falls back to `path` itself
+        # unchanged for anything that isn't HEVC (the normal case for
+        # the rest of the archive), so this is always safe to try.
+        if is_video_file:
+            preview_cache_dir = default_config_dir() / ".hevc_preview_cache"
+            path = load_or_transcode_hevc_preview(path, preview_cache_dir)
 
         return FileResponse(path)
 

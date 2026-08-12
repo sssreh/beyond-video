@@ -264,6 +264,49 @@ def probe_audio_codec(path: Path) -> str | None:
     return codec_name or None
 
 
+def probe_video_codec(path: Path) -> str | None:
+    """Return the source's first video stream's codec name (e.g.
+    "h264", "hevc"), or None if it has no video stream at all.
+
+    Mirrors probe_audio_codec() exactly (same ffprobe invocation shape,
+    same error behavior), just selecting the video stream instead of
+    the audio one. Added for export.hevc_preview.
+    load_or_transcode_hevc_preview() (see WORKING_CONTEXT.md, task
+    #704), which needs to tell HEVC/H.265 recordings - unplayable in
+    Chrome/Firefox's built-in <video> decoder regardless of OS codec
+    packs - apart from the H.264 ones bv-web's video player already
+    handles fine, without re-transcoding files that don't need it.
+
+    Raises MediaToolError if ffprobe itself is missing or fails
+    outright (as opposed to just finding no video stream, which is a
+    normal outcome reported as None rather than an error).
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffprobe not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffprobe failed for {path.name}: {exc.stderr.strip()}"
+        ) from exc
+
+    codec_name = result.stdout.strip()
+    return codec_name or None
+
+
 def probe_audio_format(path: Path) -> tuple[int, int] | None:
     """Return the source's first audio stream's (sample_rate, channel
     count), or None if it has no audio stream at all.
