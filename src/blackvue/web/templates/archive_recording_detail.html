@@ -49,13 +49,15 @@
 
 {% if recording.scene_texts %}
 <details class="option-group">
-  <summary id="full-scene-text">Full scene text (raw)</summary>
+  <summary>Full scene text (raw)</summary>
+  <div id="full-scene-text">
   {% for label, text in recording.scene_texts %}
   <div class="scene-text">
     <p class="hint">{{ label }}</p>
     <pre class="scene-text-body">{{ text }}</pre>
   </div>
   {% endfor %}
+  </div>
 </details>
 {% endif %}
 </div>
