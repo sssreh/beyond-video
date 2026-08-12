@@ -9601,3 +9601,61 @@ faked but `is_audio_silent()` untouched, confirming real ffmpeg
 string as "not silent" (fails to parse a `mean_volume` line) rather
 than crashing or hanging - existing tests that fake `extract_audio()`
 without mocking `is_audio_silent()` are unaffected by this change.
+
+## Discard empty Whisper transcripts instead of writing junk files (2026-08-12)
+
+Follow-up to the silence-skip fix above, found by Christer testing
+that fix against his real archive. He kept seeing `<id>_nno.transcript.txt`
+files - "nno" (Norwegian Nynorsk) is not his spoken language. Walked
+through two real examples he pulled from his NAS:
+
+1. `20190131_095154_E.transcript.txt` contained `Parking mode off.` -
+   a real, correct transcript of the camera's own voice prompt. Not a
+   bug; `_nno` wasn't even involved here, this just confirmed
+   non-silent audio still gets transcribed as expected.
+2. `20190208_130145_E_nno.transcript.txt` and its matching `.srt` were
+   both essentially empty (`ls -lh` showed 2 bytes each - just
+   whitespace), while `20190208_130145_E.aac` was a real 1.1 MB file,
+   nowhere near what the silence-skip fix would have caught.
+
+Root cause: a track can clear the loudness threshold (real road/wind/
+engine noise, or a short voice prompt elsewhere in the same trip) while
+still having *no actual speech* in the specific clip being transcribed.
+`_do_transcribe_with_optional_translate()` calls `detect_language()`
+up front to pick the transcript's filename before Whisper even runs -
+on a clip with nothing to transcribe, that cheap detection pass has
+nothing real to go on and can guess almost anything (Norwegian Nynorsk,
+here). `transcribe()` is then forced to run with that guessed language,
+comes back with empty text, and the old code wrote it out anyway:
+an empty `transcript.txt`/`.srt` under a filename carrying a wrong
+language tag that made the whole thing look like a translation bug
+rather than a "nothing to transcribe" one.
+
+**Changed:** both `_do_translate_only()` and
+`_do_transcribe_with_optional_translate()` (`cli/bv_generate.py`) now
+check `transcript.text.strip()` immediately after a fresh `transcribe()`
+call succeeds. If it's empty, they warn `"no speech detected, skipping"`
+and return without writing the transcript, SRT, or translation file -
+skipping diarization too, since there's nothing to diarize. A real but
+short transcript (`"Parking mode off."`) still passes through untouched;
+only a genuinely empty result is discarded. Deliberately left the
+underlying `.aac` alone in this case (unlike the silence-skip fix,
+which deletes the file) - the track itself may be legitimately audible,
+just not what got transcribed to nothing, and there was no request to
+touch it.
+
+**Verification.** Same sandbox constraints as the silence-skip fix
+(no real pytest, no `tomllib` on Python 3.10 - reused the stub from
+that fix). Added 3 new tests to `test_bv_generate.py`: the empty-result
+skip for `--transcribe` (reproducing the exact `_nno` scenario), a
+real-short-content control case (`"Parking mode off."` still gets
+written), and the empty-result skip for `--translate`'s own fresh-
+transcribe branch. Independently re-ran each test's logic standalone
+against the real source (same technique as the silence-skip fix) - all
+8 checks passed, including confirming the real-content case still
+produces `20190131_095154_E.transcript.txt` containing exactly
+`Parking mode off.` and the empty-result case produces no
+`.transcript.txt` file at all (not even under the wrong-language
+name). Re-ran the earlier silence-skip verification scripts too to
+confirm this change doesn't interact badly with them - all still
+passed.

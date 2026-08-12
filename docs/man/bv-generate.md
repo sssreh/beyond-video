@@ -29,6 +29,8 @@ Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - 
 
 Some BlackVue cameras keep a real AAC audio stream in every recording even with in-camera voice recording turned off - the track exists, it's just silent. `bv-generate` checks the mean volume of every audio track it extracts (fresh, via `--extract-audio`, or as an internal step of `--transcribe`/`--translate`) and, if it's at or below a fixed loudness threshold, discards the `.aac` and skips transcription for that recording instead of keeping a silent file or wasting Whisper time on it. If the loudness check itself can't run (e.g. ffmpeg unexpectedly unavailable), the audio is kept rather than risk discarding something real.
 
+A track can also be *not* silent (road/wind/engine noise, or the camera's own short voice prompts like "Parking mode off") while still having no actual speech in it. If Whisper transcribes such a track and comes back with nothing, `bv-generate` doesn't write a transcript/SRT/translation file for it - an empty result forcing a language guess tends to produce a wrong one, so the alternative was empty files with a bogus language suffix (e.g. `<recording>_nno.transcript.txt`) instead of no file at all.
+
 `--translate` implies transcription internally - `--transcribe` doesn't need to also be given.
 
 Every run prints a `bv-generate: started HH:MM:SS` line up front and a `bv-generate: finished HH:MM:SS (N.Ns)` line on every exit path from there on (including argument errors and an empty selection) - same pattern `bv-search(1)` uses. A batch run over hundreds of recordings with `--describe-scene`/`--transcribe` can take hours with nothing else printed in between, so both when it ran and how long it took are visible without timing it yourself.

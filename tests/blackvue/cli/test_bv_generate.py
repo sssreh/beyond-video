@@ -2189,4 +2189,121 @@ def test_run_prints_finished_line_even_when_the_time_parser_rejects_input(
 
     assert exit_code == bv_generate.EXIT_ARGS_ERROR
     assert any(m.startswith("bv-generate: started ") for m in messages)
+
+
+def _fake_transcript(text, *, language="nno", segments=()):
+    return lambda source, *, language=None, model_size="small", npu_model_dir=None, force_cpu=False: Transcript(
+        text=text, language=language or "nno", segments=segments
+    )
+
+
+def test_transcribe_skips_writing_when_whisper_finds_no_speech(
+    tmp_path, monkeypatch
+):
+    """Reproduces what Christer hit: a real, non-silent .aac (road/
+    engine noise, or the camera's own short voice prompts, no actual
+    speech) still got forced through detect_language() and transcribe(),
+    which found nothing to say but still wrote an empty
+    <id>_nno.transcript.txt - the wrong-looking language suffix was a
+    symptom of Whisper guessing on nothing, not the actual bug. An
+    empty transcript.text should mean "nothing generated", full stop."""
+
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"real-noise-audio"),
+    )
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: False)
+    monkeypatch.setattr(
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "nno",
+    )
+    monkeypatch.setattr(bv_generate, "transcribe", _fake_transcript(""))
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+
+    recording = Recording(id=RecordingId("20190208_130145_E"))
+    video_path = tmp_path / "20190208_130145_EF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True)
+    warnings = []
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args, warn=warnings.append
+    )
+
+    assert had_error is False
+    assert not (tmp_path / "20190208_130145_E_nno.transcript.txt").exists()
+    assert not any(tmp_path.glob("*.transcript.txt"))
+    assert any("no speech detected" in w for w in warnings)
+
+
+def test_transcribe_still_writes_real_short_content(tmp_path, monkeypatch):
+    # The counterpart to the empty-result test above: a short but real
+    # transcript ("Parking mode off." - the camera's own voice prompt)
+    # must still be written, not treated as "empty".
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"real-audio"),
+    )
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: False)
+    monkeypatch.setattr(
+        bv_generate,
+        "detect_language",
+        lambda source, *, model_size, force_cpu=False: "en",
+    )
+    monkeypatch.setattr(
+        bv_generate, "transcribe", _fake_transcript("Parking mode off.", language="en")
+    )
+
+    recording = Recording(id=RecordingId("20190131_095154_E"))
+    video_path = tmp_path / "20190131_095154_EF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(transcribe=True)
+    had_error = bv_generate._do_transcribe_with_optional_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert (
+        tmp_path / "20190131_095154_E.transcript.txt"
+    ).read_text().strip() == "Parking mode off."
+
+
+def test_translate_only_skips_writing_when_whisper_finds_no_speech(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        bv_generate,
+        "extract_audio",
+        lambda source, destination: destination.write_bytes(b"real-noise-audio"),
+    )
+    monkeypatch.setattr(bv_generate, "is_audio_silent", lambda path: False)
+    monkeypatch.setattr(bv_generate, "transcribe", _fake_transcript("   "))
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+
+    recording = Recording(id=RecordingId("20190208_140000_E"))
+    video_path = tmp_path / "20190208_140000_EF.mp4"
+    video_path.write_bytes(b"v")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+
+    args = _base_args(translate="sv")
+    warnings = []
+    had_error = bv_generate._do_translate_only(
+        recording, tmp_path, args, warn=warnings.append
+    )
+
+    assert had_error is False
+    assert not any(tmp_path.glob("*.translation.txt"))
+    assert any("no speech detected" in w for w in warnings)
     assert any(m.startswith("bv-generate: finished ") for m in messages)

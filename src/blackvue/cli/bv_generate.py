@@ -1025,6 +1025,22 @@ def _do_translate_only(
         transcript_language = transcript.language
         segments = transcript.segments
 
+        if not transcript_text.strip():
+            # Whisper found no actual speech - a non-silent (by
+            # mean-volume) track can still have nothing to transcribe,
+            # e.g. road/wind/engine noise or the camera's own short
+            # voice prompts ("Parking mode off") that get picked up
+            # but leave nothing for a *different* clip to say. Forcing
+            # a language guess onto near-nothing also tends to produce
+            # a wrong one (Christer hit this: a real, sizable .aac
+            # with no speech in it got tagged "_nno" and an empty
+            # transcript.txt/.srt written anyway). Bail out before any
+            # of that gets written rather than leave junk files with a
+            # bogus language suffix behind.
+            warn(f"bv-generate: {recording.id}: no speech detected, "
+                "skipping translation")
+            return False
+
         if args.diarize:
             try:
                 turns = diarize(audio_source, hf_token=args.hf_token)
@@ -1273,6 +1289,17 @@ def _do_transcribe_with_optional_translate(
     had_error = False
     transcript_text = transcript.text
     turns: tuple = ()
+
+    if not transcript_text.strip():
+        # See the matching check in _do_translate_only for the full
+        # explanation - a track that isn't silent by mean-volume can
+        # still have no actual speech in it, and forcing a language
+        # guess onto near-nothing tends to produce a wrong one. Bail
+        # out before writing a transcript/srt/translation file with a
+        # bogus language suffix and empty content.
+        warn(f"bv-generate: {recording.id}: no speech detected, "
+            "skipping")
+        return False
 
     if args.diarize:
         try:
