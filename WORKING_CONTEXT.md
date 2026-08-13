@@ -9659,3 +9659,39 @@ produces `20190131_095154_E.transcript.txt` containing exactly
 name). Re-ran the earlier silence-skip verification scripts too to
 confirm this change doesn't interact badly with them - all still
 passed.
+
+## Decision: leave corrupted-parking-audio scene-description failures as skip-and-continue (2026-08-13)
+
+Christer hit `describe_scene()` failing on a couple of 2019 Parking
+(timelapse) recordings: `error reading header` / `Invalid data found
+when processing input`, both from ffprobe and from `decord` (used by
+the zoom-into-signs sub-pipeline). Root cause confirmed with a
+synthetic repro (built a test MP4, corrupted its audio track's
+STSC/STCO the same way): this is a hard failure in ffmpeg's own MP4
+demuxer, not just ffprobe being strict. `ffmpeg -i` itself refuses to
+open these files too - `-err_detect ignore_err`, `-fflags
++discardcorrupt+igndts+genpts`, and `-analyzeduration`/`-probesize`
+tweaks all fail identically, because `avformat_find_stream_info()`
+parses every track's sample table while opening the file, before any
+stream selection happens - a broken audio-track table kills the whole
+open even though the video track's own data is intact.
+
+The only real fix would mirror what `get_span()`'s box-reader fallback
+already does for duration/frame-count: skip ffmpeg's container parser
+entirely, walk the video track's own (uncorrupted) sample table by
+hand, pull raw H.264/HEVC keyframe bytes directly out of the file, and
+feed just that elementary stream to ffmpeg for decoding - bypassing
+the container layer that trips over the audio track. That's a real
+chunk of new low-level parsing code (extending `mp4_box_reader.py` +
+a new frame-extraction function + wiring into both of `scene.py`'s
+frame-reading paths), only verifiable against a synthetic repro, not
+Christer's actual files.
+
+Christer's call: not worth it. Affects fewer than 20 recordings out of
+his whole 2019 archive, and Parking-mode recordings don't carry real
+audio anyway, so there's no transcription/translation loss - just a
+missing scene description on a handful of clips. The existing
+per-recording error handling (`scene description failed for ...`,
+then continue to the next file) already contains the damage correctly.
+Left as-is; revisit only if this turns out to affect a much larger
+share of the archive.
