@@ -10026,3 +10026,41 @@ this project to extend instead.
 Docs: `docs/WEB_ARCHITECTURE.md`'s "Trip list" bullet and the archive-
 browser cross-reference to `_find_trip()`'s guard both updated to
 describe the one-level nesting.
+
+## Note: unresolved - should bv-web read each camera's own Target instead of scanning one shared parent? (must resolve before starting real exports)
+
+Follow-up to the "Make bv-web scan_trips() see trips nested under
+camera-id subfolders" fix above. Christer, after that fix shipped:
+"I am not to happy about trips solution, but it is what it is. Of
+corse every Camera should have the option to put trips where ever it
+wants. At the same time bv-web needs to see them all. Searching
+through all the cameras target is not beautiful, but necessary."
+
+What actually shipped only recurses one level under the single
+`TARGET` directory `bv-web serve` is given - it works because
+`bv-config`'s own suggested default nests every camera's Target as a
+sibling under the same parent (swap `archive` for `trips` in that
+camera's own Archive path), so following that default naturally puts
+every camera's trips under one common parent `scan_trips()` can then
+recurse into. It does **not** read each camera's own config to
+discover wherever its Target actually points - a camera whose Target
+lives somewhere genuinely unrelated (a different drive, a different
+NAS share, nothing under whatever directory `bv-web serve` was pointed
+at) still wouldn't show up.
+
+The alternative Christer is describing - and calls "not beautiful, but
+necessary" - is the fully general fix: `bv-web` reads every camera's
+config, resolves each one's real `Target` field wherever it points,
+and merges `scan_trips()` results across all of them, so a camera
+really can put its trips anywhere with no shared-parent requirement at
+all. This would mean `create_app()` no longer (or not only) takes a
+single `TARGET` positional argument - it'd load the camera config
+directory instead (or in addition, as a fallback for cameras with no
+Target set) and scan N different directories.
+
+**Explicitly not decided.** Christer's own words: "i am ambiguous
+about this." Noted here rather than built, with his own instruction
+attached: **resolve this before starting real exports** - i.e. revisit
+and decide (build the fully general version, or accept the current
+shared-parent-directory fix as good enough) before bv-export sees
+production use across multiple cameras, not left open indefinitely.
