@@ -24,6 +24,8 @@ from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
 from ..core.joblog import wrap_say
 from ..core.joblog import wrap_warn
+from ..core.lock import assets_fully_locked
+from ..core.lock import load_lock_manifest
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import SpeechSegment
@@ -297,6 +299,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--ignore-lock",
+        action="store_true",
+        help=(
+            "Run even if the selected range is fully locked (see "
+            "bv-lock) for every action flag given here. For the rare "
+            "case of needing to touch an otherwise-locked range again "
+            "(e.g. a bug fix, or a genuinely new value for an "
+            "already-locked asset like a fresh --translate) without "
+            "editing the lock itself - narrow the selection with "
+            "--timestamp/--from/--until first, this does not also "
+            "narrow it for you."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -422,6 +439,33 @@ def _default_warn(message: str) -> None:
     lambda."""
 
     print(message, file=sys.stderr)
+
+
+def _requested_lock_assets(args: argparse.Namespace) -> set[str]:
+    """The core/lock.py asset names this run's action flags correspond
+    to - the same vocabulary bv-lock's --lock-assets/--unlock-assets
+    accept (core.lock.LOCKABLE_ASSETS). --translate maps to the single
+    "translate" name regardless of target language - see
+    core/lock.py's own module docstring for why. --diarize is its own
+    name (not folded into "transcribe"/"translate") so a range locked
+    without it still lets a later --diarize-only re-run through."""
+
+    requested = set()
+    if args.extract_audio:
+        requested.add("extract-audio")
+    if args.get_duration:
+        requested.add("get-duration")
+    if args.transcribe:
+        requested.add("transcribe")
+    if args.translate is not None:
+        requested.add("translate")
+    if args.srt:
+        requested.add("srt")
+    if args.describe_scene:
+        requested.add("describe-scene")
+    if args.diarize:
+        requested.add("diarize")
+    return requested
 
 
 class _OverwriteDecision:
@@ -1415,6 +1459,22 @@ def _run(
         except ValueError as exc:
             warn(f"bv-generate: {exc}")
             return EXIT_ARGS_ERROR
+
+        if not args.ignore_lock:
+            requested_assets = _requested_lock_assets(args)
+            manifest = load_lock_manifest(archive_path)
+            locked_entry = assets_fully_locked(
+                manifest, interval, requested_assets
+            )
+            if locked_entry is not None:
+                say(
+                    f"bv-generate: {archive_path} - "
+                    f"{interval.first}..{interval.last} already locked "
+                    f"for [{', '.join(sorted(requested_assets))}], "
+                    "skipping (see bv-lock --list, or --ignore-lock "
+                    "to run anyway)"
+                )
+                return EXIT_OK
 
         recordings = [
             recording

@@ -119,6 +119,7 @@ bv-live = "blackvue.cli.bv_live:main"
 bv-scribe = "blackvue.cli.bv_scribe:main"
 bv-search = "blackvue.cli.bv_search:main"
 bv-history = "blackvue.cli.bv_history:main"
+bv-lock = "blackvue.cli.bv_lock:main"
 
 # setuptools only bundles .py files into the installed wheel by
 # default - without this, web/templates/*.html (login.html,

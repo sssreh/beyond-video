@@ -12,6 +12,7 @@ from blackvue.cli import bv_generate
 from blackvue.cli.bv_generate import _language_from_generated_filename
 from blackvue.cli.bv_generate import _language_suffixed_name
 from blackvue.cli.bv_generate import _should_write
+from blackvue.cli.bv_generate import _requested_lock_assets
 from blackvue.cli.bv_generate import _translate_diarized
 from blackvue.cli.bv_generate import _translate_segments
 from blackvue.cli.bv_generate import main
@@ -19,11 +20,15 @@ from blackvue.cli.bv_generate import parse_args
 from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import save_camera_config
+from blackvue.core.lock import LockManifest
+from blackvue.core.lock import add_lock_assets
+from blackvue.core.lock import save_lock_manifest
 from blackvue.generate import SCENE_DEFAULT_MODEL
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeakerTurn
 from blackvue.generate.speech import SpeechSegment
 from blackvue.generate.speech import Transcript
+from blackvue.lexicaltimeparser import LexicalTimeParser
 
 
 def test_main_resolves_a_camera_id_to_its_configured_target(tmp_path, capsys):
@@ -2301,3 +2306,154 @@ def test_translate_only_skips_writing_when_whisper_finds_no_speech(
     assert had_error is False
     assert not any(tmp_path.glob("*.translation.txt"))
     assert any("no speech detected" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# _requested_lock_assets
+# ---------------------------------------------------------------------------
+
+
+def test_requested_lock_assets_empty_when_no_action_flags_set():
+    args = _base_args()
+
+    assert _requested_lock_assets(args) == set()
+
+
+def test_requested_lock_assets_maps_every_action_flag():
+    args = _base_args(
+        extract_audio=True,
+        get_duration=True,
+        transcribe=True,
+        translate="sv",
+        srt=True,
+        describe_scene=True,
+        diarize=True,
+    )
+
+    assert _requested_lock_assets(args) == {
+        "extract-audio",
+        "get-duration",
+        "transcribe",
+        "translate",
+        "srt",
+        "describe-scene",
+        "diarize",
+    }
+
+
+def test_requested_lock_assets_translate_is_one_name_regardless_of_language():
+    args_sv = _base_args(translate="sv")
+    args_es = _base_args(translate="es")
+
+    assert _requested_lock_assets(args_sv) == {"translate"}
+    assert _requested_lock_assets(args_es) == {"translate"}
+
+
+# ---------------------------------------------------------------------------
+# _run: lock-skip / --ignore-lock
+# ---------------------------------------------------------------------------
+
+
+def _lock_year(tmp_path, year, assets):
+    interval = LexicalTimeParser(timestamp=year).parse()
+    manifest = add_lock_assets(LockManifest(), interval, assets)
+    save_lock_manifest(tmp_path, manifest)
+
+
+def test_run_skips_a_fully_locked_range_without_processing_recordings(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "20190715_120000_EF.mp4").write_bytes(b"v")
+    _lock_year(tmp_path, "2019", ["get-duration"])
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _refuse)
+
+    args = parse_args(
+        [str(tmp_path), "--timestamp", "2019", "--get-duration"]
+    )
+    messages = []
+
+    exit_code = bv_generate._run(args, say=messages.append)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert any("already locked" in m for m in messages)
+
+
+def test_run_ignore_lock_bypasses_a_fully_locked_range(tmp_path, monkeypatch):
+    (tmp_path / "20190715_120000_EF.mp4").write_bytes(b"v")
+    _lock_year(tmp_path, "2019", ["get-duration"])
+
+    called = []
+    monkeypatch.setattr(
+        bv_generate,
+        "_do_get_duration",
+        lambda recording, archive_path, args, **kw: called.append(recording)
+        or False,
+    )
+
+    args = parse_args(
+        [
+            str(tmp_path),
+            "--timestamp",
+            "2019",
+            "--get-duration",
+            "--ignore-lock",
+        ]
+    )
+    messages = []
+
+    exit_code = bv_generate._run(args, say=messages.append)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert len(called) == 1
+    assert not any("already locked" in m for m in messages)
+
+
+def test_run_does_not_skip_when_lock_covers_a_different_asset(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "20190715_120000_EF.mp4").write_bytes(b"v")
+    _lock_year(tmp_path, "2019", ["transcribe"])
+
+    called = []
+    monkeypatch.setattr(
+        bv_generate,
+        "_do_get_duration",
+        lambda recording, archive_path, args, **kw: called.append(recording)
+        or False,
+    )
+
+    args = parse_args(
+        [str(tmp_path), "--timestamp", "2019", "--get-duration"]
+    )
+    messages = []
+
+    exit_code = bv_generate._run(args, say=messages.append)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert len(called) == 1
+    assert not any("already locked" in m for m in messages)
+
+
+def test_run_does_not_skip_an_unlocked_year(tmp_path, monkeypatch):
+    (tmp_path / "20200715_120000_EF.mp4").write_bytes(b"v")
+    _lock_year(tmp_path, "2019", ["get-duration"])
+
+    called = []
+    monkeypatch.setattr(
+        bv_generate,
+        "_do_get_duration",
+        lambda recording, archive_path, args, **kw: called.append(recording)
+        or False,
+    )
+
+    args = parse_args(
+        [str(tmp_path), "--timestamp", "2020", "--get-duration"]
+    )
+    messages = []
+
+    exit_code = bv_generate._run(args, say=messages.append)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert len(called) == 1
+    assert not any("already locked" in m for m in messages)

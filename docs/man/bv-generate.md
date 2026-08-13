@@ -15,7 +15,7 @@ bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--srt]
             [--describe-scene] [--scene-model MODEL] [--camera {front,rear,both}]
             [--config-dir DIR]
-            [--overwrite] [--dry-run] [-v]
+            [--ignore-lock] [--overwrite] [--dry-run] [-v]
             [PATH]
 ```
 
@@ -34,6 +34,8 @@ A track can also be *not* silent (road/wind/engine noise, or the camera's own sh
 `--translate` implies transcription internally - `--transcribe` doesn't need to also be given.
 
 Every run prints a `bv-generate: started HH:MM:SS` line up front and a `bv-generate: finished HH:MM:SS (N.Ns)` line on every exit path from there on (including argument errors and an empty selection) - same pattern `bv-search(1)` uses. A batch run over hundreds of recordings with `--describe-scene`/`--transcribe` can take hours with nothing else printed in between, so both when it ran and how long it took are visible without timing it yourself.
+
+Before walking the archive at all, `bv-generate` checks whether `bv-lock(1)` has already marked the selected range as done for every action flag given on this run. If so, the whole run is skipped with a single summary line instead of touching a single recording - see `bv-lock(1)` for how to mark a finished stretch of the archive (a whole year, typically) this way so it's never walked again. `--ignore-lock` bypasses this check for one run.
 
 ## ARGUMENTS
 
@@ -83,6 +85,7 @@ Every run prints a `bv-generate: started HH:MM:SS` line up front and a `bv-gener
 
 | Option | Description |
 |---|---|
+| `--ignore-lock` | Run even if the selected range is fully locked (see `bv-lock(1)`) for every action flag given here. For the rare case of needing to touch an otherwise-locked range again (e.g. a bug fix, or a genuinely new value for an already-locked asset like a fresh `--translate`) without editing the lock itself - narrow the selection with `--timestamp`/`--from`/`--until` first, this does not also narrow it for you. |
 | `--overwrite` | Regenerate files that already exist, without asking. |
 | `--dry-run` | Show what would be generated without generating it. |
 | `-v`, `--verbose` | Print each file as it is generated. |
@@ -171,6 +174,12 @@ Describe a day's recordings alongside transcribing them:
 bv-generate --timestamp 20260715 --transcribe --describe-scene
 ```
 
+Touch one already-locked recording anyway (e.g. a fresh translation into a second language), without unlocking the whole range it belongs to:
+
+```
+bv-generate --timestamp 20190715_140000 --translate sv --ignore-lock
+```
+
 ## SEE ALSO
 
-`bv-download(1)` populates the archive this reads from, `bv-lang(1)` manages the language packages `--translate` needs, `bv-ls(1)` shows which derived assets already exist, `bv-export(1)` picks up `.duration.txt`/transcript/subtitle files automatically.
+`bv-download(1)` populates the archive this reads from, `bv-lang(1)` manages the language packages `--translate` needs, `bv-ls(1)` shows which derived assets already exist, `bv-export(1)` picks up `.duration.txt`/transcript/subtitle files automatically, `bv-lock(1)` marks a finished range so it's skipped on future runs.

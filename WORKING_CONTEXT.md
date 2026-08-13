@@ -9695,3 +9695,82 @@ per-recording error handling (`scene description failed for ...`,
 then continue to the next file) already contains the damage correctly.
 Left as-is; revisit only if this turns out to affect a much larger
 share of the archive.
+
+## Feature: bv-lock - permanently skip a finished archive range in bv-generate (2026-08-13)
+
+Christer, after finishing 2019 (~20 hours of `bv-generate --get-duration
+--describe-scene`): "When i am done with 2019-2025, i never ever want to
+run bv-generate on them again. Unless we have a new asset to add." Asked
+how this should be handled; his answer, across a short design discussion,
+was a dedicated lock command rather than a bv-generate flag: "I by running
+something like `bv-lock Kirby_2020 --lock-assets (--unlock_assets)`", one
+summary line when a run gets skipped (not per-file), and `--translate`
+locked as one blanket name across every target language ("if you need a
+new translation(unlikely) you have to add an option to override the lock
+for that command, probably 1 recording").
+
+**`src/blackvue/core/lock.py`** (new). A per-archive `.bv-lock.json`
+manifest, sibling of the recordings it covers ("so it travels with the
+archive"). Each entry is `{first, last, assets, locked_at}` - `first`/
+`last` are the same lexical `TimeInterval` strings every other command
+already uses (see `lexicaltimeparser.py`), `assets` a set of names from a
+fixed `LOCKABLE_ASSETS` vocabulary (`extract-audio`, `get-duration`,
+`transcribe`, `translate`, `srt`, `describe-scene`, `diarize` - `diarize`
+is its own name, not folded into `transcribe`/`translate`, so a range
+locked without it still lets a later `--diarize`-only run through).
+`add_lock_assets()`/`remove_lock_assets()` only merge into an entry for
+an *exact* range match - deliberately no merging of overlapping-but-
+different ranges, since bv-lock is meant to be run with the same
+selection already used to generate (a whole year, typically), not built
+up piecemeal. `assets_fully_locked()` does containment checking, so a
+sub-range wholly inside an already-locked range (a single day inside a
+locked year) is still treated as covered.
+
+**`src/blackvue/cli/bv_lock.py`** (new). `bv-lock PATH --lock-assets
+A,B,C` / `--unlock-assets A,B` / `--list`, using the same `path`-as-
+camera-id resolution (`resolve_archive_path`) and `--from`/`--until`/
+`--timestamp` selection every other archive command uses. Wired into
+`pyproject.toml`'s `[project.scripts]`.
+
+**`bv_generate.py`** wiring: a new `_requested_lock_assets()` helper maps
+a parsed run's action flags to the same asset-name vocabulary, and `_run()`
+checks `assets_fully_locked()` right after parsing the time interval -
+before even walking the archive's recording list - printing one summary
+line and returning `EXIT_OK` if every requested asset is already covered.
+New `--ignore-lock` flag bypasses the check for one run (for the rare
+case of touching an otherwise-locked range again without editing the lock
+itself - narrow the selection first, `--ignore-lock` doesn't do that for
+you).
+
+**Bug caught by the tests, not by manual review.** While actually
+executing the new pytest test files (a hand-built pytest-fixture-
+emulation harness - `pytest.raises`, `capsys`, `monkeypatch.setattr`
+shims, since this sandbox has no real pytest - deliberately adopted this
+session after the CI NameError incident below caught two bugs manual
+review had missed) rather than trusting them from code review alone,
+`test_run_reports_a_clean_error_for_a_corrupt_manifest` failed for a real
+reason: `bv_lock.py`'s `_run()` called `load_lock_manifest()` *outside*
+its `try/except LockError` block, so a corrupt `.bv-lock.json` raised
+uncaught instead of returning a clean `EXIT_ARGS_ERROR` warning. Fixed by
+moving the call inside the `try`.
+
+**Verification.** All three new/changed areas run through the pytest-
+execution harness (not just `ast.parse`/manual review): `test_lock.py`
+24/24, `test_bv_lock.py` 12/12 (after the fix above), and the full
+`test_bv_generate.py` 99/106 passing - the 7 failures are pre-existing
+harness gaps unrelated to this feature (stub `tomllib` missing
+`TOMLDecodeError`, and the monkeypatch shim not supporting
+`monkeypatch.setattr("builtins.input", ...)`'s string-path form), not
+regressions - confirmed by checking those failing tests' line numbers
+predate this session's changes. New lock-integration tests added to
+`test_bv_generate.py` itself: `_requested_lock_assets()`'s flag mapping
+(including the blanket `--translate` case), and four `_run()`-level
+scenarios (fully-locked range skipped without calling `_do_get_duration`
+at all, `--ignore-lock` bypassing that skip, a lock covering a different
+asset not blocking a run, and an unlocked year not being skipped by a
+neighboring year's lock).
+
+Docs: new `docs/man/bv-lock.md`, `docs/man/bv-generate.md` updated for
+`--ignore-lock` and the lock-skip behavior, `docs/CLI.md` updated to
+include `bv-lock` in the camera-ID-resolution and timestamp-selection
+command lists.
