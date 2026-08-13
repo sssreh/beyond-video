@@ -9958,3 +9958,71 @@ routes, template, nav tab) was added in an earlier entry above but the
 welcome page card was missed at the time. Verified by re-rendering
 welcome.html through a real jinja2.Environment with an owner user,
 confirming the new card and its /jobs/bv-lock link appear.
+
+## Fix: bv-web can't see trips exported into per-camera Target subfolders (2026-08-13)
+
+Christer, working through what a shared "trips" folder even means for
+bv-web: confirmed `bv-web serve TARGET` only ever browses one single
+directory, non-recursively (`trips.scan_trips()`'s own `target.iterdir()`),
+while `bv-config`'s own wizard suggests each camera's Target as a
+sibling-of-Archive subfolder nested by camera id
+(`.../trips/<camera-id>`, see `default_target_dir()` in
+`core/camera_config.py`) - the officially documented NAS/Docker setup
+(`docs/DEPLOY.md`) already works around this by pointing every camera's
+`--target` at one shared `/data/trips` folder by hand, overriding that
+per-camera default. Christer's own framing once this was laid out:
+"Thats a dilemma." Asked which of three fixes he wanted (bv-web scans
+subfolders too / bv-config's default suggestion changes / just document
+the workaround) - he picked the first: make bv-web scan subfolders too,
+so the existing per-camera default in bv-config didn't need to change
+and nobody has to go re-edit already-configured cameras.
+
+**Fix**: `trips.scan_trips()` now checks one level deeper for any
+immediate subfolder of `target` that isn't itself a trip folder (no
+`trip.log`) - covers exactly the `.../trips/<camera-id>/trip_...`
+layout, deliberately not an arbitrary walk. A trip found this way gets
+`TripAssets.id = "<camera-id>/<trip-folder>"` instead of just the
+trailing folder name, so it round-trips back through `target / id` to
+the right place and stays unique even if two cameras' trip labels ever
+collided.
+
+This meant `TripAssets.id` could no longer be a computed `folder.name`
+property - it's now an explicit field, set by `scan_trip(folder, *,
+id_=None)` (defaults to `folder.name` for the common flat case) and by
+`TripCache.get()` (passes `id_=trip_id` through so a cache-resolved
+nested trip gets the right id too).
+
+`app.py`'s `_find_trip()` guard, previously rejecting any `trip_id`
+containing `/` at all, now allows exactly one - splits on `/` and
+rejects anything with more than 2 segments, or any segment that's
+empty/`.`/`..`; `\` stays rejected unconditionally. All four
+`/trips/{trip_id}...` routes (`trip_detail`, `trip_location`,
+`trip_kml`, `trip_file`) switched from FastAPI's default `{trip_id}`
+converter (which can't match a `/` at all) to `{trip_id:path}` -
+verified via reasoning through Starlette's route-compilation regex
+(`.*` for `:path`, greedy-with-backtracking against each route's own
+literal suffix like `/location` or `/files/{filename}`) since FastAPI
+isn't installed in this sandbox to exercise directly. The KML
+download's `Content-Disposition` filename now takes just the last `/`
+segment of `trip_id`, rather than embedding the camera-id prefix in
+the downloaded file's name.
+
+No template changes needed - every `<a href="/trips/{{ trip.id }}...">`
+already just interpolates the id literally into the URL, and a `/`
+in there is exactly what's wanted now.
+
+**Verification.** `trips.py`'s pure logic is fully covered by the
+harness: 6 new tests (explicit `id_` override, nested-trip discovery,
+flat+nested combined in one scan, no-recursion-past-one-level, an
+empty camera-subfolder correctly ignored, `TripCache.get()` resolving
+a nested id) plus all 22 pre-existing tests - 28/28 passing, no
+regressions. `_find_trip()`/the route decorators were verified by
+`ast.parse` (syntax) and by reasoning through the guard's segment
+logic and Starlette's path-converter matching by hand, the same
+FastAPI-not-installed limitation this whole session's bv-web work has
+worked within - no route-level (TestClient) tests exist anywhere in
+this project to extend instead.
+
+Docs: `docs/WEB_ARCHITECTURE.md`'s "Trip list" bullet and the archive-
+browser cross-reference to `_find_trip()`'s guard both updated to
+describe the one-level nesting.

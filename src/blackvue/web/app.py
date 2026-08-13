@@ -300,7 +300,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             request, "trip_list.html", {"user": user, "trips": trips}
         )
 
-    @app.get("/trips/{trip_id}", response_class=HTMLResponse)
+    @app.get("/trips/{trip_id:path}", response_class=HTMLResponse)
     async def trip_detail(
         request: Request, trip_id: str, user: User = Depends(require_login)
     ):
@@ -309,7 +309,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             request, "trip_detail.html", {"user": user, "trip": trip}
         )
 
-    @app.get("/trips/{trip_id}/location", response_class=HTMLResponse)
+    @app.get("/trips/{trip_id:path}/location", response_class=HTMLResponse)
     async def trip_location(
         request: Request, trip_id: str, user: User = Depends(require_login)
     ):
@@ -365,7 +365,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             },
         )
 
-    @app.get("/trips/{trip_id}/kml")
+    @app.get("/trips/{trip_id:path}/kml")
     async def trip_kml(
         trip_id: str, user: User = Depends(require_login)
     ):
@@ -392,15 +392,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 detail="no valid GPS fix found in this trip's GPS track",
             )
 
+        # trip_id may now be "camera-id/trip-folder" (see scan_trips()'s
+        # own docstring) - the download filename only wants the trip's
+        # own folder name, not a path, so take the last "/" segment.
+        kml_filename = trip_id.rsplit("/", 1)[-1]
         return Response(
             content=kml,
             media_type="application/vnd.google-earth.kml+xml",
             headers={
-                "Content-Disposition": f'attachment; filename="{trip_id}.kml"'
+                "Content-Disposition": (
+                    f'attachment; filename="{kml_filename}.kml"'
+                )
             },
         )
 
-    @app.get("/trips/{trip_id}/files/{filename}")
+    @app.get("/trips/{trip_id:path}/files/{filename}")
     async def trip_file(
         trip_id: str, filename: str, user: User = Depends(require_login)
     ):
@@ -1893,22 +1899,32 @@ def _find_job(job_runner: JobRunner, job_id: str) -> Job:
 
 
 def _find_trip(cache: TripCache, target: Path, trip_id: str) -> TripAssets:
-    """Resolve a trip id (its folder name) to a TripAssets inside
-    `target`, 404ing if it doesn't exist or isn't actually a trip
-    folder. `trip_id` comes straight from the URL path and is
-    therefore untrusted - reject anything that could walk outside
-    `target` (a component like ".." or a path separator) before ever
-    touching the filesystem with it.
+    """Resolve a trip id to a TripAssets inside `target`, 404ing if it
+    doesn't exist or isn't actually a trip folder. `trip_id` comes
+    straight from the URL path and is therefore untrusted - reject
+    anything that could walk outside `target` before ever touching
+    the filesystem with it.
+
+    `trip_id` is either a plain folder name (the common case: the
+    trip sits directly under `target`) or exactly one "camera-id/
+    folder-name" segment pair (see scan_trips()'s own docstring for
+    why a trip can be nested one level under `target` - each segment
+    still goes through the same "no dots, no backslash" check a flat
+    id always has). Anything with more than one "/", a backslash, or
+    an empty/"."/".." segment is rejected outright - "\\" is blocked
+    unconditionally since it's never a legitimate part of an id on
+    any platform this runs on, only ever an attempted escape.
 
     Goes through `cache` (see TripCache's own docstring) rather than
     calling scan_trip() directly - trip_file() calls this once per
     HTTP range request, and a video player issues many of those per
     second while seeking/buffering."""
 
+    segments = trip_id.split("/")
     if (
-        "/" in trip_id
-        or "\\" in trip_id
-        or trip_id in (".", "..")
+        "\\" in trip_id
+        or len(segments) > 2
+        or any(segment in ("", ".", "..") for segment in segments)
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="trip not found"

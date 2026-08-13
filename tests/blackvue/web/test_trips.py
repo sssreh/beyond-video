@@ -246,6 +246,117 @@ def test_scan_trips_returns_empty_list_for_missing_target(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# scan_trips() one-level camera-subfolder recursion - added so bv-web can
+# browse a single shared parent target (e.g. z:/data/trips) even when each
+# camera's own Target defaults to a sibling-of-Archive subfolder nested by
+# camera id (.../trips/<camera-id>, see default_target_dir() in
+# core/camera_config.py) rather than everyone sharing one flat folder.
+# Christer's own framing: "that's a dilemma" once this was pointed out.
+# ---------------------------------------------------------------------------
+
+
+def test_scan_trip_accepts_an_explicit_id_override(tmp_path):
+    folder = tmp_path / "Kirby" / "trip_20260715_133458_20260715_141235"
+    _write_trip_log(folder, label="trip_20260715_133458_20260715_141235")
+
+    trip = scan_trip(folder, id_="Kirby/trip_20260715_133458_20260715_141235")
+
+    assert trip is not None
+    assert trip.id == "Kirby/trip_20260715_133458_20260715_141235"
+    # label/videos/etc. are still read from the folder itself, unaffected
+    # by the id override.
+    assert trip.label == "trip_20260715_133458_20260715_141235"
+
+
+def test_scan_trips_finds_trips_nested_one_level_under_a_camera_subfolder(
+    tmp_path,
+):
+    target = tmp_path / "trips"
+    target.mkdir()
+    _write_trip_log(
+        target / "Kirby" / "trip_20260715_133458_20260715_141235",
+        label="trip_20260715_133458_20260715_141235",
+    )
+
+    trips = scan_trips(target)
+
+    assert len(trips) == 1
+    assert trips[0].id == "Kirby/trip_20260715_133458_20260715_141235"
+    assert trips[0].label == "trip_20260715_133458_20260715_141235"
+
+
+def test_scan_trips_combines_flat_and_nested_trips(tmp_path):
+    target = tmp_path / "trips"
+    target.mkdir()
+    # A trip directly under target (the flat/shared-folder layout)...
+    _write_trip_log(
+        target / "trip_20260701_000000_20260701_010000",
+        label="trip_20260701_000000_20260701_010000",
+    )
+    # ...alongside one nested under a camera-id subfolder (the
+    # bv-config-wizard-default layout) - both must show up together.
+    _write_trip_log(
+        target / "Kirby" / "trip_20260715_000000_20260715_010000",
+        label="trip_20260715_000000_20260715_010000",
+    )
+
+    trips = scan_trips(target)
+
+    ids = {trip.id for trip in trips}
+    assert ids == {
+        "trip_20260701_000000_20260701_010000",
+        "Kirby/trip_20260715_000000_20260715_010000",
+    }
+    # Still sorted newest-label-first across both layouts combined.
+    assert trips[0].id == "Kirby/trip_20260715_000000_20260715_010000"
+
+
+def test_scan_trips_does_not_recurse_past_one_level(tmp_path):
+    # A trip two levels deep (camera-id/sub-sub-folder/trip) must NOT be
+    # found - only one level of nesting is supported, matching
+    # default_target_dir()'s own single-level camera-id convention, not
+    # an unbounded directory walk.
+    target = tmp_path / "trips"
+    target.mkdir()
+    _write_trip_log(
+        target / "Kirby" / "2026" / "trip_20260715_133458_20260715_141235",
+        label="trip_20260715_133458_20260715_141235",
+    )
+
+    assert scan_trips(target) == []
+
+
+def test_scan_trips_ignores_a_camera_subfolder_with_no_trips_inside(
+    tmp_path,
+):
+    target = tmp_path / "trips"
+    target.mkdir()
+    empty_camera_folder = target / "SomeCamera"
+    empty_camera_folder.mkdir()
+    (empty_camera_folder / "not_a_trip.txt").write_bytes(b"")
+
+    assert scan_trips(target) == []
+
+
+def test_trip_cache_resolves_a_nested_trip_id(tmp_path, monkeypatch):
+    import blackvue.web.trips as trips_module
+
+    monkeypatch.setattr(
+        trips_module.time, "monotonic", _FakeClock(),
+    )
+
+    target = tmp_path / "trips"
+    _write_trip_log(target / "Kirby" / "trip_1")
+
+    cache = TripCache(ttl_seconds=2.0)
+    trip = cache.get(target, "Kirby/trip_1")
+
+    assert trip is not None
+    assert trip.id == "Kirby/trip_1"
+    assert trip.folder == target / "Kirby" / "trip_1"
+
+
+# ---------------------------------------------------------------------------
 # TripCache - added so a video player's HTTP range requests (many per
 # second while seeking/buffering) don't each redo scan_trip()'s ~nine
 # stat()/open() calls against the trip's own folder. See its own docstring

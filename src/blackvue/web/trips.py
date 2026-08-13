@@ -64,6 +64,14 @@ class TripAssets:
     None."""
 
     folder: Path
+    # The URL-safe identifier bv-web uses for this trip. Set
+    # explicitly by scan_trip()/scan_trips() rather than derived here
+    # as folder.name - a trip nested one level under a camera-id
+    # subfolder (see scan_trips()'s own docstring for why that
+    # happens) needs an id like "Kirby/trip_..." to stay unique and to
+    # round-trip back through `target / id` to the right folder;
+    # folder.name alone would only ever be the last path component.
+    id: str
     label: str
     videos: tuple[str, ...] = field(default_factory=tuple)
     map_video: str | None = None
@@ -71,14 +79,6 @@ class TripAssets:
     gsensor_video: str | None = None
     gpx: bool = False
     srt: bool = False
-
-    @property
-    def id(self) -> str:
-        """The URL-safe identifier bv-web uses for this trip - just
-        the folder name, since that's already filesystem-safe and
-        already unique within --target."""
-
-        return self.folder.name
 
     @property
     def primary_video(self) -> str | None:
@@ -171,9 +171,16 @@ def first_gpx_point(path: Path) -> tuple[float, float] | None:
         return None
 
 
-def scan_trip(folder: Path) -> TripAssets | None:
+def scan_trip(folder: Path, *, id_: str | None = None) -> TripAssets | None:
     """Return the TripAssets for `folder`, or None if it doesn't look
-    like a trip folder (no trip.log)."""
+    like a trip folder (no trip.log).
+
+    `id_` defaults to `folder.name` (the common case: `folder` sits
+    directly under --target) - pass it explicitly when `folder` is one
+    level deeper than that (see scan_trips()'s own docstring), so the
+    returned TripAssets.id is the full relative path
+    ("CameraId/trip_...") needed to find it again, not just the
+    trailing folder name."""
 
     trip_log_path = folder / TRIP_LOG_FILENAME
     if not trip_log_path.is_file():
@@ -190,6 +197,7 @@ def scan_trip(folder: Path) -> TripAssets | None:
 
     return TripAssets(
         folder=folder,
+        id=id_ if id_ is not None else folder.name,
         label=label,
         videos=videos,
         map_video=MAP_FILENAME if (folder / MAP_FILENAME).is_file() else None,
@@ -205,20 +213,46 @@ def scan_trip(folder: Path) -> TripAssets | None:
 
 
 def scan_trips(target: Path) -> list[TripAssets]:
-    """Scan every immediate subfolder of `target` (a bv-export
-    --target directory) for trips, newest first. A `target` that
-    doesn't exist yet (e.g. bv-export hasn't been run) is read as
-    zero trips rather than an error - bv-web's trip list should just
-    look empty, not crash."""
+    """Scan `target` (a bv-export --target directory) for trips,
+    newest first. A `target` that doesn't exist yet (e.g. bv-export
+    hasn't been run) is read as zero trips rather than an error -
+    bv-web's trip list should just look empty, not crash.
+
+    Checks every immediate subfolder of `target` first; any subfolder
+    that isn't itself a trip (no trip.log) is checked one level
+    deeper too. This exists for one specific layout: bv-config's own
+    wizard suggests each camera's Target as a sibling of its Archive,
+    nested by camera id (`.../trips/<camera-id>`, see
+    default_target_dir() in core/camera_config.py) - so a `bv-web
+    serve` pointed at the shared parent (`.../trips`) would otherwise
+    only ever see whichever single camera's folder happened to match
+    exactly, never the trips one level down inside each camera's own
+    subfolder. Deliberately only one level, not arbitrarily deep - it
+    covers this one real layout without turning into an unbounded
+    directory walk over whatever else might live under `target`."""
 
     if not target.is_dir():
         return []
 
-    trips = [
-        trip
-        for entry in sorted(target.iterdir())
-        if entry.is_dir() and (trip := scan_trip(entry)) is not None
-    ]
+    trips = []
+    for entry in sorted(target.iterdir()):
+        if not entry.is_dir():
+            continue
+
+        trip = scan_trip(entry)
+        if trip is not None:
+            trips.append(trip)
+            continue
+
+        for nested_entry in sorted(entry.iterdir()):
+            if not nested_entry.is_dir():
+                continue
+            nested_trip = scan_trip(
+                nested_entry, id_=f"{entry.name}/{nested_entry.name}"
+            )
+            if nested_trip is not None:
+                trips.append(nested_trip)
+
     trips.sort(key=lambda trip: trip.label, reverse=True)
     return trips
 
@@ -268,7 +302,7 @@ class TripCache:
             if now < expires_at:
                 return trip
 
-        trip = scan_trip(target / trip_id)
+        trip = scan_trip(target / trip_id, id_=trip_id)
         if trip is not None:
             self._entries[trip_id] = (trip, now + self._ttl_seconds)
         else:
