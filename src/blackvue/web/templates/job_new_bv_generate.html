@@ -3,9 +3,11 @@
 {% block content %}
 <h2 class="page-heading">Generate assets (bv-generate)</h2>
 <div class="command-help">
-  <p>Extracts audio, computes real-world duration, and transcribes/
-  translates recordings in one camera's archive - the same actions
-  <code>bv-generate</code> runs from the command line. Generated files
+  <p>Extracts audio, computes real-world duration, transcribes/
+  translates, and describes the scene for recordings in one camera's
+  archive - the same actions <code>bv-generate</code> runs from the
+  command line. See <a href="/jobs/bv-scribe">Describe scenes</a> for
+  the fuller set of scene-description tuning flags. Generated files
   are written next to their source recording and show up in the
   archive browser and bv-ls. Ranges already marked done via
   <a href="/jobs/bv-lock">Lock ranges</a> are skipped automatically
@@ -45,6 +47,10 @@
       <label class="filter-checkbox">
         <input type="checkbox" id="transcribe" name="transcribe" value="true" style="width: auto; margin: 0;">
         Transcribe audio to text (.transcript.txt)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="describe_scene" name="describe_scene" value="true" style="width: auto; margin: 0;">
+        Describe scene + read on-screen text (.scene.txt)
       </label>
     </div>
     <label class="field-label" for="translate">
@@ -104,6 +110,31 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Language actually spoken in the recording (e.g. en). Auto-detected if left blank.</span></span>
         </label>
         <input type="text" id="language" name="language" placeholder="auto-detected if blank">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Scene description</h3>
+    <p class="hint">Only used when Describe scene (above) is checked.</p>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="camera">
+          Camera direction
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which recorded camera(s) to describe. Front (default) describes the front video, or rear if there's no front. Rear describes only the rear video with a full pass. Both adds a cheap plates/signs-only OCR pass on the rear video alongside the normal front pass.</span></span>
+        </label>
+        <select id="camera" name="camera">
+          <option value="front" selected>Front</option>
+          <option value="rear">Rear</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="scene_model">
+          Vision-language model
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Model used to describe the scene and read on-screen text. Leave blank for the default. First use on a new model downloads it (~16GB), cached on the server afterward.</span></span>
+        </label>
+        <input type="text" id="scene_model" name="scene_model" placeholder="leave blank for default">
       </div>
     </div>
   </div>

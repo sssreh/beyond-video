@@ -635,6 +635,9 @@ def _generate_kwargs(**overrides):
         diarize=False,
         hf_token=None,
         srt=False,
+        describe_scene=False,
+        scene_model=None,
+        camera="front",
         overwrite=False,
         dry_run=False,
         ignore_lock=False,
@@ -690,6 +693,9 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
             diarize=True,
             hf_token="hf_secret",
             srt=True,
+            describe_scene=True,
+            scene_model="custom-vlm",
+            camera="rear",
             overwrite=True,
             dry_run=True,
             ignore_lock=True,
@@ -707,11 +713,41 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
     assert args.diarize is True
     assert args.hf_token == "hf_secret"
     assert args.srt is True
+    assert args.describe_scene is True
+    assert args.scene_model == "custom-vlm"
+    assert args.camera == "rear"
     assert args.overwrite is True
     assert args.dry_run is True
     assert args.ignore_lock is True
     assert args.from_ == "20260101_000000"
     assert args.until == "20260102_000000"
+
+
+def test_start_bv_generate_camera_default_omits_flag_for_cli_parity(
+    monkeypatch,
+):
+    """camera="front" (the web form's own default selection) must not
+    add an explicit --camera to argv - same reasoning as the
+    Auto-model-size test above: --camera's own CLI default is already
+    "front", so adding it explicitly here would be redundant, and
+    would silently stop tracking bv_generate.py's own default if it
+    ever changed."""
+
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return bv_generate_module.EXIT_OK
+
+    monkeypatch.setattr(bv_generate_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_generate(
+        **_generate_kwargs(describe_scene=True, camera="front")
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].camera == "front"
 
 
 def test_start_bv_generate_ignore_lock_defaults_to_false(monkeypatch):

@@ -764,6 +764,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         diarize: bool = Form(False),
         hf_token: str = Form(""),
         srt: bool = Form(False),
+        describe_scene: bool = Form(False),
+        scene_model: str = Form(""),
+        camera: str = Form("front"),
         overwrite: bool = Form(False),
         dry_run: bool = Form(False),
         ignore_lock: bool = Form(False),
@@ -781,6 +784,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         language = language.strip() or None
         model_size = model_size.strip() or None
         hf_token = hf_token.strip() or None
+        scene_model = scene_model.strip() or None
         from_ = from_.strip() or None
         until = until.strip() or None
         timestamp = timestamp.strip() or None
@@ -791,10 +795,16 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # re-renders with a friendly error instead of parse_args()
         # raising SystemExit(2) inside this route.
         error = None
-        if not (extract_audio or get_duration or transcribe or translate):
+        if not (
+            extract_audio
+            or get_duration
+            or transcribe
+            or translate
+            or describe_scene
+        ):
             error = (
                 "Select at least one action: extract audio, compute "
-                "duration, transcribe, or translate."
+                "duration, transcribe, translate, or describe scene."
             )
         elif diarize and not (transcribe or translate):
             error = "Label speakers requires transcribe or translate."
@@ -826,6 +836,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             diarize=diarize,
             hf_token=hf_token,
             srt=srt,
+            describe_scene=describe_scene,
+            scene_model=scene_model,
+            camera=camera,
             overwrite=overwrite,
             dry_run=dry_run,
             ignore_lock=ignore_lock,

@@ -515,6 +515,9 @@ class JobRunner:
         diarize: bool,
         hf_token: str | None,
         srt: bool,
+        describe_scene: bool,
+        scene_model: str | None,
+        camera: str,
         overwrite: bool,
         dry_run: bool,
         ignore_lock: bool,
@@ -573,6 +576,12 @@ class JobRunner:
             argv += ["--hf-token", hf_token]
         if srt:
             argv.append("--srt")
+        if describe_scene:
+            argv.append("--describe-scene")
+        if scene_model:
+            argv += ["--scene-model", scene_model]
+        if camera and camera != "front":
+            argv += ["--camera", camera]
         if overwrite:
             argv.append("--overwrite")
         if dry_run:

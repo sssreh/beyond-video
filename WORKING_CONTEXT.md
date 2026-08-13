@@ -9895,3 +9895,54 @@ re-rendered directly through a real `jinja2.Environment` (same
 FastAPI-not-installed workaround used throughout this session) to
 confirm no template syntax errors and that the new checkbox/copy
 actually appear in the output.
+
+## Follow-up: --describe-scene missing from bv-web's Generate assets form (2026-08-13)
+
+Christer: "in bv-web , bv-generate is missing assets like --describe-scene --srt".
+Checked both: `--srt` was already wired (Optional group, "Also write
+SRT subtitles" checkbox, present since the original bv-generate/
+bv-export web-wiring commit). `--describe-scene` - along with its two
+companion flags `--scene-model` and `--camera` - genuinely had no web
+equivalent at all; those three only existed in bv-scribe's own web
+wiring (a separate, scene-description-only CLI), never in
+bv-generate's.
+
+Fixed by extending the same three layers again:
+
+- `JobRunner.start_bv_generate()` gained `describe_scene: bool`,
+  `scene_model: str | None`, `camera: str` keywords. `--camera` is
+  only appended to argv when it differs from `"front"` (the CLI's own
+  default) - same "don't restate the CLI default" convention already
+  used for `model_size=None`/Auto, so the replicate-command line stays
+  minimal and never drifts from bv_generate.py's own default if that
+  default ever changes.
+- `/jobs/bv-generate`'s POST route gained matching form fields, and
+  its "at least one action" cross-field check (mirroring
+  `bv_generate.parse_args()`'s own) now also accepts `describe_scene`
+  as a valid standalone action, with the error message text updated
+  to mention it.
+- `job_new_bv_generate.html` gained a "Describe scene + read
+  on-screen text" checkbox in the existing "What to generate" row,
+  plus a new "Scene description" option-group (Camera direction
+  select: Front/Rear/Both, Vision-language model text field) placed
+  right after the Whisper Defaults group, with a hint noting it's only
+  used when the checkbox above is checked. The page's own intro
+  paragraph now mentions scene description and cross-references
+  `/jobs/bv-scribe` ("Describe scenes") for the fuller tuning-flag set
+  bv-scribe exposes that bv-generate deliberately doesn't (sensible
+  defaults only, for running scene description alongside other
+  bv-generate actions in one pass - matches `--describe-scene`'s own
+  CLI help text).
+
+Verified via the harness: `_generate_kwargs()` gained
+`describe_scene=False, scene_model=None, camera="front"` defaults;
+the existing `test_start_bv_generate_flags_reach_parsed_args` test now
+also passes `describe_scene=True, scene_model="custom-vlm",
+camera="rear"` and asserts all three reach parsed args; a new
+`test_start_bv_generate_camera_default_omits_flag_for_cli_parity` test
+proves `camera="front"` does not add an explicit `--camera` to argv.
+Full `test_jobs.py` (85 tests) passes with no regressions.
+`job_new_bv_generate.html` re-rendered through a real
+`jinja2.Environment` across populated/empty-cameras/error states,
+confirming the new checkbox, select, and text field all appear with
+no template syntax errors.
