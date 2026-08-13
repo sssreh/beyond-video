@@ -31,14 +31,22 @@ def _split_assets(parser: argparse.ArgumentParser, raw: str) -> list[str]:
     validate every name against LOCKABLE_ASSETS, using parser.error()
     for a clean CLI message (rather than a raw exception) on an
     unknown name - the same argparse-time-validation pattern
-    bv-generate's own parse_args() uses for its cross-flag checks."""
+    bv-generate's own parse_args() uses for its cross-flag checks.
+
+    "all" is a convenience alias for every name in LOCKABLE_ASSETS -
+    if present anywhere in the comma-separated list, it wins outright
+    (any other names alongside it are redundant, not an error) rather
+    than being treated as an unknown asset name itself."""
 
     names = [part.strip() for part in raw.split(",") if part.strip()]
+    if "all" in names:
+        return sorted(LOCKABLE_ASSETS)
+
     unknown = set(names) - LOCKABLE_ASSETS
     if unknown:
         parser.error(
             f"unknown asset name(s): {', '.join(sorted(unknown))} - "
-            f"valid names: {', '.join(sorted(LOCKABLE_ASSETS))}"
+            f"valid names: {', '.join(sorted(LOCKABLE_ASSETS))}, or 'all'"
         )
     return names
 
@@ -113,8 +121,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Mark these asset types as done for the selected range - "
             "comma-separated, from: "
-            f"{', '.join(sorted(LOCKABLE_ASSETS))}. 'translate' covers "
-            "every target language, not one lock per language."
+            f"{', '.join(sorted(LOCKABLE_ASSETS))}, or 'all' for every "
+            "one of them. 'translate' covers every target language, "
+            "not one lock per language."
         ),
     )
 
@@ -124,8 +133,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Remove these asset types from the lock for the selected "
-            "range (comma-separated). A name that was never locked "
-            "for that exact range is silently ignored, not an error."
+            "range (comma-separated, or 'all'). A name that was never "
+            "locked for that exact range is silently ignored, not an "
+            "error."
         ),
     )
 

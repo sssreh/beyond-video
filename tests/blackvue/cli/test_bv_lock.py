@@ -66,9 +66,75 @@ def test_parse_args_rejects_an_unknown_asset_name():
         )
 
 
+def test_parse_args_all_expands_to_every_lockable_asset():
+    from blackvue.core.lock import LOCKABLE_ASSETS
+
+    args = bv_lock.parse_args(
+        ["archive", "--timestamp", "2019", "--lock-assets", "all"]
+    )
+
+    assert args.lock_assets == sorted(LOCKABLE_ASSETS)
+
+
+def test_parse_args_all_wins_even_alongside_other_names():
+    from blackvue.core.lock import LOCKABLE_ASSETS
+
+    args = bv_lock.parse_args(
+        [
+            "archive",
+            "--timestamp",
+            "2019",
+            "--lock-assets",
+            "transcribe,all",
+        ]
+    )
+
+    assert args.lock_assets == sorted(LOCKABLE_ASSETS)
+
+
+def test_parse_args_unlock_assets_also_accepts_all():
+    from blackvue.core.lock import LOCKABLE_ASSETS
+
+    args = bv_lock.parse_args(
+        ["archive", "--timestamp", "2019", "--unlock-assets", "all"]
+    )
+
+    assert args.unlock_assets == sorted(LOCKABLE_ASSETS)
+
+
 # ---------------------------------------------------------------------------
 # _run
 # ---------------------------------------------------------------------------
+
+
+def test_run_lock_all_locks_every_lockable_asset(tmp_path):
+    from blackvue.core.lock import LOCKABLE_ASSETS
+
+    args = bv_lock.parse_args(
+        [str(tmp_path), "--timestamp", "2019", "--lock-assets", "all"]
+    )
+
+    exit_code = bv_lock._run(args)
+
+    assert exit_code == bv_lock.EXIT_OK
+    manifest = load_lock_manifest(tmp_path)
+    assert manifest.entries[0].assets == LOCKABLE_ASSETS
+
+
+def test_run_unlock_all_clears_every_lockable_asset(tmp_path):
+    lock_args = bv_lock.parse_args(
+        [str(tmp_path), "--timestamp", "2019", "--lock-assets", "all"]
+    )
+    bv_lock._run(lock_args)
+
+    unlock_args = bv_lock.parse_args(
+        [str(tmp_path), "--timestamp", "2019", "--unlock-assets", "all"]
+    )
+    exit_code = bv_lock._run(unlock_args)
+
+    assert exit_code == bv_lock.EXIT_OK
+    manifest = load_lock_manifest(tmp_path)
+    assert manifest.entries == []
 
 
 def test_run_lock_writes_a_manifest_entry(tmp_path):
