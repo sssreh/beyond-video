@@ -72,7 +72,7 @@ from .trips import GPX_FILENAME
 from .trips import TripAssets
 from .trips import TripCache
 from .trips import first_gpx_point
-from .trips import scan_trips
+from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
 from ..core.camera_config import CameraConfigCache
@@ -132,11 +132,17 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     """Build the bv-web FastAPI app.
 
     `target` is a bv-export --target directory (the same one passed
-    to `bv-export --target ...`) - trips are discovered by scanning
-    its subfolders for trip.log (see trips.scan_trips()), freshly on
-    every request rather than cached, so a trip bv-export finishes
-    writing while the app is already running shows up without a
-    restart.
+    to `bv-export --target ...`) - but no longer the *only* place
+    trips are found. Every camera set up via bv-config may have its
+    own configured Target (CameraConfig.target - see bv-config's own
+    "Target" prompt) that bv-export writes to by default, and there's
+    no requirement they share one; `target` here now serves as the
+    *fallback*, scanned flat alongside every configured camera's own
+    Target directory (see trips.scan_all_trips(), and the
+    "Thats a dilemma"/task #762 discussion in WORKING_CONTEXT.md this
+    resolves). Trips are discovered freshly on every request rather
+    than cached, so a trip bv-export finishes writing while the app
+    is already running shows up without a restart.
 
     `users_config` is the already-loaded set of accounts (see
     users.load_users_config()) - this app itself never creates or
@@ -295,7 +301,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
     @app.get("/trips", response_class=HTMLResponse)
     async def trip_list(request: Request, user: User = Depends(require_login)):
-        trips = scan_trips(target)
+        trips = scan_all_trips(default_config_dir(), target)
         return templates.TemplateResponse(
             request, "trip_list.html", {"user": user, "trips": trips}
         )
@@ -304,7 +310,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def trip_detail(
         request: Request, trip_id: str, user: User = Depends(require_login)
     ):
-        trip = _find_trip(app.state.trip_cache, target, trip_id)
+        trip = _find_trip(
+            app.state.trip_cache, app.state.camera_config_cache, target, trip_id
+        )
         return templates.TemplateResponse(
             request, "trip_detail.html", {"user": user, "trip": trip}
         )
@@ -313,7 +321,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def trip_location(
         request: Request, trip_id: str, user: User = Depends(require_login)
     ):
-        trip = _find_trip(app.state.trip_cache, target, trip_id)
+        trip = _find_trip(
+            app.state.trip_cache, app.state.camera_config_cache, target, trip_id
+        )
 
         coordinates = None
         google_maps_url = None
@@ -378,7 +388,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # Google Earth Pro opens trip.gpx directly (File > Open), but
         # Google Earth Web only accepts KML/KMZ via its own Import
         # flow - see kml_writer.gpx_to_kml()'s own docstring.
-        trip = _find_trip(app.state.trip_cache, target, trip_id)
+        trip = _find_trip(
+            app.state.trip_cache, app.state.camera_config_cache, target, trip_id
+        )
         if not trip.gpx:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -392,9 +404,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 detail="no valid GPS fix found in this trip's GPS track",
             )
 
-        # trip_id may now be "camera-id/trip-folder" (see scan_trips()'s
-        # own docstring) - the download filename only wants the trip's
-        # own folder name, not a path, so take the last "/" segment.
+        # trip_id may now be "camera-id/trip-folder" (see
+        # scan_all_trips()'s own docstring) - the download filename
+        # only wants the trip's own folder name, not a path, so take
+        # the last "/" segment.
         kml_filename = trip_id.rsplit("/", 1)[-1]
         return Response(
             content=kml,
@@ -410,7 +423,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def trip_file(
         trip_id: str, filename: str, user: User = Depends(require_login)
     ):
-        trip = _find_trip(app.state.trip_cache, target, trip_id)
+        trip = _find_trip(
+            app.state.trip_cache, app.state.camera_config_cache, target, trip_id
+        )
         if filename not in trip.known_filenames:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
@@ -1819,9 +1834,9 @@ def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:
     `camera_id` comes straight from the URL path and is therefore
     untrusted - reject anything that could walk outside
     default_config_dir() before it ever reaches config_path(), same
-    guard _find_trip() applies to trip_id below. A camera id that
-    doesn't have a config file at all (never set up, or a typo) 404s
-    the same way a bad trip id does.
+    guard _find_trip() applies to each segment of trip_id below. A
+    camera id that doesn't have a config file at all (never set up,
+    or a typo) 404s the same way a bad trip id does.
 
     Goes through `cache` (see CameraConfigCache's own docstring in
     core/camera_config.py) rather than calling load_camera_config()
@@ -1898,27 +1913,54 @@ def _find_job(job_runner: JobRunner, job_id: str) -> Job:
     return job
 
 
-def _find_trip(cache: TripCache, target: Path, trip_id: str) -> TripAssets:
-    """Resolve a trip id to a TripAssets inside `target`, 404ing if it
-    doesn't exist or isn't actually a trip folder. `trip_id` comes
-    straight from the URL path and is therefore untrusted - reject
-    anything that could walk outside `target` before ever touching
-    the filesystem with it.
+def _resolve_camera_target(cache: CameraConfigCache, camera_id: str) -> Path | None:
+    """Resolve a camera id to its configured Target directory
+    (CameraConfig.target - the same directory bv-export --target
+    defaults to for that camera), or None if the camera doesn't have
+    a config at all, or has one but never set a Target (see
+    bv-config's own "Target" prompt, which is optional).
 
-    `trip_id` is either a plain folder name (the common case: the
-    trip sits directly under `target`) or exactly one "camera-id/
-    folder-name" segment pair (see scan_trips()'s own docstring for
-    why a trip can be nested one level under `target` - each segment
-    still goes through the same "no dots, no backslash" check a flat
-    id always has). Anything with more than one "/", a backslash, or
-    an empty/"."/".." segment is rejected outright - "\\" is blocked
+    Mirrors _find_camera_archive()'s own pattern (same cache, same
+    default_config_dir()) - but returns None instead of 404ing on a
+    miss, since callers here (_find_trip() below) use it to
+    distinguish "no such camera-scoped trip" from "malformed id",
+    not to serve a dedicated per-camera route of its own."""
+
+    try:
+        config = cache.get(default_config_dir(), camera_id)
+    except CameraConfigError:
+        return None
+    return config.target
+
+
+def _find_trip(
+    trip_cache: TripCache,
+    camera_config_cache: CameraConfigCache,
+    fallback_target: Path,
+    trip_id: str,
+) -> TripAssets:
+    """Resolve a trip id to a TripAssets, 404ing if it doesn't exist
+    or isn't actually a trip folder. `trip_id` comes straight from
+    the URL path and is therefore untrusted - reject anything that
+    could walk outside the resolved target directory before ever
+    touching the filesystem with it.
+
+    `trip_id` is either a plain folder name - resolved under
+    `fallback_target`, same as before scan_all_trips() existed - or
+    exactly one "camera-id/folder-name" segment pair, resolved
+    through that camera's own configured Target via
+    _resolve_camera_target() (see scan_all_trips()'s own docstring
+    for why a trip can be identified this way). Each segment still
+    goes through the same "no dots, no backslash" check a flat id
+    always has. Anything with more than one "/", a backslash, or an
+    empty/"."/".." segment is rejected outright - "\\" is blocked
     unconditionally since it's never a legitimate part of an id on
     any platform this runs on, only ever an attempted escape.
 
-    Goes through `cache` (see TripCache's own docstring) rather than
-    calling scan_trip() directly - trip_file() calls this once per
-    HTTP range request, and a video player issues many of those per
-    second while seeking/buffering."""
+    Goes through `trip_cache` (see TripCache's own docstring) rather
+    than calling scan_trip() directly - trip_file() calls this once
+    per HTTP range request, and a video player issues many of those
+    per second while seeking/buffering."""
 
     segments = trip_id.split("/")
     if (
@@ -1930,7 +1972,17 @@ def _find_trip(cache: TripCache, target: Path, trip_id: str) -> TripAssets:
             status_code=status.HTTP_404_NOT_FOUND, detail="trip not found"
         )
 
-    trip = cache.get(target, trip_id)
+    if len(segments) == 2:
+        camera_id, trip_folder = segments
+        camera_target = _resolve_camera_target(camera_config_cache, camera_id)
+        if camera_target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="trip not found"
+            )
+        trip = trip_cache.get(camera_target, trip_folder, id_=trip_id)
+    else:
+        trip = trip_cache.get(fallback_target, trip_id)
+
     if trip is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="trip not found"

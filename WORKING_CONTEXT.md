@@ -10064,3 +10064,106 @@ attached: **resolve this before starting real exports** - i.e. revisit
 and decide (build the fully general version, or accept the current
 shared-parent-directory fix as good enough) before bv-export sees
 production use across multiple cameras, not left open indefinitely.
+
+## Resolved: bv-web now reads each camera's own Target directory (task #762-771)
+
+Follow-up to (and resolution of) the "Note: unresolved..." entry
+above. Christer's own recommendation request - "what is your thoughts
+about it" - led to proposing the fully general fix (read every
+camera's own configured Target, merge across all of them); Christer
+agreed: "I agree, the problem is that bv-export allows us to specify
+any directory we want. But then again i feel its our own
+responsibility under our freedom to manage that." - then gave the
+explicit go-ahead with one more requirement: "Yes, but maybe with a
+little warning that if you specify --target , you are on your own
+trip, pun intended."
+
+**What shipped.** `trips.py` gained `scan_all_trips(config_dir,
+fallback_target)`: for every camera `list_camera_ids()` finds, loads
+its config and - if it has a Target set - scans that directory with
+`scan_trips()`, re-identifying each trip as `"<camera-id>/<trip-id>"`.
+`fallback_target` (bv-web's own positional `TARGET` argument, left
+otherwise unchanged) is still scanned flat and unprefixed, covering
+both "no camera config involved at all" and "trips exported with an
+explicit `--target` override that doesn't match the camera's own
+default" (see the bv-export warning below). Results from both sources
+are deduped by resolved absolute folder path. `scan_trips()` itself
+reverted to a flat, single-level scan - the one-level-recursion trick
+from the previous fix (task #756) is gone, since keeping both
+mechanisms alive at once would have made a two-segment trip id
+ambiguous between "camera_id/trip" (real config resolution) and
+"subfolder/trip" (the old recursion guess); now a two-segment id has
+exactly one meaning app-wide.
+
+`app.py` gained `_resolve_camera_target()` (mirrors
+`_find_camera_archive()`'s own pattern: same `CameraConfigCache`,
+returns `None` on a missing camera or an unset Target rather than
+404ing directly). `_find_trip()` was rewritten around it: a
+single-segment id resolves under the fallback target exactly as
+before; a two-segment `"camera_id/trip_folder"` id resolves the
+camera's own Target via `_resolve_camera_target()` first, then looks
+the trip up inside it. `TripCache.get()` gained an `id_` keyword
+(defaults to the relative path, same as before) so the cache key can
+stay the full `"camera_id/trip_folder"` id even though the filesystem
+lookup only ever uses the trailing `trip_folder` relative to that
+camera's own resolved target - without this, two different cameras'
+trip folders sharing a timestamp-derived name (a realistic scenario)
+would have collided in the cache.
+
+`bv-export` (`_run()` in `cli/bv_export.py`) gained the requested
+warning: when `--target` is given explicitly *and* differs from the
+resolved camera's own configured Target, it prints a `say()` note
+(not an error - explicit `--target` stays fully supported, "our own
+responsibility") that `bv-web`'s discovery won't find this export
+automatically, closing with Christer's own pun: "you're on your own
+trip (pun intended)." Only fires when there's actually a camera
+config with a configured Target to diverge from - a bare path with no
+camera config, or an explicit `--target` that happens to match the
+camera's own default, prints nothing.
+
+**Deliberately NOT changed:** `bv-web serve`'s CLI shape (`TARGET`
+stays a required positional, unchanged - Docker's `CMD` already bakes
+it in) and `create_app()`'s signature - the fallback-target parameter
+just means something slightly different now ("shared/flat fallback,"
+not "the only place trips live"), which needed a docstring update but
+no signature change. This kept the change scoped to `trips.py`/
+`app.py`/`bv_export.py` rather than touching the CLI or Docker
+deployment surface at all.
+
+**Sandbox note.** This sandbox has neither Python 3.11's real
+`tomllib` nor `tomli` installed, and no network access to install
+either - `save_camera_config()`/`load_camera_config()` were
+previously untested here for that reason. Added a minimal
+`tomllib` stub (`/tmp/stub_stdlib/tomllib.py`, harness-only, not part
+of the repo) that parses the simple `key = "json-escaped string"` +
+`[[endpoint]]` shape `save_camera_config()` actually writes - enough
+to exercise `scan_all_trips()`'s camera-config-reading tests for
+real rather than only via `ast.parse`. Also extended the harness's
+`FakeCapsys` (also `/tmp`-only, not part of the repo) to actually
+redirect `sys.stdout`/`sys.stderr` during a test body - it previously
+only stubbed out `readouterr()`'s return shape without ever capturing
+real output, silently passing/failing capsys assertions vacuously.
+
+**Verification.** `test_trips.py`: 30/30 passing (5 obsolete
+recursion-specific tests removed, replaced with 6 new
+`scan_all_trips()` tests covering camera-only discovery, camera+
+fallback combination, no-Target-configured skip, a corrupt sibling
+config not breaking discovery of the rest, dedup when a camera's
+Target IS the fallback, and the fully-empty case). `test_bv_export.py`:
+126/129 passing - all target-resolution/divergence-warning tests
+(including 3 new ones) pass; the 3 failures
+(`test_bv_export_interactive_prompt_*`) are a pre-existing
+harness-only gap unrelated to this change (interactive `input()`
+monkeypatching), not a regression. `app.py`'s route/helper changes
+verified via `ast.parse` only, same FastAPI-not-installed limitation
+as every other bv-web change this project has made in this sandbox.
+
+Docs: `docs/WEB_ARCHITECTURE.md`'s "Trip list" bullet rewritten to
+describe `scan_all_trips()` and the design history (quoting both
+"Thats a dilemma" and Christer's "every Camera should have the
+option..." framing); the archive-browser cross-reference to
+`_find_trip()`'s guard updated. `docs/man/bv-export.md`'s `--target`
+row now mentions the divergence note. `docs/DEPLOY.md` gained one
+clarifying sentence: its documented shared-flat-`/data/trips`
+workflow never sets a camera Target, so it never triggers the new
+warning.

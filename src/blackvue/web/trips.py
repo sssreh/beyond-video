@@ -25,8 +25,14 @@ import re
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+from ..core.camera_config import CameraConfigError
+from ..core.camera_config import config_path
+from ..core.camera_config import list_camera_ids
+from ..core.camera_config import load_camera_config
 
 TRIP_LOG_FILENAME = "trip.log"
 
@@ -65,12 +71,12 @@ class TripAssets:
 
     folder: Path
     # The URL-safe identifier bv-web uses for this trip. Set
-    # explicitly by scan_trip()/scan_trips() rather than derived here
-    # as folder.name - a trip nested one level under a camera-id
-    # subfolder (see scan_trips()'s own docstring for why that
-    # happens) needs an id like "Kirby/trip_..." to stay unique and to
-    # round-trip back through `target / id` to the right folder;
-    # folder.name alone would only ever be the last path component.
+    # explicitly by scan_trip()/scan_all_trips() rather than derived
+    # here as folder.name - a trip found under a specific camera's own
+    # Target directory (see scan_all_trips()'s own docstring) needs an
+    # id like "Kirby/trip_..." to stay unique across cameras and to
+    # resolve back through that camera's config; folder.name alone
+    # would only ever be the last path component.
     id: str
     label: str
     videos: tuple[str, ...] = field(default_factory=tuple)
@@ -176,11 +182,11 @@ def scan_trip(folder: Path, *, id_: str | None = None) -> TripAssets | None:
     like a trip folder (no trip.log).
 
     `id_` defaults to `folder.name` (the common case: `folder` sits
-    directly under --target) - pass it explicitly when `folder` is one
-    level deeper than that (see scan_trips()'s own docstring), so the
-    returned TripAssets.id is the full relative path
-    ("CameraId/trip_...") needed to find it again, not just the
-    trailing folder name."""
+    directly under a --target directory) - pass it explicitly when the
+    returned TripAssets.id needs to be something else, e.g. the full
+    "CameraId/trip_..." id scan_all_trips() prefixes trips with, so
+    it can be found again through that camera's own config rather
+    than just by trailing folder name."""
 
     trip_log_path = folder / TRIP_LOG_FILENAME
     if not trip_log_path.is_file():
@@ -214,22 +220,23 @@ def scan_trip(folder: Path, *, id_: str | None = None) -> TripAssets | None:
 
 def scan_trips(target: Path) -> list[TripAssets]:
     """Scan `target` (a bv-export --target directory) for trips,
-    newest first. A `target` that doesn't exist yet (e.g. bv-export
-    hasn't been run) is read as zero trips rather than an error -
-    bv-web's trip list should just look empty, not crash.
+    newest first - every immediate subfolder of `target` that looks
+    like a trip (has trip.log), flat, one level only. A `target` that
+    doesn't exist yet (e.g. bv-export hasn't been run) is read as zero
+    trips rather than an error - bv-web's trip list should just look
+    empty, not crash.
 
-    Checks every immediate subfolder of `target` first; any subfolder
-    that isn't itself a trip (no trip.log) is checked one level
-    deeper too. This exists for one specific layout: bv-config's own
-    wizard suggests each camera's Target as a sibling of its Archive,
-    nested by camera id (`.../trips/<camera-id>`, see
-    default_target_dir() in core/camera_config.py) - so a `bv-web
-    serve` pointed at the shared parent (`.../trips`) would otherwise
-    only ever see whichever single camera's folder happened to match
-    exactly, never the trips one level down inside each camera's own
-    subfolder. Deliberately only one level, not arbitrarily deep - it
-    covers this one real layout without turning into an unbounded
-    directory walk over whatever else might live under `target`."""
+    Deliberately flat: a camera-id-nested layout
+    (`.../trips/<camera-id>/<trip>`) is scan_all_trips()'s job to
+    combine, not this function's - see that function's own
+    docstring for why a single flat scan isn't enough to see every
+    camera's trips, and why the two used to be conflated here (one
+    level of recursion into non-trip subfolders) before that existed.
+    Kept flat and single-purpose so a two-segment trip id has exactly
+    one meaning app-wide (see app.py's _find_trip()): "camera_id/
+    trip_folder", resolved through that camera's own config, never
+    "arbitrary subfolder/trip_folder" guessed by walking the
+    filesystem."""
 
     if not target.is_dir():
         return []
@@ -238,20 +245,73 @@ def scan_trips(target: Path) -> list[TripAssets]:
     for entry in sorted(target.iterdir()):
         if not entry.is_dir():
             continue
-
         trip = scan_trip(entry)
         if trip is not None:
             trips.append(trip)
-            continue
 
-        for nested_entry in sorted(entry.iterdir()):
-            if not nested_entry.is_dir():
+    trips.sort(key=lambda trip: trip.label, reverse=True)
+    return trips
+
+
+def scan_all_trips(config_dir: Path, fallback_target: Path) -> list[TripAssets]:
+    """Scan every configured camera's own Target directory for trips,
+    plus `fallback_target` (bv-web's own positional TARGET argument),
+    combined into one newest-first list.
+
+    Each camera set up via bv-config may have its own Target directory
+    (CameraConfig.target, the same value bv-export --target defaults
+    to for that camera - see core/camera_config.py) - and nothing
+    requires every camera to share one. Reading only `fallback_target`
+    (the old, pre-task-762 behavior) meant bv-web only ever saw
+    whichever single directory happened to be passed to `bv-web
+    serve`, silently missing any camera exporting somewhere else.
+
+    Trips found under a camera's own Target are re-identified as
+    "<camera-id>/<trip-id>" (see TripAssets.id's own docstring) so
+    they resolve back through that camera's config rather than being
+    looked up under `fallback_target` - a trip whose folder name
+    happens to collide with one from another camera (a realistic
+    scenario: trip folder names are timestamp-derived) still stays
+    unambiguous, since the id carries which camera it came from.
+
+    `fallback_target` is still scanned flat, unprefixed - the
+    "no camera config at all, just point bv-web straight at a shared
+    export directory" case documented in docs/DEPLOY.md's own example
+    pipeline, and the landing spot for anything exported with an
+    explicit `bv-export --target` override that doesn't match any
+    camera's own configured default (see that flag's own "you're on
+    your own trip" warning in bv_export.py) - bv-web still shows it,
+    just without a camera prefix, exactly as before this function
+    existed.
+
+    A trip folder is only ever listed once even if it's reachable
+    both ways (e.g. a camera's Target literally *is*
+    `fallback_target`) - deduped by each trip's resolved absolute
+    folder path."""
+
+    seen_folders: set[Path] = set()
+    trips: list[TripAssets] = []
+
+    for camera_id in list_camera_ids(config_dir):
+        try:
+            config = load_camera_config(config_path(config_dir, camera_id))
+        except CameraConfigError:
+            continue
+        if config.target is None:
+            continue
+        for trip in scan_trips(config.target):
+            folder = trip.folder.resolve()
+            if folder in seen_folders:
                 continue
-            nested_trip = scan_trip(
-                nested_entry, id_=f"{entry.name}/{nested_entry.name}"
-            )
-            if nested_trip is not None:
-                trips.append(nested_trip)
+            seen_folders.add(folder)
+            trips.append(replace(trip, id=f"{camera_id}/{trip.id}"))
+
+    for trip in scan_trips(fallback_target):
+        folder = trip.folder.resolve()
+        if folder in seen_folders:
+            continue
+        seen_folders.add(folder)
+        trips.append(trip)
 
     trips.sort(key=lambda trip: trip.label, reverse=True)
     return trips
@@ -290,10 +350,26 @@ class TripCache:
         self._ttl_seconds = ttl_seconds
         self._entries: dict[str, tuple[TripAssets, float]] = {}
 
-    def get(self, target: Path, trip_id: str) -> TripAssets | None:
-        """Same result as scan_trip(target / trip_id), but reused
-        from cache if it was resolved within the last ttl_seconds."""
+    def get(
+        self, target: Path, relative_path: str, *, id_: str | None = None
+    ) -> TripAssets | None:
+        """Same result as scan_trip(target / relative_path), but
+        reused from cache if it was resolved within the last
+        ttl_seconds.
 
+        `id_` defaults to `relative_path` (the common flat-target
+        case) - pass it explicitly when the two differ, as they do
+        for a trip resolved through its own camera's Target directory
+        (see app.py's _find_trip()): `relative_path` is just the trip
+        folder's own name relative to *that camera's* target, but
+        `id_` is the full "camera_id/trip_folder" id the rest of
+        bv-web knows it by. Caching keyed on `id_` rather than
+        `relative_path` matters here - two different cameras'
+        trip folders can share the same timestamp-derived name, and
+        without this they'd collide in the cache and one camera's
+        trip would occasionally serve up the other's."""
+
+        trip_id = id_ if id_ is not None else relative_path
         now = time.monotonic()
 
         cached = self._entries.get(trip_id)
@@ -302,7 +378,7 @@ class TripCache:
             if now < expires_at:
                 return trip
 
-        trip = scan_trip(target / trip_id, id_=trip_id)
+        trip = scan_trip(target / relative_path, id_=trip_id)
         if trip is not None:
             self._entries[trip_id] = (trip, now + self._ttl_seconds)
         else:

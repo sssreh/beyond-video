@@ -1,5 +1,9 @@
+from blackvue.core.camera_config import CameraConfig
+from blackvue.core.camera_config import config_path
+from blackvue.core.camera_config import save_camera_config
 from blackvue.web.trips import TripCache
 from blackvue.web.trips import first_gpx_point
+from blackvue.web.trips import scan_all_trips
 from blackvue.web.trips import scan_trip
 from blackvue.web.trips import scan_trips
 
@@ -268,74 +272,113 @@ def test_scan_trip_accepts_an_explicit_id_override(tmp_path):
     assert trip.label == "trip_20260715_133458_20260715_141235"
 
 
-def test_scan_trips_finds_trips_nested_one_level_under_a_camera_subfolder(
-    tmp_path,
-):
-    target = tmp_path / "trips"
-    target.mkdir()
+# ---------------------------------------------------------------------------
+# scan_all_trips() - combines every configured camera's own Target
+# directory with a flat fallback_target, added for task #762/#765:
+# each camera may have its own Target (see bv-config's "Target" prompt),
+# and nothing requires them to share one - see the function's own
+# docstring, and the "Thats a dilemma"/"you're on your own trip"
+# discussion in WORKING_CONTEXT.md this resolves.
+# ---------------------------------------------------------------------------
+
+
+def _save_camera(config_dir, id_, target=None, archive=None):
+    save_camera_config(
+        config_path(config_dir, id_),
+        CameraConfig(
+            id=id_,
+            name=id_,
+            archive=archive or (config_dir / "archive" / id_),
+            target=target,
+        ),
+    )
+
+
+def test_scan_all_trips_finds_trips_under_a_cameras_own_target(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    camera_target = tmp_path / "Kirby-trips"
+    _save_camera(config_dir, "Kirby", target=camera_target)
     _write_trip_log(
-        target / "Kirby" / "trip_20260715_133458_20260715_141235",
+        camera_target / "trip_20260715_133458_20260715_141235",
         label="trip_20260715_133458_20260715_141235",
     )
 
-    trips = scan_trips(target)
+    trips = scan_all_trips(config_dir, tmp_path / "unused_fallback")
 
     assert len(trips) == 1
     assert trips[0].id == "Kirby/trip_20260715_133458_20260715_141235"
     assert trips[0].label == "trip_20260715_133458_20260715_141235"
 
 
-def test_scan_trips_combines_flat_and_nested_trips(tmp_path):
-    target = tmp_path / "trips"
-    target.mkdir()
-    # A trip directly under target (the flat/shared-folder layout)...
+def test_scan_all_trips_combines_camera_and_fallback_trips(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    camera_target = tmp_path / "Kirby-trips"
+    _save_camera(config_dir, "Kirby", target=camera_target)
     _write_trip_log(
-        target / "trip_20260701_000000_20260701_010000",
-        label="trip_20260701_000000_20260701_010000",
-    )
-    # ...alongside one nested under a camera-id subfolder (the
-    # bv-config-wizard-default layout) - both must show up together.
-    _write_trip_log(
-        target / "Kirby" / "trip_20260715_000000_20260715_010000",
+        camera_target / "trip_20260715_000000_20260715_010000",
         label="trip_20260715_000000_20260715_010000",
     )
 
-    trips = scan_trips(target)
+    fallback_target = tmp_path / "shared-trips"
+    _write_trip_log(
+        fallback_target / "trip_20260701_000000_20260701_010000",
+        label="trip_20260701_000000_20260701_010000",
+    )
+
+    trips = scan_all_trips(config_dir, fallback_target)
 
     ids = {trip.id for trip in trips}
     assert ids == {
-        "trip_20260701_000000_20260701_010000",
         "Kirby/trip_20260715_000000_20260715_010000",
+        "trip_20260701_000000_20260701_010000",
     }
-    # Still sorted newest-label-first across both layouts combined.
+    # Still sorted newest-label-first across camera + fallback combined.
     assert trips[0].id == "Kirby/trip_20260715_000000_20260715_010000"
 
 
-def test_scan_trips_does_not_recurse_past_one_level(tmp_path):
-    # A trip two levels deep (camera-id/sub-sub-folder/trip) must NOT be
-    # found - only one level of nesting is supported, matching
-    # default_target_dir()'s own single-level camera-id convention, not
-    # an unbounded directory walk.
-    target = tmp_path / "trips"
-    target.mkdir()
-    _write_trip_log(
-        target / "Kirby" / "2026" / "trip_20260715_133458_20260715_141235",
-        label="trip_20260715_133458_20260715_141235",
-    )
+def test_scan_all_trips_skips_cameras_with_no_target_configured(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    _save_camera(config_dir, "Kirby", target=None)
 
-    assert scan_trips(target) == []
+    assert scan_all_trips(config_dir, tmp_path / "shared-trips") == []
 
 
-def test_scan_trips_ignores_a_camera_subfolder_with_no_trips_inside(
-    tmp_path,
-):
-    target = tmp_path / "trips"
-    target.mkdir()
-    empty_camera_folder = target / "SomeCamera"
-    empty_camera_folder.mkdir()
-    (empty_camera_folder / "not_a_trip.txt").write_bytes(b"")
+def test_scan_all_trips_skips_a_corrupt_camera_config(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "Broken.cfg").write_text("not valid toml [[[")
 
-    assert scan_trips(target) == []
+    fallback_target = tmp_path / "shared-trips"
+    _write_trip_log(fallback_target / "trip_1")
+
+    # A corrupt sibling config shouldn't break discovery of everything
+    # else - same "one bad config can't take down the whole listing"
+    # rule _camera_options() already follows.
+    trips = scan_all_trips(config_dir, fallback_target)
+    assert [trip.id for trip in trips] == ["trip_1"]
+
+
+def test_scan_all_trips_dedupes_a_trip_reachable_both_ways(tmp_path):
+    # A camera whose own Target literally *is* the fallback_target -
+    # the trip must only be listed once, camera-prefixed (found while
+    # scanning the camera first).
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    shared_target = tmp_path / "shared-trips"
+    _save_camera(config_dir, "Kirby", target=shared_target)
+    _write_trip_log(shared_target / "trip_1")
+
+    trips = scan_all_trips(config_dir, shared_target)
+
+    assert len(trips) == 1
+    assert trips[0].id == "Kirby/trip_1"
+
+
+def test_scan_all_trips_returns_empty_list_when_nothing_configured(tmp_path):
+    assert scan_all_trips(tmp_path / "no-config", tmp_path / "no-target") == []
 
 
 def test_trip_cache_resolves_a_nested_trip_id(tmp_path, monkeypatch):

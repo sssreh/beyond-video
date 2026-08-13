@@ -132,6 +132,88 @@ def test_main_explicit_target_overrides_camera_target(tmp_path):
     assert not unused_target.exists()
 
 
+def test_main_warns_when_explicit_target_diverges_from_camera_default(
+    tmp_path, capsys
+):
+    # See WORKING_CONTEXT.md / task #762-763: an explicit --target that
+    # doesn't match the camera's own configured Target is a deliberate
+    # one-off bv-web's per-camera discovery (scan_all_trips()) won't
+    # find on its own - worth a heads-up, not an error.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    config_dir = tmp_path / "config"
+    camera_target = tmp_path / "camera_exports"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(
+            id="Kirby", name="Kirby", archive=archive, target=camera_target
+        ),
+    )
+
+    explicit_target = tmp_path / "explicit_exports"
+    exit_code = main(
+        [
+            "Kirby",
+            "--config-dir", str(config_dir),
+            "--target", str(explicit_target),
+        ]
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "on your own trip" in out
+    assert str(camera_target) in out
+
+
+def test_main_no_divergence_warning_when_target_matches_camera_default(
+    tmp_path, capsys
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    config_dir = tmp_path / "config"
+    target = tmp_path / "exports"
+    save_camera_config(
+        config_path(config_dir, "Kirby"),
+        CameraConfig(id="Kirby", name="Kirby", archive=archive, target=target),
+    )
+
+    # Explicitly passing --target with the exact same value the camera
+    # config already defaults to isn't a divergence - no warning.
+    exit_code = main(
+        [
+            "Kirby",
+            "--config-dir", str(config_dir),
+            "--target", str(target),
+        ]
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "on your own trip" not in out
+
+
+def test_main_no_divergence_warning_for_a_plain_path_with_no_camera_config(
+    tmp_path, capsys
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    _make_video(archive / "20260720_100000_NF.mp4")
+
+    target = tmp_path / "exports"
+    exit_code = main([str(archive), "--target", str(target)])
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "on your own trip" not in out
+
+
 def test_bv_export_creates_a_trip_folder(tmp_path, capsys):
     archive = tmp_path / "archive"
     archive.mkdir()

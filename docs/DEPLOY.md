@@ -114,7 +114,7 @@ If it doesn't load, check DSM's own firewall (**Control Panel -> Security -> Fir
 - **On Christer's PC**, natively, reaching the NAS's `data/archive`/`data/trips` over an SMB-mapped network drive - faster (GPU acceleration, already proven to work there - see `WORKING_CONTEXT.md`'s "GPU auto-detect + CPU fallback" work), good for anything time-sensitive or GPU-hungry (`--transcribe`/`--diarize` in particular).
 - **From a browser**, via `bv-web`'s own "Generate assets"/"Export trips"/"Scene description" job pages - no SSH or `docker-compose run` needed, good for a quick one-off from a phone or another PC. Runs inside the `bv-web` container itself (CPU-only, same as the `bv-cli` path - not GPU-accelerated the way the PC path is), which is why `bv-web`'s image now carries the same full toolchain `bv-cli`'s does (plus the scene-description extra `bv-cli`'s image also has) rather than just the lightweight `web` extra.
 
-All three write into the exact same `data/trips`/`data/archive` folders, so there's nothing to reconcile between them - a trip exported from the NAS CLI, the browser, or the PC shows up in `bv-web` identically.
+All three write into the exact same `data/trips`/`data/archive` folders, so there's nothing to reconcile between them - a trip exported from the NAS CLI, the browser, or the PC shows up in `bv-web` identically. `bv-web` also reads each configured camera's own Trips directory automatically (see `docs/WEB_ARCHITECTURE.md`'s "Trip list"), but this setup never sets one - every `--target` here is explicit, so `bv-export` never prints its "you're on your own trip" divergence note either.
 
 ### On the NAS: the full pipeline
 

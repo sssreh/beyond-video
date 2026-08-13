@@ -1786,6 +1786,29 @@ def _run(
         )
         return 1
 
+    # An explicit --target that diverges from the camera's own
+    # configured default is a deliberate one-off (nothing stops you
+    # exporting to wherever you like), but it's worth flagging: bv-web
+    # discovers trips by reading each configured camera's own Target
+    # (see web/trips.py's scan_all_trips()), not by walking arbitrary
+    # directories - a trip written somewhere else won't show up there
+    # on its own. Only fires when both a camera config *and* a
+    # configured Target exist to diverge from; an explicit --target on
+    # a bare path (no camera config at all) has nothing to compare
+    # against and is never "diverging" from anything.
+    if (
+        args.target is not None
+        and camera_config is not None
+        and camera_config.target is not None
+        and Path(args.target).resolve() != camera_config.target.resolve()
+    ):
+        say(
+            "bv-export: note - this --target differs from "
+            f"{args.path!r}'s configured Target ({camera_config.target}). "
+            "bv-web won't discover trips exported here automatically; "
+            "you're on your own trip (pun intended)."
+        )
+
     try:
         return bv_export(
             path=archive_path,
