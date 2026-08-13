@@ -517,6 +517,7 @@ class JobRunner:
         srt: bool,
         overwrite: bool,
         dry_run: bool,
+        ignore_lock: bool,
         username: str,
     ) -> Job:
         """Start bv-generate as a job against one already-configured
@@ -576,6 +577,8 @@ class JobRunner:
             argv.append("--overwrite")
         if dry_run:
             argv.append("--dry-run")
+        if ignore_lock:
+            argv.append("--ignore-lock")
 
         args = bv_generate.parse_args(argv)
         job = self._new_job(

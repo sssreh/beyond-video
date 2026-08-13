@@ -7,7 +7,9 @@
   translates recordings in one camera's archive - the same actions
   <code>bv-generate</code> runs from the command line. Generated files
   are written next to their source recording and show up in the
-  archive browser and bv-ls.</p>
+  archive browser and bv-ls. Ranges already marked done via
+  <a href="/jobs/bv-lock">Lock ranges</a> are skipped automatically
+  unless Ignore lock (below) is checked.</p>
 </div>
 {% if error %}
 <p class="error">{{ error }}</p>
@@ -132,6 +134,11 @@
       <label class="filter-checkbox">
         <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
         Dry run (show what would be generated, generate nothing)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="ignore_lock" name="ignore_lock" value="true" style="width: auto; margin: 0;">
+        Ignore lock
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Process this range even if <a href="/jobs/bv-lock">Lock ranges</a> marked it as already generated for the requested asset types. Use for the rare case of redoing an otherwise-locked range.</span></span>
       </label>
     </div>
   </div>

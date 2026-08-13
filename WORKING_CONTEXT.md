@@ -9850,3 +9850,48 @@ own setup) across three states - populated camera list, no cameras
 configured yet, and a validation error - confirming no template
 syntax errors and the expected form controls, choices, and nav-tab
 link all appear in the output.
+
+## Follow-up: --ignore-lock missing from bv-web's Generate assets form (2026-08-13)
+
+Christer: "is bv-generate in bv-web missing a --override-lock" - right
+after the bv-lock web-wiring commit above. He was correct: the CLI's
+own `--ignore-lock` flag (built earlier for the bv-lock feature, see
+`bv_generate.py`'s `if not args.ignore_lock:` lock-check) had no
+equivalent anywhere under `src/blackvue/web/` - confirmed by grepping
+`ignore_lock|ignore-lock|override-lock|override_lock` across that
+whole directory and getting zero matches before making any change.
+
+Fixed by following the exact three-layer pattern every other
+bv-generate flag already uses:
+
+- `JobRunner.start_bv_generate()` (`web/jobs.py`) gained a required
+  `ignore_lock: bool` keyword, appending `--ignore-lock` to `argv`
+  when set - same shape as the existing `overwrite`/`dry_run` flags
+  right above it.
+- `/jobs/bv-generate`'s POST route (`web/app.py`) gained an
+  `ignore_lock: bool = Form(False)` parameter, threaded straight
+  through to `start_bv_generate()`. No new validation needed - unlike
+  `--diarize`/`--srt`, `--ignore-lock` has no cross-field requirement.
+- `job_new_bv_generate.html` gained an "Ignore lock" checkbox in the
+  existing Optional group, next to Overwrite/Dry run, with a tooltip
+  explaining it bypasses `/jobs/bv-lock`-marked ranges - plus a
+  one-sentence cross-reference in the page's own intro paragraph
+  ("Ranges already marked done via Lock ranges are skipped
+  automatically unless Ignore lock is checked") and a matching
+  cross-reference already added to `job_new_bv_lock.html` in the
+  previous entry ("Ignore lock option for the rare case of touching
+  an otherwise-locked range again").
+
+Verified via the harness: `_generate_kwargs()` in `test_jobs.py`
+gained `ignore_lock=False` as its default; the existing
+`test_start_bv_generate_flags_reach_parsed_args` test now also passes
+`ignore_lock=True` and asserts `args.ignore_lock is True`; a new
+`test_start_bv_generate_ignore_lock_defaults_to_false` test proves the
+web form's default (unchecked checkbox, so the kwarg is never passed
+as `True`) does not accidentally add `--ignore-lock` to argv. All 6
+`start_bv_generate` tests plus the full `test_jobs.py` file (84 tests)
+pass with no regressions. `job_new_bv_generate.html` was also
+re-rendered directly through a real `jinja2.Environment` (same
+FastAPI-not-installed workaround used throughout this session) to
+confirm no template syntax errors and that the new checkbox/copy
+actually appear in the output.

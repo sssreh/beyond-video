@@ -637,6 +637,7 @@ def _generate_kwargs(**overrides):
         srt=False,
         overwrite=False,
         dry_run=False,
+        ignore_lock=False,
         username="christer",
     )
     kwargs.update(overrides)
@@ -691,6 +692,7 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
             srt=True,
             overwrite=True,
             dry_run=True,
+            ignore_lock=True,
             from_="20260101_000000",
             until="20260102_000000",
         )
@@ -707,8 +709,31 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
     assert args.srt is True
     assert args.overwrite is True
     assert args.dry_run is True
+    assert args.ignore_lock is True
     assert args.from_ == "20260101_000000"
     assert args.until == "20260102_000000"
+
+
+def test_start_bv_generate_ignore_lock_defaults_to_false(monkeypatch):
+    """A separate, minimal test for the default (unchecked-checkbox)
+    case - the flags test above only proves ignore_lock=True reaches
+    args; this proves the web form's default (ignore_lock not passed
+    at all, i.e. _generate_kwargs()'s own default of False) does not
+    accidentally add --ignore-lock to argv."""
+
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return bv_generate_module.EXIT_OK
+
+    monkeypatch.setattr(bv_generate_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_generate(**_generate_kwargs(get_duration=True))
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].ignore_lock is False
 
 
 def test_start_bv_generate_auto_model_size_applies_gpu_aware_default(

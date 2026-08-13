@@ -766,6 +766,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         srt: bool = Form(False),
         overwrite: bool = Form(False),
         dry_run: bool = Form(False),
+        ignore_lock: bool = Form(False),
         from_: str = Form(""),
         until: str = Form(""),
         timestamp: str = Form(""),
@@ -827,6 +828,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             srt=srt,
             overwrite=overwrite,
             dry_run=dry_run,
+            ignore_lock=ignore_lock,
             username=user.username,
         )
         return RedirectResponse(
