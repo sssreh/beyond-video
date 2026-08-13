@@ -9774,3 +9774,79 @@ Docs: new `docs/man/bv-lock.md`, `docs/man/bv-generate.md` updated for
 `--ignore-lock` and the lock-skip behavior, `docs/CLI.md` updated to
 include `bv-lock` in the camera-ID-resolution and timestamp-selection
 command lists.
+
+## Follow-up: --lock-assets/--unlock-assets all alias, and bv-web wiring (2026-08-13)
+
+Two follow-ups to the bv-lock feature above, both from Christer.
+
+**`all` alias.** Asked what `--lock-assets all` would do - nothing,
+it wasn't supported, `_split_assets()` in `cli/bv_lock.py` validated
+strictly against `LOCKABLE_ASSETS` and would have rejected `all` as
+an unknown name. Added: if `all` appears anywhere in the comma-
+separated `--lock-assets`/`--unlock-assets` value it wins outright
+(any other names alongside it are redundant, not an error) and
+expands to `sorted(LOCKABLE_ASSETS)` - the concrete list of real
+asset names, not a literal `"all"` marker stored in the manifest.
+That distinction matters for forward-compatibility: if a new asset
+type gets added to `LOCKABLE_ASSETS` later, an existing lock written
+with `all` before that addition still only contains the assets that
+existed at lock time, so `assets_fully_locked()` correctly does NOT
+treat the new asset type as already covered - a later `bv-generate`
+run asking for it goes through normally, same as any other new-asset-
+type case. Christer confirmed this was exactly the intended behavior
+before it was asked for as a fix. Tests: 5 new cases in
+`test_bv_lock.py` (parse_args expansion alone/mixed-with-other-names,
+`--unlock-assets` accepting it too, and two end-to-end `_run()`
+checks confirming the manifest actually gets/loses every
+`LOCKABLE_ASSETS` name) - all 17 tests in the file re-verified via
+the pytest-execution harness.
+
+**bv-web wiring.** "Now everything new needs to be in bv-web too" -
+a standing instruction, not scoped to just this feature: any new
+CLI command should also get the same web-job-runner treatment
+`bv-ls`/`bv-scribe`/`bv-search` etc. already have. Wired bv-lock in
+following the `bv-ls` precedent exactly (full flag parity, no curated
+subset, since bv-lock has nothing slow or destructive enough to need
+one):
+
+- `JobRunner.start_bv_lock()` in `web/jobs.py` - `mode` is `"lock"`/
+  `"unlock"`/`"list"`, mapping to `--lock-assets`/`--unlock-assets`/
+  `--list` the same way the CLI itself does; `--list` drops the
+  range fields from argv entirely, matching `bv-lock`'s own CLI
+  behavior of ignoring them for `--list`.
+- `GET`/`POST /jobs/bv-lock` routes in `web/app.py` - mode dropdown,
+  From/Until/Timestamp fields (hint text noting they're ignored for
+  List), one checkbox per `LOCKABLE_ASSETS` name plus a dedicated
+  "All asset types" checkbox mapping straight onto the `all` alias
+  above (kept as its own form field rather than folded into the
+  `assets` checkbox group, so the template needs no JS to reconcile
+  "all seven checked individually" vs "the All box checked"). Server-
+  side validation: `lock`/`unlock` need at least one asset (or All);
+  `list` needs neither.
+- New `job_new_bv_lock.html` template (same `option-group`/`field-row`/
+  `checkbox-row`/`help-tip` conventions every other job-trigger form
+  uses) and a "Lock ranges" nav tab in `base.html`, placed right after
+  "Generate assets" since the two features are directly related.
+- `LOCKABLE_ASSETS` imported into `app.py` from `core/lock.py` to
+  build both the template's own checkbox list and the "all" expansion
+  server-side - no vocabulary duplicated between CLI and web.
+
+**Verification.** `ast.parse` on all three changed/new Python files.
+6 new `JobRunner.start_bv_lock()` tests added to `test_jobs.py`
+(lock/unlock/list mode mapping, the `all` alias reaching parsed args,
+time-range fields, and a nonzero-exit-code failure case) - run
+through the pytest-execution harness alongside the full existing
+`test_jobs.py` suite (78 passed, 5 pre-existing failures unrelated to
+this change - two harness gaps around `monkeypatch.setenv()`/
+`pytest.approx()` this sandbox's shim doesn't implement, one around
+`_Raises.value`, none touching bv-lock). No FastAPI installed in this
+sandbox, so the two new routes themselves couldn't be exercised via a
+TestClient - consistent with the rest of the test suite, which has no
+route-level tests for any `/jobs/bv-*` endpoint either (only
+`JobRunner.start_bv_*()` coverage, which is what was added here).
+`job_new_bv_lock.html` rendered directly through a real Jinja2
+`Environment` (with `capitalize_first` registered, matching `app.py`'s
+own setup) across three states - populated camera list, no cameras
+configured yet, and a validation error - confirming no template
+syntax errors and the expected form controls, choices, and nav-tab
+link all appear in the output.

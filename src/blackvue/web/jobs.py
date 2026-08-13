@@ -437,6 +437,67 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_lock(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        mode: str,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        assets: list[str],
+        username: str,
+    ) -> Job:
+        """Start bv-lock as a job against one already-configured
+        camera's archive - same treatment bv-ls got (full parity,
+        nothing curated away, nothing slow or destructive enough to
+        need special handling).
+
+        `mode` is one of "lock", "unlock", "list" - app.py's route
+        picks the CLI flag this maps to (--lock-assets/--unlock-assets
+        /--list) and, for "list", drops --from/--until/--timestamp
+        the same way bv-lock's own CLI ignores them for --list (see
+        cli/bv_lock.py's parse_args() - --list "always shows every
+        lock entry, since a lock's own range is exactly what's being
+        listed"). `assets` is the already-validated, non-empty (for
+        "lock"/"unlock") list of asset names or `["all"]` - app.py's
+        route is responsible for that validation before calling this,
+        same as it validates numeric fields before calling
+        start_bv_ls()."""
+
+        from ..cli import bv_lock as bv_lock_cli
+
+        argv: list[str] = [str(archive_path)]
+
+        if mode == "list":
+            argv.append("--list")
+        else:
+            if from_:
+                argv += ["--from", from_]
+            if until:
+                argv += ["--until", until]
+            if timestamp:
+                argv += ["--timestamp", timestamp]
+            flag = "--lock-assets" if mode == "lock" else "--unlock-assets"
+            argv += [flag, ",".join(assets)]
+
+        args = bv_lock_cli.parse_args(argv)
+        job = self._new_job(
+            command=f"bv-lock {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-lock", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
+
+        def run() -> int:
+            say = job.append_output
+            return bv_lock_cli._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
     def start_bv_generate(
         self,
         *,

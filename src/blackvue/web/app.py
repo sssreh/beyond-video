@@ -81,6 +81,7 @@ from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
+from ..core.lock import LOCKABLE_ASSETS
 from ..export.geocoding import load_or_reverse_geocode
 from ..export.hevc_preview import load_or_transcode_hevc_preview
 from ..export.kml_writer import gpx_to_kml
@@ -1119,6 +1120,79 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             movement=movement,
             duration=not no_duration,
             gap_tolerance_seconds=gap_tolerance_seconds_value,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-lock", response_class=HTMLResponse)
+    async def new_bv_lock_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_lock.html",
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "lockable_assets": sorted(LOCKABLE_ASSETS),
+                "error": None,
+            },
+        )
+
+    @app.post("/jobs/bv-lock")
+    async def new_bv_lock_submit(
+        request: Request,
+        id: str = Form(...),
+        mode: str = Form("lock"),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        assets: list[str] = Form([]),
+        assets_all: bool = Form(False),
+        user: User = Depends(require_owner),
+    ):
+        # "list" ignores the range/asset fields entirely, same as
+        # bv-lock's own CLI --list does - nothing to validate for it.
+        # "lock"/"unlock" need at least one asset name, same
+        # requirement cli/bv_lock.py's own --lock-assets/--unlock-
+        # assets enforce (a bare "" would otherwise silently lock/
+        # unlock nothing). assets_all is its own checkbox rather than
+        # just another item in the `assets` list, so the "select all
+        # seven individually" and "check the one All box" cases can't
+        # both need to be handled by the template's own JS - it maps
+        # straight onto --lock-assets/--unlock-assets' own "all" alias
+        # (see cli/bv_lock.py's _split_assets()).
+        error = None
+        if mode not in ("lock", "unlock", "list"):
+            error = "Unknown mode."
+        elif mode != "list" and not assets_all and not assets:
+            error = "Choose at least one asset type, or All."
+
+        if error is not None:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_lock.html",
+                {
+                    "user": user,
+                    "cameras": _camera_options(),
+                    "lockable_assets": sorted(LOCKABLE_ASSETS),
+                    "error": error,
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        job = app.state.job_runner.start_bv_lock(
+            camera_id=id,
+            archive_path=archive_path,
+            mode=mode,
+            from_=from_.strip() or None,
+            until=until.strip() or None,
+            timestamp=timestamp.strip() or None,
+            assets=["all"] if assets_all else assets,
             username=user.username,
         )
         return RedirectResponse(

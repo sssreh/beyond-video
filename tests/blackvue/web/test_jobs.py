@@ -29,6 +29,7 @@ from blackvue.cli import bv_download as bv_download_module
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli import bv_generate as bv_generate_module
 from blackvue.cli import bv_gps as bv_gps_module
+from blackvue.cli import bv_lock as bv_lock_module
 from blackvue.cli import bv_ls as bv_ls_module
 from blackvue.cli import bv_scribe as bv_scribe_module
 from blackvue.cli import bv_search as bv_search_module
@@ -1308,6 +1309,153 @@ def test_start_bv_ls_job_fails_when_run_returns_nonzero(monkeypatch):
 
     runner = JobRunner()
     job = runner.start_bv_ls(**_ls_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# JobRunner.start_bv_lock - real wiring, fake _run
+# ---------------------------------------------------------------------------
+
+
+def _lock_kwargs(**overrides):
+    """Every start_bv_lock() keyword, defaulted to a plain lock of one
+    asset over the whole archive - the same per-test-override shape
+    _ls_kwargs() above uses."""
+
+    kwargs = dict(
+        camera_id="kirby",
+        archive_path=Path("/archive/kirby"),
+        mode="lock",
+        from_=None,
+        until=None,
+        timestamp=None,
+        assets=["get-duration"],
+        username="christer",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_start_bv_lock_lock_mode_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.path == "/archive/kirby"
+        assert args.lock_assets == ["get-duration"]
+        assert args.unlock_assets is None
+        assert args.list is False
+        say("bv-lock: /archive/kirby - locked [get-duration] for ...")
+        return 0
+
+    monkeypatch.setattr(bv_lock_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_lock(**_lock_kwargs())
+
+    assert job.command == "bv-lock kirby"
+    assert job.replicate_command == "bv-lock kirby --lock-assets get-duration"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert any("locked [get-duration]" in line for line in output)
+
+
+def test_start_bv_lock_unlock_mode_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.unlock_assets == ["get-duration", "transcribe"]
+        assert args.lock_assets is None
+        return 0
+
+    monkeypatch.setattr(bv_lock_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_lock(
+        **_lock_kwargs(mode="unlock", assets=["get-duration", "transcribe"])
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_lock_list_mode_ignores_range_and_assets(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.list is True
+        assert args.lock_assets is None
+        assert args.unlock_assets is None
+        return 0
+
+    monkeypatch.setattr(bv_lock_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_lock(
+        **_lock_kwargs(
+            mode="list",
+            from_="20260101_000000",
+            timestamp="2019",
+            assets=["get-duration"],
+        )
+    )
+
+    assert job.replicate_command == "bv-lock kirby --list"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_lock_all_alias_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.lock_assets == sorted(
+            {
+                "extract-audio",
+                "get-duration",
+                "transcribe",
+                "translate",
+                "srt",
+                "describe-scene",
+                "diarize",
+            }
+        )
+        return 0
+
+    monkeypatch.setattr(bv_lock_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_lock(**_lock_kwargs(assets=["all"]))
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_lock_time_range_reaches_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_lock_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_lock(
+        **_lock_kwargs(
+            timestamp="2019",
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].timestamp == "2019"
+
+
+def test_start_bv_lock_job_fails_when_run_returns_nonzero(monkeypatch):
+    def fake_run(args, *, say, warn):
+        return 1
+
+    monkeypatch.setattr(bv_lock_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_lock(**_lock_kwargs())
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, _, _ = job.snapshot()

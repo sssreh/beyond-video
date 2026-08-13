@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Lock ranges - Beyond Video{% endblock %}
+{% block content %}
+<h2 class="page-heading">Lock ranges (bv-lock)</h2>
+<div class="command-help">
+  <p>Mark a time range in an already-configured camera's archive as
+  already generated, so <a href="/jobs/bv-generate">Generate assets</a>
+  skips it entirely on future runs instead of walking every recording
+  in it again. A range stays skippable only for the asset types it was
+  locked with - a later run asking for something not yet locked (a new
+  asset type) is never blocked. See
+  <a href="/jobs/bv-generate">Generate assets</a>'s own Ignore lock
+  option for the rare case of touching an otherwise-locked range again.</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<div class="content-panel">
+<form method="post" action="/jobs/bv-lock">
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera's archive to lock/unlock/list. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+
+    <label class="field-label" for="mode">
+      Action
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Lock marks the range as done for the asset types checked below. Unlock removes them again. List shows every current lock for this archive and ignores the range/asset fields entirely.</span></span>
+    </label>
+    <select id="mode" name="mode">
+      <option value="lock" selected>Lock a range</option>
+      <option value="unlock">Unlock a range</option>
+      <option value="list">List current locks</option>
+    </select>
+  </div>
+
+  <div class="option-group">
+    <h3>Time range</h3>
+    <p class="hint">Ignored when Action is List - a lock's own range is exactly what gets listed.</p>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only this exact timestamp or prefix - an alternative to From/Until for a single recording, day, or year (e.g. 2019).</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" placeholder="e.g. 2019 or 20260715">
+      </div>
+      <div class="field">
+        <label class="field-label" for="from_">
+          From
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only from this timestamp onward (e.g. 20260101), or a shorter prefix. Leave blank for the whole archive.</span></span>
+        </label>
+        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="until">
+          Until
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only up to this timestamp.</span></span>
+        </label>
+        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Asset types</h3>
+    <p class="field-hint">Ignored when Action is List. Lock/Unlock need at least one - or check All.</p>
+    <label class="field-label">
+      <input type="checkbox" id="assets_all" name="assets_all" value="true" style="width: auto; margin: 0;">
+      All asset types
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Shortcut for every asset type below - same as bv-lock's own --lock-assets all.</span></span>
+    </label>
+    <div class="checkbox-row">
+      {% for asset in lockable_assets %}
+      <label class="filter-checkbox">
+        <input type="checkbox" name="assets" value="{{ asset }}" style="width: auto; margin: 0;">
+        {{ asset }}
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <button type="submit">Start</button>
+</form>
+</div>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}
