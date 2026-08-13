@@ -9946,3 +9946,15 @@ Full `test_jobs.py` (85 tests) passes with no regressions.
 `jinja2.Environment` across populated/empty-cameras/error states,
 confirming the new checkbox, select, and text field all appear with
 no template syntax errors.
+
+## Follow-up: bv-lock missing from welcome page quick links (2026-08-13)
+
+Christer: "ok put bv-lock in welcome page". Added a "Lock ranges" quick-
+link card to `welcome.html`'s owner-only "Run a pipeline step" section,
+right before Export trips - matching the nav tab's own position
+(between Generate assets and Export trips). Every other bv-* job
+already has a card there; bv-lock's web wiring (JobRunner method,
+routes, template, nav tab) was added in an earlier entry above but the
+welcome page card was missed at the time. Verified by re-rendering
+welcome.html through a real jinja2.Environment with an owner user,
+confirming the new card and its /jobs/bv-lock link appear.
