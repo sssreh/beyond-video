@@ -33,6 +33,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from ..telemetry.gsensor_reader import GSensorSample
@@ -40,6 +41,8 @@ from .gsensor_graph_render import axis_scales_for_samples
 from .gsensor_graph_render import baseline_for_samples
 from .gsensor_graph_render import render_base_frame
 from .gsensor_graph_render import render_frame
+from .media import ExportCancelled
+from .media import _FRAME_CHECKPOINT_INTERVAL
 from .media import encode_frame_sequence
 
 # A slow-moving playhead over an otherwise static chart doesn't need
@@ -61,6 +64,7 @@ def render_gsensor_graph_video(
     height: int | None = None,
     show_x: bool = False,
     window_seconds: float | None = None,
+    should_continue: Callable[[], bool] = lambda: True,
 ) -> Path | None:
     """Render a trip's merged g-sensor samples into a strip-chart
     overlay video at `destination`: colored Y/Z (and X, when `show_x`)
@@ -200,6 +204,12 @@ def render_gsensor_graph_video(
         frame_dir = Path(frame_dir_name)
 
         for frame_number in range(frame_count):
+            if (
+                frame_number % _FRAME_CHECKPOINT_INTERVAL == 0
+                and not should_continue()
+            ):
+                raise ExportCancelled("gsensor graph render")
+
             elapsed_seconds = min(frame_number / fps, total_seconds)
 
             if paginated:

@@ -14,6 +14,7 @@ import argparse
 import shlex
 import shutil
 import sys
+from collections.abc import Callable
 from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
@@ -26,6 +27,7 @@ from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import resolve_archive_path
 from blackvue.core.joblog import wrap_say
 from blackvue.core.joblog import wrap_warn
+from blackvue.export import ExportCancelled
 from blackvue.export import export_trip
 from blackvue.export import folder_name_for_trip
 from blackvue.export.map_video import DEFAULT_INTRO_SECONDS
@@ -480,6 +482,7 @@ def bv_export(
     dry_run: bool = False,
     debug: bool = False,
     command_line: str | None = None,
+    should_continue: Callable[[], bool] = lambda: True,
     say=print,
     warn=_default_warn,
 ) -> int:
@@ -613,6 +616,21 @@ def bv_export(
     in the video to speed up in that case. Left at 1.0 (a strict
     no-op, zero extra ffmpeg work), this behaves exactly as before
     `--parking-speed` existed.
+
+    `should_continue` (default always-True) is forwarded straight into
+    every trip's own `export_trip()` call - see that function's own
+    docstring for the checkpoint mechanism and its deliberate scope
+    (phase boundaries and per-frame Python render loops only, not
+    in-flight ffmpeg subprocess calls). A trip that raises
+    `ExportCancelled` here stops this whole run - the trip loop below
+    breaks rather than moving on to the next trip, since a cancellation
+    is a request to stop everything, not just skip one trip - and
+    `bv_export()` returns 1, the same exit code any other failed trip
+    already produces. bv-web's job runner (see web/jobs.py's
+    `start_bv_export()`) is what actually supplies a real one here,
+    tied to the job's own Cancel button; a plain terminal run never
+    passes anything but the default, since Ctrl-C already works there
+    via `run_cli()`'s own `KeyboardInterrupt` handling.
     """
 
     if duration_heal_archive and not duration:
@@ -826,7 +844,18 @@ def bv_export(
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
+                should_continue=should_continue,
             )
+        except ExportCancelled as exc:
+            # A real cancellation (bv-web's Cancel button, via
+            # should_continue) - stop the whole run, not just this
+            # trip: unlike MediaToolError below (one trip's own
+            # failure, the rest may still be worth attempting), this
+            # means "stop doing new work" globally, so the trip loop
+            # breaks here rather than continuing to the next trip.
+            warn(f"bv-export: cancelled ({exc})")
+            exit_code = 1
+            break
         except MediaToolError as exc:
             warn(f"bv-export: {trip.label}: {exc}")
             exit_code = 1
@@ -1740,6 +1769,7 @@ def _run(
     args: argparse.Namespace,
     *,
     command_line: str | None = None,
+    should_continue: Callable[[], bool] = lambda: True,
     say=print,
     warn=_default_warn,
 ) -> int:
@@ -1756,6 +1786,12 @@ def _run(
     normally given) rather than being reconstructed from sys.argv the
     way `main()` does, since there is no real argv for a job that was
     never actually typed at a shell.
+
+    `should_continue` is forwarded straight into `bv_export()` - see
+    that function's own docstring. Left at its always-True default for
+    a real terminal run (via main() below); bv-web's job runner is the
+    only caller that passes a real one, tied to its own Job's Cancel
+    button.
 
     `bv_export()` itself still raises `SystemExit` for its own two
     fatal-argument-combination checks (`--duration-heal-archive` with
@@ -1862,6 +1898,7 @@ def _run(
             dry_run=args.dry_run,
             debug=args.debug,
             command_line=command_line,
+            should_continue=should_continue,
             say=say,
             warn=warn,
         )

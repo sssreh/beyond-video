@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from datetime import timedelta
@@ -48,6 +49,7 @@ from .map_video import DEFAULT_INTRO_SECONDS
 from .map_video import intro_start_bbox
 from .map_video import render_intro_flyover
 from .map_video import render_map_video
+from .media import ExportCancelled
 from .media import change_playback_speed
 from .media import check_readable
 from .media import concatenate_media
@@ -1466,6 +1468,7 @@ def _render_map_variant(
     recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
     track_up: bool = False,
     log: TripLog | None = None,
+    should_continue: Callable[[], bool] = lambda: True,
 ) -> Path | None:
     """Render one map video (either the static map.mp4 or a zoomed
     map_zoom_*m.mp4) at `destination`, degrading to a warning (not a
@@ -1501,6 +1504,14 @@ def _render_map_variant(
     render_map_video()'s own docstring for why that distinction
     matters (confirmed as a real sync bug, not just theoretical - see
     WORKING_CONTEXT.md).
+
+    `should_continue` (task #780) is forwarded straight to
+    render_map_video() - see its own docstring for how it's checked
+    inside the frame loop. Not caught here: an ExportCancelled raised
+    inside render_map_video() propagates straight up through this
+    function too, same as any other exception - there's no
+    "cancelled" case to degrade into a warning the way an
+    ffmpeg/image-loading MediaToolError does.
     """
 
     if log is not None:
@@ -1522,6 +1533,7 @@ def _render_map_variant(
             video_duration_seconds=video_duration_seconds,
             recording_breakpoints=recording_breakpoints,
             track_up=track_up,
+            should_continue=should_continue,
             **render_kwargs,
         )
     except MediaToolError as exc:
@@ -1679,6 +1691,33 @@ def _prepend_intro_to_stitch(
         muxed.unlink(missing_ok=True)
 
 
+def _checkpoint(
+    should_continue: Callable[[], bool], phase: str, *, debug: bool = False
+) -> None:
+    """Report progress (if `debug`) and give `should_continue()` the
+    chance to stop the export before the next phase starts.
+
+    Called at the start of each of export_trip()'s own major phases
+    (concatenation, map, gsensor, gsensor graph, stitch, intro) - see
+    that function's own `should_continue` param docstring for what
+    calling this does and doesn't guarantee. Two independent jobs in
+    one small helper because they share the same natural checkpoints:
+    Christer's own report that prompted this ("bv-export isnt
+    talkative even with --debug") turned out to have the same root
+    cause as "cancelling a job doesn't stop it" - neither existed
+    before, and both belong at exactly the same phase boundaries.
+
+    Printing happens before the cancellation check (not after) so the
+    very last thing on stderr before an export stops is always which
+    phase it was about to start, not silence.
+    """
+
+    if debug:
+        print(f"bv-export: {phase}", file=sys.stderr)
+    if not should_continue():
+        raise ExportCancelled(phase)
+
+
 def export_trip(
     trip: Trip,
     destination: Path,
@@ -1722,6 +1761,7 @@ def export_trip(
     command_line: str | None = None,
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
+    should_continue: Callable[[], bool] = lambda: True,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -2087,7 +2127,31 @@ def export_trip(
     concatenation/map/gsensor/stitch phases below, plus (from stitch.py)
     which decode method --stitch actually used - see bv_export.py's
     --debug flag. Independent of trip.log, which always records this
-    same timing (and more) regardless of --debug.
+    same timing (and more) regardless of --debug. As of task #780,
+    `debug=True` also prints a line right when each major phase
+    *starts* (via `_checkpoint()`), not just when one finishes - a
+    long export used to go completely silent on stderr for however
+    long the current phase took.
+
+    `should_continue`, if given, is called at the start of each major
+    phase (via `_checkpoint()`) and, separately, from inside the
+    map/gsensor-graph frame-rendering loops themselves (map_video.py's
+    render_map_video()/render_intro_flyover(), gsensor_graph_video.py's
+    render_gsensor_graph_video()) every
+    `_FRAME_CHECKPOINT_INTERVAL` frames - a `False` return raises
+    `ExportCancelled` right there, unwinding the whole export instead
+    of letting it run to completion. bv-web's job runner (web/jobs.py)
+    passes one tied to `Job.cancel()` so clicking Cancel actually stops
+    new work within roughly one phase or one batch of frames, not only
+    after the whole export finishes - see WORKING_CONTEXT.md, "bv
+    -export cancellation doesn't stop it". Defaults to always-True (no
+    -op) for direct CLI use, where Ctrl-C already works at the process
+    level via cli/errors.py's run_cli(). Deliberately does NOT reach
+    inside a single ffmpeg subprocess call already in flight (the
+    concatenation/stitch/gsensor-dot-gauge phases are one blocking
+    subprocess.run() each) - stopping mid-subprocess would need actual
+    process termination, a bigger change left for later if it's ever
+    needed; those phases just won't *start* if already cancelled.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -2124,6 +2188,7 @@ def export_trip(
     _ensure_recording_audio(trip, warnings, log, debug=debug)
 
     log.step("starting concatenation (front/rear/audio)")
+    _checkpoint(should_continue, "starting concatenation (front/rear/audio)", debug=debug)
     concat_start = time.monotonic()
 
     # Scoped to just this phase - no later phase (map/gsensor/stitch
@@ -2491,6 +2556,7 @@ def export_trip(
         or stitch_map is not None or render_map_intro
     ) and fixes:
         log.step("starting map data phase (fetch/cache OSM roads)")
+        _checkpoint(should_continue, "starting map data phase (fetch/cache OSM roads)", debug=debug)
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
         bbox, roads, areas, intro_roads, intro_areas = _load_trip_roads(
@@ -2509,6 +2575,7 @@ def export_trip(
                     recording_breakpoints=recording_breakpoints,
                     track_up=map_track_up,
                     log=log,
+                    should_continue=should_continue,
                 )
 
             if map_zoom_meters is not None:
@@ -2551,6 +2618,7 @@ def export_trip(
                     recording_breakpoints=recording_breakpoints,
                     track_up=map_track_up,
                     log=log,
+                    should_continue=should_continue,
                 )
 
             if render_map_intro and stitch_layout is None:
@@ -2583,6 +2651,7 @@ def export_trip(
                         pass
 
                 log.step("starting intro.mp4 render (standalone)")
+                _checkpoint(should_continue, "starting intro.mp4 render (standalone)", debug=debug)
                 intro_kwargs = {}
                 if intro_width is not None and intro_height is not None:
                     intro_kwargs = {"width": intro_width, "height": intro_height}
@@ -2592,6 +2661,7 @@ def export_trip(
                         areas=intro_areas, duration_seconds=map_intro_seconds,
                         fps=intro_fps, marker_image_path=map_icon,
                         caption=destination.name,
+                        should_continue=should_continue,
                         **intro_kwargs,
                     )
                 except MediaToolError as exc:
@@ -2629,6 +2699,7 @@ def export_trip(
         # trip.log alone whether it's a huge trip genuinely taking a
         # while, or something worth investigating further.
         log.step(f"starting gsensor.mp4 render ({len(samples)} sample(s))")
+        _checkpoint(should_continue, "starting gsensor.mp4 render", debug=debug)
         gsensor_start = time.monotonic()
         try:
             gsensor_video_path = render_gsensor_video(
@@ -2653,12 +2724,14 @@ def export_trip(
     gsensor_graph_video_path = None
     if render_gsensor_graph and samples:
         log.step(f"starting gsensor_graph.mp4 render ({len(samples)} sample(s))")
+        _checkpoint(should_continue, "starting gsensor_graph.mp4 render", debug=debug)
         gsensor_graph_start = time.monotonic()
         try:
             gsensor_graph_video_path = render_gsensor_graph_video(
                 samples, destination / "gsensor_graph.mp4",
                 duration_seconds=video_duration_seconds,
                 show_x=gsensor_graph_x,
+                should_continue=should_continue,
             )
         except MediaToolError as exc:
             warnings.append(f"gsensor graph video: {exc}")
@@ -2807,6 +2880,11 @@ def export_trip(
     stitch_path = None
     if stitch_layout is not None:
         log.step(f"starting stitch.mp4 render (layout={resolved_stitch_layout})")
+        _checkpoint(
+            should_continue,
+            f"starting stitch.mp4 render (layout={resolved_stitch_layout})",
+            debug=debug,
+        )
         stitch_start = time.monotonic() if debug else None
         # Diffing warnings' own length across the call, rather than
         # threading `log` into stitch_cameras() itself, catches both
@@ -2907,6 +2985,7 @@ def export_trip(
                     pass
 
                 log.step("starting intro.mp4 render (sized to stitch.mp4)")
+                _checkpoint(should_continue, "starting intro.mp4 render (sized to stitch.mp4)", debug=debug)
                 try:
                     map_intro_path = render_intro_flyover(
                         fixes, intro_roads, destination / "intro.mp4",
@@ -2914,6 +2993,7 @@ def export_trip(
                         fps=intro_fps, marker_image_path=map_icon,
                         width=intro_width, height=intro_height,
                         caption=destination.name,
+                        should_continue=should_continue,
                     )
                 except MediaToolError as exc:
                     warnings.append(f"map intro: {exc}")

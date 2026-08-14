@@ -909,7 +909,7 @@ def _export_kwargs(**overrides):
 def test_start_bv_export_wires_say_warn_and_command_line_into_run(monkeypatch):
     captured = {}
 
-    def fake_run(args, *, command_line, say, warn):
+    def fake_run(args, *, command_line, should_continue, say, warn):
         captured["path"] = args.path
         captured["target"] = args.target
         captured["command_line"] = command_line
@@ -941,7 +941,7 @@ def test_start_bv_export_wires_say_warn_and_command_line_into_run(monkeypatch):
 def test_start_bv_export_defaults_reach_parsed_args(monkeypatch):
     captured = {}
 
-    def fake_run(args, *, command_line, say, warn):
+    def fake_run(args, *, command_line, should_continue, say, warn):
         captured["args"] = args
         return 0
 
@@ -962,7 +962,7 @@ def test_start_bv_export_defaults_reach_parsed_args(monkeypatch):
 def test_start_bv_export_flags_reach_parsed_args(monkeypatch):
     captured = {}
 
-    def fake_run(args, *, command_line, say, warn):
+    def fake_run(args, *, command_line, should_continue, say, warn):
         captured["args"] = args
         return 0
 
@@ -1059,7 +1059,7 @@ def test_start_bv_export_arg_error_does_not_create_a_job():
 
 
 def test_start_bv_export_job_fails_when_run_returns_nonzero(monkeypatch):
-    def fake_run(args, *, command_line, say, warn):
+    def fake_run(args, *, command_line, should_continue, say, warn):
         warn("bv-export: something went wrong")
         return 1
 
@@ -1072,6 +1072,38 @@ def test_start_bv_export_job_fails_when_run_returns_nonzero(monkeypatch):
     status, output, _ = job.snapshot()
     assert status == JobStatus.FAILED
     assert any("something went wrong" in line for line in output)
+
+
+def test_start_bv_export_should_continue_reflects_job_cancellation(monkeypatch):
+    # Christer: "That hasnt stopped it, it still creating files" -
+    # clicking Cancel used to only flip the job's own status, since
+    # bv-export never checked it. start_bv_export() now wires a real
+    # should_continue callable tied to that same status - this test
+    # confirms the callable itself actually flips False once
+    # job.cancel() runs, not just that some object gets passed through.
+    import threading
+
+    captured = {}
+    proceed = threading.Event()
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["should_continue"] = should_continue
+        proceed.wait(timeout=5)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_export(**_export_kwargs())
+
+    _wait_until(lambda: "should_continue" in captured)
+    assert captured["should_continue"]() is True
+
+    job.cancel()
+    assert captured["should_continue"]() is False
+
+    proceed.set()
+    _wait_until(lambda: job.snapshot()[0].is_finished)
 
 
 # ---------------------------------------------------------------------------

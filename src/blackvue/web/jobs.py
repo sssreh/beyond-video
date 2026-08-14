@@ -38,6 +38,22 @@ may keep running invisibly (daemon=True below means it can't block
 process shutdown either way) until whatever it's blocked on returns
 or times out on its own.
 
+bv-export is the one exception to "keeps running invisibly": its own
+_run()/bv_export() accept a `should_continue` callable (see
+export/trip_export.py's own docstring for the checkpoint mechanism),
+and start_bv_export() below wires that to
+`job.snapshot()[0] != JobStatus.CANCELLED` - so a cancelled export job
+actually stops starting new work, checked at phase boundaries and
+every _FRAME_CHECKPOINT_INTERVAL frames inside the slower per-frame
+render loops (map/intro/g-sensor-graph), typically within a few
+seconds. Still not instant, and still doesn't interrupt a single
+in-flight ffmpeg subprocess call already running (concatenation,
+stitch.mp4, the dot-gauge gsensor.mp4 render) - those finish that one
+call before the next checkpoint is reached, same "honest, not
+absolute" limitation as everywhere else in this module, just with a
+much shorter real-world window than "keeps running until the whole
+job ends."
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -824,7 +840,11 @@ class JobRunner:
         def run() -> int:
             say = job.append_output
             return bv_export._run(
-                args, command_line=command_line, say=say, warn=say
+                args,
+                command_line=command_line,
+                should_continue=lambda: job.snapshot()[0] != JobStatus.CANCELLED,
+                say=say,
+                warn=say,
             )
 
         self._spawn(job, run)

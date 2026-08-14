@@ -20,6 +20,41 @@ from pathlib import Path
 from ..generate.media import MediaToolError
 from ..generate.media import probe
 
+
+class ExportCancelled(Exception):
+    """Raised mid-export when a caller-supplied `should_continue()`
+    callable (see trip_export.py's own `export_trip()` docstring)
+    returns False - bv-web's job runner uses this to make Cancel
+    actually stop new work, instead of only hiding a still-running
+    job's output from the browser while the real background thread
+    keeps going to completion regardless (see WORKING_CONTEXT.md,
+    "bv-export cancellation doesn't stop it").
+
+    Deliberately its own exception, not MediaToolError - a cancelled
+    export isn't a failure to report as a warning the way a bad ffmpeg
+    call is; callers should let it propagate and treat it as a clean,
+    deliberate stop.
+
+    Lives here (export/media.py), the shared low-level module both
+    map_video.py and gsensor_graph_video.py already import from,
+    rather than in trip_export.py itself - trip_export.py imports
+    *from* both of those, so putting it there would be a circular
+    import.
+    """
+
+
+# How often (in frames) map_video.py's render_map_video()/
+# render_intro_flyover() and gsensor_graph_video.py's
+# render_gsensor_graph_video() call their own `should_continue()`
+# during a frame-rendering loop. Checking every single frame would
+# work too (a Python callable call is negligible next to the PIL
+# drawing/ffmpeg work each frame already does) but batching the check
+# avoids paying even that negligible cost 25-30 times a second for no
+# real gain - a several-minute render still stops within a couple of
+# seconds either way.
+_FRAME_CHECKPOINT_INTERVAL = 30
+
+
 # Forced onto every source `_strip_audio_stream_copy()` normalizes
 # before a `video_only=True` concat - see that function's own
 # docstring for why. 90000 is the standard MPEG PTS clock rate

@@ -207,10 +207,12 @@ A second, alternate g-sensor visualization alongside `--stitch-gsensor`'s dot-ga
 |---|---|
 | `--overwrite` | Wipe and rebuild each trip folder from scratch, without asking. |
 | `--dry-run` | Show which trip folders would be created/refreshed without writing anything. |
-| `--debug` | Print wall-clock timing per trip phase (concatenation/map/stitch), plus which decode method (`nvdec`/`cpu`) `--stitch` used. |
+| `--debug` | Print wall-clock timing per trip phase (concatenation/map/stitch), plus which decode method (`nvdec`/`cpu`) `--stitch` used. Also prints a line as each major phase *starts* (concatenation, map data, intro/gsensor/gsensor-graph/stitch rendering), not just when one finishes, so a long-running phase no longer looks silent. |
 | `-h`, `--help` | Show help and exit. |
 
 Without `--overwrite`: an interactive run asks once whether to wipe or keep existing trip folders (the answer applies to every trip folder touched that run); a non-interactive run always keeps them, only overwriting the files it actually regenerates.
+
+Cancelling a `bv-export` job from `bv-web`'s job page now actually stops it starting new work, rather than just marking the job cancelled in the browser while it kept running underneath - checked between trips and between each major phase within a trip (concatenation, map, gsensor, gsensor-graph, stitch, intro), and every 30 frames inside the slower per-frame renders (map/intro/gsensor-graph). A phase's own in-flight ffmpeg call (concatenation, the stitch.mp4 render, the gsensor.mp4 dot-gauge render) still runs to completion before the next checkpoint is reached - not instant, but no longer "runs to the end of the whole job regardless." A real terminal run (Ctrl-C) already stopped promptly and is unaffected by this.
 
 ## OUTPUT
 

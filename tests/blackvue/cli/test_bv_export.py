@@ -12,6 +12,7 @@ from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import save_camera_config
 from blackvue.export import trip_export as trip_export_module
+from blackvue.export.media import ExportCancelled
 from blackvue.export.osm_roads import Road
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
@@ -2805,3 +2806,67 @@ def test_bv_export_forwards_trip_membership_reasons_into_the_trip_log(tmp_path):
     assert "--- Trip membership ---" in log_text
     assert "first recording in the archive" in log_text
     assert "continues the trip" in log_text
+
+
+# --- should_continue / ExportCancelled cancellation ---------------------
+#
+# Christer: "That hasnt stopped it, it still creating files" - clicking
+# Cancel in bv-web only flipped the job's own status; nothing in
+# bv-export's actual trip loop ever checked it. These tests cover the
+# fix at the CLI layer: bv_export() catching ExportCancelled from
+# export_trip() and stopping the whole run (not just skipping one
+# trip), and _run() forwarding its own should_continue param through to
+# bv_export().
+
+
+def test_bv_export_stops_the_whole_run_when_export_trip_is_cancelled(
+    tmp_path, monkeypatch
+):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    # Two well-separated recordings - definitely two different trips at
+    # the default gap threshold, so a broken (not continued) loop after
+    # the first trip is a real, observable difference from the
+    # MediaToolError-triggered "warn and continue to the next trip"
+    # behavior right above it in bv_export()'s own except chain.
+    _make_video(archive / "20260720_100000_NF.mp4")
+    _make_video(archive / "20260721_100000_NF.mp4")
+
+    calls = []
+
+    def _fake_export_trip(*args, **kwargs):
+        calls.append(1)
+        raise ExportCancelled("starting concatenation")
+
+    monkeypatch.setattr(bv_export_module, "export_trip", _fake_export_trip)
+
+    exit_code = bv_export(str(archive), target=str(target))
+
+    assert exit_code == 1
+    # Stopped after the first trip - never attempted the second one.
+    assert len(calls) == 1
+
+
+def test_run_forwards_should_continue_into_bv_export(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    should_continue = lambda: False  # noqa: E731 - trivial test sentinel
+
+    args = bv_export_module.parse_args(
+        [str(archive), "--target", str(target)]
+    )
+    bv_export_module._run(args, should_continue=should_continue)
+
+    assert captured["should_continue"] is should_continue

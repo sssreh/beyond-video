@@ -2,7 +2,10 @@ import json
 import subprocess
 from datetime import timedelta
 
+import pytest
+
 from blackvue.export.gsensor_graph_video import render_gsensor_graph_video
+from blackvue.export.media import ExportCancelled
 from blackvue.telemetry.gsensor_reader import GSensorSample
 
 
@@ -40,6 +43,25 @@ def test_render_gsensor_graph_video_returns_none_for_zero_duration(tmp_path):
     )
 
     assert result is None
+
+
+def test_render_gsensor_graph_video_raises_export_cancelled_when_should_continue_is_false(
+    tmp_path,
+):
+    samples = (
+        _sample(0, 0, 0),
+        _sample(1000, 200, -100),
+        _sample(2000, -150, 300),
+    )
+
+    with pytest.raises(ExportCancelled):
+        render_gsensor_graph_video(
+            samples,
+            tmp_path / "gsensor_graph.mp4",
+            should_continue=lambda: False,
+        )
+
+    assert not (tmp_path / "gsensor_graph.mp4").exists()
 
 
 def test_render_gsensor_graph_video_produces_a_real_video_end_to_end(tmp_path):

@@ -27,10 +27,12 @@ from blackvue.export.trip_export import _repair_parking_sources
 from blackvue.export.trip_export import _replace_with_retry
 from blackvue.export.trip_export import _trim_prebuffers
 from blackvue.export.trip_export import _union_bbox
+from blackvue.export.trip_export import _checkpoint
 from blackvue.export.trip_export import _video_position_breakpoints
 from blackvue.export.trip_export import export_trip
 from blackvue.export.trip_export import folder_name_for_trip
 from blackvue.export.trip_export import TEXT_ASSETS
+from blackvue.export.media import ExportCancelled
 from blackvue.export.text import merge_text_assets
 from blackvue.generate.media import MediaInfo
 from blackvue.generate.media import MediaToolError
@@ -4542,3 +4544,74 @@ def test_export_trip_map_intro_sized_to_stitch_passes_the_trip_caption(
     destination, kwargs = captured[0]
     assert destination == dest_dir / "intro.mp4"
     assert kwargs["caption"] == dest_dir.name
+
+
+# --- should_continue / ExportCancelled cancellation ---------------------
+#
+# Christer: "That hasnt stopped it, it still creating files" - clicking
+# Cancel in bv-web only flipped the job's own status, since nothing in
+# bv-export's actual work loop ever checked it. _checkpoint() (called at
+# every major phase boundary in export_trip() - see its own docstring)
+# and the should_continue param threaded through export_trip() and the
+# frame-render loops (map_video.py, gsensor_graph_video.py) are the
+# fix; these tests cover the checkpoint helper itself plus export_trip()
+# actually stopping and raising ExportCancelled rather than continuing
+# past a should_continue()-is-False phase boundary.
+
+
+def test_checkpoint_does_nothing_when_should_continue_is_true():
+    # No exception, no output - the common case, every phase boundary
+    # on every ordinary (non-cancelled, non-debug) export.
+    _checkpoint(lambda: True, "starting concatenation (front/rear/audio)")
+
+
+def test_checkpoint_raises_export_cancelled_when_should_continue_is_false():
+    with pytest.raises(ExportCancelled, match="starting concatenation"):
+        _checkpoint(lambda: False, "starting concatenation (front/rear/audio)")
+
+
+def test_checkpoint_prints_the_phase_to_stderr_when_debug(capsys):
+    # Printing happens before the cancellation check (see _checkpoint()'s
+    # own docstring) - the phase name should reach stderr even on the
+    # call that goes on to raise, so a cancelled run's last stderr line
+    # always says what it was about to do, not silence.
+    with pytest.raises(ExportCancelled):
+        _checkpoint(lambda: False, "starting map data phase", debug=True)
+
+    captured = capsys.readouterr()
+    assert "bv-export: starting map data phase" in captured.err
+
+
+def test_checkpoint_prints_nothing_when_debug_is_false(capsys):
+    _checkpoint(lambda: True, "starting concatenation (front/rear/audio)")
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_export_trip_raises_export_cancelled_when_should_continue_is_false(
+    tmp_path,
+):
+    # A cancelled job (bv-web's Cancel button, wired through
+    # JobRunner.start_bv_export()'s own should_continue) should stop
+    # before doing any real work - checked at the very first phase
+    # boundary (concatenation), before any ffmpeg call this trip would
+    # otherwise make.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front = source_dir / "front.mp4"
+    _make_video(front, 1.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    with pytest.raises(ExportCancelled):
+        export_trip(trip, dest_dir, should_continue=lambda: False)
+
+    assert not (dest_dir / "front.mp4").exists()

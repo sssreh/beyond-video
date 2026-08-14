@@ -10425,3 +10425,100 @@ right now. Candidates if picked up later: an idle-timeout eviction
 `--describe-scene` call), an explicit "unload model" action/route in
 bv-web, or simply documenting that restarting `bv-web serve`
 reclaims the memory.
+
+## Fix: real bv-export cancellation + --debug phase-start progress (2026-08-14)
+
+Christer cancelled a bv-web `bv-export` job ("I cancelled, since i
+forgot to set timestamp") and reported: "That hasnt stopped it, it
+still creating files." Root cause: `web/jobs.py`'s `Job.cancel()`
+only ever flipped `job.status` to `CANCELLED` for display purposes -
+nothing in bv-export's/bv-generate's actual work loop ever checked
+it, since the only existing cancellation checkpoint was `ask()`
+(blocked-on-a-prompt jobs only). A job with no open prompt just kept
+running to completion underneath a browser that had already stopped
+trusting its output. Separately, Christer noted bv-export "isnt
+talkative even with --debug" - `--debug` only ever printed a timing
+line at the *end* of each phase, so a long-running phase looked
+completely silent while it was in progress. Confirmed as one fix
+("yes, bv-export isnt talkative even with --debug") since both traced
+back to the same missing checkpoint mechanism.
+
+**Design.** `ExportCancelled(Exception)` (new, in `export/media.py` -
+not `trip_export.py`, to avoid a circular import since `map_video.py`/
+`gsensor_graph_video.py` already import from `media.py`) plus a
+`should_continue: Callable[[], bool] = lambda: True` parameter,
+threaded through `export_trip()` and its render sub-functions. A new
+`_checkpoint(should_continue, phase, *, debug=False)` helper in
+`trip_export.py` is called at the start of every major phase
+(concatenation, map data, intro/gsensor/gsensor-graph/stitch
+rendering) - it prints `f"bv-export: {phase}"` to stderr when
+`debug=True` *before* checking `should_continue()`, so the last
+stderr line before a cancelled run stops is always informative, then
+raises `ExportCancelled(phase)` if it returns False. The three
+slowest per-frame Python render loops (`render_map_video()`,
+`render_intro_flyover()` in `map_video.py`; `render_gsensor_graph_video()`
+in `gsensor_graph_video.py`) also check `should_continue()` every
+`_FRAME_CHECKPOINT_INTERVAL = 30` frames (a module constant in
+`media.py`), so a cancellation lands within about one checkpoint
+window even mid-render rather than only between phases.
+
+**Deliberate scope limit**, called out in `export_trip()`'s own
+docstring: single blocking `subprocess.run()` calls already in flight
+(front/rear/audio concatenation, the stitch.mp4 render, the
+gsensor.mp4 dot-gauge render) are *not* interrupted mid-call - only
+"won't start the next phase" applies to those. True mid-subprocess
+interruption would need real process termination, left as a bigger
+future change if ever needed; Christer didn't ask for that level, and
+the common case (cancelling during a long map/intro/gsensor-graph
+render, which are pure-Python per-frame loops) is now covered at
+roughly frame granularity.
+
+**CLI wiring.** `cli/bv_export.py`'s `bv_export()` gained the same
+`should_continue` param, forwarded into `export_trip()`; a new
+`except ExportCancelled:` branch in the per-trip loop `break`s the
+whole run (not just the one trip - a cancellation means "stop
+everything," unlike a per-trip `MediaToolError`, which still lets the
+rest of the archive export) and returns exit code 1. `_run()` gained
+the same param and threads it through to `bv_export()`. A plain
+terminal run never passes anything but the default (`lambda: True`) -
+Ctrl-C there already worked via `run_cli()`'s own `KeyboardInterrupt`
+handling, untouched by this change.
+
+**Web wiring.** `web/jobs.py`'s `JobRunner.start_bv_export()` now
+passes `should_continue=lambda: job.snapshot()[0] != JobStatus.CANCELLED`
+into `bv_export._run(...)` - the same thread-safe `snapshot()` the
+job-detail page's own polling already uses, so `Job.cancel()`
+flipping the status is now a real signal the export loop itself
+reads, not just a browser-side display change. Module docstring
+updated with a paragraph explaining bv-export is now the one
+exception to "keeps running invisibly until it ends on its own,"
+including the same "doesn't interrupt one already-running ffmpeg
+call" caveat.
+
+**Verification.** No pytest in this sandbox (same as always);
+`ast.parse` clean on every touched file (`export/media.py`,
+`export/trip_export.py`, `export/map_video.py`,
+`export/gsensor_graph_video.py`, `export/__init__.py`,
+`cli/bv_export.py`, `web/jobs.py`). New/updated tests: `ExportCancelled`
+raised when `should_continue` is False, for `render_map_video()`,
+`render_intro_flyover()`, and `render_gsensor_graph_video()`
+(`tests/blackvue/export/test_map_video.py`,
+`test_gsensor_graph_video.py`); `_checkpoint()` itself (no-op when
+True, raises when False, prints the phase to stderr before raising
+only when `debug=True`) and `export_trip()` raising `ExportCancelled`
+before any ffmpeg work when `should_continue` is already False
+(`tests/blackvue/export/test_trip_export.py`); `bv_export()` breaking
+the trip loop (not continuing to a second trip) and returning 1 on
+`ExportCancelled`, plus `_run()` forwarding its own `should_continue`
+through to `bv_export()` (`tests/blackvue/cli/test_bv_export.py`);
+and `start_bv_export()`'s `should_continue` callable actually
+flipping from True to False across a real `job.cancel()` call, using
+a `threading.Event` to hold the fake `_run()` open long enough to
+observe both states (`tests/blackvue/web/test_jobs.py`) - the 4
+existing `fake_run(args, *, command_line, say, warn)` stubs in that
+file were also updated to accept the new `should_continue` keyword,
+since `start_bv_export()` now always passes it.
+
+`docs/man/bv-export.md` updated: the `--debug` row now mentions
+phase-start lines, and a new paragraph after the wipe-vs-keep section
+explains what Cancel now does and doesn't guarantee.

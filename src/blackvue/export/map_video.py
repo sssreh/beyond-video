@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -29,6 +30,8 @@ from .map_render import compose_frame_overlay
 from .map_render import draw_caption
 from .map_render import render_base_map
 from .map_render import render_frame_visual
+from .media import ExportCancelled
+from .media import _FRAME_CHECKPOINT_INTERVAL
 from .media import encode_frame_sequence
 from .osm_roads import Area
 from .osm_roads import BoundingBox
@@ -512,6 +515,7 @@ def render_map_video(
     video_duration_seconds: float | None = None,
     recording_breakpoints: tuple[tuple[float, datetime], ...] | None = None,
     track_up: bool = False,
+    should_continue: Callable[[], bool] = lambda: True,
 ) -> Path | None:
     """Render a trip's merged GPS fixes into an overlay video at
     `destination`: the route driven so far, current position/heading,
@@ -620,6 +624,12 @@ def render_map_video(
     Returns None (and writes nothing) if there aren't at least two
     valid, positioned fixes to draw a route from - the same "nothing
     to work with" convention export_trip()'s other outputs use.
+
+    `should_continue`, if given, is polled every
+    `_FRAME_CHECKPOINT_INTERVAL` frames inside the render loop - a
+    `False` return raises `ExportCancelled` right there instead of
+    finishing every remaining frame first. See trip_export.py's
+    `export_trip()` for the full picture (task #780).
     """
 
     positioned = _valid_positioned_fixes(fixes)
@@ -702,6 +712,12 @@ def render_map_video(
         cached_signature = None
 
         for frame_number in range(frame_count):
+            if (
+                frame_number % _FRAME_CHECKPOINT_INTERVAL == 0
+                and not should_continue()
+            ):
+                raise ExportCancelled("map render")
+
             elapsed = min(frame_number / fps, total_seconds)
             timestamp = _wallclock_for_elapsed(
                 elapsed, recording_breakpoints or (), start
@@ -940,6 +956,7 @@ def render_intro_flyover(
     height: int = DEFAULT_HEIGHT,
     zoom_start_multiplier: float = INTRO_ZOOM_START_MULTIPLIER,
     caption: str | None = None,
+    should_continue: Callable[[], bool] = lambda: True,
 ) -> Path | None:
     """Render a short establishing-shot "flyover" of a trip's whole
     route at `destination`: the camera starts on a wide view of the
@@ -1101,6 +1118,12 @@ def render_intro_flyover(
         frame_dir = Path(frame_dir_name)
 
         for frame_number in range(frame_count):
+            if (
+                frame_number % _FRAME_CHECKPOINT_INTERVAL == 0
+                and not should_continue()
+            ):
+                raise ExportCancelled("intro render")
+
             t = frame_number / last_frame_index if last_frame_index else 1.0
             eased_t = _ease_out_cubic(t)
             frame_bbox = _lerp_bbox(start_bbox, end_bbox, eased_t)

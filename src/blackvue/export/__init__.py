@@ -4,6 +4,7 @@ from .gsensor_video import render_gsensor_video
 from .map_render import render_frame
 from .map_video import interpolate_position
 from .map_video import render_map_video
+from .media import ExportCancelled
 from .media import concatenate_media
 from .osm_roads import BoundingBox
 from .osm_roads import Road
@@ -20,6 +21,7 @@ from .trip_log import TripLog
 
 __all__ = [
     "BoundingBox",
+    "ExportCancelled",
     "ExportResult",
     "Road",
     "bounding_box_for_fixes",

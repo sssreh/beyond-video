@@ -22,6 +22,7 @@ from blackvue.export.map_video import intro_start_bbox
 from blackvue.export.map_video import render_intro_flyover
 from blackvue.export.map_video import render_map_video
 from blackvue.export.map_render import bbox_pixel_rect
+from blackvue.export.media import ExportCancelled
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
 from blackvue.export.osm_roads import bounding_box_for_fixes
@@ -1075,6 +1076,44 @@ def test_wallclock_for_elapsed_falls_back_to_start_plus_elapsed_without_breakpoi
     result = _wallclock_for_elapsed(42.0, (), fallback_start)
 
     assert result == fallback_start + timedelta(seconds=42.0)
+
+
+def test_render_map_video_raises_export_cancelled_when_should_continue_is_false(
+    tmp_path,
+):
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+
+    with pytest.raises(ExportCancelled):
+        render_map_video(
+            fixes,
+            roads=(),
+            bbox=bbox,
+            destination=tmp_path / "map.mp4",
+            fps=2,
+            should_continue=lambda: False,
+        )
+
+    # Checked at frame 0, before any real work - nothing written.
+    assert not (tmp_path / "map.mp4").exists()
+
+
+def test_render_intro_flyover_raises_export_cancelled_when_should_continue_is_false(
+    tmp_path,
+):
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+
+    with pytest.raises(ExportCancelled):
+        render_intro_flyover(
+            fixes,
+            roads=(),
+            destination=tmp_path / "intro.mp4",
+            duration_seconds=2.0,
+            fps=2,
+            should_continue=lambda: False,
+        )
+
+    assert not (tmp_path / "intro.mp4").exists()
 
 
 def test_wallclock_for_elapsed_contiguous_recordings_matches_old_single_anchor():
