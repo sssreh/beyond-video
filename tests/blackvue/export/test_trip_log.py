@@ -128,7 +128,10 @@ def test_step_echoes_live_through_say_when_given(tmp_path):
     # also calls the optional say() callable, not just trip.log's own
     # file. Prefixed "bv-export: " to match every other say() line
     # bv-export already prints (see bv_export.py's own "bv-export:
-    # {folder} - N file(s) written").
+    # {folder} - N file(s) written"), and - Christer: "print trip name
+    # too, in case there are more than 1 trips" - also prefixed with
+    # trip_label, so a multi-trip run's live output can be told apart
+    # trip by trip.
     said = []
     log = TripLog.open(
         tmp_path, trip_label="trip", command="bv-export", say=said.append
@@ -136,7 +139,7 @@ def test_step_echoes_live_through_say_when_given(tmp_path):
     log.step("starting map.mp4 render")
     log.close()
 
-    assert said == ["bv-export: starting map.mp4 render"]
+    assert said == ["bv-export: trip: starting map.mp4 render"]
 
 
 def test_step_echoes_elapsed_seconds_through_say_too(tmp_path):
@@ -147,7 +150,7 @@ def test_step_echoes_elapsed_seconds_through_say_too(tmp_path):
     log.step("rendered map.mp4", elapsed_seconds=181.3)
     log.close()
 
-    assert said == ["bv-export: rendered map.mp4 (181.3s)"]
+    assert said == ["bv-export: trip: rendered map.mp4 (181.3s)"]
 
 
 def test_warning_echoes_through_say_too(tmp_path):
@@ -159,7 +162,43 @@ def test_warning_echoes_through_say_too(tmp_path):
     log.close()
 
     assert said == [
-        "bv-export: WARNING: stitch: no GPS data to auto-pick a layout from"
+        "bv-export: trip: WARNING: stitch: no GPS data to auto-pick a layout from"
+    ]
+
+
+def test_say_echo_distinguishes_different_trips_in_the_same_run(tmp_path):
+    # Christer: "I would like bv-export to print trip name too, in
+    # case there are more than 1 trips" - a multi-trip run reuses the
+    # same say() callable (bv_export.py's main() calls export_trip()
+    # once per trip in a loop, print()/job.append_output passed
+    # through unchanged each time), so without a per-trip prefix two
+    # trips' step lines would be indistinguishable in the live output.
+    said = []
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    first = TripLog.open(
+        tmp_path / "a",
+        trip_label="trip_20260814_041047_20260814_042633",
+        command="bv-export",
+        say=said.append,
+    )
+    first.step("starting map.mp4 render")
+    first.close()
+
+    second = TripLog.open(
+        tmp_path / "b",
+        trip_label="trip_20260814_050000_20260814_051500",
+        command="bv-export",
+        say=said.append,
+    )
+    second.step("starting map.mp4 render")
+    second.close()
+
+    assert said == [
+        "bv-export: trip_20260814_041047_20260814_042633: "
+        "starting map.mp4 render",
+        "bv-export: trip_20260814_050000_20260814_051500: "
+        "starting map.mp4 render",
     ]
 
 

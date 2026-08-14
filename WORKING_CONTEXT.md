@@ -11060,3 +11060,46 @@ this sandbox's own pytest-shim limitations, unrelated to this change,
 same gaps noted for task #799) afterward with no regressions.
 `docs/man/bv-export.md`'s Map section gained a paragraph documenting
 the reuse policy and its interaction with `--stitch-map zoom`.
+
+## Feature: print trip name in bv-export's live progress output
+## (2026-08-14)
+
+Christer: "I would like bv-export to print trip name too, in case
+there are more than 1 trips." A full-archive or wide-range export
+processes several trips in one run (`bv_export.py`'s own trip loop),
+reusing the same `say` callable (`print` for the CLI, `job.append_output`
+for a bv-web job) across all of them. The live step-level progress
+lines added by task #794 (`TripLog.step()`'s optional `say` echo, e.g.
+"bv-export: starting map.mp4 render") carried no indication of which
+trip they belonged to - fine for a single-trip export, unreadable for
+a multi-trip one, since consecutive trips' phase lines were
+indistinguishable.
+
+**Fix.** `TripLog.__init__`/`.open()` already receive `trip_label` (it
+was only used for the file header) - stored it on the instance and
+prefixed it onto the live-echoed line in `step()`:
+`self._say(f"bv-export: {self._trip_label}: {full_message}")`. Left
+the on-disk `trip.log` lines themselves untouched (each `trip.log` is
+already scoped to one trip via its own header, so repeating the label
+on every line would just be noise there). Also threaded a new
+`trip_label` param through `trip_export.py`'s own `_checkpoint()`
+helper (the `--debug`-only raw-stderr phase-start print, independent
+of `TripLog`/`say` - see task #780/#794) and passed `trip_label=trip.label`
+at all 8 of its call sites in `export_trip()`, so `--debug`'s own
+stderr stream gets the same per-trip prefix, not just the always-on
+live output.
+
+**Verification.** No pytest in this sandbox. `ast.parse` clean on
+`trip_log.py` and `trip_export.py`. Updated the three existing
+`test_trip_log.py` `say`-echo assertions for the new prefix, added a
+new test proving two different trips in the same run produce
+distinguishable prefixed lines, and strengthened
+`test_export_trip_echoes_progress_live_when_say_is_given`
+(`test_trip_export.py`) to assert every live-echoed line starts with
+`"bv-export: {trip.label}: "`. Ran the full `test_trip_export.py` (150
+of 158 passing, same 8 pre-existing sandbox-harness-only failures
+noted for tasks #799/#805, confirmed unrelated) and `test_trip_log.py`
+(16 of 16 passing) suites with no regressions. `docs/man/bv-export.md`'s
+General options section gained a paragraph explaining the per-trip
+prefix and when it kicks in (multi-trip runs only, in both the
+always-on live output and `--debug`'s stderr).

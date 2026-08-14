@@ -73,6 +73,16 @@ class TripLog:
     touch: this is coarser than trip.log's own per-recording
     concatenation detail (Christer's own "not like trip.txt"), so it
     doesn't need debug's extra opt-in to stay readable.
+
+    The live-echoed line is prefixed with `trip_label` (e.g.
+    "bv-export: trip_20260814_...: starting map.mp4 render"), unlike
+    trip.log's own on-disk lines, which don't repeat it (each trip.log
+    is already scoped to one trip via its own header). A single
+    bv-export run processes its trips one at a time, but Christer's
+    own "print trip name too, in case there are more than 1 trips"
+    request still applies: without it, a multi-trip run's live output
+    is a single undifferentiated stream of step lines with no way to
+    tell which trip is currently being reported on.
     """
 
     def __init__(
@@ -87,6 +97,7 @@ class TripLog:
         self._monotonic_start = time.monotonic()
         self._file = path.open("w", encoding="utf-8")
         self._say = say
+        self._trip_label = trip_label
         self._wrote_membership_header = False
         self._wrote_steps_header = False
         # front/rear/audio concatenation runs in three concurrent
@@ -167,7 +178,7 @@ class TripLog:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._write(f"{timestamp}  {full_message}")
         if self._say is not None:
-            self._say(f"bv-export: {full_message}")
+            self._say(f"bv-export: {self._trip_label}: {full_message}")
 
     def warning(self, message: str) -> None:
         """Record a warning - the same text that also goes into

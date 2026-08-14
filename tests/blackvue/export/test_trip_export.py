@@ -453,6 +453,11 @@ def test_export_trip_echoes_progress_live_when_say_is_given(tmp_path):
 
     assert said, "expected at least one live-echoed progress line"
     assert all(line.startswith("bv-export: ") for line in said)
+    # Christer: "I would like bv-export to print trip name too, in
+    # case there are more than 1 trips" - every live-echoed line
+    # includes trip.label right after the "bv-export: " prefix, so a
+    # multi-trip run's output can be told apart trip by trip.
+    assert all(line.startswith(f"bv-export: {trip.label}: ") for line in said)
     # trip.log itself is unaffected - say is additive, not a
     # replacement for the file.
     assert (dest_dir / "trip.log").exists()

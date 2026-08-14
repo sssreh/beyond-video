@@ -1853,7 +1853,11 @@ def _prepend_intro_to_stitch(
 
 
 def _checkpoint(
-    should_continue: Callable[[], bool], phase: str, *, debug: bool = False
+    should_continue: Callable[[], bool],
+    phase: str,
+    *,
+    trip_label: str | None = None,
+    debug: bool = False,
 ) -> None:
     """Report progress (if `debug`) and give `should_continue()` the
     chance to stop the export before the next phase starts.
@@ -1871,10 +1875,19 @@ def _checkpoint(
     Printing happens before the cancellation check (not after) so the
     very last thing on stderr before an export stops is always which
     phase it was about to start, not silence.
+
+    `trip_label`, if given, is prefixed onto the printed line - same
+    reasoning as TripLog.step()'s own live-say prefix (see that
+    class's docstring): a multi-trip run's --debug stderr is one
+    undifferentiated stream otherwise, with no way to tell which
+    trip's phase is starting.
     """
 
     if debug:
-        print(f"bv-export: {phase}", file=sys.stderr)
+        if trip_label is not None:
+            print(f"bv-export: {trip_label}: {phase}", file=sys.stderr)
+        else:
+            print(f"bv-export: {phase}", file=sys.stderr)
     if not should_continue():
         raise ExportCancelled(phase)
 
@@ -2396,7 +2409,12 @@ def export_trip(
     _ensure_recording_audio(trip, warnings, log, debug=debug)
 
     log.step("starting concatenation (front/rear/audio)")
-    _checkpoint(should_continue, "starting concatenation (front/rear/audio)", debug=debug)
+    _checkpoint(
+        should_continue,
+        "starting concatenation (front/rear/audio)",
+        trip_label=trip.label,
+        debug=debug,
+    )
     concat_start = time.monotonic()
 
     # Scoped to just this phase - no later phase (map/gsensor/stitch
@@ -2788,7 +2806,12 @@ def export_trip(
         or stitch_map is not None or render_map_intro
     ) and fixes:
         log.step("starting map data phase (fetch/cache OSM roads)")
-        _checkpoint(should_continue, "starting map data phase (fetch/cache OSM roads)", debug=debug)
+        _checkpoint(
+            should_continue,
+            "starting map data phase (fetch/cache OSM roads)",
+            trip_label=trip.label,
+            debug=debug,
+        )
         map_start = time.monotonic() if debug else None
         cache_dir = map_cache_dir or (destination.parent / ".osm_cache")
         bbox, roads, areas, intro_roads, intro_areas = _load_trip_roads(
@@ -2939,7 +2962,12 @@ def export_trip(
                         pass
 
                 log.step("starting intro.mp4 render (standalone)")
-                _checkpoint(should_continue, "starting intro.mp4 render (standalone)", debug=debug)
+                _checkpoint(
+                    should_continue,
+                    "starting intro.mp4 render (standalone)",
+                    trip_label=trip.label,
+                    debug=debug,
+                )
                 intro_kwargs = {}
                 if intro_width is not None and intro_height is not None:
                     intro_kwargs = {"width": intro_width, "height": intro_height}
@@ -2987,7 +3015,12 @@ def export_trip(
         # trip.log alone whether it's a huge trip genuinely taking a
         # while, or something worth investigating further.
         log.step(f"starting gsensor.mp4 render ({len(samples)} sample(s))")
-        _checkpoint(should_continue, "starting gsensor.mp4 render", debug=debug)
+        _checkpoint(
+            should_continue,
+            "starting gsensor.mp4 render",
+            trip_label=trip.label,
+            debug=debug,
+        )
         gsensor_start = time.monotonic()
         try:
             gsensor_video_path = render_gsensor_video(
@@ -3012,7 +3045,12 @@ def export_trip(
     gsensor_graph_video_path = None
     if render_gsensor_graph and samples:
         log.step(f"starting gsensor_graph.mp4 render ({len(samples)} sample(s))")
-        _checkpoint(should_continue, "starting gsensor_graph.mp4 render", debug=debug)
+        _checkpoint(
+            should_continue,
+            "starting gsensor_graph.mp4 render",
+            trip_label=trip.label,
+            debug=debug,
+        )
         gsensor_graph_start = time.monotonic()
         try:
             gsensor_graph_video_path = render_gsensor_graph_video(
@@ -3171,6 +3209,7 @@ def export_trip(
         _checkpoint(
             should_continue,
             f"starting stitch.mp4 render (layout={resolved_stitch_layout})",
+            trip_label=trip.label,
             debug=debug,
         )
         stitch_start = time.monotonic() if debug else None
@@ -3273,7 +3312,12 @@ def export_trip(
                     pass
 
                 log.step("starting intro.mp4 render (sized to stitch.mp4)")
-                _checkpoint(should_continue, "starting intro.mp4 render (sized to stitch.mp4)", debug=debug)
+                _checkpoint(
+                    should_continue,
+                    "starting intro.mp4 render (sized to stitch.mp4)",
+                    trip_label=trip.label,
+                    debug=debug,
+                )
                 try:
                     map_intro_path = render_intro_flyover(
                         fixes, intro_roads, destination / "intro.mp4",
