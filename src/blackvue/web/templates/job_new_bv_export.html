@@ -215,21 +215,21 @@
           Mirror inset size (%)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Mirror inset size as a percentage of the composite's own width (10-50). Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_size" name="stitch_mirror_size" value="40" min="10" max="50" step="0.1">
+        <input type="number" id="stitch_mirror_size" name="stitch_mirror_size" min="10" max="50" step="0.1" placeholder="40">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_radius">
           Mirror inset corner radius (%)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Round the mirror inset's four corners (0-100) - 0 leaves them square. Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_radius" name="stitch_mirror_radius" value="0" min="0" max="100" step="0.1">
+        <input type="number" id="stitch_mirror_radius" name="stitch_mirror_radius" min="0" max="100" step="0.1" placeholder="0">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_zoom">
           Mirror inset zoom (%)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Zoom the mirror inset in, by cropping this percentage off each edge of the rear source (0-95). Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_zoom" name="stitch_mirror_zoom" value="40" min="0" max="95" step="0.1">
+        <input type="number" id="stitch_mirror_zoom" name="stitch_mirror_zoom" min="0" max="95" step="0.1" placeholder="40">
       </div>
     </div>
 
@@ -239,14 +239,14 @@
           Mirror inset pan X (%)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Pan the mirror inset's crop window left/right within the margin zoom crops away (-100 to 100). Only has room to move once zoom is above 0.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_pan_x" name="stitch_mirror_pan_x" value="0" min="-100" max="100" step="0.1">
+        <input type="number" id="stitch_mirror_pan_x" name="stitch_mirror_pan_x" min="-100" max="100" step="0.1" placeholder="0">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_pan_y">
           Mirror inset pan Y (%)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Pan the mirror inset's crop window up/down within the margin zoom crops away (-100 to 100). Default is panned up, since the default zoom already crops in.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_pan_y" name="stitch_mirror_pan_y" value="-30" min="-100" max="100" step="0.1">
+        <input type="number" id="stitch_mirror_pan_y" name="stitch_mirror_pan_y" min="-100" max="100" step="0.1" placeholder="-30">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_icon">
@@ -349,7 +349,7 @@
           G-sensor overlay size (%)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Overlay size as a percentage of the camera composite's width (5-40). Only used together with Overlay g-sensor gauge above.</span></span>
         </label>
-        <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" value="15" min="5" max="40" step="0.1">
+        <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" min="5" max="40" step="0.1" placeholder="15">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_gsensor_pos">

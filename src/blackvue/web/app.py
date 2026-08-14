@@ -904,11 +904,28 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         gsensor_graph_x: bool = Form(False),
         stitch: bool = Form(False),
         stitch_layout: str = Form("auto"),
-        stitch_mirror_size: str = Form("40"),
-        stitch_mirror_radius: str = Form("0"),
-        stitch_mirror_zoom: str = Form("40"),
-        stitch_mirror_pan_x: str = Form("0"),
-        stitch_mirror_pan_y: str = Form("-30"),
+        # stitch_mirror_size/_radius/_zoom/_pan_x/_pan_y and
+        # stitch_gsensor_size below used to default to bv-export's own
+        # CLI default (e.g. Form("40")) - matching the template's own
+        # value="40" so the field showed a sensible starting point.
+        # Christer, looking at a real job's shown replicate command:
+        # "Why show all option, we should only show non default, or?"
+        # The bug: once a field's own Form() default equals the CLI's
+        # default, _clean() below can never tell "the user left this
+        # untouched" apart from "the user typed the default value on
+        # purpose" - both arrive here as that same non-empty string, so
+        # start_bv_export()'s own `if x is not None: argv += [...]`
+        # check always adds the flag, even for a field nobody touched.
+        # Blank here (like every other optional field already was) plus
+        # a `placeholder=` (not `value=`) in the template - a real hint
+        # text, not a submitted value - fixes it: an untouched field now
+        # actually arrives here empty, so _clean() turns it into None
+        # and the flag is correctly omitted.
+        stitch_mirror_size: str = Form(""),
+        stitch_mirror_radius: str = Form(""),
+        stitch_mirror_zoom: str = Form(""),
+        stitch_mirror_pan_x: str = Form(""),
+        stitch_mirror_pan_y: str = Form(""),
         stitch_mirror_icon: str = Form(""),
         stitch_resolution: str = Form(""),
         stitch_bitrate: str = Form(""),
@@ -919,7 +936,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         stitch_map_side: str = Form(""),
         stitch_map_size: str = Form(""),
         stitch_gsensor: bool = Form(False),
-        stitch_gsensor_size: str = Form("15"),
+        stitch_gsensor_size: str = Form(""),
         stitch_gsensor_pos: str = Form(""),
         stitch_gsensor_xy: str = Form(""),
         stitch_graph: bool = Form(False),

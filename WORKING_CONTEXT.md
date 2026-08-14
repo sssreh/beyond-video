@@ -10615,3 +10615,60 @@ passing.
 the new cost model (roughly free on `--map`'s static overview now,
 unchanged/still-redrawing on `--map-zoom`) instead of the old blanket
 "costs real extra render time" warning.
+
+## Fix: bv-web job forms no longer show default values in the
+## replicate command (2026-08-14)
+
+Christer, looking at a real job's shown replicate command: "Why show
+all option, we should only show non default, or?" - the command
+displayed on a job page listed flags for fields nobody had touched,
+because those fields' shown values happened to equal the CLI's own
+defaults.
+
+**Root cause.** `web/jobs.py`'s `start_bv_export()` was already
+correct - it only adds a flag when the incoming value `is not None`.
+The bug was upstream, in `web/app.py`'s `new_bv_export_submit()`
+route: 6 fields declared their FastAPI `Form()` default as the CLI's
+own real default string (e.g. `stitch_mirror_size: str = Form("40")`,
+matching the template's `value="40"`), instead of blank like every
+other optional field in the same form (`Form("")`). Once a field's
+own untouched-default *is* a non-empty string equal to the CLI
+default, `_clean()` can never distinguish "the user left this alone"
+from "the user retyped the default on purpose" - both arrive as that
+same non-empty string, so the flag gets added to the shown/replicated
+command every time, whether or not anyone touched the field.
+
+**Fix.** Changed the 6 offending fields - `stitch_mirror_size`,
+`stitch_mirror_radius`, `stitch_mirror_zoom`, `stitch_mirror_pan_x`,
+`stitch_mirror_pan_y`, `stitch_gsensor_size` - to match the pattern
+every other optional field in the form already used:
+`web/app.py`'s `Form("40")`-style defaults became `Form("")`, and
+`job_new_bv_export.html`'s matching `value="40"` attributes became
+`placeholder="40"` (a visual hint only, never submitted, so the
+input still shows a sensible starting number but an untouched field
+now genuinely posts empty). Placeholder values re-verified against
+the real CLI/library defaults in `bv_export.py`/`stitch.py`
+(`_DEFAULT_CLI_MIRROR_SIZE_PERCENT=40.0`,
+`DEFAULT_MIRROR_RADIUS_PERCENT=0.0`,
+`_DEFAULT_CLI_MIRROR_ZOOM_PERCENT=40.0`,
+`DEFAULT_MIRROR_PAN_X_PERCENT=0.0`,
+`_DEFAULT_CLI_MIRROR_PAN_Y_PERCENT=-30.0`,
+`DEFAULT_GSENSOR_SIZE_PERCENT=15.0`) so the visual hint still matches
+what actually runs when the field is left blank.
+
+Also checked bv-generate's form per Christer's own follow-up ask -
+`job_new_bv_generate.html` has no `type="number"` fields at all, and
+its one non-blank `Form()` default (`camera: str = Form("front")`)
+is a meaningful select choice, not a numeric-default masking bug -
+so bv-generate needed no change.
+
+**Verification.** No pytest in this sandbox; `ast.parse` clean on
+`web/app.py`. Confirmed via `grep` that none of the 6 fields' `<input
+type="number">` elements retain a stray `value=` attribute, and that
+each now carries `placeholder=`. Checked existing tests
+(`tests/blackvue/web/test_jobs.py`, the only test file referencing
+these field names) - it already exercises `start_bv_export()` with
+`stitch_mirror_size=None` etc. directly, at the `jobs.py` layer this
+fix doesn't touch, so no test changes were needed. No route-level
+test posts to the bv-export form with defaults, so there was nothing
+else to update.
