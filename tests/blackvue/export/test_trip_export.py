@@ -426,6 +426,37 @@ def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
     assert result.warnings == ()
 
 
+def test_export_trip_echoes_progress_live_when_say_is_given(tmp_path):
+    # Christer: "could bv-export be more talkative, not like trip.txt,
+    # but tell what its doing, now i dont get anything" - export_trip()
+    # now threads an optional `say` callable into TripLog, so every
+    # log.step()/log.warning() this function already makes also reaches
+    # the caller live, not just trip.log. See trip_log.py's own tests
+    # for the mechanism itself; this just confirms export_trip() really
+    # wires it through end to end.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front = source_dir / "front.mp4"
+    _make_video(front, 1.0)
+
+    recording = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+    said: list[str] = []
+
+    export_trip(trip, dest_dir, say=said.append)
+
+    assert said, "expected at least one live-echoed progress line"
+    assert all(line.startswith("bv-export: ") for line in said)
+    # trip.log itself is unaffected - say is additive, not a
+    # replacement for the file.
+    assert (dest_dir / "trip.log").exists()
+
+
 def test_text_assets_includes_scene_description_entries():
     # Christer: "this will also be a flag for bv-export i guess" ->
     # "dont touch bv-export except for merge of scene" - no new flag,

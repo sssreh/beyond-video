@@ -10736,3 +10736,68 @@ monkeypatch `_interactive()` itself directly rather than
 `sys.stdin`/`sys.stdout`, so they exercise `_ask_wipe_existing()`'s
 own wipe/keep/ask-once logic unaffected by this change - no updates
 needed there.
+
+## Feature: bv-export echoes trip.log's own step-level progress live
+## (2026-08-14)
+
+Christer: "could bv-export be more talkative, not like trip.txt, but
+tell what its doing, now i dont get anything." He'd already been
+passing `--debug` (visible in his own trip.log's `Command:` line from
+the earlier map-comparison session) and still got nothing.
+
+**Root cause.** Before this, `export_trip()` had zero live output of
+its own. `TripLog.step()`/`.warning()` only ever wrote to that trip's
+`trip.log` file - never printed anywhere. The only other progress
+output, `--debug`'s own `_checkpoint()`/scattered `print(f"bv-export:
+{phase}", file=sys.stderr)` calls, went straight to raw `sys.stderr` -
+which is process-wide, not per-thread. In a direct CLI run that's
+fine (the process's own terminal is `sys.stderr`), but in bv-web's
+background job thread it's the *server's own* console instead, never
+`job.append_output()` (the job's own output box) - exactly the same
+root cause as `bv_export.py`'s `_interactive()` fix two entries above
+in this file, just hitting progress prints instead of an `input()`
+prompt.
+
+**Fix.** Rather than touching each of `--debug`'s existing raw
+`print()` call sites, reused the channel that was already right there
+and already comprehensive: `TripLog.step()`/`.warning()`. `TripLog`
+(`trip_log.py`) gained an optional `say: Callable[[str], None] | None
+= None` constructor/`.open()` param; `step()` now calls
+`self._say(f"bv-export: {full_message}")` (same text it writes to the
+file, `elapsed_seconds` included when given) right after its own
+`_write()`, whenever `say` was given. `warning()` already routes
+through `step()`, so it's covered for free. `export_trip()`
+(`trip_export.py`) gained a matching `say` param, forwarded straight
+to `TripLog.open()`. `bv_export()` (`bv_export.py`) now passes its own
+already-injected `say` into that `export_trip()` call - the same
+`say` that's `print` for a direct CLI run (via `wrap_say()`'s
+persistent-logging wrapper) and `job.append_output` for a bv-web job
+(see `web/jobs.py`'s `start_bv_export()`), so both paths get this for
+free with no new wiring needed at either call site.
+
+Deliberately **not** gated behind `--debug`, unlike the raw print()s
+it doesn't touch: `trip.log`'s own step-level granularity (roughly a
+dozen lines per trip - concatenation, map/gsensor/stitch render start
+and finish with timing, not per-recording-trim detail) is already the
+right amount of talkative on its own, matching Christer's own "not
+like trip.txt" - the file's *fuller* detail (WARNING lines, trip
+membership reasoning, per-recording duration-mismatch notes) stays
+file-only; only `step()`/`warning()`'s own lines echo live.
+
+**Verification.** No pytest in this sandbox; `ast.parse` clean on
+`trip_log.py`, `trip_export.py`, `bv_export.py`, and both edited test
+files. Real ffmpeg is available in this sandbox this session, so this
+was verified end to end, not just unit-level: a genuine
+`export_trip()` call against a real 1-recording trip with `say=list
+.append` produced 10 live lines ("starting concatenation
+(front/rear/audio)", "concatenated front.mp4 from 1 recording(s))",
+"wrote trip_info.txt", and so on), all prefixed `bv-export: `, and
+`trip.log` was still written unchanged alongside them. New tests:
+`test_trip_log.py` gained 4 (`step()` echoes through `say` when given,
+`elapsed_seconds` included, `warning()` echoes too, no `say` given ->
+file-only as before, all confirmed against the real module in this
+sandbox); `test_trip_export.py` gained one end-to-end integration test
+confirming `export_trip(..., say=...)` really reaches live output
+through the whole chain, not just that `TripLog` itself can do it.
+`docs/man/bv-export.md`'s `--debug` row/options table updated with a
+new paragraph describing this as independent of `--debug`.

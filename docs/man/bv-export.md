@@ -212,6 +212,8 @@ A second, alternate g-sensor visualization alongside `--stitch-gsensor`'s dot-ga
 
 Without `--overwrite`: an interactive run asks once whether to wipe or keep existing trip folders (the answer applies to every trip folder touched that run); a non-interactive run always keeps them, only overwriting the files it actually regenerates.
 
+Independent of `--debug`: every run (direct CLI or a bv-web job) now also prints each trip's own step-level progress live as it happens - concatenation, map/gsensor/stitch render start and finish (with timing), and so on - the same lines that always went into that trip's own `trip.log`. This is off by default on nothing; there's no flag to turn it off or on, since it's the same coarse, phase-level detail `trip.log` itself already has, just streamed out live instead of only readable after the fact (or after opening the file mid-run).
+
 Cancelling a `bv-export` job from `bv-web`'s job page now actually stops it starting new work, rather than just marking the job cancelled in the browser while it kept running underneath - checked between trips and between each major phase within a trip (concatenation, map, gsensor, gsensor-graph, stitch, intro), and every 30 frames inside the slower per-frame renders (map/intro/gsensor-graph). A phase's own in-flight ffmpeg call (concatenation, the stitch.mp4 render, the gsensor.mp4 dot-gauge render) still runs to completion before the next checkpoint is reached - not instant, but no longer "runs to the end of the whole job regardless." A real terminal run (Ctrl-C) already stopped promptly and is unaffected by this.
 
 ## OUTPUT

@@ -538,6 +538,16 @@ def bv_export(
     breadcrumbs for tracking down where time went on a slow run, off
     by default since most runs don't need them.
 
+    `say` (always available, not gated behind `debug`) also gets each
+    trip's own export-phase progress - "starting map.mp4 render",
+    "rendered map.mp4", and so on, the same lines export_trip() writes
+    to that trip's own trip.log - live, as they happen, via
+    `export_trip()`'s own `say` param. Before this, a long export gave
+    no live signal of any kind unless `--debug` was passed, and even
+    then the underlying print()s went to raw stderr rather than
+    through `say`, so a bv-web job never saw them at all - see
+    trip_export.py's own `say` param docstring.
+
     `--timestamp`/`--from`/`--until` select *trips*, not recordings: a
     trip is included if any of its own recordings fall inside the
     requested range - the whole trip is then exported, including
@@ -877,6 +887,7 @@ def bv_export(
                 reasons=reasons,
                 debug=debug,
                 should_continue=should_continue,
+                say=say,
             )
         except ExportCancelled as exc:
             # A real cancellation (bv-web's Cancel button, via

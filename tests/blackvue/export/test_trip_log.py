@@ -120,3 +120,56 @@ def test_a_trip_with_no_membership_or_steps_still_reads_cleanly(tmp_path):
     assert "--- Trip membership ---" not in text
     assert "--- Export steps ---" not in text
     assert "Finished:" in text
+
+
+def test_step_echoes_live_through_say_when_given(tmp_path):
+    # Christer: "could bv-export be more talkative, not like trip.txt,
+    # but tell what its doing, now i dont get anything" - step() now
+    # also calls the optional say() callable, not just trip.log's own
+    # file. Prefixed "bv-export: " to match every other say() line
+    # bv-export already prints (see bv_export.py's own "bv-export:
+    # {folder} - N file(s) written").
+    said = []
+    log = TripLog.open(
+        tmp_path, trip_label="trip", command="bv-export", say=said.append
+    )
+    log.step("starting map.mp4 render")
+    log.close()
+
+    assert said == ["bv-export: starting map.mp4 render"]
+
+
+def test_step_echoes_elapsed_seconds_through_say_too(tmp_path):
+    said = []
+    log = TripLog.open(
+        tmp_path, trip_label="trip", command="bv-export", say=said.append
+    )
+    log.step("rendered map.mp4", elapsed_seconds=181.3)
+    log.close()
+
+    assert said == ["bv-export: rendered map.mp4 (181.3s)"]
+
+
+def test_warning_echoes_through_say_too(tmp_path):
+    said = []
+    log = TripLog.open(
+        tmp_path, trip_label="trip", command="bv-export", say=said.append
+    )
+    log.warning("stitch: no GPS data to auto-pick a layout from")
+    log.close()
+
+    assert said == [
+        "bv-export: WARNING: stitch: no GPS data to auto-pick a layout from"
+    ]
+
+
+def test_no_say_given_means_no_live_echo_just_the_file(tmp_path):
+    # Default behavior (every existing call site before this change,
+    # and any caller that doesn't pass say=) must be unaffected -
+    # trip.log itself still gets every line either way.
+    log = TripLog.open(tmp_path, trip_label="trip", command="bv-export")
+    log.step("starting map.mp4 render")
+    log.close()
+
+    text = (tmp_path / "trip.log").read_text(encoding="utf-8")
+    assert "starting map.mp4 render" in text

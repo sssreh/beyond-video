@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -50,12 +51,42 @@ class TripLog:
     lazily, the first time `membership()`/`step()` is actually called,
     so a trip log for a run that (say) fails before any steps run
     still reads cleanly rather than showing an empty steps section.
+
+    Optional `say` (task: "could bv-export be more talkative, not like
+    trip.txt, but tell what its doing, now i dont get anything") - when
+    given, every `step()`/`warning()` call also gets echoed live
+    through it, in addition to being written to trip.log. Before this,
+    export_trip() had no live output at all: the existing `--debug`
+    print()s went straight to raw `sys.stderr`, which is process-wide,
+    not per-thread - the exact same class of bug as `bv_export.py`'s
+    `_interactive()` fix (see WORKING_CONTEXT.md), just hitting
+    progress output instead of an `input()` prompt. In bv-web's
+    background job thread, those prints went to the server's own
+    unwatched console, never to the job's own output box - "now i dont
+    get anything" even with `--debug` already on. Reusing `step()`'s
+    own call sites (already comprehensive - concatenation, map render
+    start/end with timing, gsensor, stitch, and so on) rather than
+    threading a separate callable through each of `trip_export.py`'s
+    individual phases means every phase already worth recording to
+    trip.log is, for free, also worth saying live - deliberately not
+    gated behind `--debug` either, unlike the print()s it doesn't
+    touch: this is coarser than trip.log's own per-recording
+    concatenation detail (Christer's own "not like trip.txt"), so it
+    doesn't need debug's extra opt-in to stay readable.
     """
 
-    def __init__(self, path: Path, *, trip_label: str, command: str):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        trip_label: str,
+        command: str,
+        say: Callable[[str], None] | None = None,
+    ):
         self._path = path
         self._monotonic_start = time.monotonic()
         self._file = path.open("w", encoding="utf-8")
+        self._say = say
         self._wrote_membership_header = False
         self._wrote_steps_header = False
         # front/rear/audio concatenation runs in three concurrent
@@ -72,12 +103,24 @@ class TripLog:
         self._write(f"Command: {command}")
 
     @classmethod
-    def open(cls, destination: Path, *, trip_label: str, command: str) -> "TripLog":
+    def open(
+        cls,
+        destination: Path,
+        *,
+        trip_label: str,
+        command: str,
+        say: Callable[[str], None] | None = None,
+    ) -> "TripLog":
         """Open (creating/truncating) trip.log inside `destination`,
-        writing the header immediately."""
+        writing the header immediately. `say`, if given, is forwarded
+        straight to `__init__` - see this class's own docstring for
+        what it does."""
 
         return cls(
-            destination / LOG_FILENAME, trip_label=trip_label, command=command
+            destination / LOG_FILENAME,
+            trip_label=trip_label,
+            command=command,
+            say=say,
         )
 
     def _write(self, line: str) -> None:
@@ -106,18 +149,25 @@ class TripLog:
         wall-clock timestamp (HH:MM:SS) is prefixed automatically.
         `elapsed_seconds`, if given, is appended in parentheses - for
         phases worth knowing the duration of (map/stitch rendering in
-        particular, which can run to minutes on a real archive)."""
+        particular, which can run to minutes on a real archive).
+
+        Also echoed live through `self._say`, if one was given to
+        `__init__`/`open()` - see this class's own docstring."""
 
         if not self._wrote_steps_header:
             self._write("")
             self._write("--- Export steps ---")
             self._wrote_steps_header = True
 
-        timestamp = datetime.now().strftime("%H:%M:%S")
         if elapsed_seconds is not None:
-            self._write(f"{timestamp}  {message} ({elapsed_seconds:.1f}s)")
+            full_message = f"{message} ({elapsed_seconds:.1f}s)"
         else:
-            self._write(f"{timestamp}  {message}")
+            full_message = message
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._write(f"{timestamp}  {full_message}")
+        if self._say is not None:
+            self._say(f"bv-export: {full_message}")
 
     def warning(self, message: str) -> None:
         """Record a warning - the same text that also goes into

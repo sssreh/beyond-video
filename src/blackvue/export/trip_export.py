@@ -1762,6 +1762,7 @@ def export_trip(
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
     should_continue: Callable[[], bool] = lambda: True,
+    say: Callable[[str], None] | None = None,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -2152,13 +2153,33 @@ def export_trip(
     subprocess.run() each) - stopping mid-subprocess would need actual
     process termination, a bigger change left for later if it's ever
     needed; those phases just won't *start* if already cancelled.
+
+    `say`, if given, is forwarded straight to `TripLog.open()` - every
+    `log.step()`/`log.warning()` call this function already makes
+    (concatenation, map/gsensor/stitch/intro render start and finish,
+    with timing) is then also echoed live through it, not just written
+    to trip.log. Christer: "could bv-export be more talkative, not
+    like trip.txt, but tell what its doing, now i dont get anything" -
+    unlike `debug`'s own print()s above, not gated behind `--debug`
+    (trip.log's own step-level granularity is already the right amount
+    of talkative on its own) and, critically, not a raw
+    `print(..., file=sys.stderr)` either - those go to whatever
+    process-wide stderr happens to be attached, which in bv-web's
+    background job thread is the *server's* own console, never the
+    job's own output box (the same root cause as `bv_export.py`'s
+    `_interactive()` fix - see WORKING_CONTEXT.md). `say` instead flows
+    through each caller's own already-correct channel: `print` for a
+    direct CLI run, `job.append_output` for a bv-web job.
     """
 
     destination.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
 
     log = TripLog.open(
-        destination, trip_label=trip.label, command=command_line or "(not recorded)"
+        destination,
+        trip_label=trip.label,
+        command=command_line or "(not recorded)",
+        say=say,
     )
     if reasons is not None:
         for recording in trip:
