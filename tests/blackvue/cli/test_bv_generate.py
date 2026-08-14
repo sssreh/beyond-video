@@ -1951,6 +1951,13 @@ def test_do_describe_scene_skips_parking_mode_ok(monkeypatch, tmp_path):
         return "## Description\nParked, nothing notable.\n\n---\ndisclaimer"
 
     monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+    # Repair wiring (task #777) is exercised by its own tests below -
+    # kept as an identity pass-through here so this test still isolates
+    # just the "Parking recordings aren't skipped" behavior it's named
+    # for.
+    monkeypatch.setattr(
+        bv_generate, "load_or_repair_parking_video", lambda path, cache_dir: path
+    )
 
     recording = Recording(id=RecordingId("20260715_134010_P"))
     video = tmp_path / "20260715_134010_PF.mp4"
@@ -1965,6 +1972,68 @@ def test_do_describe_scene_skips_parking_mode_ok(monkeypatch, tmp_path):
     assert calls == [(video, SCENE_DEFAULT_MODEL, True)]
     written = (tmp_path / "20260715_134010_P.scene.txt").read_text(encoding="utf-8")
     assert "Parked, nothing notable." in written
+
+
+def test_do_describe_scene_repairs_parking_video_before_describing(monkeypatch, tmp_path):
+    # task #777: a Parking recording's raw video trips ffmpeg's/
+    # libavformat's strict container validation on its own broken,
+    # empty audio track (WORKING_CONTEXT.md, "contradictionary STSC
+    # and STCO" / "error reading header") - describe_scene() should
+    # be handed a repaired copy instead of the raw archive file, same
+    # as web/app.py's video-serving route and export/trip_export.py's
+    # own pipeline already do.
+    calls = []
+    repair_calls = []
+
+    def fake_describe_scene(source, *, model, force_cpu):
+        calls.append(source)
+        return "## Description\nnothing notable"
+
+    def fake_load_or_repair(path, cache_dir):
+        repair_calls.append((path, cache_dir))
+        return path.parent / "repaired.mp4"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+    monkeypatch.setattr(bv_generate, "load_or_repair_parking_video", fake_load_or_repair)
+
+    recording = Recording(id=RecordingId("20260715_134010_P"))
+    video = tmp_path / "20260715_134010_PF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True)
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert repair_calls == [(video, bv_generate.default_config_dir() / ".parking_repair_cache")]
+    assert calls == [tmp_path / "repaired.mp4"]
+
+
+def test_do_describe_scene_does_not_repair_non_parking_video(monkeypatch, tmp_path):
+    # A non-Parking recording's video was never affected by the
+    # broken-audio-track quirk (see mp4_repair.py's own docstring) -
+    # the repair helper should not even be called for it.
+    calls = []
+
+    def fake_describe_scene(source, *, model, force_cpu):
+        calls.append(source)
+        return "## Description\nnothing notable"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+    monkeypatch.setattr(bv_generate, "load_or_repair_parking_video", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    video = tmp_path / "20260715_134010_NF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True)
+
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+
+    assert had_error is False
+    assert calls == [video]
 
 
 def test_do_describe_scene_no_source_is_an_error(monkeypatch, tmp_path):

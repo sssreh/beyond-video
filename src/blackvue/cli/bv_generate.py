@@ -43,6 +43,7 @@ from ..generate import select_source
 from ..generate import short_code
 from ..generate import transcribe
 from ..generate import translate
+from ..generate.mp4_repair import load_or_repair_parking_video
 from ..lexicaltimeparser import LexicalTimeParser
 
 _SPEAKER_LINE = re.compile(r"^\[(?P<speaker>[^\]]+)\]\s*(?P<text>.*)$")
@@ -757,6 +758,25 @@ def _run_describe_scene_pass(
     kwargs = {"model": args.scene_model, "force_cpu": args.cpu}
     if task is not None:
         kwargs["task"] = task
+
+    # Parking-mode video has an empty, broken audio track that trips
+    # strict container validation - ffmpeg/libavformat then log
+    # "contradictionary STSC and STCO" / "error reading header"
+    # straight to stderr (describe_scene()'s own video decoding, via
+    # qwen_vl_utils -> decord/ffmpeg, isn't wrapped in this project's
+    # own subprocess capture the way media.py's probe()/extract_audio()
+    # are, so those lines leak to the real terminal instead of being
+    # caught cleanly). The video track itself is fine - only the
+    # container's bookkeeping for the unused audio track is broken -
+    # so swap in a repaired, cached copy first. Same fix already used
+    # by web/app.py's video-serving route and export/trip_export.py's
+    # own pipeline; load_or_repair_parking_video() falls back to
+    # `video_path` unchanged for anything outside the one narrow,
+    # confirmed pattern it knows how to fix, so this is always safe to
+    # try.
+    if recording.id.is_parking:
+        cache_dir = default_config_dir() / ".parking_repair_cache"
+        video_path = load_or_repair_parking_video(video_path, cache_dir)
 
     try:
         output_text = describe_scene(video_path, **kwargs)

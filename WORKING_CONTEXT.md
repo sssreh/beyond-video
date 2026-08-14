@@ -10334,3 +10334,60 @@ to `tests/blackvue/core/test_camera_config.py`:
 `test_validate_id_rejects_the_reserved_web_users_id` and
 `test_list_camera_ids_skips_the_reserved_web_users_file`. `ast.parse`
 clean on all three touched files.
+
+## Fix: wire the Parking-container repair into bv-generate's --describe-scene (2026-08-14)
+
+Christer's report: `bv-generate` printed raw ffmpeg/libavformat lines
+straight to the terminal for every Parking-mode recording -
+`"[mov,mp4,m4a,3gp,3g2,mj2 @ ...] stream 1, contradictionary STSC and
+STCO"` / `"error reading header"` - and asked whether it was hard to
+get rid of. It wasn't: this project already has a battle-tested fix
+for exactly this quirk (an empty, broken audio track that trips
+strict container validation - see `generate/mp4_repair.py`'s own
+docstring for the full root-cause writeup, confirmed against one of
+Christer's own real recordings), and it was already wired into two
+call sites - `web/app.py`'s video-serving route and `export/
+trip_export.py`'s own export pipeline - just not into `bv-generate`
+itself.
+
+Root cause of the leak specifically: `--describe-scene`'s video
+reading happens inside `qwen_vl_utils.process_vision_info()` (via
+`generate/scene.py`'s `describe_scene()`), which decodes video through
+`decord`/`ffmpeg` bindings outside this project's own subprocess
+wrapping (every other ffmpeg/ffprobe call in `generate/media.py` uses
+`subprocess.run(..., capture_output=True)`, which is what normally
+keeps this kind of diagnostic text out of the real terminal) - so
+`cli/bv_generate.py`'s `_do_describe_scene()` was handing the raw,
+unrepaired archive file straight through, and whatever decord/ffmpeg
+printed internally leaked to real stderr uncaught.
+
+Fix, in `cli/bv_generate.py`'s `_run_describe_scene_pass()` (the one
+call site shared by both the front and rear `--describe-scene`
+passes): for a Parking-mode recording (`recording.id.is_parking`),
+swap `video_path` for `load_or_repair_parking_video(video_path,
+default_config_dir() / ".parking_repair_cache")`'s result before
+calling `describe_scene()` - the exact same cache directory `web/
+app.py` and `trip_export.py` already share, so a recording repaired
+once by any of the three call sites is reused by the others too.
+`load_or_repair_parking_video()` already falls back to the original
+path unchanged for anything outside the one narrow, confirmed pattern
+it knows how to fix, so this is always safe to try and never makes an
+already-working recording behave any differently.
+
+**Verification.** No pytest in this sandbox; `cli/bv_generate.py` has
+no fastapi dependency but does transitively hit `core/camera_config.
+py`'s `import tomllib` (this sandbox runs Python 3.10, no stdlib
+tomllib) - same stubbed-`tomllib` harness pattern used for the
+web-users fix above let `_do_describe_scene()` be exercised directly:
+confirmed a Parking recording's video path gets swapped for the
+repaired path before reaching `describe_scene()`, that the repair
+helper is never even called for a non-Parking recording, and that the
+existing "Parking recordings aren't skipped for --describe-scene"
+behavior is unchanged. Three tests added to `tests/blackvue/cli/
+test_bv_generate.py`:
+`test_do_describe_scene_repairs_parking_video_before_describing`,
+`test_do_describe_scene_does_not_repair_non_parking_video`, and an
+update to the existing `test_do_describe_scene_skips_parking_mode_ok`
+(now monkeypatches the repair helper as an identity pass-through so
+it keeps isolating just the behavior it's named for). `ast.parse`
+clean on both touched files.
