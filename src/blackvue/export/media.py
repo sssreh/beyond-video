@@ -13,6 +13,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -886,3 +887,122 @@ def trim_media_head(
         raise MediaToolError(
             f"ffmpeg head trim failed for {source.name}: {exc.stderr.strip()}"
         ) from exc
+
+
+def probe_video_dimensions(path: Path) -> tuple[int, int]:
+    """Return `path`'s own (width, height) via ffprobe.
+
+    Used by trip_export.py to size render_missing_camera_placeholder()
+    below to exactly match a trip's real rear.mp4 sources - see that
+    function's own docstring for why an exact match matters."""
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffprobe not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"ffprobe failed for {path.name}: {exc.stderr.strip()}"
+        ) from exc
+
+    try:
+        stream = json.loads(result.stdout)["streams"][0]
+        return int(stream["width"]), int(stream["height"])
+    except (KeyError, IndexError, ValueError) as exc:
+        raise MediaToolError(
+            f"could not parse ffprobe output for {path.name}"
+        ) from exc
+
+
+def render_missing_camera_placeholder(
+    destination: Path,
+    duration_seconds: float,
+    *,
+    width: int,
+    height: int,
+    fps: float = 30.0,
+) -> None:
+    """Render a black `duration_seconds`-long video with a red
+    diagonal cross drawn corner-to-corner across it, at `width`x
+    `height`/`fps` - a stand-in for a recording whose own rear video
+    is simply missing (SD card fault, camera glitch, ...) while its
+    front video still exists and is otherwise a normal part of the
+    trip.
+
+    Built for trip_export.py's own rear.mp4 pipeline (task #799).
+    Christer, on a real export that logged "concatenated rear.mp4 from
+    5 recording(s)" against "front.mp4 from 6 recording(s))": "So this
+    will give a black rearview mirror for a while or?" Plain black was
+    rejected in favor of reusing the same visual language the archive
+    browser's thumbnail grid already uses for a recording with no
+    video at all (see base.html's `.thumb-no-video` CSS, task #432) -
+    a red diagonal cross reads unambiguously as "deliberately marked
+    missing", not "camera glitched / lens cap / tunnel". Drawn corner-
+    to-corner here rather than at the thumbnail's fixed +/-35 degrees -
+    a thumbnail is always roughly the same aspect ratio, a dashcam
+    video frame isn't guaranteed to be, and corner-to-corner always
+    fills the frame correctly regardless of aspect ratio.
+
+    Rendered as a single static PIL frame, looped by ffmpeg
+    (`-loop 1`) for the whole duration, rather than writing out one
+    PNG per held frame the way map_video.py's Parking frame-holding
+    optimization does (see that function's own docstring) - nothing
+    here changes frame to frame, so one input frame is enough even for
+    a multi-minute gap.
+
+    `width`/`height` must match the caller's other rear.mp4 sources'
+    own resolution exactly - trip_export.py's own caller always forces
+    `force_reencode=True` on the whole rear.mp4 concat whenever this
+    placeholder is used (see concatenate_media()'s/
+    `_concat_filter_reencode()`'s own docstrings for why: a file
+    rendered here never shares the camera's own encoder session, so
+    it can't safely go through the normal stream-copy concat path -
+    exactly the corruption class the removed parking-transition-clip
+    feature hit through that same path; see `_concatenate_asset()`'s
+    own docstring). `_concat_filter_reencode()`'s own `concat` filter
+    has no scale step of its own, so a mismatched width/height here
+    would fail or misbehave rather than being silently corrected.
+    """
+
+    from PIL import Image
+    from PIL import ImageDraw
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    image = Image.new("RGB", (width, height), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    # Same red as the archive browser's own .thumb-no-video CSS
+    # (#e5484d), so the two "this footage is missing" markers in the
+    # app read as the same visual language rather than two unrelated
+    # ones.
+    red = (229, 72, 77)
+    line_width = max(6, min(width, height) // 40)
+    draw.line([(0, 0), (width, height)], fill=red, width=line_width)
+    draw.line([(width, 0), (0, height)], fill=red, width=line_width)
+
+    with tempfile.TemporaryDirectory(
+        prefix="bv_export_rear_placeholder_", ignore_cleanup_errors=True
+    ) as frame_dir:
+        frame_path = Path(frame_dir) / "placeholder.png"
+        image.save(frame_path)
+
+        encode_with_nvenc_fallback(
+            [
+                "-loop", "1",
+                "-framerate", str(fps),
+                "-i", str(frame_path),
+                "-t", str(duration_seconds),
+            ],
+            destination,
+        )

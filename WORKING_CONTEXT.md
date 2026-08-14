@@ -10867,3 +10867,111 @@ coexist rather than one clobbering the other. New tests in
 `test_trips.py` cover `scan_trip()` finding both fields at once, the
 plain-only case, the `map_zoom` glob already picking up `_tu` variants
 with no code change, and `known_filenames` including both.
+
+## Feature: black+red-X placeholder for a recording missing rear video
+## (2026-08-14)
+
+Christer noticed a real export's log showing `rear.mp4` built from 5
+recordings against `front.mp4`'s 6, and asked: "So this will give a
+black rearview mirror for a while or?" Investigation (via a delegated
+code-reading pass over `_concatenate_asset()`,
+`_align_front_rear_durations()`, and `stitch_cameras()`'s rearview-
+mirror `overlay` filter) found the real behavior was worse than a
+blank stretch: `_concatenate_asset()` silently omits any recording
+missing the asset it's building (`if not recording.has(asset):
+continue`, no placeholder), so `rear.mp4` came out genuinely shorter
+than `front.mp4` and time-shifted against it for everything after the
+gap - not a hidden pause, a real desync for the rest of the trip. On
+top of that, the `overlay` filter used for the rearview-mirror stitch
+composite has no `-shortest` anywhere and defaults to
+`eof_action=repeat`, so once the shorter rear stream ran out ffmpeg
+would freeze on rear's last real frame while front kept playing to its
+own full length - worse than either a black screen or a clean cut.
+
+Asked Christer what the placeholder should look like: "Should the rear
+mirror be black, or maybe black with those 2 red diagonal lines or
+something else? Whats your take on that?" Found the app already has a
+visual convention for exactly this - `.thumb-no-video` in
+`base.html` (task #432), a red diagonal cross (`#e5484d`, two bars at
+±35°) drawn over a dark-tinted thumbnail for an archive recording with
+no video at all. Recommended reusing that language rather than plain
+black, since black alone reads as "video is just dark" rather than
+"footage is missing." Christer approved: "Yes implement it that way,
+for a short time i thought, remove the rearview mirror for that time
+or have angled down, bu that would be strange" - i.e. render a real
+placeholder clip rather than hiding or tilting the mirror inset for
+that stretch.
+
+**Fix.** Two new functions in `export/media.py`:
+`probe_video_dimensions()` (ffprobe wrapper returning `(width,
+height)`, scoped locally rather than added to the widely-used
+`generate/media.py` `MediaInfo`/`probe()` to avoid touching that
+function's many existing callers across bv-generate/subtitle-timing/
+mp4_repair/etc.) and `render_missing_camera_placeholder()`, which
+draws a black frame with a red corner-to-corner cross via Pillow (not
+the CSS's fixed ±35° - a dashcam frame's aspect ratio varies, corner-
+to-corner always fills it correctly) and loops it with ffmpeg
+(`-loop 1 -framerate ... -t duration`) into a clip of the exact
+requested duration - a single static frame looped, rather than one PNG
+per held frame the way map_video.py's Parking frame-holding
+optimization does it, since nothing changes frame-to-frame in a
+placeholder and a multi-minute gap would be wasteful to render as
+individual stills.
+
+`trip_export.py` gained `_missing_rear_placeholders()`, which finds
+the trip's first real REAR file to size/framerate the placeholder
+against (falling back to an empty result if the trip has no real rear
+footage anywhere - a front-only camera setup, not this feature's
+target case), then for every non-Parking recording that has FRONT but
+no REAR, renders a placeholder matching that recording's own
+(possibly-already-trimmed, via `duration_overrides`) FRONT duration
+and returns a `{recording id: placeholder path}` map. `_concatenate_
+asset()` gained a `missing_placeholders` param: wherever a recording
+lacks the asset being built, it now checks this map before falling
+through to the old skip-it behavior, splicing the placeholder in at
+that recording's own position in the trip instead of leaving a gap.
+`export_trip()` computes this map right before the front/rear/audio
+`ThreadPoolExecutor` block (still inside the alignment temp directory,
+since the generated placeholder files need to survive the executor's
+synchronous calls) and forces `rear_needs_reencode = True` whenever
+any placeholders exist, so the mixed real-camera-plus-synthetic-clip
+concat always goes through `_concat_filter_reencode()`'s frame-level
+re-encode path rather than the concat demuxer's stream copy - the
+same SPS/PPS/GOP-mismatch corruption class documented at length on the
+now-removed parking-transition-clip feature (tasks #235-240) applies
+identically here, since the placeholder and the camera's own hardware-
+encoded footage come from separate encoder sessions. A genuine missing-
+rear gap gets a real `warnings.append()`/`log.warning()` (not just
+`log.step()`), unlike `_align_front_rear_durations()`'s routine clock-
+jitter trim - this is actual lost footage for that camera, worth
+surfacing even though bv-export auto-fills it.
+
+**Verification.** No pytest in this sandbox; real ffmpeg is available
+this session, so every layer was verified against it directly rather
+than mocked. `render_missing_camera_placeholder()`/`probe_video_
+dimensions()` alone: a 2.5s/640x360/25fps placeholder probed back as
+2.52s at exactly (640, 360). `_missing_rear_placeholders()` alone:
+correctly finds the reference rear file, sizes a placeholder to the
+gap recording's own front duration, skips Parking recordings when
+`include_parking=False`, and returns empty for a front-only trip or a
+trip where every recording already has rear. `_concatenate_asset()` +
+`missing_placeholders`: a 1s/2s(placeholder)/1s three-recording rear
+sequence concatenated to a real 4.0s file, confirming the placeholder
+lands at the gap recording's own position rather than being dropped or
+appended at the end. Full `export_trip()` end to end: a 3-recording
+trip (2.0s+3.0s+1.5s front, middle recording missing rear) produced
+`front.mp4`/`rear.mp4` both ~6.5s, in sync, with a warning naming the
+gap recording - reproducing and fixing exactly the scenario from
+Christer's original report. Added 6 new tests to `test_export_media.py`
+(dimension probing, exact duration/size, the black-background-plus-
+red-cross pixel content, and the ffmpeg-missing error path) and 6 new
+tests to `test_trip_export.py` (`_missing_rear_placeholders()` in all
+four branches, the `_concatenate_asset()` splice-position case, and the
+full `export_trip()` end-to-end case above). Ran the complete existing
+`test_export_media.py` (48 tests) and `test_trip_export.py` (147 of
+155 - the other 8 fail only on this sandbox's own pytest-shim
+limitations, unrelated to this change: `capsys` not capturing stderr
+and `monkeypatch.setenv` missing from the stub, both pre-existing gaps
+hit by unrelated tests) suites afterward with no regressions.
+`docs/man/bv-export.md` gained a new "Missing rear video" subsection
+plus an update to the `front.mp4`/`rear.mp4` output-file row.

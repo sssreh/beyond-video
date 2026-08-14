@@ -22,6 +22,7 @@ from blackvue.export.trip_export import _concatenate_asset
 from blackvue.export.trip_export import _ensure_recording_audio
 from blackvue.export.trip_export import _load_trip_roads
 from blackvue.export.trip_export import _merge_gsensor
+from blackvue.export.trip_export import _missing_rear_placeholders
 from blackvue.export.trip_export import _recording_video_offsets
 from blackvue.export.trip_export import _repair_parking_sources
 from blackvue.export.trip_export import _replace_with_retry
@@ -1163,6 +1164,198 @@ def test_align_front_rear_durations_skips_a_recording_missing_one_side(tmp_path)
 
     assert overrides == {}
     assert warnings == []
+
+
+def test_missing_rear_placeholders_returns_empty_when_trip_has_no_rear_anywhere(
+    tmp_path,
+):
+    # A front-only camera setup - never this feature's target case (see
+    # _missing_rear_placeholders()'s own docstring). Nothing to size a
+    # placeholder *rear* against when the trip never had real rear
+    # footage in the first place.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    _make_video(front, 2.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    placeholders = _missing_rear_placeholders(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True
+    )
+
+    assert placeholders == {}
+    assert warnings == []
+
+
+def test_missing_rear_placeholders_returns_empty_when_every_recording_has_rear(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    rear = source_dir / "rear.mp4"
+    _make_video(front, 2.0)
+    _make_video(rear, 2.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front),
+                Asset.REAR: AssetFile(Asset.REAR, rear),
+            },
+        ),
+    ))
+
+    warnings: list[str] = []
+    placeholders = _missing_rear_placeholders(
+        trip, tmp_path / "work", warnings, log=None, include_parking=True
+    )
+
+    assert placeholders == {}
+    assert warnings == []
+
+
+def test_missing_rear_placeholders_renders_one_sized_to_match_real_rear_video(
+    tmp_path,
+):
+    # Task #799 - Christer: "So this will give a black rearview mirror
+    # for a while or?" - the recording missing REAR gets a placeholder
+    # of its own FRONT's duration, sized/framerated to match the
+    # trip's own real rear.mp4 sources (64x64/10fps here) so the
+    # concat filter downstream (no scale step) can splice it straight
+    # in.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    good_front = source_dir / "good_front.mp4"
+    good_rear = source_dir / "good_rear.mp4"
+    gap_front = source_dir / "gap_front.mp4"
+    _make_video(good_front, 2.0)
+    _make_video(good_rear, 2.0)
+    _make_video(gap_front, 3.0)
+
+    gap_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, good_front),
+                Asset.REAR: AssetFile(Asset.REAR, good_rear),
+            },
+        ),
+        Recording(
+            id=gap_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, gap_front)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    log = _StepLog()
+    placeholders = _missing_rear_placeholders(
+        trip, tmp_path / "work", warnings, log=log, include_parking=True
+    )
+
+    assert list(placeholders.keys()) == [gap_id]
+    placeholder_path = placeholders[gap_id]
+    assert placeholder_path.exists()
+    assert _video_size(placeholder_path) == _video_size(good_rear)
+    assert abs(_video_duration(placeholder_path) - 3.0) < 0.3
+
+    # A real gap always surfaces as a warning (not just a step) - this
+    # is genuinely missing footage, even though bv-export auto-fills
+    # it, unlike _align_front_rear_durations()'s routine clock-jitter
+    # trim (which stays step()-only).
+    assert len(warnings) == 1
+    assert "no rear video" in warnings[0]
+    assert any("no rear video" in step for step in log.steps)
+
+
+def test_missing_rear_placeholders_skips_parking_recordings_when_not_included(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    good_front = source_dir / "good_front.mp4"
+    good_rear = source_dir / "good_rear.mp4"
+    parking_front = source_dir / "parking_front.mp4"
+    _make_video(good_front, 2.0)
+    _make_video(good_rear, 2.0)
+    _make_video(parking_front, 2.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, good_front),
+                Asset.REAR: AssetFile(Asset.REAR, good_rear),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_PF"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, parking_front)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    placeholders = _missing_rear_placeholders(
+        trip, tmp_path / "work", warnings, log=None, include_parking=False
+    )
+
+    assert placeholders == {}
+    assert warnings == []
+
+
+def test_concatenate_asset_splices_a_missing_rear_placeholder_into_the_right_slot(
+    tmp_path,
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    dest_dir.mkdir()
+
+    first_rear = source_dir / "first_rear.mp4"
+    third_rear = source_dir / "third_rear.mp4"
+    _make_video(first_rear, 1.0)
+    _make_video(third_rear, 1.0)
+
+    gap_id = RecordingId("20260720_100100_N")
+    placeholder_path = tmp_path / "placeholder.mp4"
+    _make_video(placeholder_path, 2.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.REAR: AssetFile(Asset.REAR, first_rear)},
+        ),
+        Recording(
+            id=gap_id,
+            assets={},
+        ),
+        Recording(
+            id=RecordingId("20260720_100200_N"),
+            assets={Asset.REAR: AssetFile(Asset.REAR, third_rear)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    result = _concatenate_asset(
+        trip, Asset.REAR, "rear.mp4", dest_dir, warnings,
+        force_reencode=True,
+        missing_placeholders={gap_id: placeholder_path},
+    )
+
+    assert result == dest_dir / "rear.mp4"
+    # 1.0 + 2.0 + 1.0 = 4.0s total - the placeholder really is spliced
+    # in at the gap recording's own position, not dropped or appended
+    # at the end.
+    assert abs(_video_duration(result) - 4.0) < 0.3
 
 
 def _make_video_with_frequent_keyframes(path, duration_seconds: float) -> None:
@@ -4742,3 +4935,69 @@ def test_export_trip_raises_export_cancelled_when_should_continue_is_false(
         export_trip(trip, dest_dir, should_continue=lambda: False)
 
     assert not (dest_dir / "front.mp4").exists()
+
+
+def test_export_trip_keeps_rear_in_sync_when_a_recording_has_no_rear_video(
+    tmp_path,
+):
+    # End-to-end for task #799. Christer, on a real export where a
+    # recording had 5 rear files against 6 front files: "So this will
+    # give a black rearview mirror for a while or?" - confirmed (via
+    # code investigation) the real behavior was worse than a blank
+    # gap: rear.mp4 came out genuinely shorter and time-shifted, and
+    # once ffmpeg's overlay ran out of rear frames it froze on the
+    # last real one while front kept playing - not a sync-preserving
+    # freeze, a real desync for the rest of the trip. Christer approved
+    # a black+red-X placeholder (task #432's existing .thumb-no-video
+    # convention, adapted) sized to the missing recording's own
+    # duration: "Yes implement it that way". front.mp4 and rear.mp4
+    # should come out the same length, and the trip should surface a
+    # warning explaining the gap.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front1 = source_dir / "front1.mp4"
+    rear1 = source_dir / "rear1.mp4"
+    _make_video(front1, 2.0)
+    _make_video(rear1, 2.0)
+
+    front2 = source_dir / "front2.mp4"
+    _make_video(front2, 3.0)
+
+    front3 = source_dir / "front3.mp4"
+    rear3 = source_dir / "rear3.mp4"
+    _make_video(front3, 1.5)
+    _make_video(rear3, 1.5)
+
+    gap_id = RecordingId("20260720_100100_N")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front1),
+                Asset.REAR: AssetFile(Asset.REAR, rear1),
+            },
+        ),
+        Recording(
+            id=gap_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front2)},
+        ),
+        Recording(
+            id=RecordingId("20260720_100200_N"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, front3),
+                Asset.REAR: AssetFile(Asset.REAR, rear3),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    front_duration = _video_duration(result.front_video)
+    rear_duration = _video_duration(result.rear_video)
+    assert abs(front_duration - rear_duration) < 0.5
+    assert abs(front_duration - 6.5) < 0.5
+    assert any(
+        "no rear video" in w and str(gap_id) in w for w in result.warnings
+    )

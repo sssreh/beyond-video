@@ -55,6 +55,8 @@ from .media import check_readable
 from .media import concatenate_media
 from .media import generate_silence
 from .media import mux_audio_track
+from .media import probe_video_dimensions
+from .media import render_missing_camera_placeholder
 from .media import trim_media
 from .media import trim_media_head
 from .osm_roads import BoundingBox
@@ -705,6 +707,145 @@ def _align_front_rear_durations(
     return overrides
 
 
+def _missing_rear_placeholders(
+    trip: Trip,
+    work_dir: Path,
+    warnings: list[str],
+    log: TripLog | None,
+    *,
+    include_parking: bool,
+    duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
+) -> dict[RecordingId, Path]:
+    """Render a black/red-X placeholder (task #799,
+    `render_missing_camera_placeholder()` in media.py) for every
+    recording in `trip` that has FRONT video but genuinely has no REAR
+    video at all - an SD card fault, a camera glitch, anything short
+    of the recording never having a rear camera - so `_concatenate_asset()`
+    can splice it into rear.mp4 at that recording's own place instead
+    of leaving it out.
+
+    Christer, seeing a real export log "concatenated rear.mp4 from 5
+    recording(s)" against "front.mp4 from 6 recording(s)": "So this
+    will give a black rearview mirror for a while or?" Before this,
+    yes - worse, actually: `_concatenate_asset()` simply skipped the
+    recording missing REAR, so rear.mp4 came out shorter than
+    front.mp4 by that recording's own duration, and every recording
+    *after* the gap played back time-shifted against the wrong moment
+    in front.mp4 for the rest of the trip - not just a blank stretch,
+    a genuine desync. A placeholder of the *exact* right duration
+    closes that gap the same way `generate_silence()` already does for
+    a recording missing its own `.aac` (see that function's own
+    docstring) - keeping rear.mp4's own timeline in step with
+    front.mp4's, just with an obviously-synthetic frame standing in for
+    the footage that was never captured.
+
+    Returns `{recording id: placeholder path}`, empty if the trip has
+    no REAR video anywhere to size/style the placeholder against (a
+    front-only camera setup, not this feature's target case at all -
+    nothing to insert a *placeholder* rear alongside when there was
+    never any real rear footage in the trip in the first place) or if
+    every recording in the trip already has REAR.
+
+    A Parking-mode recording that will be dropped anyway
+    (`include_parking=False`) is skipped without rendering anything for
+    it, the same "don't do work for footage that never reaches
+    rear.mp4 regardless" policy `_align_front_rear_durations()` already
+    uses for the same case.
+
+    `duration_overrides`, if given, resolves this recording's own FRONT
+    path the same way every other caller here does - a recording whose
+    FRONT was itself trimmed (prebuffer trim, `--parking-speed`, front/
+    rear alignment) needs its *already-trimmed* duration probed, not
+    the untouched original's, or the placeholder would run long against
+    everything downstream of it.
+
+    A recording whose FRONT can't be probed at all is left out with a
+    warning, same as every other per-file failure in this module -
+    genuinely missing/corrupt data always degrades to "leave it out"
+    rather than aborting the whole export.
+    """
+
+    reference_rear_path: Path | None = None
+    for recording in trip.recordings:
+        if recording.id.is_parking and not include_parking:
+            continue
+        if recording.has(Asset.REAR):
+            reference_rear_path = recording.file(Asset.REAR).path
+            break
+
+    if reference_rear_path is None:
+        return {}
+
+    try:
+        rear_width, rear_height = probe_video_dimensions(reference_rear_path)
+        rear_fps = probe(reference_rear_path).frame_rate or 30.0
+    except MediaToolError as exc:
+        message = (
+            f"rear.mp4: could not probe {reference_rear_path.name} to size "
+            f"a missing-rear placeholder against: {exc}"
+        )
+        warnings.append(message)
+        if log is not None:
+            log.warning(message)
+        return {}
+
+    placeholders: dict[RecordingId, Path] = {}
+
+    for recording in trip.recordings:
+        if recording.id.is_parking and not include_parking:
+            continue
+        if recording.has(Asset.REAR) or not recording.has(Asset.FRONT):
+            continue
+
+        front_path = (
+            duration_overrides.get((recording.id, Asset.FRONT))
+            if duration_overrides is not None else None
+        ) or recording.file(Asset.FRONT).path
+
+        try:
+            duration_seconds = probe(front_path).duration_seconds
+        except MediaToolError as exc:
+            message = (
+                f"{recording.id}: has no rear video and its own front "
+                f"video could not be probed to size a placeholder: {exc} "
+                f"- left out of rear.mp4 entirely"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        placeholder_path = work_dir / f"{recording.id}_rear_placeholder.mp4"
+        try:
+            render_missing_camera_placeholder(
+                placeholder_path, duration_seconds,
+                width=rear_width, height=rear_height, fps=rear_fps,
+            )
+        except MediaToolError as exc:
+            message = (
+                f"{recording.id}: has no rear video and a placeholder "
+                f"could not be rendered: {exc} - left out of rear.mp4 "
+                f"entirely"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        placeholders[recording.id] = placeholder_path
+
+        message = (
+            f"{recording.id}: no rear video ({duration_seconds:.2f}s) - "
+            f"inserted a black/red-X placeholder so rear.mp4 stays in "
+            f"sync with front.mp4"
+        )
+        warnings.append(message)
+        if log is not None:
+            log.warning(message)
+
+    return placeholders
+
+
 def _ensure_recording_audio(
     trip: Trip,
     warnings: list[str],
@@ -1115,6 +1256,7 @@ def _concatenate_asset(
     duration_overrides: dict[tuple[RecordingId, Asset], Path] | None = None,
     video_only: bool = False,
     force_reencode: bool = False,
+    missing_placeholders: dict[RecordingId, Path] | None = None,
 ) -> Path | None:
     """Build `sources` in trip order, leaving out any Parking-mode
     recording entirely - wherever it falls in the trip - whenever
@@ -1189,12 +1331,31 @@ def _concatenate_asset(
     out" treatment already used for excluded Parking recordings above
     - the corrupted footage is genuinely gone either way; the fix here
     is only to stop it from taking healthy footage down with it.
+
+    `missing_placeholders`, if given, is `_missing_rear_placeholders()`'s
+    own `{recording id: placeholder path}` map (task #799) - for a
+    recording that has FRONT but genuinely has no REAR video at all
+    (SD card fault, camera glitch - not a Parking exclusion, which is
+    handled separately above), the placeholder file is spliced in at
+    that recording's own place in the trip instead of leaving it out
+    entirely. Without this, rear.mp4 simply skipped that stretch of
+    time, so everything after it played back time-shifted against the
+    wrong moment in front.mp4 - see that function's own docstring for
+    the full story and why a placeholder is inserted rather than just
+    leaving the gap as before. Ignored entirely for FRONT/AUDIO -
+    `export_trip()` only ever builds this map keyed for REAR.
     """
 
     sources: list[Path] = []
 
     for recording in trip.recordings:
         if not recording.has(asset):
+            placeholder = (
+                missing_placeholders.get(recording.id)
+                if missing_placeholders is not None else None
+            )
+            if placeholder is not None:
+                sources.append(placeholder)
             continue
 
         if recording.id.is_parking and not include_parking:
@@ -2336,6 +2497,29 @@ def export_trip(
             Path(align_dir), warnings, log, debug=debug,
         )
 
+        # Also must finish before the ThreadPoolExecutor block starts -
+        # its own placeholder files are written into align_dir, same as
+        # the silence padding just above, and rear_future below needs
+        # to already know about them before it starts. Task #799: any
+        # recording with FRONT but genuinely no REAR (not a Parking
+        # exclusion, which stays "just leave it out") gets a black/
+        # red-X placeholder inserted so rear.mp4 doesn't silently drift
+        # out of sync with front.mp4 from that point on - see
+        # _missing_rear_placeholders()'s own docstring.
+        missing_rear_placeholders = _missing_rear_placeholders(
+            trip, Path(align_dir), warnings, log,
+            include_parking=include_parking, duration_overrides=duration_overrides,
+        )
+        # Forces the same safer, decode-and-reencode concat path
+        # _apply_parking_speed() already earns rear_needs_reencode for
+        # (see that flag's own comment above) - a placeholder here
+        # never comes from the camera's own encoder session either, so
+        # it needs exactly the same treatment. A trip with no missing-
+        # rear recordings gets an empty map back and pays nothing
+        # extra.
+        if missing_rear_placeholders:
+            rear_needs_reencode = True
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             front_future = executor.submit(
                 _concatenate_asset, trip, Asset.FRONT, "front.mp4", destination, warnings, log,
@@ -2346,6 +2530,7 @@ def export_trip(
                 _concatenate_asset, trip, Asset.REAR, "rear.mp4", destination, warnings, log,
                 include_parking=include_parking, duration_overrides=duration_overrides,
                 force_reencode=rear_needs_reencode,
+                missing_placeholders=missing_rear_placeholders,
             )
             audio_future = executor.submit(
                 _concatenate_asset, trip, Asset.AUDIO, "audio.aac", destination, warnings, log,

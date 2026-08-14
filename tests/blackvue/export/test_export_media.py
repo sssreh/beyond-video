@@ -12,6 +12,8 @@ from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
 from blackvue.export.media import generate_silence
 from blackvue.export.media import mux_audio_track
+from blackvue.export.media import probe_video_dimensions
+from blackvue.export.media import render_missing_camera_placeholder
 from blackvue.export.media import trim_media
 from blackvue.export.media import trim_media_head
 from blackvue.generate.media import MediaToolError
@@ -936,3 +938,112 @@ def test_generate_silence_raises_when_ffmpeg_itself_is_missing(tmp_path, monkeyp
 
     with pytest.raises(MediaToolError):
         generate_silence(tmp_path / "silence.aac", 1.0)
+
+
+def test_probe_video_dimensions_reads_width_and_height(tmp_path):
+    video = tmp_path / "video.mp4"
+    _make_silent_video(video, 1.0)
+
+    assert probe_video_dimensions(video) == (64, 64)
+
+
+def test_probe_video_dimensions_raises_when_ffprobe_itself_is_missing(
+    tmp_path, monkeypatch
+):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("no ffprobe")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        probe_video_dimensions(tmp_path / "video.mp4")
+
+
+def test_probe_video_dimensions_raises_for_a_nonexistent_file(tmp_path):
+    with pytest.raises(MediaToolError):
+        probe_video_dimensions(tmp_path / "missing.mp4")
+
+
+def test_render_missing_camera_placeholder_produces_the_exact_requested_duration_and_size(
+    tmp_path,
+):
+    # Task #799 - Christer, on a real export where one recording had
+    # no rear video: "So this will give a black rearview mirror for a
+    # while or?" - render_missing_camera_placeholder() fills that gap
+    # with a synthetic clip sized to exactly match the trip's real
+    # rear.mp4 sources, so the concat filter (which has no scale step)
+    # can splice it in without failing or distorting.
+    destination = tmp_path / "placeholder.mp4"
+
+    render_missing_camera_placeholder(
+        destination, 2.0, width=64, height=64, fps=10.0
+    )
+
+    assert destination.exists()
+    assert probe_video_dimensions(destination) == (64, 64)
+    # ffmpeg's own frame-boundary rounding means this won't be exact
+    # to the millisecond - same tolerance generate_silence()'s own
+    # duration test above uses for the same reason.
+    duration = float(
+        json.loads(
+            subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "json",
+                    str(destination),
+                ],
+                capture_output=True, text=True, check=True,
+            ).stdout
+        )["format"]["duration"]
+    )
+    assert 1.9 < duration < 2.3
+
+
+def test_render_missing_camera_placeholder_draws_a_red_cross_on_black(tmp_path):
+    # Christer approved this look explicitly ("Yes implement it that
+    # way") after we discussed reusing the existing .thumb-no-video
+    # convention (task #432: black background, red diagonal cross) -
+    # confirm the rendered frame actually contains black background
+    # pixels and red cross pixels, not just a solid color.
+    destination = tmp_path / "placeholder.mp4"
+
+    render_missing_camera_placeholder(
+        destination, 0.5, width=64, height=64, fps=10.0
+    )
+
+    frame_path = tmp_path / "frame.png"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(destination),
+            "-frames:v", "1", str(frame_path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    frame = Image.open(frame_path).convert("RGB")
+    pixels = list(frame.getdata())
+
+    # Corners are on the diagonal cross' own thickness at 64x64 only
+    # near dead-center, so instead check the population as a whole:
+    # a real mix of near-black background and reddish cross pixels,
+    # not a uniform fill.
+    near_black = sum(1 for r, g, b in pixels if r < 20 and g < 20 and b < 20)
+    reddish = sum(1 for r, g, b in pixels if r > 150 and g < 120 and b < 120)
+
+    assert near_black > 0
+    assert reddish > 0
+
+
+def test_render_missing_camera_placeholder_raises_when_ffmpeg_itself_is_missing(
+    tmp_path, monkeypatch
+):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("no ffmpeg")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        render_missing_camera_placeholder(
+            tmp_path / "placeholder.mp4", 1.0, width=64, height=64
+        )

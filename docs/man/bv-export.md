@@ -112,6 +112,10 @@ Every recording's front and rear video are expected to run the same length. `bv-
 
 An earlier version of this only trimmed a recording once its own front/rear gap passed a 5-second tolerance, on the theory that anything smaller was ordinary per-camera jitter not worth acting on. Dropped after a real export came back with `front.mp4`/`rear.mp4`/`stitch.mp4` all 8 seconds out of sync overall, despite no single recording differing by anywhere near 5 seconds and `trip.log` showing no trim had fired anywhere - small per-recording gaps, each individually below the tolerance, had simply accumulated across the whole trip. Trimming every recording's pair exactly, every time, closes that gap: there's no accumulation window left for drift to hide in.
 
+### Missing rear video
+
+A recording can have front video but no rear video at all (SD card fault, camera glitch - not a Parking-mode exclusion, which is handled separately via `--include-parking`). Left alone, `rear.mp4` would simply skip that stretch of time, coming out genuinely shorter than `front.mp4` and time-shifted against it for the rest of the trip - not a blank gap, a real desync, since ffmpeg's rearview-mirror overlay compositing freezes on rear's last real frame once it runs out while front keeps playing. `bv-export` instead inserts a synthetic placeholder - a black frame with a red diagonal cross, the same visual language bv-web's archive browser already uses for a recording with no video at all - sized to exactly that recording's own duration, so `rear.mp4` stays the same length and in sync with `front.mp4` throughout. A warning naming the affected recording is added whenever this happens; this is genuinely missing footage, not routine jitter, so it's surfaced even though the export auto-compensates for it. Only ever applies to `rear.mp4` - a recording missing its front video (or missing both) is handled by the existing per-file skip-and-warn behavior instead, same as an unreadable/corrupted source.
+
 ### Map
 
 | Option | Description |
@@ -222,7 +226,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 
 | File | Written by |
 |---|---|
-| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a Parking-mode recording is left out entirely unless `--include-parking` is given; a recording whose own front/rear durations differ at all has its longer side auto-trimmed to match (see "Front/rear duration alignment" above) |
+| `front.mp4`, `rear.mp4` | always (whichever cameras exist) - a Parking-mode recording is left out entirely unless `--include-parking` is given; a recording whose own front/rear durations differ at all has its longer side auto-trimmed to match (see "Front/rear duration alignment" above); a recording with front but no rear video gets a black+red-X placeholder spliced into `rear.mp4` instead (see "Missing rear video" above) |
 | `trip.gpx` | always, if GPS data exists |
 | `trip.3gf` | always, if g-sensor data exists |
 | `trip.srt` | always, if transcript data exists |
