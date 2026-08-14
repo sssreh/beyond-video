@@ -11144,3 +11144,65 @@ template through Jinja2's own `Environment.get_template()` to confirm
 it still parses, and grepped `tests/` for any test asserting on these
 fields' old Advanced-section placement (none exist - `test_jobs.py`
 tests `JobRunner`, not the template's HTML structure).
+
+## Fix: map_zoom_METERSm.mp4 no longer feels zoomed on real video resolutions
+## (2026-08-14)
+
+Christer, after seeing a real render post-#509: "zoom map no longer
+square, and dont feel zoomed." The squareness change was intentional
+(task #505/#506, per Christer's own request that day) - the regression
+was the second half: `stitch.map_zoom_dimensions()` sizes the
+standalone map_zoom canvas by matching one axis exactly to the trip's
+real front/rear video resolution (1080p/1440p/2160p...) via the same
+`_map_panel_dimensions()` rule `--stitch-map`'s embedded panel uses.
+That's correct for `--stitch-map`, where the shared axis genuinely has
+to equal the composite's exact pixel dimension for hstack/vstack to
+line up - but `map_zoom_*.mp4` is a standalone file with no compositing
+constraint. Every fixed-pixel visual style constant in `map_render.py`
+(road-type line widths, the position marker, street-name/caption font
+sizes, margins) is explicitly tuned for a ~640px canvas (see that
+module's own `DEFAULT_WIDTH`/`DEFAULT_HEIGHT` and the road-style
+dict's own in-code comment). Matching a real dashcam video's full
+resolution made the canvas several times bigger than that without the
+constants scaling to match, so the roads/marker/labels shrank to a
+sliver of a much bigger frame. `zoom_meters` alone controls how much
+real-world area is shown (`map_video.render_map_video()`'s own
+`zoom_aspect_ratio` handling) - that never changed - but the content
+drawn over that area read as "not zoomed" regardless.
+
+**Fix.** `map_zoom_dimensions()` now caps its output's larger side at
+a new `_MAP_ZOOM_MAX_SIZE = 640` constant (matching
+`map_render.DEFAULT_WIDTH`/`HEIGHT`), scaling both dimensions down
+together so the shape stays non-square and proportioned to the trip/
+video exactly like before - just capped in absolute scale. Deliberately
+a cap, not a fixed target: `scale = min(1.0, _MAP_ZOOM_MAX_SIZE /
+max(width, height))`, so a video already at or under 640px passes
+through unchanged rather than being upscaled - there's no evidence
+upscaling a small source helps, and it would just cost more to encode
+for nothing. Applies to both `map_zoom_dimensions()`'s real
+`_map_panel_dimensions()` path and its "not enough GPS data" raw
+-video-dimensions fallback, since both eventually feed the same
+`render_map_video()` call with the same fixed-pixel style constants.
+Scoped entirely to `map_zoom_dimensions()` - confirmed via grep it's
+only called from `trip_export.py`'s standalone `map_zoom_*.mp4` and
+`intro.mp4` sizing, never from `--stitch-map`'s own panel path (which
+calls `_map_panel_dimensions()` directly with the real composite
+dimensions, unaffected by this cap).
+
+**Verification.** No pytest in this sandbox; ran the relevant test
+functions directly through the project's usual harness pattern
+(`PYTHONPATH` including `src`, `tests/blackvue/export`, and a
+`tomllib`/`pytest` stub dir). Added
+`test_map_zoom_dimensions_caps_larger_side_at_640_for_real_video_resolutions`
+(a synthetic 1920x1080 source, confirms the larger side lands at
+exactly 640 and the shape stays non-square) and
+`test_map_zoom_dimensions_does_not_upscale_a_small_video` (a 640x480
+source passes through unchanged) to `test_stitch.py`. All 6
+`map_zoom_dimensions()` tests pass, including the 4 pre-existing ones
+(their fixtures are all ≤640px, so the cap is a no-op for them - no
+assertions needed changing). Also ran both
+`test_export_trip_map_zoom_matches_video_*_trip` tests in
+`test_trip_export.py` (their `_make_video()` fixtures are 64x64, well
+under the cap) - both still pass unchanged. Updated
+`docs/man/bv-export.md`'s `--map-zoom` discussion to describe the
+640px cap and why it exists.

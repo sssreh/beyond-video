@@ -1661,6 +1661,42 @@ def test_map_zoom_dimensions_falls_back_to_raw_video_size_with_no_gps_data(tmp_p
     assert map_zoom_dimensions(video, ()) == (320, 240)
 
 
+def test_map_zoom_dimensions_caps_larger_side_at_640_for_real_video_resolutions(tmp_path):
+    # Christer, after seeing a real render post-#509: "zoom map no
+    # longer square, and dont feel zoomed" - matching a full 1080p
+    # source's own height made the standalone map_zoom_*.mp4 canvas
+    # several times bigger than the ~640px scale map_render.py's
+    # fixed-pixel road widths/marker/fonts were tuned against, so the
+    # map content read as "not zoomed" even though the requested
+    # geographic radius (zoom_meters) hadn't changed. The larger side
+    # must now be capped at 640 - and the aspect ratio (still matching
+    # the trip/video shape, still non-square) preserved.
+    video = tmp_path / "front.mp4"
+    _make_video(video, 1920, 1080)
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))
+
+    width, height = map_zoom_dimensions(video, fixes)
+
+    assert max(width, height) <= 640
+    assert height == 640  # north-south trip -> shared axis is height, capped
+    assert 0 < width < height
+
+
+def test_map_zoom_dimensions_does_not_upscale_a_small_video(tmp_path):
+    # A video already at or under the 640px cap should pass through
+    # unchanged, not get scaled up to hit the cap - no evidence
+    # upscaling a small source helps, and it'd just cost more to
+    # encode for no visual benefit.
+    video = tmp_path / "front.mp4"
+    _make_video(video, 640, 480)
+    fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))
+
+    width, height = map_zoom_dimensions(video, fixes)
+
+    assert height == 480
+    assert 0 < width <= 640
+
+
 def test_map_zoom_dimensions_raises_for_unprobeable_video(tmp_path):
     missing = tmp_path / "does_not_exist.mp4"
     fixes = (_fix(0, 59.30, 18.000), _fix(10, 59.34, 18.001))

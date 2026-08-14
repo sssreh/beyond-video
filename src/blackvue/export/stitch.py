@@ -1438,6 +1438,18 @@ def _map_panel_dimensions(
     return max(2, round(width / 2) * 2), max(2, round(height / 2) * 2)
 
 
+# map_zoom_dimensions()'s size cap - see that function's docstring for
+# why it caps _map_panel_dimensions()'s output at this instead of
+# using it directly. Matches map_render.DEFAULT_WIDTH/HEIGHT, the
+# canvas size every fixed-pixel style constant in that module (road
+# widths, the position marker, street-name/caption font sizes,
+# margins) was actually tuned against. Kept as its own constant rather
+# than imported from map_render to avoid a stitch.py <-> map_render.py
+# import for a single int - the docstring reference below is what
+# keeps the two in sync.
+_MAP_ZOOM_MAX_SIZE = 640
+
+
 def map_zoom_dimensions(
     video_path: Path,
     fixes: tuple[GpsFix, ...],
@@ -1466,20 +1478,53 @@ def map_zoom_dimensions(
     bounding_box_for_fixes()/aspect_ratio_of() check, just aimed at
     map_zoom instead of a rearview-mirror panel.
 
-    Falls back to `video_path`'s own raw dimensions unchanged if there
-    isn't enough GPS data to compute a bounding box (mirrors
-    _map_panel_dimensions()'s own "nothing to bound" None return) -
-    render_map_video() still renders fine at any width/height, it just
-    won't come out trip-shaped. Raises MediaToolError if `video_path`
-    can't be probed (missing file, no ffprobe on PATH, etc.) - the
-    caller should catch this the same "warn, don't fail the whole
-    export" way _render_map_variant() already treats a render problem.
+    _map_panel_dimensions()'s raw output is still in `video_path`'s own
+    pixel scale at this point - correct for --stitch-map, where the
+    shared axis genuinely has to equal the composite's exact pixel
+    dimension for hstack/vstack to line up, but wrong for this
+    standalone file: matching a real dashcam video's full height
+    (1080/1440/2160...) makes the canvas several times bigger than the
+    ~640px scale every fixed-pixel style constant in map_render.py
+    (road widths, the position marker, street-name/caption font sizes,
+    margins) was actually tuned against, without those constants
+    scaling up to match. `zoom_meters` alone controls how much real
+    -world area is shown (see map_video.render_map_video()'s own
+    zoom_aspect_ratio handling) - that doesn't change here - but the
+    roads/marker/labels drawn over that area shrink to a sliver of a
+    much bigger frame, reading as "not zoomed" even though the
+    requested geographic radius is unchanged. Christer, after seeing a
+    real render post-#509: "zoom map no longer square, and dont feel
+    zoomed" (the squareness change was intentional; this shrink
+    -relative-to-frame side effect wasn't). Capping the whole (width,
+    height) pair so its larger side never exceeds `_MAP_ZOOM_MAX_SIZE`
+    - scaling both dimensions down together, so the shape stays
+    non-square and proportioned to the trip/video exactly like
+    --stitch-map's panel - keeps the canvas at (or below) the scale
+    those style constants were actually tuned for. Deliberately a cap,
+    not a fixed target size: a video already at or under
+    `_MAP_ZOOM_MAX_SIZE` (as every current test fixture in
+    test_stitch.py is) passes through unchanged rather than being
+    upscaled - there's no evidence upscaling a small source helps, and
+    it would just blow up file size for no visual benefit.
+
+    Falls back to `video_path`'s own raw dimensions, also capped at
+    `_MAP_ZOOM_MAX_SIZE`, if there isn't enough GPS data to compute a
+    bounding box (mirrors _map_panel_dimensions()'s own "nothing to
+    bound" None return) - render_map_video() still renders fine at any
+    width/height, it just won't come out trip-shaped. Raises
+    MediaToolError if `video_path` can't be probed (missing file, no
+    ffprobe on PATH, etc.) - the caller should catch this the same
+    "warn, don't fail the whole export" way _render_map_variant()
+    already treats a render problem.
     """
 
     video_width, video_height = _video_dimensions(video_path)
     side = _default_rearview_mirror_map_side(fixes)
     dimensions = _map_panel_dimensions(video_width, video_height, side=side, fixes=fixes)
-    return dimensions if dimensions is not None else (video_width, video_height)
+    width, height = dimensions if dimensions is not None else (video_width, video_height)
+
+    scale = min(1.0, _MAP_ZOOM_MAX_SIZE / max(width, height))
+    return max(2, round(width * scale / 2) * 2), max(2, round(height * scale / 2) * 2)
 
 
 def _render_map_panel(
