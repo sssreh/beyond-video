@@ -1,0 +1,20 @@
+{#
+  Job output line rendering - shared by job_detail.html's initial
+  full-page render and app.py's /jobs/{job_id}/poll AJAX endpoint (see
+  that route's own docstring for why this had to be pulled out of
+  job_detail.html rather than duplicated: the two need byte-identical
+  output, including the "> " echo styling and bv-search's recording-id
+  links, or a poll tick could visibly change how a line renders
+  compared to how the page first showed it).
+
+  Expects the same context job_detail() has always built: `output`
+  (list[str], already sliced by ?tail=1 upstream if applicable) and
+  `camera_id` (None for every job type except bv-search - see
+  RECORDING_ID_RE's own comment in app.py). `is_recording_id` is a
+  Jinja env global, not a context variable - available here the same
+  way it always was inline in job_detail.html.
+#}
+{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
+{% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
+{% else %}{{ line }}
+{% endif %}{% endfor %}

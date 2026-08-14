@@ -20,9 +20,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
+
+import pytest
+from fastapi import HTTPException
+
 from blackvue.core import history
+from blackvue.web.app import _authorize_job_view
+from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _recent_web_runs
 from blackvue.web.app import _reuse_defaults
+from blackvue.web.app import _sliced_job_output
+from blackvue.web.app import TAIL_LINE_COUNT
+from blackvue.web.jobs import Job
+from blackvue.web.jobs import JobStatus
+from blackvue.web.users import User
 
 
 def _record(tmp_path, monkeypatch, **overrides):
@@ -161,3 +174,115 @@ def test_reuse_defaults_falls_back_to_latest_for_non_numeric_reuse_param(tmp_pat
 
     assert defaults == {"id": "new"}
     assert active_number == runs[0].number
+
+
+# ---------------------------------------------------------------------------
+# _authorize_job_view() / _sliced_job_output() / _job_camera_id() - shared
+# by job_detail() and its /jobs/{job_id}/poll AJAX sibling (task #772-776,
+# WORKING_CONTEXT.md). Testing the helpers directly, rather than the two
+# routes through a TestClient, matches this file's own established
+# approach above (see the module docstring) and this repo's convention of
+# not depending on httpx/TestClient anywhere in the suite.
+# ---------------------------------------------------------------------------
+
+
+def _job(command: str = "bv-generate kirby") -> Job:
+    return Job(
+        id="test-job-id",
+        command=command,
+        username="christer",
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def _user(role: str) -> User:
+    return User(username="christer", password_hash="x", role=role)
+
+
+def test_authorize_job_view_allows_owner_for_any_command():
+    _authorize_job_view(_job("bv-export kirby"), _user("owner"))
+
+
+def test_authorize_job_view_allows_viewer_for_bv_search():
+    _authorize_job_view(_job("bv-search kirby"), _user("viewer"))
+
+
+def test_authorize_job_view_rejects_viewer_for_other_commands():
+    with pytest.raises(HTTPException) as exc_info:
+        _authorize_job_view(_job("bv-export kirby"), _user("viewer"))
+
+    assert exc_info.value.status_code == 403
+
+
+def test_authorize_job_view_rejects_viewer_for_a_command_merely_starting_with_bv_search_prefix_mismatch():
+    # "bv-search-ish kirby" must not slip through a naive startswith("bv-search")
+    # check without the trailing space _authorize_job_view() actually uses.
+    with pytest.raises(HTTPException):
+        _authorize_job_view(_job("bv-search-ish kirby"), _user("viewer"))
+
+
+def test_sliced_job_output_returns_full_output_when_tail_not_requested():
+    output = [f"line {i}" for i in range(TAIL_LINE_COUNT + 10)]
+
+    tail_active, displayed, truncated_count = _sliced_job_output(
+        JobStatus.RUNNING, output, tail_requested=False
+    )
+
+    assert tail_active is False
+    assert displayed == output
+    assert truncated_count == 0
+
+
+def test_sliced_job_output_truncates_when_tail_requested_and_running():
+    output = [f"line {i}" for i in range(TAIL_LINE_COUNT + 10)]
+
+    tail_active, displayed, truncated_count = _sliced_job_output(
+        JobStatus.RUNNING, output, tail_requested=True
+    )
+
+    assert tail_active is True
+    assert displayed == output[-TAIL_LINE_COUNT:]
+    assert truncated_count == 10
+
+
+def test_sliced_job_output_tail_requested_but_short_output_is_not_truncated():
+    output = ["line 1", "line 2"]
+
+    tail_active, displayed, truncated_count = _sliced_job_output(
+        JobStatus.RUNNING, output, tail_requested=True
+    )
+
+    assert tail_active is True
+    assert displayed == output
+    assert truncated_count == 0
+
+
+def test_sliced_job_output_tail_requested_but_finished_job_shows_full_output():
+    # Tailing is offered only while running (see the route's own
+    # comment) - a finished job's output is cheap to keep around/
+    # re-render since no more poll ticks are coming.
+    output = [f"line {i}" for i in range(TAIL_LINE_COUNT + 10)]
+
+    tail_active, displayed, truncated_count = _sliced_job_output(
+        JobStatus.SUCCEEDED, output, tail_requested=True
+    )
+
+    assert tail_active is False
+    assert displayed == output
+    assert truncated_count == 0
+
+
+def test_job_camera_id_extracts_id_for_bv_search():
+    assert _job_camera_id(_job("bv-search kirby")) == "kirby"
+
+
+def test_job_camera_id_is_none_for_other_commands():
+    assert _job_camera_id(_job("bv-export kirby")) is None
+    assert _job_camera_id(_job("bv-generate kirby")) is None
+
+
+def test_job_camera_id_is_none_when_bv_search_command_has_no_id():
+    # Shouldn't happen in practice (start_bv_search() always sets
+    # job.command to "bv-search {camera_id}"), but the split() guard
+    # should not raise on malformed input.
+    assert _job_camera_id(_job("bv-search")) is None

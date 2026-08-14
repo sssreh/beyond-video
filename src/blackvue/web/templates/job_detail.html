@@ -2,7 +2,12 @@
 {% block title %}{{ job.command }} - Beyond Video{% endblock %}
 {% block content %}
 {% if status == "running" and not paused %}
-<meta http-equiv="refresh" content="2">
+{# Was a plain <meta http-equiv="refresh" content="2"> full-page
+   reload - see the JS poll loop further down for why that got
+   replaced (task #772-776, WORKING_CONTEXT.md). Kept here, slowed
+   way down, purely as a no-JS fallback so the page still eventually
+   catches up to a finished job even with scripting disabled. #}
+<noscript><meta http-equiv="refresh" content="15"></noscript>
 {% endif %}
 <h2 class="page-heading">
   {{ job.command }}
@@ -51,36 +56,96 @@ function copyReplicateCommand(button) {
 </p>
 {% endif %}
 
-{% if tail_active and tail_truncated_count > 0 %}
-<p class="hint">({{ tail_truncated_count }} earlier line(s) hidden - <a href="{{ tail_off_url }}">show full output</a>.)</p>
-{% endif %}
+<p class="hint" id="tail-hint"{% if not (tail_active and tail_truncated_count > 0) %} style="display:none"{% endif %}>(<span id="tail-hint-count">{{ tail_truncated_count }}</span> earlier line(s) hidden - <a href="{{ tail_off_url }}">show full output</a>.)</p>
 
-<pre class="job-output" id="job-output">{% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
-{% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
-{% else %}{{ line }}
-{% endif %}{% endfor %}</pre>
+<pre class="job-output" id="job-output">{% include "_job_output_lines.html" %}</pre>
 <script>
   // pre.job-output is a fixed-height, scrollable box (base.html:
   // max-height: 60vh, overflow-y: auto) that only actually shows
   // about 24 lines before it needs scrolling - a bare <pre> always
-  // starts scrolled to its own top, though, so on a job whose output
-  // (or ?tail=1's own last-30-lines slice - see job's own docstring
-  // in app.py) is longer than that, the newest lines sat below the
-  // fold and never got seen without a manual scroll. Christer, after
-  // ?tail=1 still looked "stuck" on old progress: "still showing the
-  // first 30 rows... it started on 50 instead of 203" - the shown
-  // slice actually *was* the real last 30/tail_line_count lines each
-  // time (server-side slicing was already correct), just rendered
-  // scrolled to the top of that slice, so only its oldest, no-longer-
-  // current entries were visible above the fold. Every page load here
-  // is a genuine full reload (the <meta refresh> above, same as a
-  // manual F5) rather than a partial DOM update, so a plain scroll-
-  // to-bottom on load re-applies itself automatically on every
-  // auto-refresh tick too - no separate "stay pinned to bottom while
-  // new lines stream in" logic needed.
+  // starts scrolled to its own top, though, so on load (a job whose
+  // output, or ?tail=1's own slice, is longer than that) the newest
+  // lines sat below the fold until a manual scroll. Scroll-to-bottom
+  // on load handles that first paint the same way it always has.
+  //
+  // What changed (task #772-776, WORKING_CONTEXT.md): this page used
+  // to auto-refresh via a full <meta http-equiv="refresh"> page
+  // reload every 2s while a job ran - simple, but Christer hit two
+  // real problems with it. First, it always snapped scroll back to
+  // the top, fighting anyone trying to read further up in a long
+  // job's output. Second, and worse: resizing or restoring the
+  // browser window while a GPU-heavy bv-generate job (NVENC encode
+  // and/or CUDA Whisper/scene-description inference) was running
+  // could line up with one of those full-page reloads and tip an
+  // already GPU-starved display driver into a TDR reset - screen
+  // corruption and an audio glitch, several times over. A full
+  // reload rebuilds literally everything (layout, the full-page
+  // background image, this whole output block) every single tick;
+  // none of that churn was actually necessary just to show a few new
+  // lines of text.
+  //
+  // This app has stayed deliberately JS-free everywhere else (see
+  // the now-stale comment this replaced in app.py's job_detail()) -
+  // this is a deliberate, scoped exception for the one page that
+  // genuinely needed a partial update rather than a page reload. The
+  // <noscript> meta-refresh above is the fallback for anyone running
+  // with scripting disabled.
   (function () {
     var box = document.getElementById("job-output");
-    if (box) box.scrollTop = box.scrollHeight;
+    if (!box) return;
+    box.scrollTop = box.scrollHeight;
+
+    var shouldPoll = {{ 'true' if (status == 'running' and not paused) else 'false' }};
+    if (!shouldPoll) return;
+
+    var pollUrl = "/jobs/{{ job.id }}/poll{{ '?tail=1' if tail_active else '' }}";
+    var tailHint = document.getElementById("tail-hint");
+    var tailHintCount = document.getElementById("tail-hint-count");
+
+    function nearBottom() {
+      return box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    }
+
+    function poll() {
+      fetch(pollUrl, { credentials: "same-origin", cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("poll failed: " + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          // Any status other than "running" means the page furniture
+          // itself needs to change (cancel button gone, an answer
+          // prompt or finished-state summary appears, etc.) - rather
+          // than duplicate all of job_detail.html's conditional HTML
+          // in JS, just reload once to get the real server-rendered
+          // page for that state, same as the old meta-refresh would
+          // have eventually shown anyway.
+          if (data.status !== "running") {
+            window.location.reload();
+            return;
+          }
+          var stayAtBottom = nearBottom();
+          box.innerHTML = data.output_html;
+          if (stayAtBottom) box.scrollTop = box.scrollHeight;
+          if (tailHint) {
+            if (data.tail_truncated_count > 0) {
+              tailHint.style.display = "";
+              if (tailHintCount) tailHintCount.textContent = data.tail_truncated_count;
+            } else {
+              tailHint.style.display = "none";
+            }
+          }
+          setTimeout(poll, 2000);
+        })
+        .catch(function () {
+          // Network hiccup or the server restarted mid-job - fall
+          // back to a real reload rather than polling a dead endpoint
+          // forever or leaving the page silently stale.
+          window.location.reload();
+        });
+    }
+
+    setTimeout(poll, 2000);
   })();
 </script>
 

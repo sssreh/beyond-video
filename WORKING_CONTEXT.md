@@ -10167,3 +10167,111 @@ row now mentions the divergence note. `docs/DEPLOY.md` gained one
 clarifying sentence: its documented shared-flat-`/data/trips`
 workflow never sets a camera Target, so it never triggers the new
 warning.
+
+## Fix: GPU driver crashes when resizing bv-web during a running job - replace meta-refresh with AJAX polling (task #772-776, 2026-08-14)
+
+Christer's report: "When i am running a bv-command in bv-web and it
+takes some time, i tried to change the size of the web page and
+sometimes scroll it get crazy. The page starts showing garbage, like
+an old TV going crazy, the sounds is like sssssss." Happened about 4
+times, always while resizing/restoring the browser window during a
+GPU-heavy `bv-generate` job (NVENC encode and/or CUDA Whisper/scene-
+description inference). A separate, unrelated annoyance (Windows
+"Snap" auto-resizing the window when dragged to the screen edge) got
+ruled out along the way - Christer disabled it separately and the
+crashes still happened afterward.
+
+Root cause, arrived at after a revised diagnosis (an initial page-
+layer-only theory didn't survive Christer's follow-up detail that it
+"feels like a graphic driver is getting crazy" and that Pause
+wouldn't respond): a Windows GPU driver TDR (Timeout Detection and
+Recovery) event. The GPU was already under sustained load from the
+running job's NVENC/CUDA work; `job_detail.html`'s own
+`<meta http-equiv="refresh" content="2">` made a resize/restore more
+likely to trigger a reset by adding a full-page reload - rebuilding
+layout, the background image, and the entire output block - every 2
+seconds regardless of whether the browser was mid-resize. This is a
+`bv-web` mitigation for a real OS/driver-level hazard, not a fix for
+the hazard itself - running NVENC/CUDA workloads on the same GPU a
+window compositor uses remains inherently contentious.
+
+**Fix**: replaced the full-page auto-refresh with AJAX polling.
+`job_detail.html`'s output block (the line-rendering loop, including
+the "> " echo styling and bv-search's recording-id links) was pulled
+into a new shared partial, `templates/_job_output_lines.html`,
+expecting the same `output`/`camera_id` context `job_detail()` always
+built plus the `is_recording_id` Jinja global - included both by the
+full page and rendered directly (via `templates.env.get_template(...)
+.render(...)`, not a full `TemplateResponse`) by the new
+`GET /jobs/{job_id}/poll` route, so the two can never disagree on how
+a line renders. Three small helpers factored out of `job_detail()`'s
+own body so the route and its poll sibling share identical logic
+rather than two copies that could drift: `_authorize_job_view(job,
+user)` (the existing "bv-search open to viewers, everything else
+owner-only" 403 rule), `_sliced_job_output(job_status, output,
+tail_requested)` (the existing `?tail=1` slicing, task #687), and
+`_job_camera_id(job)` (the existing bv-search-only recording-id-link
+resolution). `/poll` returns `{"status", "output_html",
+"tail_truncated_count"}` as JSON with `Cache-Control: no-store` (same
+bfcache reasoning as `job_detail()`'s own header).
+
+`job_detail.html`'s inline `<script>` now `fetch()`es `/poll` every 2s
+while `status == "running" and not paused`, checks whether the output
+box was already scrolled near its own bottom before patching
+(`box.innerHTML = data.output_html`), and only then re-pins scroll -
+preserving a mid-read scroll position instead of fighting it, which
+also incidentally fixes the older "auto-refresh keeps yanking me back
+to the top" complaint that `?paused=1` was originally built to work
+around (task #477/`?paused=1` itself is unchanged and still useful for
+deliberately freezing the page). Any status other than `"running"`
+(finished, or `waiting_for_input`) triggers one real
+`window.location.reload()` instead of duplicating `job_detail.html`'s
+full conditional page furniture in JS; the same fallback covers a
+`fetch()` failure (network hiccup, server restart). A
+`<noscript><meta http-equiv="refresh" content="15"></noscript>` stays
+as a slow no-JS fallback, `content="15"` rather than the old `"2"`
+since it's now only a backstop, not the primary mechanism.
+
+**Deliberate, scoped JS exception.** `bv-web` has stayed JS-free
+everywhere else, preferring plain server-rendered link toggles
+(`?paused=1`, `?tail=1`, `?reuse=<N>`) specifically because they don't
+need JS - this is the one page where a true partial DOM update has no
+equivalent server-rendered-link trick, so it gets a deliberate,
+narrowly-scoped `<script>` instead. `job_detail()`'s own stale comment
+(which used to explain *why* it stayed a full-page reload, citing this
+same "deliberately JS-free" principle) was rewritten to describe the
+new poll loop instead.
+
+**Verification.** No fastapi/pytest/httpx available in this sandbox
+(same limitation as every other bv-web change in this project) -
+verified via `ast.parse` on `app.py` (clean) and by rendering
+`job_detail.html`/`_job_output_lines.html` directly through a plain
+`jinja2.Environment` (registering `is_recording_id`/
+`capitalize_first` the same way `create_app()` does) for three states:
+`running`/not-paused (poll URL present, `shouldPoll = true`, noscript
+fallback still present), `paused` (`shouldPoll = false`), and a
+finished job (`shouldPoll = false`) - all three rendered without
+error and asserted on the expected script/markup. New tests added to
+`tests/blackvue/web/test_app_reuse.py` (the existing fastapi-importing
+test module, kept separate from `test_jobs.py` for the same collection
+reason its own docstring gives) covering `_authorize_job_view()`
+(owner allowed anywhere, viewer allowed only for `bv-search `-prefixed
+commands, a `bv-search-ish` command name doesn't falsely match),
+`_sliced_job_output()` (no truncation without `?tail=1`, truncates
+when running and requested, no truncation when short, and - the one
+behavior most worth locking down - no truncation once the job has
+finished even if `?tail=1` is still on the URL), and `_job_camera_id()`
+(extracts the id for `bv-search`, `None` for every other command,
+doesn't raise on a malformed `bv-search` with no id). These, like the
+rest of `test_app_reuse.py`, need the `web` extra installed to collect
+- CI has it; this sandbox doesn't.
+
+Docs: `docs/WEB_ARCHITECTURE.md`'s job-runner paragraph updated to
+describe the poll loop instead of the meta-refresh (the `?paused=1`/
+`?tail=1` explanations kept, since both still apply the same way), the
+scroll-to-bottom paragraph updated to note the poll loop's own
+proximity-check replaces the old "every reload re-runs the same
+script" mechanism, the `no-store` paragraph extended to mention
+`/poll`'s identical header, and a new "AJAX job-output polling"
+paragraph added laying out the GPU-TDR root cause and the fix end to
+end for anyone hitting this again.

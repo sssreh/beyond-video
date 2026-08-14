@@ -40,6 +40,7 @@ from fastapi import status
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -68,6 +69,7 @@ from ..history import tail
 from .jobs import BvExportArgError
 from .jobs import Job
 from .jobs import JobRunner
+from .jobs import JobStatus
 from .trips import GPX_FILENAME
 from .trips import TripAssets
 from .trips import TripCache
@@ -1520,61 +1522,33 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         request: Request, job_id: str, user: User = Depends(require_viewer_or_owner)
     ):
         job = _find_job(app.state.job_runner, job_id)
-        # This route is shared by every job type (see the many
-        # start_bv_*() routes above), but only bv-search is open to
-        # viewers (see require_viewer_or_owner's own docstring) - a
-        # viewer trying to load any other job type's detail page (e.g.
-        # by guessing/reusing a job id) still gets the usual 403, same
-        # as if they'd hit that job type's own /jobs/bv-* form directly.
-        if user.role != "owner" and not job.command.startswith("bv-search "):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="owner role required"
-            )
+        _authorize_job_view(job, user)
         job_status, output, prompt = job.snapshot()
-        # Auto-refresh (the <meta http-equiv="refresh"> below) is a full
-        # page reload, which always snaps scroll back to the top - fine
-        # for a short job, but Christer hit this trying to read further
-        # up in a long-running job's output and kept getting yanked back
-        # down. Rather than rebuild this into a JS-polled partial update
-        # (this app has stayed deliberately JS-free everywhere else), a
-        # plain "paused" query param lets the owner freeze the page on
-        # its current snapshot - same server-rendered-link pattern the
+        # A "paused" query param lets the owner freeze the page on its
+        # current snapshot - same server-rendered-link pattern the
         # archive browser's filters already use - and resume by
-        # dropping it, no different from an ordinary manual reload.
+        # dropping it. This now also gates job_detail.html's own JS
+        # poll loop (task #772-776, WORKING_CONTEXT.md), not just the
+        # old full-page <meta refresh> it replaced: the template only
+        # starts polling /jobs/{id}/poll when status == "running" and
+        # not paused, exactly the same condition that used to gate the
+        # meta tag.
         paused = request.query_params.get("paused") == "1"
         # Quick-tail view (task #687): a long-running job (a 902-
         # recording bv-scribe batch is the real example that prompted
-        # this) accumulates thousands of output lines, and the auto-
-        # refresh above is a full page reload - every 2s tick re-sends
-        # and re-renders the *entire* output list, getting heavier the
-        # longer the job runs. `?tail=1` renders only the most recent
-        # TAIL_LINE_COUNT lines instead of the full history, the
-        # smaller-endpoint-on-the-existing-page option from the design
-        # note (WORKING_CONTEXT.md) rather than a separate quick-peek
-        # surface - reuses this same route/template, no new page. A
+        # this) accumulates thousands of output lines. `?tail=1`
+        # renders only the most recent TAIL_LINE_COUNT lines instead of
+        # the full history - both this initial render and every /poll
+        # tick after it (see _sliced_job_output()) honor the same flag,
+        # carried forward via the poll URL job_detail.html builds. A
         # finished job's full output is comparatively cheap to keep
-        # around/re-render (no more refresh ticks coming), so tailing
-        # only actually matters - and is only offered - while running.
+        # around/re-render (no more poll ticks coming), so tailing only
+        # actually matters - and is only offered - while running.
         tail_requested = request.query_params.get("tail") == "1"
-        tail_active = tail_requested and not job_status.is_finished
-        displayed_output = output
-        tail_truncated_count = 0
-        if tail_active and len(output) > TAIL_LINE_COUNT:
-            tail_truncated_count = len(output) - TAIL_LINE_COUNT
-            displayed_output = output[-TAIL_LINE_COUNT:]
-        # bv-search is the only job type whose output prints recording
-        # ids (see RECORDING_ID_RE's own comment) - camera_id stays
-        # None for every other job type, so job_detail.html only ever
-        # links lines for a bv-search job, never coincidentally similar-
-        # looking text in some other command's output. There's no
-        # dedicated Job.camera_id field (see jobs.py's Job dataclass) -
-        # start_bv_search() sets job.command to exactly
-        # f"bv-search {camera_id}", so the second whitespace-separated
-        # token is the camera id whenever the first is "bv-search".
-        camera_id = None
-        command_parts = job.command.split(maxsplit=1)
-        if command_parts and command_parts[0] == "bv-search" and len(command_parts) == 2:
-            camera_id = command_parts[1]
+        tail_active, displayed_output, tail_truncated_count = _sliced_job_output(
+            job_status, output, tail_requested
+        )
+        camera_id = _job_camera_id(job)
         response = templates.TemplateResponse(
             request,
             "job_detail.html",
@@ -1613,6 +1587,52 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # browser this response (and therefore Back to it) is never
         # allowed to come from cache, only from a fresh request - so
         # Back now shows current status/output the same as a reload.
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/jobs/{job_id}/poll")
+    async def job_poll(
+        request: Request, job_id: str, user: User = Depends(require_viewer_or_owner)
+    ):
+        """AJAX sibling of job_detail() (task #772-776, WORKING_CONTEXT.md).
+
+        job_detail.html used to auto-refresh via a full <meta
+        http-equiv="refresh"> page reload every 2s while a job ran.
+        Christer hit two real problems with that: it snapped scroll back
+        to the top on every tick, and - worse - resizing/restoring the
+        browser window while a GPU-heavy bv-generate job (NVENC encode
+        and/or CUDA Whisper/scene-description inference) was running
+        could line up with a reload and tip an already GPU-starved
+        display driver into a TDR reset (screen corruption, audio
+        glitch). This route returns just the current status and freshly
+        rendered output HTML so job_detail.html's own poll loop can
+        patch #job-output in place instead - same slicing/permission
+        rules as job_detail() itself (see _authorize_job_view() and
+        _sliced_job_output()'s own docstrings for why those had to be
+        shared helpers, not just copied), so a poll tick can never
+        disagree with how the page first rendered.
+        """
+        job = _find_job(app.state.job_runner, job_id)
+        _authorize_job_view(job, user)
+        job_status, output, _prompt = job.snapshot()
+        tail_requested = request.query_params.get("tail") == "1"
+        tail_active, displayed_output, tail_truncated_count = _sliced_job_output(
+            job_status, output, tail_requested
+        )
+        camera_id = _job_camera_id(job)
+        output_html = templates.env.get_template("_job_output_lines.html").render(
+            output=displayed_output, camera_id=camera_id
+        )
+        response = JSONResponse(
+            {
+                "status": job_status.value,
+                "output_html": output_html,
+                "tail_truncated_count": tail_truncated_count,
+            }
+        )
+        # Same reasoning as job_detail()'s own no-store header - a
+        # bfcache-restored poll response would show stale output/status
+        # forever since nothing re-triggers the fetch loop.
         response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -1911,6 +1931,53 @@ def _find_job(job_runner: JobRunner, job_id: str) -> Job:
             status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
         )
     return job
+
+
+def _authorize_job_view(job: Job, user: User) -> None:
+    """Shared by job_detail() and its /poll AJAX sibling (task
+    #772-776, WORKING_CONTEXT.md) - only bv-search is open to
+    viewers (see require_viewer_or_owner's own docstring). A viewer
+    hitting either route for any other job type (e.g. by guessing/
+    reusing a job id) gets the usual 403 either way."""
+
+    if user.role != "owner" and not job.command.startswith("bv-search "):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="owner role required"
+        )
+
+
+def _sliced_job_output(
+    job_status: JobStatus, output: list[str], tail_requested: bool
+) -> tuple[bool, list[str], int]:
+    """Apply ?tail=1's slicing (task #687, WORKING_CONTEXT.md) - shared
+    by job_detail() and /poll so a poll tick can never disagree with
+    how the page first decided to slice. See TAIL_LINE_COUNT's own
+    comment for why 30. Returns (tail_active, displayed_output,
+    tail_truncated_count)."""
+
+    tail_active = tail_requested and not job_status.is_finished
+    displayed_output = output
+    tail_truncated_count = 0
+    if tail_active and len(output) > TAIL_LINE_COUNT:
+        tail_truncated_count = len(output) - TAIL_LINE_COUNT
+        displayed_output = output[-TAIL_LINE_COUNT:]
+    return tail_active, displayed_output, tail_truncated_count
+
+
+def _job_camera_id(job: Job) -> str | None:
+    """bv-search is the only job type whose output prints recording
+    ids (see RECORDING_ID_RE's own comment) - None for every other
+    job type, so the output partial only ever links lines for a
+    bv-search job. There's no dedicated Job.camera_id field (see
+    jobs.py's Job dataclass) - start_bv_search() sets job.command to
+    exactly f"bv-search {camera_id}", so the second whitespace-
+    separated token is the camera id whenever the first is
+    "bv-search"."""
+
+    command_parts = job.command.split(maxsplit=1)
+    if command_parts and command_parts[0] == "bv-search" and len(command_parts) == 2:
+        return command_parts[1]
+    return None
 
 
 def _resolve_camera_target(cache: CameraConfigCache, camera_id: str) -> Path | None:
