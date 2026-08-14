@@ -24,6 +24,7 @@ bv-export [--target DIR] [--config-dir DIR] [--prefix PREFIX]
           [--stitch-resolution WIDTHxHEIGHT] [--stitch-bitrate RATE]
           [--stitch-scale PERCENT] [--stitch-max-width PIXELS] [--stitch-max-height PIXELS]
           [--stitch-map [{map,zoom}]] [--stitch-map-side SIDE] [--stitch-map-size PERCENT]
+          [--stitch-map-circle]
           [--stitch-gsensor] [--stitch-gsensor-size PERCENT]
           [--stitch-gsensor-pos POSITION | --stitch-gsensor-xy X,Y]
           [--stitch-graph] [--stitch-graph-side SIDE] [--stitch-graph-size PERCENT]
@@ -180,6 +181,7 @@ The position marker itself is hidden entirely before the trip's very first real 
 | `--stitch-map [{map,zoom}]` | Compose a map panel alongside the cameras, rendered fresh at the composite's own size (not a copy of `--map`'s file). Bare flag = static overview; `zoom` = follow-camera view (needs `--map-zoom METERS` too, reused as the radius). Respects `--map-track-up` too, if that's also given. |
 | `--stitch-map-side {left,right,top,down}` | Panel side. Default: left for `top_down`, down for `side_by_side`. For `rearview_mirror` (a single full-frame camera, not a stack, so there's no camera shape to nest the panel against) the default instead follows the trip's own real-world shape: left for a mainly north-south trip, down for a mainly east-west one (or when there's no GPS data to judge by). |
 | `--stitch-map-size PERCENT` | Panel width/height as a percent of the matching composite dimension (5-80). Default: sized automatically from the trip's own aspect ratio. |
+| `--stitch-map-circle` | Mask the `--stitch-map` panel into a full ellipse inscribed in its own frame, with the four corners rendered solid black - Christer: "do you think a zoomed map would look better as in a circle." Off by default; only has an effect once `--stitch-map` is set. |
 
 ### Stitch g-sensor overlay
 

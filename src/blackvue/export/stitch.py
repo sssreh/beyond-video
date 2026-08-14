@@ -491,6 +491,7 @@ def stitch_cameras(
     map_video_duration_seconds: float | None = None,
     map_recording_breakpoints=None,
     map_track_up: bool = False,
+    map_circle: bool = False,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -731,6 +732,19 @@ def stitch_cameras(
     just theoretical - see trip_export._recording_video_offsets()'s
     own docstring and WORKING_CONTEXT.md).
 
+    `map_circle` (default False), if True, masks the rendered map
+    panel into a full ellipse (a circle when the panel happens to be
+    square, an oval otherwise) before it's combined with the camera
+    composite - Christer: "do you think a zoomed map would look better
+    as in a circle." Applies to either `map_mode` ('map' or 'zoom')
+    alike; corners outside the ellipse render as solid black, matching
+    this project's existing letterbox convention rather than showing
+    through to anything else. See _map_panel_circle_mask_filter()'s own
+    docstring for the exact masking approach and why it's a distinct
+    shape from `mirror_radius`'s 100%-rounded "stadium" below. A no-op
+    whenever no panel actually gets rendered (no GPS data, etc.) - same
+    degrade-quietly convention as every other map-panel option here.
+
     `gsensor_video`, if given, is an *already-rendered* gsensor.mp4
     (see gsensor_video.py's --gsensor-video) composited as a
     transparent chroma-keyed overlay on top of the camera footage -
@@ -859,7 +873,7 @@ def stitch_cameras(
             map_video_start=map_video_start,
             map_video_duration_seconds=map_video_duration_seconds,
             map_recording_breakpoints=map_recording_breakpoints,
-            map_track_up=map_track_up,
+            map_track_up=map_track_up, map_circle=map_circle,
             gsensor_video=gsensor_video, gsensor_size=gsensor_size,
             gsensor_pos=gsensor_pos, gsensor_xy=gsensor_xy,
             graph_samples=graph_samples, graph_side=graph_side,
@@ -1989,6 +2003,63 @@ def _mirror_radius_alpha_expr(radius_percent: float) -> str:
     )
 
 
+def _map_panel_circle_mask_filter(label_in: str, label_out: str) -> str:
+    """The ffmpeg filter-chain fragment masking `label_in` (the
+    rendered --stitch-map panel file, already at its final width x
+    height) into a full ellipse inscribed in that whole frame -
+    touching all four edges, a true circle when the panel happens to
+    be square, an oval matching the panel's own aspect ratio otherwise
+    (see _map_panel_dimensions()'s own shape-matching logic - the
+    panel is rarely square in practice). Christer: "do you think a
+    zoomed map would look better as in a circle" - opt-in via
+    `--stitch-map-circle`, see stitch_cameras()'s own docstring.
+
+    Deliberately a different shape from _mirror_radius_alpha_expr()'s
+    100%-radius "stadium"/pill (which only becomes a full circle for a
+    square source, and otherwise leaves two flat edges where the
+    straight sides of the rectangle exceed the rounded corners) -
+    reusing that function here would look right for a roughly-square
+    panel but wrong for the tall/narrow or short/wide panels
+    _map_panel_dimensions() actually produces. An always-full-ellipse
+    mask keeps the "circular" read regardless of the panel's own
+    proportions, at the cost of masking away more area on an elongated
+    panel - acceptable here since, unlike the mirror inset, there's no
+    separate frame/bezel graphic expected to fill the corners; they're
+    simply left as opaque black, matching this project's established
+    letterbox convention (see _fit_and_pad()'s own docstring).
+
+    Masks the RGB channels directly (`r='if(...,r(X,Y),0)'` etc.)
+    rather than building a real alpha channel and compositing onto a
+    separate background layer: the masked panel feeds straight into
+    the same hstack/vstack call the unmasked panel would have (see
+    _stack()'s own map-panel block) - a filter that just concatenates
+    frames, not one that blends per-pixel alpha - so there's no
+    downstream compositing step to hand a transparent frame to. Zeroing
+    the color channels outside the ellipse up front produces exactly
+    the same "solid black corners" result with no extra overlay step.
+    `format=rgba` first is required for geq's `r(X,Y)`/`g(X,Y)`/
+    `b(X,Y)` per-plane accessors to be available at all (same
+    requirement _mirror_radius_alpha_expr()'s own caller documents);
+    `format=yuv420p` after converts back to what hstack/vstack and the
+    final encode expect, matching every other input in the filter
+    graph. `W`/`H`/`X`/`Y` are geq's own per-pixel runtime variables,
+    resolved by ffmpeg when the filter actually runs, never Python
+    values.
+    """
+
+    inside_ellipse = (
+        "lte(pow((X-W/2)/(W/2),2)+pow((Y-H/2)/(H/2),2),1)"
+    )
+    return (
+        f"[{label_in}]format=rgba,geq="
+        f"r='if({inside_ellipse},r(X,Y),0)':"
+        f"g='if({inside_ellipse},g(X,Y),0)':"
+        f"b='if({inside_ellipse},b(X,Y),0)':"
+        "a=255,format=yuv420p"
+        f"[{label_out}]"
+    )
+
+
 def _stack(
     front: Path,
     rear: Path,
@@ -2018,6 +2089,7 @@ def _stack(
     map_video_duration_seconds: float | None = None,
     map_recording_breakpoints=None,
     map_track_up: bool = False,
+    map_circle: bool = False,
     gsensor_video: Path | None = None,
     gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     gsensor_pos: str | None = None,
@@ -2757,10 +2829,29 @@ def _stack(
                     )
                     map_index = next_input_index
                     next_input_index += 1
+                    map_panel_label = f"{map_index}:v"
+                    if map_circle:
+                        # Christer: "do you think a zoomed map would
+                        # look better as in a circle" - masks the
+                        # rendered panel into a full ellipse before it
+                        # ever reaches hstack/vstack below, same
+                        # "render normally, mask right before
+                        # combining" order _mirror_radius_alpha_expr's
+                        # own caller uses for the rearview mirror inset
+                        # (see this function's own is_mirror block) -
+                        # see _map_panel_circle_mask_filter()'s own
+                        # docstring for why this is a different shape
+                        # from that one.
+                        clauses.append(
+                            _map_panel_circle_mask_filter(
+                                map_panel_label, "map_circle_masked"
+                            )
+                        )
+                        map_panel_label = "map_circle_masked"
                     combine_inputs = (
-                        f"[{map_index}:v][{camera_label}]"
+                        f"[{map_panel_label}][{camera_label}]"
                         if panel_side in ("left", "top")
-                        else f"[{camera_label}][{map_index}:v]"
+                        else f"[{camera_label}][{map_panel_label}]"
                     )
                     clauses.append(
                         f"{combine_inputs}{panel_filter_name}=inputs=2[withmap]"

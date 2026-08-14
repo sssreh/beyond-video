@@ -3297,6 +3297,61 @@ def test_export_trip_map_track_up_defaults_to_false_for_stitch_cameras(
     assert captured["map_track_up"] is False
 
 
+def test_export_trip_stitch_map_circle_is_forwarded_to_stitch_cameras(
+    tmp_path, monkeypatch
+):
+    # Same forwarding pattern as map_track_up above - export_trip()'s own
+    # stitch_map_circle param (Christer: "do you think a zoomed map
+    # would look better as in a circle") needs to reach stitch_cameras()'s
+    # map_circle kwarg or the CLI flag would silently do nothing.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side",
+        stitch_map_circle=True,
+    )
+
+    assert captured["map_circle"] is True
+
+
+def test_export_trip_stitch_map_circle_defaults_to_false_for_stitch_cameras(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(trip, dest_dir, stitch_layout="side_by_side")
+
+    assert captured["map_circle"] is False
+
+
 def test_export_trip_stitch_mirror_icon_is_forwarded(tmp_path, monkeypatch):
     from PIL import Image
     from PIL import ImageDraw

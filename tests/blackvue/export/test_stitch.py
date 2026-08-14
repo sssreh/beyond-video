@@ -15,6 +15,7 @@ from blackvue.export.stitch import STACK_LAYOUTS
 from blackvue.export.stitch import _default_rearview_mirror_map_side
 from blackvue.export.stitch import _escape_subtitles_filename
 from blackvue.export.stitch import _graph_panel_dimensions
+from blackvue.export.stitch import _map_panel_circle_mask_filter
 from blackvue.export.stitch import _map_panel_dimensions
 from blackvue.export.stitch import map_zoom_dimensions
 from blackvue.export.stitch import parse_gsensor_position
@@ -3171,6 +3172,122 @@ def test_stitch_cameras_rearview_mirror_radius_rounds_the_corners(tmp_path):
     # rounding only carves away the four corners, not the whole shape.
     center = image.getpixel((192 + 128, 10 + 128))
     assert center[0] > 150 and center[1] < 100
+
+
+def test_map_panel_circle_mask_filter_blackens_corners_keeps_center(tmp_path):
+    # Direct unit test of the filter fragment itself - Christer: "do
+    # you think a zoomed map would look better as in a circle" - a
+    # solid-red synthetic source run straight through the returned
+    # ffmpeg filter-graph fragment (bypassing stitch_cameras()/the map
+    # renderer entirely) should come out with its four corners
+    # blackened and its center untouched, matching
+    # _map_panel_circle_mask_filter()'s own "full ellipse inscribed in
+    # the whole frame" docstring claim.
+    source = tmp_path / "panel.mp4"
+    _make_solid_video(source, 200, 200, "red", duration_seconds=0.1)
+    destination = tmp_path / "masked.mp4"
+
+    filter_graph = _map_panel_circle_mask_filter("0:v", "out")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(source),
+            "-filter_complex", filter_graph,
+            "-map", "[out]", "-frames:v", "1",
+            str(destination),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    corner = image.getpixel((2, 2))
+    assert corner[0] < 20 and corner[1] < 20 and corner[2] < 20
+    center = image.getpixel((100, 100))
+    assert center[0] > 150 and center[1] < 100
+
+
+def _make_video_matching_map_fps(path, width, height, duration_seconds):
+    # The rendered --stitch-map panel is a fixed 5fps (see
+    # render_map_video()) - a camera source at a different fps (the
+    # shared _make_video() helper above hardcodes 10) forces ffmpeg's
+    # hstack to reconcile two mismatched timebases via an enormous
+    # duplicated-frame timeline (confirmed via a real ffprobe: tens of
+    # thousands of duplicated frames at a synthetic ~10240fps), which
+    # empirically corrupted every sampled pixel - camera area included
+    # - to a flat, content-free gray in real runs. Rendering the camera
+    # sources at the panel's own 5fps sidesteps that pathology
+    # entirely, verified against a real ffmpeg/ffprobe run before
+    # writing this helper. Pixel-content assertions below depend on
+    # this - width/height-only assertions elsewhere in this file don't
+    # need it, which is why they don't hit this problem.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"testsrc=size={width}x{height}:rate=5",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_stitch_cameras_map_circle_blackens_the_panel_corners(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video_matching_map_fps(front, 160, 120, duration_seconds=2.2)
+    _make_video_matching_map_fps(rear, 160, 120, duration_seconds=2.2)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_side="right", map_size=40.0,
+        map_fixes=fixes, map_roads=(), map_circle=True,
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    # side_by_side's camera composite is 320x120 (two 160x120 hstacked)
+    # - 40% of that, rounded to an even pixel count, is the panel's own
+    # width (128); its height matches the composite (120). The panel
+    # sits to the right, at x=320. map_circle=True should mask its own
+    # corner (up near the map render's own bright BACKGROUND_COLOR,
+    # (247, 244, 238) - see map_render.py) down to solid black. Value
+    # confirmed against a real render before writing this assertion.
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    corner = image.getpixel((320 + 2, 2))
+    assert corner[0] < 20 and corner[1] < 20 and corner[2] < 20
+
+
+def test_stitch_cameras_map_circle_defaults_to_off(tmp_path):
+    front = tmp_path / "front.mp4"
+    rear = tmp_path / "rear.mp4"
+    _make_video_matching_map_fps(front, 160, 120, duration_seconds=2.2)
+    _make_video_matching_map_fps(rear, 160, 120, duration_seconds=2.2)
+
+    fixes = (_fix(0, 59.30, 18.000), _fix(2, 59.34, 18.005))
+    warnings = []
+    destination = tmp_path / "stitch.mp4"
+
+    stitch_cameras(
+        front, rear, destination, layout="side_by_side",
+        map_mode="map", map_side="right", map_size=40.0,
+        map_fixes=fixes, map_roads=(),
+        warnings=warnings,
+    )
+
+    assert warnings == []
+    # Same panel geometry as the map_circle=True test above, but
+    # map_circle left at its default (False) - the corner should stay
+    # the map render's own bright background instead of being masked
+    # to black.
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    corner = image.getpixel((320 + 2, 2))
+    assert corner[0] > 150 and corner[1] > 150 and corner[2] > 150
 
 
 def _make_rear_zoom_probe(path, size=320, border=20, duration_seconds=1.0):

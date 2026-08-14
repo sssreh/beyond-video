@@ -2150,6 +2150,45 @@ def test_main_rejects_an_out_of_range_stitch_map_size(tmp_path):
         ])
 
 
+def test_main_parses_stitch_map_circle_flag(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-map", "--stitch-map-circle",
+    ])
+
+    assert captured["stitch_map_circle"] is True
+
+
+def test_main_defaults_stitch_map_circle_to_false(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive), "--stitch", "--stitch-map"])
+
+    assert captured["stitch_map_circle"] is False
+
+
 def test_main_leaves_stitch_gsensor_false_when_stitch_flag_is_absent(
     tmp_path, monkeypatch
 ):

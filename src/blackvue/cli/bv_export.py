@@ -499,6 +499,7 @@ def bv_export(
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
+    stitch_map_circle: bool = False,
     stitch_gsensor: bool = False,
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
@@ -872,6 +873,7 @@ def bv_export(
                 stitch_map=stitch_map,
                 stitch_map_side=stitch_map_side,
                 stitch_map_size=stitch_map_size,
+                stitch_map_circle=stitch_map_circle,
                 stitch_gsensor=stitch_gsensor,
                 stitch_gsensor_size=stitch_gsensor_size,
                 stitch_gsensor_pos=stitch_gsensor_pos,
@@ -1584,6 +1586,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--stitch-map-circle",
+        action="store_true",
+        help=(
+            "Mask --stitch-map's panel into a full ellipse (a circle "
+            "if the panel happens to be square, an oval otherwise) "
+            "instead of a plain rectangle - corners render as solid "
+            "black. Applies to either --stitch-map variant. Only used "
+            "together with --stitch-map."
+        ),
+    )
+
+    parser.add_argument(
         "--stitch-gsensor",
         action="store_true",
         help=(
@@ -1930,6 +1944,7 @@ def _run(
             stitch_map=args.stitch_map if args.stitch else None,
             stitch_map_side=args.stitch_map_side,
             stitch_map_size=args.stitch_map_size,
+            stitch_map_circle=args.stitch_map_circle,
             stitch_gsensor=args.stitch_gsensor if args.stitch else False,
             stitch_gsensor_size=args.stitch_gsensor_size,
             stitch_gsensor_pos=args.stitch_gsensor_pos,

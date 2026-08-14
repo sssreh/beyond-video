@@ -1921,6 +1921,7 @@ def export_trip(
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
+    stitch_map_circle: bool = False,
     stitch_gsensor: bool = False,
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
@@ -2180,6 +2181,11 @@ def export_trip(
     -aspect-ratio sizing (which otherwise floors at 20% of the
     composite's matching dimension - can read as "too thin" for a
     near-straight-line trip) with an exact fraction instead.
+    `stitch_map_circle=True` masks that panel into a full ellipse
+    (Christer: "do you think a zoomed map would look better as in a
+    circle") - see stitch.stitch_cameras()'s own docstring for exactly
+    how, and _map_panel_circle_mask_filter() for why an ellipse rather
+    than reusing `stitch_mirror_radius`'s corner-rounding approach.
 
     `stitch_gsensor=True` (also requires `stitch_layout`) composites a
     gsensor.mp4 as a transparent chroma-keyed overlay on top of the
@@ -3247,6 +3253,7 @@ def export_trip(
                 map_video_duration_seconds=video_duration_seconds,
                 map_recording_breakpoints=recording_breakpoints,
                 map_track_up=map_track_up,
+                map_circle=stitch_map_circle,
                 gsensor_video=stitch_gsensor_source,
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,

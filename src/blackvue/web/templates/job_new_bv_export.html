@@ -125,6 +125,11 @@
         Rotate map(s) to vehicle heading (track-up) instead of north-up
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Applies to both "Include map" and the follow-camera radius in Advanced map - the vehicle's current heading always points "up" on screen, like a phone turn-by-turn app. Costs extra render time on the whole-trip overview map specifically.</span></span>
       </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="stitch_map_circle" name="stitch_map_circle" value="true" style="width: auto; margin: 0;">
+        Crop the stitched map panel into a circle
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Masks the map panel composited into stitch.mp4 into an ellipse inscribed in its own frame, with the four corners rendered solid black. Only meaningful once Stitch map panel above is set.</span></span>
+      </label>
     </div>
 
     <div class="checkbox-row">

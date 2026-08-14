@@ -660,6 +660,7 @@ class JobRunner:
         stitch_map: str | None,
         stitch_map_side: str | None,
         stitch_map_size: float | None,
+        stitch_map_circle: bool,
         stitch_gsensor: bool,
         stitch_gsensor_size: float | None,
         stitch_gsensor_pos: str | None,
@@ -789,6 +790,8 @@ class JobRunner:
             argv += ["--stitch-map-side", stitch_map_side]
         if stitch_map_size is not None:
             argv += ["--stitch-map-size", str(stitch_map_size)]
+        if stitch_map_circle:
+            argv.append("--stitch-map-circle")
         if stitch_gsensor:
             argv.append("--stitch-gsensor")
         if stitch_gsensor_size is not None:

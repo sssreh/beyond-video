@@ -11206,3 +11206,87 @@ assertions needed changing). Also ran both
 under the cap) - both still pass unchanged. Updated
 `docs/man/bv-export.md`'s `--map-zoom` discussion to describe the
 640px cap and why it exists.
+
+## Feature: circular crop for the --stitch-map panel (--stitch-map-circle)
+## (2026-08-14)
+
+Christer, after the map_zoom cap fix above: "do you think a zoomed map
+would look better as in a circle?" Answered with reasoning + a mockup
+(rectangular vs. circular crop), then clarified via a follow-up
+question that this should apply to `--stitch-map`'s panel (the one
+composited into `stitch.mp4`), not the standalone `map_zoom_*.mp4`
+file. New opt-in `--stitch-map-circle` flag, off by default.
+
+**Design.** `_map_panel_circle_mask_filter(label_in, label_out)` in
+`stitch.py` builds an ffmpeg `geq` filter-graph fragment that masks
+the rendered panel's RGB channels directly (`r='if(<inside-ellipse>,
+r(X,Y),0)'` etc., `format=rgba` before / `format=yuv420p` after) into
+a full ellipse inscribed in the panel's own whole frame - touching all
+four edges regardless of aspect ratio, corners left solid black.
+Deliberately a different, always-full-ellipse shape from
+`_mirror_radius_alpha_expr()`'s existing 100%-radius rounded-corner
+mechanism (`--stitch-mirror-radius`), which only becomes a true circle
+for a square source and leaves two flat edges on the panel's typically
+non-square dimensions - reusing that function here would look wrong.
+Masks RGB directly rather than building a real alpha channel + `overlay`
+compositing (the mirror inset's own approach): the masked panel feeds
+straight into `_stack()`'s existing `hstack`/`vstack` combine, a filter
+that concatenates frames rather than blending per-pixel alpha, so
+there's no separate background layer to composite onto - zeroing the
+color channels up front produces the same "solid black corners" result
+with no extra step.
+
+**Wiring.** New `map_circle: bool = False` param threaded through the
+usual five layers in the established order: `stitch.py`'s `_stack()`
+(masks the rendered panel via `_map_panel_circle_mask_filter()`
+immediately before the hstack/vstack combine, when set) and
+`stitch_cameras()`; `trip_export.py`'s `export_trip()` (as
+`stitch_map_circle`, forwarded to `stitch_cameras(map_circle=...)`);
+`bv_export.py`'s `bv_export()` + new `--stitch-map-circle` argparse
+flag (`store_true`) + `_run()`; `web/jobs.py`'s
+`JobRunner.start_bv_export()` (new required `stitch_map_circle: bool`
+param, appends `--stitch-map-circle` to argv when set); `web/app.py`'s
+bv-export route (`stitch_map_circle: bool = Form(False)`). Template
+checkbox added to `job_new_bv_export.html`'s always-visible Options
+checkbox-row (next to `map_track_up`) rather than the collapsed
+Advanced stitching section - per the #807 progressive-disclosure
+policy, this is a deliberate shape choice with no real "default
+behavior" to fine-tune, not a sensible-default knob.
+
+**Verification.** No pytest in this sandbox; ran the relevant test
+functions directly through the project's usual harness pattern. Wrote
+`test_map_panel_circle_mask_filter_blackens_corners_keeps_center`
+(direct unit test of the filter fragment against a solid-red synthetic
+source, bypassing `stitch_cameras()` entirely - corner black, center
+still red) plus two `stitch_cameras()` end-to-end tests,
+`test_stitch_cameras_map_circle_blackens_the_panel_corners` and
+`test_stitch_cameras_map_circle_defaults_to_off`. The end-to-end tests
+hit a real, pre-existing pitfall while being written: the rendered
+`--stitch-map` panel is a fixed 5fps (`render_map_video()`), and camera
+sources at a different fps (the shared `_make_video()` test helper
+hardcodes 10) force ffmpeg's `hstack` to reconcile two mismatched
+timebases via an enormous duplicated-frame timeline (confirmed via a
+real ffprobe: ~22500 frames at a synthetic ~10240fps for a 2.2s clip) -
+which empirically corrupted every sampled pixel, camera area included,
+to a flat, content-free gray in real test runs. Not a production bug -
+real dashcam footage and the map panel both decode/re-encode through
+the same pipeline regardless of source fps - but it broke pixel-content
+assertions specifically; fixed by rendering the test's camera sources
+at the panel's own 5fps via a small local `_make_video_matching_map_fps()`
+helper (confirmed against a real render before writing the final
+assertions: corner black with `map_circle=True`, `(247, 243, 237)` -
+`map_render.BACKGROUND_COLOR` - with it `False`). Also added CLI parsing
+tests (`test_main_parses_stitch_map_circle_flag`,
+`test_main_defaults_stitch_map_circle_to_false`), job-runner wiring
+tests (`test_start_bv_export_stitch_map_circle_reaches_parsed_args`,
+`test_start_bv_export_stitch_map_circle_defaults_to_false`), and
+`export_trip()`-forwarding tests
+(`test_export_trip_stitch_map_circle_is_forwarded_to_stitch_cameras`,
+`test_export_trip_stitch_map_circle_defaults_to_false_for_stitch_cameras`).
+Ran the full pre-existing map-panel/rearview-mirror-radius/map-zoom
+test set (27 tests) afterward to confirm no regressions - all pass (one
+harness-only false failure: `test_stitch_cameras_map_panel_debug_reports_render_timing`
+checks a stderr debug print, and this sandbox's ad hoc `CapSys` shim
+only redirects stdout - unrelated to this change, confirmed by
+inspecting the shim). Updated `docs/man/bv-export.md`'s stitch-map
+options table with a `--stitch-map-circle` row and the usage synopsis.

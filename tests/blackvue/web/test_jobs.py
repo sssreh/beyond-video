@@ -887,6 +887,7 @@ def _export_kwargs(**overrides):
         stitch_map=None,
         stitch_map_side=None,
         stitch_map_size=None,
+        stitch_map_circle=False,
         stitch_gsensor=False,
         stitch_gsensor_size=None,
         stitch_gsensor_pos=None,
@@ -1002,6 +1003,42 @@ def test_start_bv_export_flags_reach_parsed_args(monkeypatch):
     assert args.stitch_subtitles is True
     assert args.overwrite is True
     assert args.dry_run is True
+
+
+def test_start_bv_export_stitch_map_circle_reaches_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_export(
+        **_export_kwargs(
+            stitch=True, stitch_map="map", stitch_map_circle=True,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].stitch_map_circle is True
+
+
+def test_start_bv_export_stitch_map_circle_defaults_to_false(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_export(**_export_kwargs())
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].stitch_map_circle is False
 
 
 def test_start_bv_export_never_exposes_target_as_a_form_field():
