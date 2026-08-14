@@ -11290,3 +11290,37 @@ checks a stderr debug print, and this sandbox's ad hoc `CapSys` shim
 only redirects stdout - unrelated to this change, confirmed by
 inspecting the shim). Updated `docs/man/bv-export.md`'s stitch-map
 options table with a `--stitch-map-circle` row and the usage synopsis.
+
+## Fix: promote "Burn in subtitles" out of Advanced stitching
+## (2026-08-14)
+
+Christer: "burn in subtitles in bv-export should not be hidden under
+advanced." Same #807 progressive-disclosure gap as the earlier
+feature-choice fields (map_track_up, stitch_map_circle, etc.) -
+`stitch_subtitles` is an on/off feature choice with no real "default
+behavior" to fine-tune, so per that policy it belongs in the
+always-visible Options group, not the collapsed `advanced-stitch`
+`<details>` section it was still sitting in.
+
+Moved the "Burn in subtitles onto stitch.mp4" checkbox in
+`job_new_bv_export.html` into the visible checkbox-row alongside
+`stitch_gsensor`/`stitch_graph`/`map_track_up`/`stitch_map_circle`.
+Left `no_subtitles_bg` ("Disable the dark background bar behind
+burned-in subtitles") in Advanced stitching - unlike the on/off
+choice itself, it's a fine-tune that only matters once subtitles are
+already on and has a sensible default (background bar shown), so it
+fits the Advanced-section half of the #807 policy; added a help-tip
+noting it only does something once the (now-relocated) burn-in
+checkbox above is checked, since it's no longer sitting right next
+to it. No backend change - `stitch_subtitles`/`no_subtitles_bg` were
+already wired end-to-end since task #62; this is purely a template
+placement fix. The `advanced-stitch` section's own auto-reveal
+trigger is the top-level `stitch` checkbox, not `stitch_subtitles`,
+so moving the latter doesn't affect when Advanced stitching (and
+`no_subtitles_bg` inside it) becomes visible.
+
+Verified by loading the template through a real Jinja2
+`Environment`/`FileSystemLoader` (parses clean) and reviewing the
+diff by hand - a single checkbox `<label>` block moved from one
+`checkbox-row` to another, no ids duplicated, no other stray content
+changed.

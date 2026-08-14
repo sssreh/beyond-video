@@ -130,6 +130,10 @@
         Crop the stitched map panel into a circle
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Masks the map panel composited into stitch.mp4 into an ellipse inscribed in its own frame, with the four corners rendered solid black. Only meaningful once Stitch map panel above is set.</span></span>
       </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="stitch_subtitles" name="stitch_subtitles" value="true" style="width: auto; margin: 0;">
+        Burn in subtitles onto stitch.mp4
+      </label>
     </div>
 
     <div class="checkbox-row">
@@ -402,12 +406,9 @@
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_subtitles" name="stitch_subtitles" value="true" style="width: auto; margin: 0;">
-        Burn in subtitles onto stitch.mp4
-      </label>
-      <label class="filter-checkbox">
         <input type="checkbox" id="no_subtitles_bg" name="no_subtitles_bg" value="true" style="width: auto; margin: 0;">
         Disable the dark background bar behind burned-in subtitles
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only meaningful once "Burn in subtitles onto stitch.mp4" above is checked.</span></span>
       </label>
     </div>
   </details>
