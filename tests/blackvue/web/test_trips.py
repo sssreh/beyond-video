@@ -210,6 +210,74 @@ def test_known_filenames_matches_what_actually_exists(tmp_path):
     assert "front.mp4" not in trip.known_filenames
 
 
+def test_scan_trip_flags_trip_info(tmp_path):
+    # Christer: "are trip summary still there" - trip_info.txt is
+    # written unconditionally by every export (task #124), but wasn't
+    # tracked in TripAssets at all before this - scan_trip() needs to
+    # notice it exists the same way it already notices gpx/srt.
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "trip_info.txt").write_text("Duration: 0:10:00\n", encoding="utf-8")
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_info is True
+    assert "trip_info.txt" in trip.known_filenames
+
+
+def test_scan_trip_trip_info_false_when_file_absent(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_info is False
+    assert "trip_info.txt" not in trip.known_filenames
+
+
+def test_trip_summary_parses_label_value_pairs(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "trip_info.txt").write_text(
+        "Started: 2026-07-21 12:41:08\n"
+        "Duration: 0:06:02\n"
+        "Distance: 3.42 km\n",
+        encoding="utf-8",
+    )
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_summary == [
+        ("Started", "2026-07-21 12:41:08"),
+        ("Duration", "0:06:02"),
+        ("Distance", "3.42 km"),
+    ]
+
+
+def test_trip_summary_empty_when_trip_info_missing(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_summary == []
+
+
+def test_trip_summary_degrades_quietly_if_file_becomes_unreadable(tmp_path):
+    # trip_info=True is set at scan time, but the file itself could
+    # still vanish (or become unreadable) between the scan and a later
+    # access of the trip_summary property - same "don't 500 the page
+    # over a secondary file" convention every other optional asset
+    # here follows.
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "trip_info.txt").write_text("Duration: 0:10:00\n", encoding="utf-8")
+    trip = scan_trip(folder)
+    (folder / "trip_info.txt").unlink()
+
+    assert trip.trip_summary == []
+
+
 def test_scan_trip_finds_a_track_up_map_alongside_a_plain_one(tmp_path):
     # Task #795, Christer: "I think we should have different names for
     # track up and not, then we always get the correct map." A trip

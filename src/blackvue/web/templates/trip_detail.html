@@ -19,6 +19,15 @@
 <p class="empty">No video available for this trip.</p>
 {% endif %}
 
+{% if trip.trip_summary %}
+<h3>Trip summary</h3>
+<ul class="asset-list">
+  {% for label, value in trip.trip_summary %}
+  <li><strong>{{ label }}:</strong> {{ value }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
 <ul class="asset-list">
   {% for video in trip.videos %}
   <li><a href="/trips/{{ trip.id }}/files/{{ video }}">{{ video }}</a></li>
@@ -40,6 +49,9 @@
   {% endif %}
   {% if trip.srt %}
   <li><a href="/trips/{{ trip.id }}/files/trip.srt">trip.srt</a></li>
+  {% endif %}
+  {% if trip.trip_info %}
+  <li><a href="/trips/{{ trip.id }}/files/trip_info.txt">trip_info.txt</a></li>
   {% endif %}
 </ul>
 </div>

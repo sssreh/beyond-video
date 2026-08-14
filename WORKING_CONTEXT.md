@@ -11325,6 +11325,56 @@ diff by hand - a single checkbox `<label>` block moved from one
 `checkbox-row` to another, no ids duplicated, no other stray content
 changed.
 
+## Feature: surface trip_info.txt on bv-web's trip detail page
+## (2026-08-14)
+
+Christer: "are trip summary still there" - trip_info.txt (task #124,
+a short plain-text summary: duration, distance/speed, moving/idle
+time, start/end address, Parking flag, total size) has always been
+written unconditionally on every export, but bv-web's trip detail
+page never read it - only `gpx`/`srt` got tracked as booleans in
+`TripAssets` and surfaced as download links; trip_info.txt was
+invisible unless you went and opened the file on disk.
+
+Added `TRIP_INFO_FILENAME = "trip_info.txt"` and a `trip_info: bool`
+field to `TripAssets` in web/trips.py, set by `scan_trip()` the same
+way `gpx`/`srt` already are, and included in `known_filenames` so it's
+downloadable through the existing `trip_file()` route too. Added a
+`trip_summary` property that reads and parses the file into (label,
+value) pairs on access - not cached on the dataclass, since
+`TripAssets` instances themselves are cached by `TripCache` and a
+stale copy of the file's *contents* would be worse than the small
+repeated read cost (same reasoning as `ArchiveRecording.scene_summary`
+on the archive-browser side, which this mirrors: read-only, computed
+live, never generates a new file). Each trip_info.txt line is
+"Label: value" (write_trip_info()'s own format), so a single
+`partition(": ")` per line parses it. Degrades quietly (empty list) if
+the file is missing or unreadable, rather than 500ing the trip page
+over what was always a secondary summary.
+
+`trip_detail.html` renders the pairs under a new "Trip summary"
+heading, above the asset list, and also adds trip_info.txt to the
+downloadable-files `<ul>` alongside trip.gpx/trip.srt.
+
+Verified via a standalone script (stubbing `tomllib`, since this
+sandbox's Python is 3.10 and camera_config.py needs 3.11+) exercising
+`scan_trip()`/`TripAssets.trip_summary`/`known_filenames` directly -
+all pass, including a missing-file-after-scan case (property re-reads
+live, so it just returns an empty list rather than crashing) - plus a
+real Jinja2 `Environment`/`FileSystemLoader` load of trip_detail.html
+to confirm it still parses. Added tests to test_trips.py:
+test_scan_trip_flags_trip_info, test_scan_trip_trip_info_false_when_
+file_absent, test_trip_summary_parses_label_value_pairs,
+test_trip_summary_empty_when_trip_info_missing,
+test_trip_summary_degrades_quietly_if_file_becomes_unreadable.
+
+Also answered, no code change needed: Christer asked "where is the
+debug option for bv-export in bv-web" - it's already there, in the
+visible Options checkbox-row in job_new_bv_export.html (`id="debug"`,
+label "Print per-trip render timing to the job log") - wired since
+task #786's cancellation/debug-progress feature, not something this
+session added.
+
 ## Fix: --stitch-map-circle now a true circle, not a stretched ellipse
 ## (2026-08-14)
 

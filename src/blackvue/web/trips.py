@@ -67,6 +67,13 @@ MAP_TU_FILENAME = "map_tu.mp4"
 GSENSOR_VIDEO_FILENAME = "gsensor.mp4"
 GPX_FILENAME = "trip.gpx"
 SRT_FILENAME = "trip.srt"
+# trip_info.txt (export/trip_info.py) - a short plain-text trip
+# summary (duration, distance/speed, start/end address) written on
+# every export, unconditionally. Christer: "are trip summary still
+# there" - it was already written to every trip folder, just never
+# surfaced anywhere in bv-web's own UI (only known_filenames'd like
+# gpx/srt below, so it could be downloaded but not read at a glance).
+TRIP_INFO_FILENAME = "trip_info.txt"
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,54 @@ class TripAssets:
     gsensor_video: str | None = None
     gpx: bool = False
     srt: bool = False
+    trip_info: bool = False
+
+    @property
+    def trip_summary(self) -> list[tuple[str, str]]:
+        """(label, value) pairs parsed from trip_info.txt (export/
+        trip_info.py) - the short plain-text trip summary (duration,
+        distance/speed, moving/idle time, start/end address, Parking
+        footage flag, total size) bv-export writes unconditionally on
+        every run. Christer: "are trip summary still there" - it was,
+        just never surfaced anywhere in bv-web's own UI before this;
+        trip_detail.html renders these pairs directly instead of
+        making someone go find the file on disk.
+
+        Computed live from trip_info.txt on every access (same
+        "reads already-written files, doesn't generate anything new"
+        convention as ArchiveRecording.scene_summary on the archive-
+        browser side) rather than cached on the dataclass, since
+        TripAssets instances themselves are cached by TripCache and a
+        stale in-memory copy of the file's *contents* would be a worse
+        bug than the small repeated read cost.
+
+        Each trip_info.txt line is "Label: value" (write_trip_info()'s
+        own format, always one value per line, never multi-line) so a
+        single partition(": ") per line is enough to parse it -
+        deliberately not a stricter format (JSON, key=value) since
+        this file is meant to be human-readable on its own too, opened
+        directly off a NAS share.
+
+        Empty if trip_info.txt doesn't exist (e.g. a trip folder from
+        a bv-export build that predates task #124) or can't be read
+        for any reason - degrades quietly, like every other optional
+        per-trip asset here, rather than 500ing the trip detail page
+        over a summary file that was always secondary to the video
+        itself."""
+
+        if not self.trip_info:
+            return []
+        try:
+            text = (self.folder / TRIP_INFO_FILENAME).read_text(encoding="utf-8")
+        except OSError:
+            return []
+        pairs = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            label, sep, value = line.partition(": ")
+            pairs.append((label, value) if sep else (line, ""))
+        return pairs
 
     @property
     def primary_video(self) -> str | None:
@@ -156,6 +211,8 @@ class TripAssets:
             names.add(GPX_FILENAME)
         if self.srt:
             names.add(SRT_FILENAME)
+        if self.trip_info:
+            names.add(TRIP_INFO_FILENAME)
         return frozenset(names)
 
 
@@ -239,6 +296,7 @@ def scan_trip(folder: Path, *, id_: str | None = None) -> TripAssets | None:
         ),
         gpx=(folder / GPX_FILENAME).is_file(),
         srt=(folder / SRT_FILENAME).is_file(),
+        trip_info=(folder / TRIP_INFO_FILENAME).is_file(),
     )
 
 
