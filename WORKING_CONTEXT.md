@@ -11324,3 +11324,44 @@ Verified by loading the template through a real Jinja2
 diff by hand - a single checkbox `<label>` block moved from one
 `checkbox-row` to another, no ids duplicated, no other stray content
 changed.
+
+## Fix: --stitch-map-circle now a true circle, not a stretched ellipse
+## (2026-08-14)
+
+Christer, after seeing task #811's first version: "And with a circle
+i mean a circle as wide as high." The first implementation inscribed
+an ellipse touching all four edges of the panel's own frame - a true
+circle only when the panel happened to be square, an oval otherwise -
+and the panel is rarely square in practice (--stitch-map's own
+side/size mechanism, task #169's grow-bbox fill). Christer's
+clarification makes clear that's not what he wanted: a circle should
+stay a circle regardless of the panel's aspect ratio.
+
+Fixed `_map_panel_circle_mask_filter()` in stitch.py: the geq mask
+expression now clamps both axes to the same radius,
+`min(W,H)/2`, instead of each axis using its own half-extent
+(`W/2`/`H/2`). Diameter = the shorter of the panel's own width/height,
+centered in the frame. On an elongated panel this leaves a visible
+black margin along the longer axis (e.g. left/right bars on a wide
+panel) instead of the ellipse stretching out to touch those edges -
+deliberate: a real circle over a panel that no longer reads as
+circular on one axis. Updated the function's own docstring,
+stitch_cameras()'s `map_circle` docstring, and the inline comment at
+the map-panel call site to match; updated docs/man/bv-export.md's
+`--stitch-map-circle` row.
+
+Verified the geq expression is valid ffmpeg syntax (`min(W,H)` works
+fine in geq's expression evaluator) and confirmed the actual pixel
+behavior with a real ffmpeg run against a 200x100 solid-red source: a
+point 98px from center on the long axis (198,50) - which the old
+stretched-ellipse formula kept red (98/100 = 0.98 on its own x
+semi-axis, inside) - now comes out solid black (98/50 = 1.96 on the
+shared radius, outside), while the center (100,50) and corner (2,2)
+behave the same as before. Added
+test_map_panel_circle_mask_filter_is_a_true_circle_on_a_wide_panel to
+test_stitch.py encoding exactly this - the earlier square-source test
+(200x200) couldn't distinguish a true circle from a stretched ellipse
+since min(W,H) == W == H in that case, so it stays as a same-shape
+sanity check. The two existing stitch_cameras()-level circle tests
+(square-ish 128x120 panel) still hold under the new formula - their
+sampled corner was already well outside even the old ellipse.

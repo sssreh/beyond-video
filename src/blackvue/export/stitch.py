@@ -733,12 +733,16 @@ def stitch_cameras(
     own docstring and WORKING_CONTEXT.md).
 
     `map_circle` (default False), if True, masks the rendered map
-    panel into a full ellipse (a circle when the panel happens to be
-    square, an oval otherwise) before it's combined with the camera
-    composite - Christer: "do you think a zoomed map would look better
-    as in a circle." Applies to either `map_mode` ('map' or 'zoom')
-    alike; corners outside the ellipse render as solid black, matching
-    this project's existing letterbox convention rather than showing
+    panel into a true circle - equal width and height, diameter
+    `min(panel_width, panel_height)`, regardless of the panel's own
+    aspect ratio - before it's combined with the camera composite -
+    Christer: "do you think a zoomed map would look better as in a
+    circle," clarified after the first version stretched to an oval on
+    non-square panels: "with a circle i mean a circle as wide as
+    high." Applies to either `map_mode` ('map' or 'zoom') alike; area
+    outside the circle (corners, and a letterboxed margin along
+    whichever axis is longer) renders as solid black, matching this
+    project's existing letterbox convention rather than showing
     through to anything else. See _map_panel_circle_mask_filter()'s own
     docstring for the exact masking approach and why it's a distinct
     shape from `mirror_radius`'s 100%-rounded "stadium" below. A no-op
@@ -2006,27 +2010,34 @@ def _mirror_radius_alpha_expr(radius_percent: float) -> str:
 def _map_panel_circle_mask_filter(label_in: str, label_out: str) -> str:
     """The ffmpeg filter-chain fragment masking `label_in` (the
     rendered --stitch-map panel file, already at its final width x
-    height) into a full ellipse inscribed in that whole frame -
-    touching all four edges, a true circle when the panel happens to
-    be square, an oval matching the panel's own aspect ratio otherwise
-    (see _map_panel_dimensions()'s own shape-matching logic - the
-    panel is rarely square in practice). Christer: "do you think a
-    zoomed map would look better as in a circle" - opt-in via
-    `--stitch-map-circle`, see stitch_cameras()'s own docstring.
+    height) into a true circle - equal width and height, diameter
+    `min(W,H)` - centered in that frame, regardless of the panel's own
+    aspect ratio. Christer: "do you think a zoomed map would look
+    better as in a circle" - opt-in via `--stitch-map-circle`, see
+    stitch_cameras()'s own docstring. Christer, clarifying after the
+    first version inscribed an ellipse touching all four edges
+    instead: "with a circle i mean a circle as wide as high" - fixed
+    here by radius-clamping both axes to `min(W,H)/2` rather than
+    letting each axis use its own `W/2`/`H/2` half-extent, which is
+    what produced an oval on the non-square panels
+    _map_panel_dimensions() actually produces in practice. On an
+    elongated panel this leaves a visible black margin along the
+    longer axis (e.g. left/right bars on a wide panel) rather than the
+    ellipse stretching out to touch those edges - the trade-off is
+    deliberate: a real circle over a panel that no longer looks
+    circular on one axis.
 
     Deliberately a different shape from _mirror_radius_alpha_expr()'s
     100%-radius "stadium"/pill (which only becomes a full circle for a
     square source, and otherwise leaves two flat edges where the
-    straight sides of the rectangle exceed the rounded corners) -
-    reusing that function here would look right for a roughly-square
-    panel but wrong for the tall/narrow or short/wide panels
-    _map_panel_dimensions() actually produces. An always-full-ellipse
-    mask keeps the "circular" read regardless of the panel's own
-    proportions, at the cost of masking away more area on an elongated
-    panel - acceptable here since, unlike the mirror inset, there's no
-    separate frame/bezel graphic expected to fill the corners; they're
-    simply left as opaque black, matching this project's established
-    letterbox convention (see _fit_and_pad()'s own docstring).
+    straight sides of the rectangle exceed the rounded corners) - that
+    function's "flat-sided pill" read is exactly what this feature is
+    opting out of. The corners (and, on an elongated panel, the
+    letterboxed margin along the longer axis) render as solid black,
+    matching this project's established letterbox convention (see
+    _fit_and_pad()'s own docstring) rather than showing through to
+    anything else - there's no separate frame/bezel graphic expected
+    to fill them, unlike the mirror inset.
 
     Masks the RGB channels directly (`r='if(...,r(X,Y),0)'` etc.)
     rather than building a real alpha channel and compositing onto a
@@ -2035,8 +2046,9 @@ def _map_panel_circle_mask_filter(label_in: str, label_out: str) -> str:
     _stack()'s own map-panel block) - a filter that just concatenates
     frames, not one that blends per-pixel alpha - so there's no
     downstream compositing step to hand a transparent frame to. Zeroing
-    the color channels outside the ellipse up front produces exactly
-    the same "solid black corners" result with no extra overlay step.
+    the color channels outside the circle up front produces exactly
+    the same "solid black corners/margin" result with no extra overlay
+    step.
     `format=rgba` first is required for geq's `r(X,Y)`/`g(X,Y)`/
     `b(X,Y)` per-plane accessors to be available at all (same
     requirement _mirror_radius_alpha_expr()'s own caller documents);
@@ -2047,14 +2059,18 @@ def _map_panel_circle_mask_filter(label_in: str, label_out: str) -> str:
     values.
     """
 
-    inside_ellipse = (
-        "lte(pow((X-W/2)/(W/2),2)+pow((Y-H/2)/(H/2),2),1)"
+    # Both axes clamped to the same radius (half of whichever of W/H is
+    # smaller) rather than each axis using its own half-extent - that's
+    # what makes this a true circle instead of an ellipse stretched to
+    # the panel's own (usually non-square) aspect ratio.
+    inside_circle = (
+        "lte(pow((X-W/2)/(min(W,H)/2),2)+pow((Y-H/2)/(min(W,H)/2),2),1)"
     )
     return (
         f"[{label_in}]format=rgba,geq="
-        f"r='if({inside_ellipse},r(X,Y),0)':"
-        f"g='if({inside_ellipse},g(X,Y),0)':"
-        f"b='if({inside_ellipse},b(X,Y),0)':"
+        f"r='if({inside_circle},r(X,Y),0)':"
+        f"g='if({inside_circle},g(X,Y),0)':"
+        f"b='if({inside_circle},b(X,Y),0)':"
         "a=255,format=yuv420p"
         f"[{label_out}]"
     )
@@ -2833,7 +2849,7 @@ def _stack(
                     if map_circle:
                         # Christer: "do you think a zoomed map would
                         # look better as in a circle" - masks the
-                        # rendered panel into a full ellipse before it
+                        # rendered panel into a true circle before it
                         # ever reaches hstack/vstack below, same
                         # "render normally, mask right before
                         # combining" order _mirror_radius_alpha_expr's

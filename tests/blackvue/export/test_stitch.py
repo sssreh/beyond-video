@@ -3180,9 +3180,10 @@ def test_map_panel_circle_mask_filter_blackens_corners_keeps_center(tmp_path):
     # solid-red synthetic source run straight through the returned
     # ffmpeg filter-graph fragment (bypassing stitch_cameras()/the map
     # renderer entirely) should come out with its four corners
-    # blackened and its center untouched, matching
-    # _map_panel_circle_mask_filter()'s own "full ellipse inscribed in
-    # the whole frame" docstring claim.
+    # blackened and its center untouched. Square source, so this
+    # doesn't distinguish a true circle from an ellipse stretched to
+    # the frame's aspect ratio - see the elongated-panel test below for
+    # that.
     source = tmp_path / "panel.mp4"
     _make_solid_video(source, 200, 200, "red", duration_seconds=0.1)
     destination = tmp_path / "masked.mp4"
@@ -3203,6 +3204,41 @@ def test_map_panel_circle_mask_filter_blackens_corners_keeps_center(tmp_path):
     assert corner[0] < 20 and corner[1] < 20 and corner[2] < 20
     center = image.getpixel((100, 100))
     assert center[0] > 150 and center[1] < 100
+
+
+def test_map_panel_circle_mask_filter_is_a_true_circle_on_a_wide_panel(tmp_path):
+    # Christer, after the first version: "with a circle i mean a
+    # circle as wide as high" - the first implementation inscribed an
+    # ellipse touching all four edges of the panel's own frame, which
+    # stretched into an oval on a non-square panel instead of staying
+    # circular. A 200x100 (2:1) source pins that down: a true circle
+    # has radius min(200,100)/2 = 50 centered at (100,50), so a point
+    # near the right edge at vertical mid-height - (198, 50), 98px from
+    # center on the long axis - sits outside it (distance 98/50 ~= 1.96)
+    # and must come out masked black. Under the old stretched-ellipse
+    # formula that same point was *inside* the ellipse (98/100 = 0.98
+    # on the x semi-axis) and would have stayed red - exactly the bug
+    # being fixed here.
+    source = tmp_path / "panel.mp4"
+    _make_solid_video(source, 200, 100, "red", duration_seconds=0.1)
+    destination = tmp_path / "masked.mp4"
+
+    filter_graph = _map_panel_circle_mask_filter("0:v", "out")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(source),
+            "-filter_complex", filter_graph,
+            "-map", "[out]", "-frames:v", "1",
+            str(destination),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    image = _extract_first_frame(destination, tmp_path / "frame.png")
+    center = image.getpixel((100, 50))
+    assert center[0] > 150 and center[1] < 100
+    long_axis_edge = image.getpixel((198, 50))
+    assert long_axis_edge[0] < 20 and long_axis_edge[1] < 20 and long_axis_edge[2] < 20
 
 
 def _make_video_matching_map_fps(path, width, height, duration_seconds):
