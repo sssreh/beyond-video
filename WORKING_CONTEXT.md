@@ -11013,3 +11013,50 @@ web form hiding the field, which is now fixed at that layer.
 **Verification.** No pytest in this sandbox. Loaded the edited
 template through Jinja2's own `Environment.get_template()` directly
 in this sandbox to confirm it still parses with no syntax errors.
+
+**Follow-up: reuse an already-rendered map/map_zoom file instead of
+re-rendering it (same day).** Christer pushed back on the form fix
+above: "But i dont want to render it if its already there, thats the
+problem." The actual complaint wasn't that the radius field was hard
+to find - it's that supplying `--map-zoom METERS` at all (required
+just so `--stitch-map zoom` knows the panel's radius) used to force a
+full re-render of the standalone `map_zoom_METERSm.mp4` file too,
+even when it was already sitting on disk from an earlier run of the
+same trip. Confirmed in code: `_render_map_variant()` (`trip_export.py`)
+had no existing-file check anywhere - every call unconditionally
+re-rendered, unlike `--stitch-gsensor`'s own `gsensor.mp4` handling
+(task #232), which already reuses an existing file rather than
+redoing the work.
+
+**Fix.** Both `render_map`'s `map.mp4`/`map_tu.mp4` and
+`map_zoom_meters`'s `map_zoom_{METERS}m.mp4`/`_tu.mp4` blocks in
+`export_trip()` now check `destination.exists()` before rendering -
+if the exact filename is already there, it's reused as-is (`log.step()`
++ the same `if debug: print(...)` convention `--stitch-gsensor`'s
+reuse path already uses) and `_render_map_variant()` is never called;
+otherwise it renders fresh exactly as before. Because the radius is
+already baked into the filename (`map_zoom_75m.mp4` vs
+`map_zoom_59m.mp4`), asking for a different radius than whatever's on
+disk always renders fresh regardless - confirmed directly with
+Christer mid-implementation: "but if i specify 59 m then i want a new
+render," which is exactly what the filename-keyed check already does,
+no extra logic needed. `--overwrite` isn't a special case either: the
+CLI wipes and recreates the whole trip folder before `export_trip()`
+ever runs, so there's nothing left on disk for this check to find by
+the time it executes.
+
+**Verification.** No pytest in this sandbox. `ast.parse` clean on
+`trip_export.py` and the updated test file. Three new tests in
+`test_trip_export.py`, all passing against the real module (monkey-
+patching `render_map_video` to count calls, the same technique the
+file's existing map tests already use): a plain `map.mp4` export
+called twice reuses the file the second time (one render call total,
+not two); the same for `map_zoom_75m.mp4`; and a follow-up export
+asking for `map_zoom_59m.mp4` while `map_zoom_75m.mp4` already exists
+renders the new radius fresh and leaves the old file untouched. Ran
+the full existing map-related test suite (16 tests) plus the complete
+`test_trip_export.py` suite (150 of 158 - the other 8 fail only on
+this sandbox's own pytest-shim limitations, unrelated to this change,
+same gaps noted for task #799) afterward with no regressions.
+`docs/man/bv-export.md`'s Map section gained a paragraph documenting
+the reuse policy and its interaction with `--stitch-map zoom`.

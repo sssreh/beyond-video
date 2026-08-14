@@ -1949,6 +1949,20 @@ def export_trip(
     `render_map` and `map_zoom_meters` can be used separately or
     together - together, both files get rendered.
 
+    Either output (map.mp4/map_tu.mp4, map_zoom_{METERS}m.mp4/_tu.mp4)
+    is reused as-is, with no render attempted, if that exact filename
+    already exists in `destination` - the same "trust what's already
+    on disk" policy `--stitch-gsensor` already applies to gsensor.mp4
+    (task #232). Matters most for `stitch_map == "zoom"` below, which
+    requires `map_zoom_meters` to be given at all just to know the
+    stitch panel's own radius - without this reuse check, supplying it
+    for that reason alone used to force a full, otherwise-unwanted
+    re-render of the standalone map_zoom file too. Christer: "But i
+    dont want to render it if its already there, thats the problem."
+    `--overwrite` bypasses this entirely - the CLI wipes and recreates
+    `destination` before `export_trip()` ever runs, so there's nothing
+    left to find by the time this check happens.
+
     `map_track_up` (default False, task #512, Christer: "Could we let
     the maps (booth of them) rotate as the car turns, instead of having
     north at the top") applies to both map.mp4 and map_zoom_*m.mp4 when
@@ -2795,16 +2809,40 @@ def export_trip(
                 # mode you were looking at. The _tu suffix makes the two
                 # modes coexist as distinct files instead.
                 map_filename = "map_tu.mp4" if map_track_up else "map.mp4"
-                map_path = _render_map_variant(
-                    fixes, bbox, roads, destination / map_filename, warnings,
-                    warning_label="map", areas=areas, map_icon=map_icon,
-                    video_start=trip.start_timestamp,
-                    video_duration_seconds=video_duration_seconds,
-                    recording_breakpoints=recording_breakpoints,
-                    track_up=map_track_up,
-                    log=log,
-                    should_continue=should_continue,
-                )
+                map_destination = destination / map_filename
+                if map_destination.exists():
+                    # Christer: "i dont want to render it if its already
+                    # there, thats the problem" - raised specifically
+                    # because --stitch-map zoom requires --map-zoom to
+                    # also be given (see the map_zoom_meters block
+                    # below), which used to force a full re-render of
+                    # this file too even when only its *value* was
+                    # needed to size the stitch panel. Mirrors
+                    # --stitch-gsensor's own existing "reuse gsensor.mp4
+                    # if it's already on disk" behavior (task #232) -
+                    # without --overwrite (which wipes the trip folder
+                    # before export ever reaches this point), an
+                    # already-rendered map.mp4/map_tu.mp4 is trusted
+                    # as-is rather than redone from scratch.
+                    map_path = map_destination
+                    log.step(f"using existing {map_filename} (render skipped)")
+                    if debug:
+                        print(
+                            f"bv-export: {map_filename} already exists - "
+                            "reusing (render skipped)",
+                            file=sys.stderr,
+                        )
+                else:
+                    map_path = _render_map_variant(
+                        fixes, bbox, roads, map_destination, warnings,
+                        warning_label="map", areas=areas, map_icon=map_icon,
+                        video_start=trip.start_timestamp,
+                        video_duration_seconds=video_duration_seconds,
+                        recording_breakpoints=recording_breakpoints,
+                        track_up=map_track_up,
+                        log=log,
+                        should_continue=should_continue,
+                    )
 
             if map_zoom_meters is not None:
                 zoom_filename = f"map_zoom_{map_zoom_meters:g}m.mp4"
@@ -2825,34 +2863,51 @@ def export_trip(
                 # square default (leaving width/height as None) rather
                 # than failing the export if the probe itself fails -
                 # a mis-shaped map_zoom.mp4 is still worth having.
-                zoom_width = zoom_height = None
-                video_for_zoom_shape = front_video or rear_video
-                if video_for_zoom_shape is not None:
-                    try:
-                        zoom_width, zoom_height = map_zoom_dimensions(
-                            video_for_zoom_shape, fixes
+                zoom_destination = destination / zoom_filename
+                if zoom_destination.exists():
+                    # Same reuse-if-present policy as map.mp4 above -
+                    # see that block's own comment for the full story
+                    # (Christer, on --stitch-map zoom forcing a
+                    # redundant re-render just to supply the radius
+                    # value: "i dont want to render it if its already
+                    # there, thats the problem").
+                    map_zoom_path = zoom_destination
+                    log.step(f"using existing {zoom_filename} (render skipped)")
+                    if debug:
+                        print(
+                            f"bv-export: {zoom_filename} already exists - "
+                            "reusing (render skipped)",
+                            file=sys.stderr,
                         )
-                    except MediaToolError as exc:
-                        warnings.append(
-                            f"map_zoom: could not size panel to match "
-                            f"video, using square default: {exc}"
-                        )
-                        log.warning(
-                            f"map_zoom: could not size panel to match "
-                            f"video: {exc}"
-                        )
-                map_zoom_path = _render_map_variant(
-                    fixes, bbox, roads, destination / zoom_filename, warnings,
-                    warning_label="map_zoom", areas=areas, map_icon=map_icon,
-                    zoom_meters=map_zoom_meters,
-                    width=zoom_width, height=zoom_height,
-                    video_start=trip.start_timestamp,
-                    video_duration_seconds=video_duration_seconds,
-                    recording_breakpoints=recording_breakpoints,
-                    track_up=map_track_up,
-                    log=log,
-                    should_continue=should_continue,
-                )
+                else:
+                    zoom_width = zoom_height = None
+                    video_for_zoom_shape = front_video or rear_video
+                    if video_for_zoom_shape is not None:
+                        try:
+                            zoom_width, zoom_height = map_zoom_dimensions(
+                                video_for_zoom_shape, fixes
+                            )
+                        except MediaToolError as exc:
+                            warnings.append(
+                                f"map_zoom: could not size panel to match "
+                                f"video, using square default: {exc}"
+                            )
+                            log.warning(
+                                f"map_zoom: could not size panel to match "
+                                f"video: {exc}"
+                            )
+                    map_zoom_path = _render_map_variant(
+                        fixes, bbox, roads, zoom_destination, warnings,
+                        warning_label="map_zoom", areas=areas, map_icon=map_icon,
+                        zoom_meters=map_zoom_meters,
+                        width=zoom_width, height=zoom_height,
+                        video_start=trip.start_timestamp,
+                        video_duration_seconds=video_duration_seconds,
+                        recording_breakpoints=recording_breakpoints,
+                        track_up=map_track_up,
+                        log=log,
+                        should_continue=should_continue,
+                    )
 
             if render_map_intro and stitch_layout is None:
                 # No stitch requested this run, so there's no

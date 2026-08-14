@@ -2462,6 +2462,142 @@ def test_export_trip_render_map_zoom_produces_a_separate_file_alongside_map(
     assert result.map_zoom == dest_dir / "map_zoom_75m.mp4"
 
 
+def test_export_trip_reuses_an_existing_map_video_without_rerendering(
+    tmp_path, monkeypatch
+):
+    # Christer's real snag: --stitch-map zoom requires --map-zoom to
+    # also be given (just to know the panel's radius), but supplying
+    # it used to force a full re-render of the standalone map/map_zoom
+    # file too, even when it was already sitting on disk from an
+    # earlier run - "But i dont want to render it if its already
+    # there, thats the problem." Mirrors --stitch-gsensor's own
+    # existing "reuse gsensor.mp4 if present" policy (task #232).
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
+
+    render_calls = []
+
+    def _capture(fixes, roads, bbox, destination, **kwargs):
+        render_calls.append(destination)
+        destination.write_bytes(b"fake map video")
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_map_video", _capture
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    first = export_trip(trip, dest_dir, render_map=True)
+    assert render_calls == [dest_dir / "map.mp4"]
+    assert first.map == dest_dir / "map.mp4"
+
+    render_calls.clear()
+    second = export_trip(trip, dest_dir, render_map=True)
+
+    assert render_calls == []
+    assert second.map == dest_dir / "map.mp4"
+    assert second.warnings == ()
+
+
+def test_export_trip_reuses_an_existing_map_zoom_video_without_rerendering(
+    tmp_path, monkeypatch
+):
+    # Same reuse policy as the plain map.mp4 test above, applied to
+    # map_zoom_{METERS}m.mp4 specifically - this is the file that
+    # --stitch-map zoom's own required --map-zoom value would
+    # otherwise force a redundant re-render of.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
+
+    render_calls = []
+
+    def _capture(fixes, roads, bbox, destination, **kwargs):
+        render_calls.append(destination)
+        destination.write_bytes(b"fake map zoom video")
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_map_video", _capture
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    first = export_trip(trip, dest_dir, map_zoom_meters=75.0)
+    assert render_calls == [dest_dir / "map_zoom_75m.mp4"]
+    assert first.map_zoom == dest_dir / "map_zoom_75m.mp4"
+
+    render_calls.clear()
+    # Simulates Christer's exact scenario: a retry export that only
+    # supplies --map-zoom to satisfy --stitch-map zoom's requirement,
+    # not because a fresh map_zoom_75m.mp4 is actually wanted.
+    second = export_trip(trip, dest_dir, map_zoom_meters=75.0)
+
+    assert render_calls == []
+    assert second.map_zoom == dest_dir / "map_zoom_75m.mp4"
+    assert second.warnings == ()
+
+
+def test_export_trip_a_different_map_zoom_radius_still_renders_fresh(
+    tmp_path, monkeypatch
+):
+    # The reuse check above is keyed on the exact filename, which
+    # already encodes the radius (map_zoom_{METERS}m.mp4) - so asking
+    # for a genuinely different radius than whatever's on disk must
+    # still render, not silently reuse the wrong-radius file. Christer,
+    # confirming this distinction explicitly: "but if i specify 59 m
+    # then i want a new render."
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
+
+    render_calls = []
+
+    def _capture(fixes, roads, bbox, destination, **kwargs):
+        render_calls.append(destination)
+        destination.write_bytes(b"fake map zoom video")
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_map_video", _capture
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    export_trip(trip, dest_dir, map_zoom_meters=75.0)
+    assert render_calls == [dest_dir / "map_zoom_75m.mp4"]
+
+    render_calls.clear()
+    result = export_trip(trip, dest_dir, map_zoom_meters=59.0)
+
+    assert render_calls == [dest_dir / "map_zoom_59m.mp4"]
+    assert result.map_zoom == dest_dir / "map_zoom_59m.mp4"
+    # Both radii coexist as distinct files - the earlier 75m render is
+    # untouched, same "don't delete what wasn't requested this run"
+    # policy the rest of bv-export already follows.
+    assert (dest_dir / "map_zoom_75m.mp4").exists()
+
+
 def test_export_trip_render_map_zoom_alone_skips_the_static_map(
     tmp_path, monkeypatch
 ):
