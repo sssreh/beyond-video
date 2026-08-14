@@ -560,9 +560,9 @@ def test_render_frame_visual_track_up_points_the_marker_glyph_straight_up(
     original_arrow_points = map_render_module._arrow_points
     captured_headings = []
 
-    def fake_arrow_points(point, heading_degrees):
+    def fake_arrow_points(point, heading_degrees, **kwargs):
         captured_headings.append(heading_degrees)
-        return original_arrow_points(point, heading_degrees)
+        return original_arrow_points(point, heading_degrees, **kwargs)
 
     monkeypatch.setattr(map_render_module, "_arrow_points", fake_arrow_points)
 
@@ -580,9 +580,9 @@ def test_render_frame_visual_without_track_up_points_the_marker_at_heading(
     original_arrow_points = map_render_module._arrow_points
     captured_headings = []
 
-    def fake_arrow_points(point, heading_degrees):
+    def fake_arrow_points(point, heading_degrees, **kwargs):
         captured_headings.append(heading_degrees)
-        return original_arrow_points(point, heading_degrees)
+        return original_arrow_points(point, heading_degrees, **kwargs)
 
     monkeypatch.setattr(map_render_module, "_arrow_points", fake_arrow_points)
 

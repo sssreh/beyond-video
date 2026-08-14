@@ -36,6 +36,7 @@ from .media import _FRAME_CHECKPOINT_INTERVAL
 from .media import encode_frame_sequence
 from .osm_roads import Area
 from .osm_roads import BoundingBox
+from .osm_roads import DEFAULT_ZOOM_RADIUS_METERS
 from .osm_roads import Road
 from .osm_roads import bounding_box_around_point
 from .osm_roads import bounding_box_for_fixes
@@ -185,6 +186,51 @@ DEFAULT_MAP_ICON_PATH = Path(__file__).parent / "assets" / "red_car.png"
 # render at whatever size its own source file happened to be saved at,
 # with nothing normalizing it against the map canvas at all.
 MARKER_IMAGE_SCALE = 0.5
+
+# Christer, having retried a --stitch-map circle panel at a tighter
+# 30m --map-zoom radius instead of the default 120m: "The car was
+# even smaller on 30 meter", then, once told the marker's size never
+# actually changed with zoom radius: "Yes, thats the whole idea of
+# zooming." Before this, the marker (the plain arrow and any custom
+# --map-icon alike) was drawn at a fixed pixel size regardless of
+# --map-zoom, so a tighter radius packed more real-world detail into
+# the same canvas - roads/distances render bigger - while the marker
+# itself stood still, reading as relatively smaller instead of bigger
+# the way zooming in on everything else already looked.
+#
+# _marker_scale_for_zoom() below multiplies the marker's normal size
+# by DEFAULT_ZOOM_RADIUS_METERS (osm_roads.py's own 120m --map-zoom
+# default) divided by the actual radius requested - 1.0 (unchanged)
+# at the default itself, bigger at a tighter radius, smaller at a
+# wider one. Only applies in --map-zoom follow-camera mode
+# (render_map_video()'s own `zoom_meters` is not None) - the
+# whole-trip static overview has no single "radius" of its own to
+# scale against (its bbox spans the entire route, however large that
+# turns out to be), and never drew the complaint above to begin with.
+#
+# Clamped to [MARKER_ZOOM_SCALE_MIN, MARKER_ZOOM_SCALE_MAX] so an
+# extreme --map-zoom value can't make the marker either illegibly
+# tiny (a very wide radius) or big enough to swallow the frame (a
+# radius near osm_roads.py's own MIN_ZOOM_RADIUS_METERS floor - at
+# 5m unclamped that would be a 24x multiplier).
+MARKER_ZOOM_SCALE_MIN = 0.5
+MARKER_ZOOM_SCALE_MAX = 3.0
+
+
+def _marker_scale_for_zoom(zoom_meters: float | None) -> float:
+    """How much bigger/smaller than normal the position marker should
+    draw for a given --map-zoom radius - see MARKER_ZOOM_SCALE_MIN's
+    own comment for the full story. Returns 1.0 (unaffected) for the
+    static whole-trip overview (`zoom_meters=None`) and for the
+    default radius itself; scales inversely with the radius otherwise,
+    clamped to a sane range."""
+
+    if not zoom_meters or zoom_meters <= 0:
+        return 1.0
+
+    raw_scale = DEFAULT_ZOOM_RADIUS_METERS / zoom_meters
+    return max(MARKER_ZOOM_SCALE_MIN, min(MARKER_ZOOM_SCALE_MAX, raw_scale))
+
 
 # The live-GPS satellite badge (see render_map_video()'s `live_fix`
 # handling and map_render.py's `show_gps_badge`) treats a frame as
@@ -462,7 +508,9 @@ def _is_live_fix(
     return span.total_seconds() <= MAX_LIVE_FIX_GAP_SECONDS
 
 
-def _load_marker_image(marker_image_path: Path | None) -> Image.Image | None:
+def _load_marker_image(
+    marker_image_path: Path | None, *, scale: float = 1.0
+) -> Image.Image | None:
     """Load and pre-scale a custom position-marker image, or return
     None if `marker_image_path` itself is None (the "no custom
     marker, draw the plain arrow instead" default both
@@ -471,12 +519,20 @@ def _load_marker_image(marker_image_path: Path | None) -> Image.Image | None:
     Raises MediaToolError if the image can't be loaded - same
     convention as every other external-file load in this module.
 
-    Scaled once here (via MARKER_IMAGE_SCALE), not per frame inside
+    Scaled once here (via MARKER_IMAGE_SCALE, further multiplied by
+    the caller's own `scale`), not per frame inside
     _paste_marker_image()'s own per-frame rotate/paste - the marker
     image itself never changes mid-render, so resizing it once up
     front is free compared to redoing it on every single frame. See
     MARKER_IMAGE_SCALE's own comment for why this applies uniformly to
     any marker image, bundled or custom.
+
+    `scale`, if given, is render_map_video()'s own
+    `_marker_scale_for_zoom()` result - see that function's own
+    comment for why a tighter --map-zoom radius needs a bigger marker
+    (Christer: "Yes, thats the whole idea of zooming"). Defaults to
+    1.0 (unaffected) for every caller that isn't zoom-mode-aware, e.g.
+    render_intro_flyover()'s own load.
 
     Factored out of render_map_video() (where this logic originally
     lived inline) so render_intro_flyover() can load a marker exactly
@@ -493,9 +549,10 @@ def _load_marker_image(marker_image_path: Path | None) -> Image.Image | None:
             f"could not load marker image {marker_image_path}: {exc}"
         ) from exc
 
+    total_scale = MARKER_IMAGE_SCALE * scale
     scaled_size = (
-        max(1, round(marker_image.width * MARKER_IMAGE_SCALE)),
-        max(1, round(marker_image.height * MARKER_IMAGE_SCALE)),
+        max(1, round(marker_image.width * total_scale)),
+        max(1, round(marker_image.height * total_scale)),
     )
     return marker_image.resize(scaled_size, resample=Image.LANCZOS)
 
@@ -558,7 +615,12 @@ def render_map_video(
     osm_roads.bounding_box_around_point()) - `bbox` itself is then
     unused, since every frame gets its own. This is what makes the map
     scroll/pan as the vehicle moves rather than sitting in a fixed
-    static view.
+    static view. The position marker's own size scales with this too
+    (see `_marker_scale_for_zoom()`) - a tighter radius packs more
+    real-world detail into the same canvas, so the marker grows to
+    match rather than staying a fixed pixel size while everything
+    around it zooms in (Christer: "Yes, thats the whole idea of
+    zooming").
 
     `width`/`height` set the rendered frame size (defaults to
     map_render.py's square 640x640). For a non-square panel, `bbox`
@@ -654,7 +716,12 @@ def render_map_video(
     if total_seconds <= 0:
         return None
 
-    marker_image = _load_marker_image(marker_image_path)
+    # See _marker_scale_for_zoom()'s own comment (Christer: "Yes, thats
+    # the whole idea of zooming") - 1.0 (unaffected) in static overview
+    # mode, bigger/smaller than normal in --map-zoom mode depending on
+    # how tight the requested radius is relative to the 120m default.
+    marker_scale = _marker_scale_for_zoom(zoom_meters)
+    marker_image = _load_marker_image(marker_image_path, scale=marker_scale)
 
     frame_count = max(2, int(total_seconds * fps) + 1)
 
@@ -860,6 +927,7 @@ def render_map_video(
                     areas=frame_areas,
                     heading=course,
                     marker_image=marker_image,
+                    marker_scale=marker_scale,
                     show_marker=show_marker,
                     width=width,
                     height=height,

@@ -731,6 +731,7 @@ def render_frame_visual(
     areas: tuple[Area, ...] = (),
     heading: float | None = None,
     marker_image: Image.Image | None = None,
+    marker_scale: float = 1.0,
     show_marker: bool = True,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
@@ -780,6 +781,28 @@ def render_frame_visual(
     precedence below, not asserted) - the two are different ways of
     avoiding the same per-frame road/area redraw and only one can apply
     to a given frame.
+
+    `marker_scale` (default 1.0) multiplies the plain arrow's own
+    fixed pixel size (DEFAULT_MARKER_LENGTH_PX/DEFAULT_MARKER_HALF_
+    WIDTH_PX) - a custom `marker_image` is unaffected here since
+    map_video.py's own `_load_marker_image()` already bakes an
+    equivalent scale into the image itself before it ever reaches this
+    function (see that function's own docstring). Christer, on the
+    marker looking *smaller* after retrying `--map-zoom` at a tighter
+    30m radius instead of the default 120m: "Yes, thats the whole idea
+    of zooming" - before this, the marker was drawn at the same fixed
+    pixel size regardless of zoom radius, so a tighter zoom (denser
+    real-world detail packed into the same canvas) made everything
+    *else* in frame bigger while the marker itself stood still,
+    reading as relatively smaller instead of the bigger-because-
+    zoomed-in look every other element already had. map_video.py's
+    render_map_video() computes this from the caller's own
+    `--map-zoom` radius (see `_marker_scale_for_zoom()`) and threads it
+    through; every other caller of this function defaults to 1.0
+    (unaffected), including the whole-trip static overview, which
+    never had this complaint - its own fixed-radius concept doesn't
+    apply there (see `_marker_scale_for_zoom()`'s own docstring for why
+    it only fires in `--map-zoom` mode).
 
     Split out of what used to be all of render_frame() so
     render_map_video() can cache and reuse this (expensive: background
@@ -878,7 +901,12 @@ def render_frame_visual(
             _paste_marker_image(image, marker_image, point, marker_heading)
         elif marker_heading is not None:
             draw.polygon(
-                _arrow_points(point, marker_heading),
+                _arrow_points(
+                    point,
+                    marker_heading,
+                    length=DEFAULT_MARKER_LENGTH_PX * marker_scale,
+                    half_width=DEFAULT_MARKER_HALF_WIDTH_PX * marker_scale,
+                ),
                 fill=MARKER_FILL_COLOR,
                 outline=MARKER_OUTLINE_COLOR,
                 width=2,
@@ -991,6 +1019,7 @@ def render_frame(
     speed_kmh: float | None = None,
     heading: float | None = None,
     marker_image: Image.Image | None = None,
+    marker_scale: float = 1.0,
     timestamp_text: str | None = None,
     show_gps_badge: bool = False,
     show_marker: bool = True,
@@ -1054,6 +1083,7 @@ def render_frame(
     visual = render_frame_visual(
         bbox, roads, route_points, position,
         areas=areas, heading=heading, marker_image=marker_image,
+        marker_scale=marker_scale,
         show_marker=show_marker, width=width, height=height,
         margin=margin, base_image=base_image, track_up=track_up,
         track_up_raster=track_up_raster,

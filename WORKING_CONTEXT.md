@@ -11616,3 +11616,62 @@ with `live=False`, and confirmed the live `say()` callable received
 only the banner while trip.log on disk got all three lines.
 `ast.parse()` confirms trip_log.py, trip_export.py, and
 test_trip_export.py all still parse.
+
+## Fix: map marker doesn't grow at a tighter --map-zoom radius ## (2026-08-14)
+
+Christer, having retried the --stitch-map circle panel at a tighter
+30m --map-zoom radius instead of the 120m default: "The car was even
+smaller on 30 meter." Root cause: the position marker (the plain
+rotating arrow, or a custom --map-icon) was always drawn at a fixed
+pixel size regardless of the follow-camera radius. The output canvas
+itself never changes size with --map-zoom - only the real-world area
+shown inside it does - so a tighter radius packs more real-world
+detail into the same frame (roads/distances render bigger), while the
+marker's own fixed pixel size stayed put, reading as relatively
+smaller instead of bigger the way everything else in frame already
+scaled. Told this, Christer: "Yes, thats the whole idea of zooming."
+
+Added `_marker_scale_for_zoom()` to map_video.py: returns 1.0
+(unaffected) for the static whole-trip overview (`zoom_meters=None` -
+there's no single radius there to scale against, and it never drew
+this complaint) and for the 120m default radius itself
+(osm_roads.DEFAULT_ZOOM_RADIUS_METERS), otherwise
+`DEFAULT_ZOOM_RADIUS_METERS / zoom_meters` - bigger at a tighter
+radius, smaller at a wider one - clamped to
+[MARKER_ZOOM_SCALE_MIN=0.5, MARKER_ZOOM_SCALE_MAX=3.0] so an extreme
+--map-zoom value near osm_roads.py's own MIN_ZOOM_RADIUS_METERS floor
+(5m) can't blow the marker up to an absurd 24x, and a very wide radius
+can't shrink it to nothing.
+
+Threaded through both marker paths: `_load_marker_image()` gained a
+`scale` kwarg multiplied into its existing MARKER_IMAGE_SCALE
+(0.5x baseline from task #153), and `map_render.render_frame_visual()`/
+`render_frame()` gained a `marker_scale` kwarg that multiplies
+DEFAULT_MARKER_LENGTH_PX/DEFAULT_MARKER_HALF_WIDTH_PX for the plain
+arrow (no custom icon). `render_map_video()` computes
+`_marker_scale_for_zoom(zoom_meters)` once per call and passes it to
+both. `render_intro_flyover()` was deliberately left untouched - its
+Ken-Burns effect renders one raster at native marker size then
+crops/scales that raster over time, so the marker already grows
+correctly as the shot zooms in without needing this fix.
+
+Updated tests/blackvue/export/test_map_render.py: the two
+`_arrow_points` monkeypatch fakes (track_up glyph-heading tests) now
+accept `**kwargs` and forward them, since render_frame_visual() now
+always passes `length=`/`half_width=`. Added
+tests/blackvue/export/test_map_video.py coverage for
+`_marker_scale_for_zoom()` (default-radius/no-zoom no-ops, tighter
+grows, wider shrinks, both clamp bounds) and an end-to-end
+render_map_video() test confirming a 30m radius scales a 128x64
+custom icon to 192x96 (0.5 base x 3.0 clamped zoom factor) and passes
+marker_scale=3.0 through to every render_frame_visual() call.
+
+Verified via the tomllib-stub standalone-script technique: exercised
+`_marker_scale_for_zoom()` directly across the default/tighter/wider/
+clamped cases, `_load_marker_image()`'s scaling on the real bundled
+red_car.png, `_arrow_points()`'s length scaling, and a full
+`render_map_video()` run (render_frame_visual/compose_frame_overlay/
+encode_frame_sequence monkeypatched) confirming both the 30m-zoom and
+no-zoom cases end to end. `ast.parse()` confirms map_render.py,
+map_video.py, test_map_render.py, and test_map_video.py all still
+parse.

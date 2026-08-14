@@ -1505,6 +1505,93 @@ def test_render_map_video_scales_the_marker_image_to_half_size(tmp_path, monkeyp
     assert captured[0].size == (64, 32)
 
 
+def test_marker_scale_for_zoom_is_unaffected_at_the_default_radius():
+    from blackvue.export.map_video import _marker_scale_for_zoom
+    from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
+
+    assert _marker_scale_for_zoom(DEFAULT_ZOOM_RADIUS_METERS) == 1.0
+
+
+def test_marker_scale_for_zoom_is_unaffected_in_static_overview_mode():
+    # zoom_meters=None is render_map_video()'s own static whole-trip
+    # overview - no single radius to scale against, see
+    # _marker_scale_for_zoom()'s own docstring.
+    from blackvue.export.map_video import _marker_scale_for_zoom
+
+    assert _marker_scale_for_zoom(None) == 1.0
+
+
+def test_marker_scale_for_zoom_grows_for_a_tighter_radius():
+    # Christer, retrying --stitch-map circle at 30m instead of the
+    # 120m default: "The car was even smaller on 30 meter", then "Yes,
+    # thats the whole idea of zooming" once told the marker never
+    # actually changed size with zoom radius.
+    from blackvue.export.map_video import MARKER_ZOOM_SCALE_MAX
+    from blackvue.export.map_video import _marker_scale_for_zoom
+
+    scale = _marker_scale_for_zoom(30.0)
+    assert scale > 1.0
+    assert scale == MARKER_ZOOM_SCALE_MAX  # 120/30=4.0, clamped
+
+
+def test_marker_scale_for_zoom_shrinks_for_a_wider_radius():
+    from blackvue.export.map_video import _marker_scale_for_zoom
+
+    scale = _marker_scale_for_zoom(240.0)
+    assert scale < 1.0
+
+
+def test_marker_scale_for_zoom_is_clamped_to_a_sane_range():
+    from blackvue.export.map_video import MARKER_ZOOM_SCALE_MAX
+    from blackvue.export.map_video import MARKER_ZOOM_SCALE_MIN
+    from blackvue.export.map_video import _marker_scale_for_zoom
+
+    # A radius near osm_roads.py's own MIN_ZOOM_RADIUS_METERS floor
+    # would otherwise produce an absurd multiplier (120/5=24x).
+    assert _marker_scale_for_zoom(5.0) == MARKER_ZOOM_SCALE_MAX
+    # A very wide radius shouldn't shrink the marker to nothing either.
+    assert _marker_scale_for_zoom(10000.0) == MARKER_ZOOM_SCALE_MIN
+
+
+def test_render_map_video_scales_the_marker_bigger_at_a_tighter_zoom_radius(
+    tmp_path, monkeypatch
+):
+    icon_path = tmp_path / "car.png"
+    Image.new("RGBA", (128, 64), (255, 0, 0, 255)).save(icon_path)
+
+    captured_sizes = []
+    captured_marker_scales = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_sizes.append(kwargs.get("marker_image").size)
+        captured_marker_scales.append(kwargs.get("marker_scale"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(1, 59.302, 18.004))
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+
+    render_map_video(
+        fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
+        marker_image_path=icon_path, zoom_meters=30.0,
+    )
+
+    # 30m vs the 120m default -> 4.0x raw, clamped to 3.0x - see
+    # MARKER_ZOOM_SCALE_MAX. Combined with MARKER_IMAGE_SCALE (0.5),
+    # a 128x64 source lands at 128*0.5*3.0 x 64*0.5*3.0 = 192x96.
+    assert captured_sizes[0] == (192, 96)
+    assert all(scale == 3.0 for scale in captured_marker_scales)
+
+
 def test_render_map_video_hides_the_marker_before_the_first_real_fix(
     tmp_path, monkeypatch
 ):
