@@ -11675,3 +11675,30 @@ encode_frame_sequence monkeypatched) confirming both the 30m-zoom and
 no-zoom cases end to end. `ast.parse()` confirms map_render.py,
 map_video.py, test_map_render.py, and test_map_video.py all still
 parse.
+
+## Fix: CI failing since "print trip name once" fix (2026-08-14)
+
+Christer: "Ci jobs at github fails again." GitHub Actions showed the
+`pytest` step failing (exit 1) on the last 3 pushed commits, no detail
+available without signing in.
+
+Root cause: `test_export_trip_echoes_progress_live_when_say_is_given`
+in test_trip_export.py was never updated for task #820 ("i asked for
+the trip name in bv-export, but not for every output, just one time").
+It still asserted every live-echoed line - not just the opening banner
+- started with `f"bv-export: {trip.label}: "`. That was the *old*
+per-line-repeated format task #820 deliberately removed; the new
+banner-once format doesn't satisfy it. Only test_trip_log.py's own
+tests were revised at the time - this end-to-end test in
+test_trip_export.py was missed.
+
+Fixed the assertion to check `said[0] == f"bv-export: {trip.label}"`
+(the one-time banner) and that no later line repeats the trip label,
+matching test_trip_log.py's already-correct pattern. Grepped the rest
+of the test suite for the same `f"bv-export: {trip.label}` pattern -
+no other stale occurrences found.
+
+Verified end to end with a real `export_trip()` run (ffmpeg-built 1s
+source video, tomllib-stub script since pytest itself isn't runnable
+here) - confirms the banner line and every subsequent say()-echoed
+line match the new assertion.
