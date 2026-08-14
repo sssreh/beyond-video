@@ -10975,3 +10975,41 @@ and `monkeypatch.setenv` missing from the stub, both pre-existing gaps
 hit by unrelated tests) suites afterward with no regressions.
 `docs/man/bv-export.md` gained a new "Missing rear video" subsection
 plus an update to the `front.mp4`/`rear.mp4` output-file row.
+
+## Fix: --stitch-map zoom's required radius field was easy to miss
+## (2026-08-14)
+
+Christer ran a real export and got: `bv-export: trip_20260814_
+041047_20260814_042633: warning: stitch map panel: --stitch-map zoom
+requires --map-zoom METERS to also be given (reused as the panel's
+follow-camera radius) - skipped`. The requirement itself is correct
+and by design - `--stitch-map zoom` deliberately reuses `--map-zoom`'s
+own radius rather than doing a second, separate zoom calculation - but
+the two fields live in different collapsible sections on the bv-web
+job form: "Stitch map panel" (which offers a "follow-camera" choice)
+is inside Advanced stitch, while the radius field it depends on ("Map
+follow-camera radius (meters)") is inside Advanced map, a section that
+only auto-opens when the separate "Include map" checkbox is checked
+(`job_new_bv_export.html`'s `triggers` array, task #527). Picking
+"follow-camera" in Stitch map panel never opened Advanced map, so
+Christer's radius field stayed hidden and unset, and the whole export
+ran to completion before surfacing the skip as a warning at the very
+end - not caught early, not visible while filling out the form.
+
+**Fix.** Added a dedicated `change` listener on the `stitch_map`
+select (`job_new_bv_export.html`): selecting "follow-camera" now opens
+the Advanced map section and (only if the radius field is still empty
+- never yanking focus away from a value already typed) focuses the
+`map_zoom_meters` input, the same one-directional "never auto-hide"
+progressive-disclosure convention the existing checkbox-based triggers
+use. Deliberately left the CLI/engine side alone - `bv_export.py` has
+no early flag-combination validation anywhere (`--stitch-mirror-*`
+without `rearview_mirror`, `--stitch-graph` without `--stitch`, etc.
+are all quiet skip-with-warning-at-render-time too), so adding a
+`parser.error()` here specifically would be inconsistent with every
+other dependent-flag pair in this CLI; the actual root cause was the
+web form hiding the field, which is now fixed at that layer.
+
+**Verification.** No pytest in this sandbox. Loaded the edited
+template through Jinja2's own `Environment.get_template()` directly
+in this sandbox to confirm it still parses with no syntax errors.

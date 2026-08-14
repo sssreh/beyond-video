@@ -427,6 +427,27 @@
         if (checkbox.checked) details.open = true;
       });
     });
+
+    // "Stitch map panel: follow-camera" reuses the Map follow-camera
+    // radius field, which lives in Advanced map - a different
+    // <details> section than the one this select itself is in
+    // (Advanced stitch). Without this, picking "follow-camera" here
+    // never opens Advanced map, so the radius field stays hidden and
+    // bv-export silently skips the panel with a warning ("--stitch-map
+    // zoom requires --map-zoom METERS to also be given") instead of
+    // rendering it - a real snag Christer hit on a live export.
+    var stitchMap = document.getElementById("stitch_map");
+    var advancedMap = document.getElementById("advanced-map");
+    var mapZoomMeters = document.getElementById("map_zoom_meters");
+    if (stitchMap && advancedMap) {
+      stitchMap.addEventListener("change", function () {
+        if (stitchMap.value !== "zoom") return;
+        advancedMap.open = true;
+        // Only nudge focus to the radius field if it's still empty -
+        // don't yank focus away from a value the user already typed.
+        if (mapZoomMeters && !mapZoomMeters.value) mapZoomMeters.focus();
+      });
+    }
   })();
 </script>
 {% else %}
