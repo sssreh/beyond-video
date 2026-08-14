@@ -56,6 +56,14 @@ _TRIP_LABEL_RE = re.compile(r"^=== bv-export trip log: (.+) ===$")
 # it exists.
 VIDEO_FILENAMES = ("stitch.mp4", "front.mp4", "rear.mp4")
 MAP_FILENAME = "map.mp4"
+# Track-up static map (task #795, Christer: "I think we should have
+# different names for track up and not, then we always get the
+# correct map") - a distinct file from MAP_FILENAME so a trip exported
+# once with --map-track-up and once without can show/serve both,
+# rather than the second run's file silently replacing the first's.
+# See export/trip_export.py's own map_track_up docstring paragraph for
+# the render-side half of this.
+MAP_TU_FILENAME = "map_tu.mp4"
 GSENSOR_VIDEO_FILENAME = "gsensor.mp4"
 GPX_FILENAME = "trip.gpx"
 SRT_FILENAME = "trip.srt"
@@ -67,7 +75,17 @@ class TripAssets:
     disk - a real bv-export run only produces the subset its flags
     asked for (e.g. no map.mp4 without --map, no gsensor.mp4 without
     --gsensor-video), so every field here can legitimately be empty/
-    None."""
+    None.
+
+    `map_video`/`map_video_tu` can both be set at once (task #795) -
+    a trip re-exported with the opposite --map-track-up setting writes
+    its own distinct file (map.mp4 vs map_tu.mp4) rather than
+    overwriting the other, so both can coexist and both are surfaced
+    here. `map_zoom_videos` doesn't need a matching `_tu` field of its
+    own - it's already a glob-built tuple (folder.glob("map_zoom_*.mp4")
+    in scan_trip() below), which picks up map_zoom_60m_tu.mp4 right
+    alongside map_zoom_60m.mp4 with no extra code, the two
+    distinguished from each other only by their filename text."""
 
     folder: Path
     # The URL-safe identifier bv-web uses for this trip. Set
@@ -81,6 +99,7 @@ class TripAssets:
     label: str
     videos: tuple[str, ...] = field(default_factory=tuple)
     map_video: str | None = None
+    map_video_tu: str | None = None
     map_zoom_videos: tuple[str, ...] = field(default_factory=tuple)
     gsensor_video: str | None = None
     gpx: bool = False
@@ -129,6 +148,8 @@ class TripAssets:
         names = set(self.videos) | set(self.map_zoom_videos)
         if self.map_video:
             names.add(self.map_video)
+        if self.map_video_tu:
+            names.add(self.map_video_tu)
         if self.gsensor_video:
             names.add(self.gsensor_video)
         if self.gpx:
@@ -207,6 +228,9 @@ def scan_trip(folder: Path, *, id_: str | None = None) -> TripAssets | None:
         label=label,
         videos=videos,
         map_video=MAP_FILENAME if (folder / MAP_FILENAME).is_file() else None,
+        map_video_tu=(
+            MAP_TU_FILENAME if (folder / MAP_TU_FILENAME).is_file() else None
+        ),
         map_zoom_videos=map_zoom_videos,
         gsensor_video=(
             GSENSOR_VIDEO_FILENAME

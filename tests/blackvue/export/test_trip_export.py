@@ -2312,6 +2312,102 @@ def test_export_trip_formats_the_map_zoom_filename_without_a_trailing_zero(
     assert result.map_zoom == dest_dir / "map_zoom_75.5m.mp4"
 
 
+def test_export_trip_map_track_up_renders_to_a_differently_named_file(
+    tmp_path, monkeypatch
+):
+    # Task #795, Christer: "I think we should have different names for
+    # track up and not, then we always get the correct map." Before
+    # this, map.mp4 meant "whatever --map-track-up was on the last run
+    # that (re)rendered it" - a plain export after a track-up one (or
+    # vice versa) silently clobbered the other mode's file. Now the
+    # two modes write to distinct filenames.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    result = export_trip(trip, dest_dir, render_map=True, map_track_up=True)
+
+    assert result.map == dest_dir / "map_tu.mp4"
+    assert result.map.exists()
+    assert not (dest_dir / "map.mp4").exists()
+
+
+def test_export_trip_map_track_up_renders_zoom_to_a_differently_named_file(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
+
+    calls = []
+
+    def _capture_zoom(fixes, roads, bbox, destination, **kwargs):
+        calls.append((destination, kwargs))
+        return destination
+
+    monkeypatch.setattr(
+        trip_export_module, "render_map_video", _capture_zoom
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    result = export_trip(
+        trip, dest_dir,
+        render_map=True, map_zoom_meters=75.0, map_track_up=True,
+    )
+
+    destinations = {destination for destination, _kwargs in calls}
+    assert destinations == {
+        dest_dir / "map_tu.mp4", dest_dir / "map_zoom_75m_tu.mp4",
+    }
+    assert result.map == dest_dir / "map_tu.mp4"
+    assert result.map_zoom == dest_dir / "map_zoom_75m_tu.mp4"
+
+    # Every call still got track_up=True forwarded - the filename
+    # change doesn't replace the actual rotation behavior, it's
+    # alongside it.
+    assert all(kwargs["track_up"] is True for _destination, kwargs in calls)
+
+
+def test_export_trip_track_up_and_plain_map_renders_coexist(
+    tmp_path, monkeypatch
+):
+    # The whole point: re-running the same trip folder with the
+    # opposite --map-track-up setting doesn't destroy the first run's
+    # file - both are on disk afterward, distinguishable by name.
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_roads", _fake_roads
+    )
+    monkeypatch.setattr(
+        trip_export_module, "load_or_fetch_areas", _fake_areas
+    )
+
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_two_gps_fixes(source_dir, monkeypatch)
+
+    export_trip(trip, dest_dir, render_map=True, map_track_up=False)
+    export_trip(trip, dest_dir, render_map=True, map_track_up=True)
+
+    assert (dest_dir / "map.mp4").exists()
+    assert (dest_dir / "map_tu.mp4").exists()
+
+
 def test_export_trip_render_map_defaults_cache_dir_next_to_destination(
     tmp_path, monkeypatch
 ):

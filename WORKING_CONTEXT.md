@@ -10801,3 +10801,69 @@ confirming `export_trip(..., say=...)` really reaches live output
 through the whole chain, not just that `TripLog` itself can do it.
 `docs/man/bv-export.md`'s `--debug` row/options table updated with a
 new paragraph describing this as independent of `--debug`.
+
+## Feature: track-up and non-track-up map renders get distinct filenames
+## (2026-08-14)
+
+Follow-up to the raster-rotation optimization from the earlier
+map-comparison session. Christer ran the same trip twice - once with
+`--map-track-up`, once without - to compare render times, and asked
+two questions about how the files it wrote related to each other:
+"how does bv-export know the difference of map_zoom_60m normal and
+map_zoom_60m heads-up" and "I thought it reused rendered maps."
+Answer at the time: it doesn't - `map.mp4`/`map_zoom_{METERS}m.mp4`
+never encoded `--map-track-up` in the name, so a plain export after a
+track-up one (or vice versa) always regenerated the file fresh and
+silently overwrote whichever mode had been there before ("Good so i
+will not get a heads up map on a no heads up" / "Thats easily done
+forget to make a new map and stitch the old one, but that is up to me
+know what i am doing"). Christer then proposed the actual fix
+himself: "I think we should have different names for track up and
+not, then we always get the correct map. Like map_zoom_60m,mp4 and
+map_zoom_60m_tu.mp4, same for mao,mp4" (map.mp4, typo aside).
+
+**Fix.** `export_trip()` (`trip_export.py`) now picks the destination
+filename based on `map_track_up`: `map.mp4` -> `map_tu.mp4` for the
+static overview, `map_zoom_{METERS}m.mp4` ->
+`map_zoom_{METERS}m_tu.mp4` for the follow-camera view, exactly
+Christer's own naming scheme. `_render_map_variant()`/
+`render_map_video()` underneath were already filename-agnostic (they
+just render to whatever `Path` they're given), so no change needed
+there - only the two destination-building call sites in
+`export_trip()`'s map phase. `track_up=map_track_up` is still passed
+to the renderer either way; the filename change is purely about where
+the result lands, not what gets drawn.
+
+`--map-track-up`'s own CLI help text (`bv_export.py`) and
+`docs/man/bv-export.md` (the `--map-track-up` row and the file-output
+table) both updated to mention the `_tu` suffix, so this is
+discoverable without having to hit the collision first.
+
+**Web UI.** `web/trips.py`'s `TripAssets` had a single `map_video`
+field fed by a `MAP_FILENAME = "map.mp4"` exact-match check -
+adequate when only one static map could ever exist per trip, wrong
+now that two can coexist. Added a parallel `map_video_tu` field/
+`MAP_TU_FILENAME = "map_tu.mp4"` constant, surfaced in
+`known_filenames` and a second link block in `trip_detail.html`.
+`map_zoom_videos` needed no change at all - it was already a
+glob-built tuple (`folder.glob("map_zoom_*.mp4")`), so a
+`map_zoom_60m_tu.mp4` sibling just shows up in it alongside
+`map_zoom_60m.mp4` automatically, distinguished only by filename text.
+
+**Verification.** No pytest in this sandbox; `ast.parse` clean on all
+edited source and test files. Real ffmpeg is available this session,
+so this was verified end to end: a genuine `bv_export()` CLI run with
+`--map --map-zoom 75 --map-track-up` produced `map_tu.mp4` and
+`map_zoom_75m_tu.mp4` on disk, with no `map.mp4`/`map_zoom_75m.mp4`
+written - confirmed via `test_bv_export_map_track_up_writes_tu_suffixed_files`,
+a new real-ffmpeg CLI test. Ran the full existing map-related test
+suite in both `test_trip_export.py` (23 tests) and `test_bv_export.py`
+(19 tests) against the real modules in this sandbox afterward - all
+pass, confirming the filename change didn't regress plain (non-track-
+up) map/map_zoom behavior. New unit tests in `test_trip_export.py`
+cover the two filename branches directly plus a same-folder,
+run-twice scenario proving `map.mp4` and `map_tu.mp4` really do
+coexist rather than one clobbering the other. New tests in
+`test_trips.py` cover `scan_trip()` finding both fields at once, the
+plain-only case, the `map_zoom` glob already picking up `_tu` variants
+with no code change, and `known_filenames` including both.

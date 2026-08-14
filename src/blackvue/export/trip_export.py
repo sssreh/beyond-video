@@ -1806,6 +1806,18 @@ def export_trip(
     stitch.mp4) rather than the separate standalone files - caught by
     Christer testing it for real: "--map-track-up dint work".
 
+    `map_track_up` also changes the output *filename* for map.mp4/
+    map_zoom_*m.mp4 (task #795, Christer: "I think we should have
+    different names for track up and not, then we always get the
+    correct map"): a track-up render is written to map_tu.mp4 /
+    map_zoom_{METERS}m_tu.mp4 instead of map.mp4 / map_zoom_{METERS}m.mp4.
+    Before this, both modes shared one filename, so re-running with the
+    opposite --map-track-up setting silently overwrote whichever mode
+    had been rendered before, with nothing in the filename to tell them
+    apart (Christer, after hitting this: "I thought it reused rendered
+    maps" / "Good so i will not get a heads up map on a no heads up").
+    Now both modes can coexist on disk as distinct files.
+
     `render_map_intro=True` additionally renders intro.mp4 - a short
     (`map_intro_seconds`, default map_video.DEFAULT_INTRO_SECONDS)
     establishing-shot flyover of the trip's whole route, zooming from a
@@ -2588,8 +2600,18 @@ def export_trip(
             stitch_map_roads = roads
             stitch_map_areas = areas
             if render_map:
+                # Christer: "I think we should have different names for
+                # track up and not, then we always get the correct map."
+                # Before this, map.mp4 always meant "whatever
+                # --map-track-up was set to on the last run that
+                # (re)rendered it" - a plain export after a track-up one
+                # (or vice versa) silently overwrote the other mode's
+                # file with no way to tell from the name alone which
+                # mode you were looking at. The _tu suffix makes the two
+                # modes coexist as distinct files instead.
+                map_filename = "map_tu.mp4" if map_track_up else "map.mp4"
                 map_path = _render_map_variant(
-                    fixes, bbox, roads, destination / "map.mp4", warnings,
+                    fixes, bbox, roads, destination / map_filename, warnings,
                     warning_label="map", areas=areas, map_icon=map_icon,
                     video_start=trip.start_timestamp,
                     video_duration_seconds=video_duration_seconds,
@@ -2601,6 +2623,11 @@ def export_trip(
 
             if map_zoom_meters is not None:
                 zoom_filename = f"map_zoom_{map_zoom_meters:g}m.mp4"
+                if map_track_up:
+                    # Same _tu-suffix distinction as map.mp4 above, so a
+                    # track-up map_zoom render never overwrites (or gets
+                    # overwritten by) a plain one for the same radius.
+                    zoom_filename = f"map_zoom_{map_zoom_meters:g}m_tu.mp4"
                 # Christer: "Map zoom layout shouldn't be square, it
                 # should match the videos height or width depending on
                 # layout... just as the other map" - "the other map"

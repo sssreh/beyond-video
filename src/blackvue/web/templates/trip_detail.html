@@ -26,6 +26,9 @@
   {% if trip.map_video %}
   <li><a href="/trips/{{ trip.id }}/files/{{ trip.map_video }}">{{ trip.map_video }}</a></li>
   {% endif %}
+  {% if trip.map_video_tu %}
+  <li><a href="/trips/{{ trip.id }}/files/{{ trip.map_video_tu }}">{{ trip.map_video_tu }}</a></li>
+  {% endif %}
   {% for zoom_video in trip.map_zoom_videos %}
   <li><a href="/trips/{{ trip.id }}/files/{{ zoom_video }}">{{ zoom_video }}</a></li>
   {% endfor %}

@@ -1226,7 +1226,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "static overview draws the whole road network once and "
             "reuses it for every frame, but a rotating scene needs a "
             "fresh redraw whenever the heading changes. Doesn't affect "
-            "--stitch-map's own embedded panel."
+            "--stitch-map's own embedded panel. Written to a "
+            "differently-named file (map_tu.mp4 / "
+            "map_zoom_METERSm_tu.mp4) than a plain --map/--map-zoom "
+            "render, so re-running with the opposite setting never "
+            "overwrites the other mode's file."
         ),
     )
 

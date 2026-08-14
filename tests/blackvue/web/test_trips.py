@@ -210,6 +210,62 @@ def test_known_filenames_matches_what_actually_exists(tmp_path):
     assert "front.mp4" not in trip.known_filenames
 
 
+def test_scan_trip_finds_a_track_up_map_alongside_a_plain_one(tmp_path):
+    # Task #795, Christer: "I think we should have different names for
+    # track up and not, then we always get the correct map." A trip
+    # re-exported once with --map-track-up and once without now has
+    # both map.mp4 and map_tu.mp4 on disk at once - both should be
+    # surfaced, not just whichever bv-export wrote last.
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "map.mp4").write_bytes(b"")
+    (folder / "map_tu.mp4").write_bytes(b"")
+
+    trip = scan_trip(folder)
+
+    assert trip.map_video == "map.mp4"
+    assert trip.map_video_tu == "map_tu.mp4"
+
+
+def test_scan_trip_map_video_tu_is_none_when_only_the_plain_one_exists(
+    tmp_path,
+):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "map.mp4").write_bytes(b"")
+
+    trip = scan_trip(folder)
+
+    assert trip.map_video == "map.mp4"
+    assert trip.map_video_tu is None
+
+
+def test_scan_trip_map_zoom_glob_picks_up_track_up_variants_too(tmp_path):
+    # map_zoom_videos never needed its own "_tu" field - it's already
+    # a glob-built tuple, so a map_zoom_60m_tu.mp4 sibling just shows
+    # up in it alongside map_zoom_60m.mp4, distinguished by filename.
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "map_zoom_60m.mp4").write_bytes(b"")
+    (folder / "map_zoom_60m_tu.mp4").write_bytes(b"")
+
+    trip = scan_trip(folder)
+
+    assert trip.map_zoom_videos == ("map_zoom_60m.mp4", "map_zoom_60m_tu.mp4")
+
+
+def test_known_filenames_includes_the_track_up_map(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "map.mp4").write_bytes(b"")
+    (folder / "map_tu.mp4").write_bytes(b"")
+
+    trip = scan_trip(folder)
+
+    assert "map.mp4" in trip.known_filenames
+    assert "map_tu.mp4" in trip.known_filenames
+
+
 def test_scan_trips_ignores_non_trip_directories(tmp_path):
     target = tmp_path / "trips"
     target.mkdir()
