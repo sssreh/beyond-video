@@ -22,6 +22,19 @@ from .endpoint import Endpoint
 MAX_ID_LENGTH = 128
 MAX_NAME_LENGTH = 128
 
+# Camera ids share default_config_dir() with bv-web's own web-users.cfg
+# accounts file (see web/users.py's default_users_path(), which
+# imports WEB_USERS_ID rather than hardcoding "web-users" a second
+# time so the two can never drift) in the unconfigured/native-install
+# case - config_path()'s own f"{id_}.cfg" means a camera id of
+# "web-users" would resolve to the exact same path the accounts file
+# lives at, so it's reserved rather than left to collide silently.
+# validate_id() rejects it outright; list_camera_ids() also skips it
+# defensively (e.g. for a config directory that already had a stray
+# web-users.cfg on disk before this reservation existed).
+WEB_USERS_ID = "web-users"
+RESERVED_CAMERA_IDS = frozenset({WEB_USERS_ID})
+
 # Every bv-* CLI's own --config-dir flag defaults to
 # default_config_dir() - fine for a native/bare-metal install, but
 # bv-web's Docker container has no persistent $HOME (a fresh, empty
@@ -279,12 +292,23 @@ def list_camera_ids(config_dir: Path) -> list[str]:
     making someone remember/retype an id, not to change that.
     Returns an empty list if config_dir doesn't exist yet (e.g. before
     bv-config has ever been run).
+
+    Skips RESERVED_CAMERA_IDS (bv-web's own web-users.cfg accounts
+    file shares this same directory in the unconfigured/native-install
+    case, and is not a camera) - validate_id() blocks creating a new
+    camera with a reserved id going forward, but this list still needs
+    its own defensive skip for a config directory that already had one
+    of these files on disk before that check existed.
     """
 
     if not config_dir.is_dir():
         return []
 
-    return sorted(path.stem for path in config_dir.glob("*.cfg") if path.is_file())
+    return sorted(
+        path.stem
+        for path in config_dir.glob("*.cfg")
+        if path.is_file() and path.stem not in RESERVED_CAMERA_IDS
+    )
 
 
 def validate_id(id_: str) -> None:
@@ -316,6 +340,12 @@ def validate_id(id_: str) -> None:
     if not id_.isascii() or not all(c.isalnum() or c in "_-" for c in id_):
         raise CameraConfigError(
             f"id must be ASCII alphanumeric, underscore, or hyphen: {id_!r}"
+        )
+
+    if id_ in RESERVED_CAMERA_IDS:
+        raise CameraConfigError(
+            f"{id_!r} is reserved (it would collide with bv-web's own "
+            f"{id_}.cfg accounts file) - pick a different id"
         )
 
 

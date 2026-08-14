@@ -10275,3 +10275,62 @@ script" mechanism, the `no-store` paragraph extended to mention
 `/poll`'s identical header, and a new "AJAX job-output polling"
 paragraph added laying out the GPU-TDR root cause and the fix end to
 end for anyone hitting this again.
+
+## Fix: "web-users" showed up as a fake camera, and could collide with the real accounts file (2026-08-14)
+
+Christer's report: "in bv-web, the web-users file is now considered
+to be a camera." Root cause: `list_camera_ids()` (`core/
+camera_config.py`) just globs `*.cfg` in `default_config_dir()` and
+treats every stem as a camera id - and bv-web's own accounts file,
+`web-users.cfg` (`web/users.py`'s `default_users_path()`), lives in
+that exact same directory by default (only Docker sets `BEYOND_
+VIDEO_CONFIG_DIR`/`BEYOND_VIDEO_USERS_FILE` to two different mounted
+paths - a native/unconfigured install shares one directory for both).
+So the accounts file's stem, `web-users`, showed up in bv-web's
+camera pick-lists as if it were a real camera.
+
+That's the visible half of the bug. The more serious half: `validate_
+id()` had no reason to reject "web-users" as a camera id (it's
+ordinary ASCII alphanumeric-plus-hyphen), and `config_path()` builds
+a camera's config path as `config_dir / f"{id_}.cfg"` - so running
+`bv-config web-users` today would resolve to the *exact same path*
+`web-users.cfg` already lives at, silently overwriting bv-web's own
+accounts file with a camera config (or vice versa, depending on which
+ran last). Christer asked "what happens if i do bv-config web-users"
+- confirmed via `bv_config._run()` walking through `validate_id()`
+first that yes, this was a real, live collision risk, not just a
+cosmetic pick-list issue.
+
+Fix, in `core/camera_config.py`: a new `WEB_USERS_ID = "web-users"`
+constant plus `RESERVED_CAMERA_IDS = frozenset({WEB_USERS_ID})`,
+defined here (the lower-level shared module both `web/users.py` and
+`core/camera_config.py` itself can reference, avoiding the reverse
+import `web/users.py` already can't make). `validate_id()` now raises
+`CameraConfigError` for any reserved id, so `bv-config web-users`
+(CLI or the bv-web job-runner path, both funnel through `bv_config.
+_run()`'s existing `validate_id(args.id)` call) fails cleanly with
+"'web-users' is reserved ... pick a different id" instead of silently
+clobbering the accounts file. `list_camera_ids()` also skips
+`RESERVED_CAMERA_IDS` defensively - not just relying on the new
+`validate_id()` guard, since a config directory could already have a
+stray `web-users.cfg` on disk from before this fix existed (Christer's
+own case). `web/users.py`'s `default_users_path()` now builds its
+path as `f"{WEB_USERS_ID}.cfg"` instead of a second hardcoded
+`"web-users.cfg"` literal, so the reserved id and the actual accounts
+filename can never drift apart again.
+
+**Verification.** No fastapi/pytest in this sandbox (same limitation
+as every other bv-web-adjacent change), but `core/camera_config.py`
+has no fastapi dependency, so it and `web/users.py` (which only needs
+tomllib) were both exercised directly: a stubbed `tomllib` module
+(`/tmp/stub_stdlib/tomllib.py`, harness-only, same pattern used
+elsewhere in this project's own history for this sandbox's missing
+3.11+ stdlib module) let `validate_id("web-users")` be confirmed to
+raise, a normal id (`"Kirby"`) to still pass, `list_camera_ids()` on a
+temp directory containing both `Kirby.cfg` and `web-users.cfg` to
+return only `["Kirby"]`, and `default_users_path()` to still resolve
+to `.../web-users.cfg` via the new constant. New permanent tests added
+to `tests/blackvue/core/test_camera_config.py`:
+`test_validate_id_rejects_the_reserved_web_users_id` and
+`test_list_camera_ids_skips_the_reserved_web_users_file`. `ast.parse`
+clean on all three touched files.

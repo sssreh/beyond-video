@@ -16,6 +16,7 @@ from blackvue.core.camera_config import resolve_archive_path
 from blackvue.core.camera_config import save_camera_config
 from blackvue.core.camera_config import validate_id
 from blackvue.core.camera_config import validate_name
+from blackvue.core.camera_config import WEB_USERS_ID
 from blackvue.core.endpoint import Endpoint
 
 
@@ -152,6 +153,16 @@ def test_default_config_dir_migration_prints_a_notice(monkeypatch, tmp_path, cap
 def test_validate_id_rejects(id_):
     with pytest.raises(CameraConfigError):
         validate_id(id_)
+
+
+def test_validate_id_rejects_the_reserved_web_users_id():
+    # config_path()'s own f"{id_}.cfg" would otherwise resolve a camera
+    # named "web-users" to the exact same path bv-web's own accounts
+    # file lives at (see web/users.py's default_users_path()) -
+    # RESERVED_CAMERA_IDS exists specifically to stop that collision at
+    # creation time, not just hide it from the pick-list afterward.
+    with pytest.raises(CameraConfigError):
+        validate_id(WEB_USERS_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +390,18 @@ def test_list_camera_ids_empty_when_dir_has_no_configs(tmp_path):
 
 def test_list_camera_ids_empty_when_dir_does_not_exist(tmp_path):
     assert list_camera_ids(tmp_path / "does-not-exist") == []
+
+
+def test_list_camera_ids_skips_the_reserved_web_users_file(tmp_path):
+    # Regression test: bv-web's own accounts file (web-users.cfg) lives
+    # in this same directory by default (see web/users.py's default_
+    # users_path()) and would otherwise glob-match *.cfg and show up
+    # as a fake "web-users" camera in every pick-list built from this
+    # function - see WORKING_CONTEXT.md's entry for this fix.
+    (tmp_path / "Kirby.cfg").write_text('archive = "/x"\n')
+    (tmp_path / f"{WEB_USERS_ID}.cfg").write_text("not a camera config\n")
+
+    assert list_camera_ids(tmp_path) == ["Kirby"]
 
 
 def test_list_camera_ids_does_not_raise_on_a_corrupt_config(tmp_path):

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+from ..core.camera_config import WEB_USERS_ID
 from ..core.camera_config import default_config_dir
 
 # Same escape hatch core/camera_config.py's BEYOND_VIDEO_CONFIG_DIR
@@ -98,7 +99,7 @@ def default_users_path() -> Path:
     override = os.environ.get(_USERS_FILE_ENV_VAR)
     if override:
         return Path(override)
-    return default_config_dir() / "web-users.cfg"
+    return default_config_dir() / f"{WEB_USERS_ID}.cfg"
 
 
 def validate_role(role: str) -> None:
