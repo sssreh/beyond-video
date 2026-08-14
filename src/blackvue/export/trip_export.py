@@ -95,6 +95,24 @@ TEXT_ASSETS = (
 )
 
 
+def _archive_path_for(trip: Trip) -> Path | None:
+    """Best-effort archive root directory for `trip`, derived from
+    wherever its own recordings' asset files actually live - the same
+    "recordings sit flat in the archive root" fact merge_text_assets()
+    already relies on, just derived here instead of assumed, since
+    export_trip() itself is never handed the archive root directly.
+    Used only for the trip_summary.txt copy-in step below (see
+    export_trip()'s own TEXT_ASSETS loop) - falls back to None (no
+    copy attempted) if `trip` somehow has no recordings with any asset
+    at all, which shouldn't happen in practice.
+    """
+
+    for recording in trip:
+        for asset_file in recording.assets.values():
+            return asset_file.path.parent
+    return None
+
+
 @dataclass(frozen=True)
 class ExportResult:
     """Which files export_trip() actually wrote for one trip."""
@@ -2682,6 +2700,36 @@ def export_trip(
         out = destination / filename
         out.write_text(merged, encoding="utf-8")
         text_paths.append(out)
+
+    # Pick up a matching trip_summary.txt if bv-scribe's --trip-summary
+    # already generated one for this exact trip - Christer: "where does
+    # a trip summary belong, in trips i feel". This is a plain file
+    # copy, not a merge/synthesis - bv-export never calls the model
+    # itself (see bv-scribe's own docstring for why that split exists).
+    # bv-scribe writes one <trip label>.trip_summary.txt per trip it
+    # detects (see bv_scribe.py's _run_dispatch()), using the same
+    # Trip.label naming bv-ls --trips and this trip's own folder name
+    # already use - so this only needs to look for the exact name
+    # `trip.label` produces, via _archive_path_for() above. If
+    # bv-scribe was never run, or was run with different trip-detection
+    # flags than this export (so the boundaries - and therefore the
+    # label - don't line up), nothing is found and this is silently
+    # skipped, same as any other optional missing text asset above.
+    archive_path = _archive_path_for(trip)
+    if archive_path is not None:
+        trip_summary_source = archive_path / f"{trip.label}.trip_summary.txt"
+        if trip_summary_source.exists():
+            try:
+                summary_text = trip_summary_source.read_text(encoding="utf-8")
+            except OSError as exc:
+                message = f"trip_summary.txt: couldn't copy ({exc})"
+                warnings.append(message)
+                log.warning(message)
+            else:
+                out = destination / "trip_summary.txt"
+                out.write_text(summary_text, encoding="utf-8")
+                text_paths.append(out)
+
     if text_paths:
         log.step(
             "merged text asset(s): " + ", ".join(p.name for p in text_paths)

@@ -124,7 +124,7 @@ After the main pass, a few full-resolution frames are separately checked for sig
 
 | Option | Description |
 |---|---|
-| `--trip-summary` | After processing every selected recording, run one extra text-only pass synthesizing a single trip-level narrative from their `## Description` sections (explicitly tracking how conditions changed over the trip, e.g. "moderate traffic became heavier after a while", rather than restating each segment) into `trip_summary.txt`. Needs 2+ described recordings in the selection. |
+| `--trip-summary` | After processing every selected recording, run one extra text-only synthesis pass per detected trip (same gap-based grouping `bv-export`/`bv-ls --trips` use) turning each trip's own `## Description` sections into a single trip-level narrative (explicitly tracking how conditions changed over the trip, e.g. "moderate traffic became heavier after a while", rather than restating each segment). Archive mode writes one `<trip label>.trip_summary.txt` per trip to the archive root - `bv-export` automatically copies a matching one into that trip's export folder as `trip_summary.txt` (no synthesis in `bv-export` itself; see its own docs). `--raw` mode (no trip concept) still writes one flat `trip_summary.txt`. Needs 2+ described recordings in a trip for that trip to get a summary. |
 | `--trip-summary-max-new-tokens N` | Cap on generated tokens for the `--trip-summary` pass. Default: `768`. |
 
 ### General

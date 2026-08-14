@@ -11770,3 +11770,62 @@ case. If this comes up again, worth considering named presets (e.g.
 `--map-zoom overview/medium/closeup`) alongside the existing numeric
 `METERS` value, so a user can express *intent* instead of guessing a
 number.
+
+## Change: bv-scribe --trip-summary is now per-trip, bv-export copies a matching one in (2026-08-14)
+
+Christer, continuing a design discussion about where a trip summary
+belongs: "do you remember why Also write a trip summary is part of
+bv-scribe and not bv-export" -> answered with the historical rule
+("dont touch bv-export except for merge of scene", so bv-export never
+calls a model - see the "--camera and --raw for the scene-description
+feature, bv-export scene merge" entry above) and pointed out a real
+gap: `trip_summary.txt` was written by bv-scribe to the archive root,
+scoped by whatever `--from`/`--until`/`--timestamp` the user gave it,
+with zero relationship to bv-export's own gap-detected trip
+boundaries - never copied into any trip's export folder at all. "What
+do you think about that?" -> agreed the no-model-calls-in-bv-export
+rule should stay, but called the archive-root/no-trip-correlation
+split a real design gap. Christer: "I know, but where does a trip
+summary belong, in trips i feel, whats your thought about that?" ->
+agreed: a trip summary is conceptually a property of one detected
+trip, not an arbitrary time window - and Christer confirmed with "yes"
+to implementing it.
+
+Implementation (no model call added to bv-export - see rule above):
+
+1. `bv-scribe --trip-summary` (archive mode only; `--raw` mode has no
+   trip concept, unchanged) now groups selected recordings into trips
+   the same way bv-export/bv-ls --trips do - `TripBuilder(max_gap=
+   DEFAULT_MAX_GAP).build_for_interval(recordings_with_front_video(...),
+   interval)` - and writes one `<trip label>.trip_summary.txt` per
+   trip to the archive root, instead of one flat `trip_summary.txt`
+   for the whole `--from`/`--until` selection. A trip still needs 2+
+   described recordings to get a summary (same rule, now per-trip).
+   Uses TripBuilder's plain defaults only - not bv-export's own
+   `--max-gap`/`--movement`/`--duration-heal-archive`/
+   `--max-parking-duration` customization - so exact label alignment
+   with a *customized* bv-export run requires bv-export to also be at
+   its plain defaults. When the labels don't match, bv-export's copy
+   step (below) just finds nothing, same as any other optional missing
+   asset.
+
+2. `trip_export.py`'s `export_trip()` gained a copy-in step right
+   after the existing `TEXT_ASSETS` merge loop: look for
+   `<archive_path>/<trip.label>.trip_summary.txt` (archive root
+   derived from the trip's own recordings' asset file locations via
+   new `_archive_path_for()` helper, since export_trip() is never
+   handed the archive root directly) and, if found, copy it into
+   `<destination>/trip_summary.txt`. Plain file copy - no synthesis,
+   no model call - silently skipped if no matching file exists.
+
+Files: `src/blackvue/cli/bv_scribe.py` (trip-splitting + per-trip
+`_finalize_trip_summary()` calls, `--trip-summary` help text),
+`src/blackvue/export/trip_export.py` (`_archive_path_for()` +
+copy-in step), `docs/man/bv-scribe.md`, `docs/man/bv-export.md`.
+Tests: `tests/blackvue/cli/test_bv_scribe.py` (per-trip vs.
+separate-trips vs. needs-2+ cases), `tests/blackvue/export/
+test_trip_export.py` (`export_trip()` copies a matching file in /
+skips when none matches - real ffmpeg-built videos, not fakes).
+Verified with tomllib-stub standalone scripts (no pytest available in
+this sandbox) exercising the real CLI/`export_trip()` code paths -
+all matched expected behavior on first pass.

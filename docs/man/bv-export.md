@@ -238,6 +238,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 | `trip.srt` | always, if transcript data exists |
 | `transcript.txt`, `transcript.diarized.txt`, `translation.txt`, `translation.diarized.txt` | always, if the corresponding per-recording `bv-generate(1)` output exists - each recording's text concatenated in order, under a `# <recording_id>` header per block |
 | `scene.txt`, `scene.rear.txt` | always, if the corresponding per-recording `bv-generate --describe-scene`/`bv-scribe(1)` output exists - same concatenation as the transcript/translation files above |
+| `trip_summary.txt` | always, if `bv-scribe --trip-summary` already wrote a matching `<trip label>.trip_summary.txt` to the archive root - a plain copy, not generated here (`bv-export` never calls the scene/summary model itself); only found when the two commands' trip-detection settings agree closely enough that the labels line up (see `bv-scribe(1)`'s own `--trip-summary` docs) |
 | `trip.log` | always - the exact command line used, trip membership reasoning, and (with `--debug`) phase timings |
 | `trip_info.txt` | always - start/end time, duration, total on-disk size, whether Parking-mode footage is included, and (if GPS data exists) distance, average/max speed, moving/idle time, and a reverse-geocoded start/end address |
 | `map.mp4` (or `map_tu.mp4` with `--map-track-up`) | `--map` |

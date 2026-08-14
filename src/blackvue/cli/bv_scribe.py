@@ -25,6 +25,7 @@ from pathlib import Path
 
 from ..archive import Archive
 from ..archive import Asset
+from ..archive import RecordingId
 from .errors import run_cli
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
@@ -36,6 +37,9 @@ from ..generate import describe_scene
 from ..generate import extract_description_section
 from ..generate import summarize_trip
 from ..lexicaltimeparser import LexicalTimeParser
+from ..trip.trip_builder import DEFAULT_MAX_GAP
+from ..trip.trip_builder import TripBuilder
+from ..trip.trip_builder import recordings_with_front_video
 
 EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
@@ -315,11 +319,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help=(
             "After processing every selected recording, run one extra "
-            "text-only pass synthesizing a single trip-level narrative "
-            "from their '## Description' sections (tracking how "
-            "conditions changed over the trip, not just concatenating "
-            "them), written to trip_summary.txt. Needs 2+ recordings "
-            "in the selection."
+            "text-only synthesis pass per detected trip (same gap-"
+            "based grouping bv-export/bv-ls --trips use), turning each "
+            "trip's own recordings' '## Description' sections into a "
+            "single trip-level narrative (tracking how conditions "
+            "changed over the trip, not just concatenating them). "
+            "Archive mode writes one <trip label>.trip_summary.txt "
+            "per trip to the archive root - bv-export picks up a "
+            "matching one automatically when exporting that trip. "
+            "--raw mode (no trip concept) still writes one flat "
+            "trip_summary.txt. Needs 2+ described recordings in a "
+            "trip for that trip to get a summary."
         ),
     )
     parser.add_argument("--trip-summary-max-new-tokens", type=int, default=768,
@@ -597,8 +607,9 @@ def _finalize_trip_summary(
 ) -> bool:
     """Run --trip-summary's extra synthesis pass, if there's enough
     material for it. Returns True on error. Shared by archive mode
-    and --raw mode, which only differ in where trip_segments/
-    summary_path come from."""
+    (called once per detected trip, with that trip's own segments/
+    summary_path - see _run_dispatch()) and --raw mode (called once
+    for the whole run, no trip concept there)."""
 
     if not args.trip_summary or args.dry_run:
         return False
@@ -752,8 +763,33 @@ def _run_dispatch(args: argparse.Namespace, *, say=print, warn=_default_warn) ->
 
     scene_kwargs = _scene_kwargs(args)
     had_error = False
-    trip_segments: list[tuple[str, str]] = []
+    trip_segments_by_label: dict[str, list[tuple[str, str]]] = {}
     failures: list[tuple[str, str]] = []
+
+    # Which trip (by label) each recording belongs to, so a
+    # --trip-summary gets built per detected trip instead of one flat
+    # summary for the whole --from/--until selection - see this
+    # function's own docstring area / WORKING_CONTEXT.md ("in trips i
+    # feel") for why: a trip summary is conceptually a property of one
+    # trip, and bv-export can only auto-pick up a matching one (see
+    # trip_export.py's own trip_summary.txt copy step) if bv-scribe's
+    # trip boundaries actually correspond to a real detected trip
+    # (Trip.label), not an arbitrary time window. Uses TripBuilder's
+    # plain defaults (DEFAULT_MAX_GAP, no --movement bridge/
+    # --duration-heal-archive/--max-parking-duration) - matching
+    # bv-export exactly requires bv-export's own extra flags to be at
+    # their defaults too; when they aren't, the labels simply won't
+    # line up and bv-export's copy step quietly finds nothing, same as
+    # any other optional missing asset.
+    trip_label_by_recording_id: dict[RecordingId, str] = {}
+    if args.trip_summary:
+        front_recordings = recordings_with_front_video(archive.recordings)
+        trips = TripBuilder(max_gap=DEFAULT_MAX_GAP).build_for_interval(
+            front_recordings, interval,
+        )
+        for trip in trips:
+            for trip_recording in trip:
+                trip_label_by_recording_id[trip_recording.id] = trip.label
 
     for i, recording in enumerate(recordings, start=1):
         prefix = f"[{i}/{len(recordings)}] "
@@ -769,12 +805,18 @@ def _run_dispatch(args: argparse.Namespace, *, say=print, warn=_default_warn) ->
             continue
         had_error |= err
         if args.trip_summary and description is not None:
-            trip_segments.append((str(recording.id), description))
+            trip_label = trip_label_by_recording_id.get(recording.id)
+            if trip_label is not None:
+                trip_segments_by_label.setdefault(trip_label, []).append(
+                    (str(recording.id), description)
+                )
 
-    had_error |= _finalize_trip_summary(
-        trip_segments, scene_kwargs, archive_path / "trip_summary.txt", args,
-        say=say, warn=warn,
-    )
+    for trip_label, trip_segments in trip_segments_by_label.items():
+        had_error |= _finalize_trip_summary(
+            trip_segments, scene_kwargs,
+            archive_path / f"{trip_label}.trip_summary.txt", args,
+            say=say, warn=warn,
+        )
 
     if failures:
         say(f"bv-scribe: {len(failures)} recording(s) failed:")

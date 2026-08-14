@@ -427,6 +427,66 @@ def test_export_trip_writes_everything_available(tmp_path, monkeypatch):
     assert result.warnings == ()
 
 
+def test_export_trip_copies_matching_trip_summary_from_archive_root(tmp_path):
+    """bv-scribe's --trip-summary writes <trip label>.trip_summary.txt
+    to the archive root (one per detected trip - see bv_scribe.py's
+    _run_dispatch()). export_trip() should pick up the one matching
+    *this* trip (same Trip.label naming already used by bv-ls --trips/
+    this trip's own folder name) and copy it in as trip_summary.txt -
+    a plain copy, not a merge/synthesis, since bv-export never calls
+    the model itself. See the "in trips i feel" WORKING_CONTEXT.md
+    entry for why this exists."""
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front = archive_dir / "20260720_100000_NF.mp4"
+    _make_video(front, 1.0)
+
+    recording = Recording(
+        id=RecordingId("20260720_100000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+
+    summary_source = archive_dir / f"{trip.label}.trip_summary.txt"
+    summary_source.write_text("The trip went smoothly overall.\n", encoding="utf-8")
+
+    result = export_trip(trip, dest_dir)
+
+    copied = dest_dir / "trip_summary.txt"
+    assert copied.exists()
+    assert "trip went smoothly" in copied.read_text(encoding="utf-8")
+    assert copied in result.text
+
+
+def test_export_trip_skips_trip_summary_when_none_matches(tmp_path):
+    """No <trip label>.trip_summary.txt for this trip (bv-scribe
+    --trip-summary was never run, or was run with different trip-
+    detection flags so the labels don't line up) - export_trip() must
+    not write trip_summary.txt at all, same as any other optional
+    missing text asset."""
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    front = archive_dir / "20260720_110000_NF.mp4"
+    _make_video(front, 1.0)
+
+    recording = Recording(
+        id=RecordingId("20260720_110000_N"),
+        assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+    )
+    trip = Trip((recording,))
+
+    result = export_trip(trip, dest_dir)
+
+    assert not (dest_dir / "trip_summary.txt").exists()
+    assert dest_dir / "trip_summary.txt" not in result.text
+
+
 def test_export_trip_echoes_progress_live_when_say_is_given(tmp_path):
     # Christer: "could bv-export be more talkative, not like trip.txt,
     # but tell what its doing, now i dont get anything" - export_trip()

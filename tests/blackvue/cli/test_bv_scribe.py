@@ -306,12 +306,20 @@ def test_run_trip_summary_needs_two_or_more_recordings(monkeypatch, tmp_path, ca
 
     assert exit_code == bv_scribe.EXIT_OK
     assert "needs 2+" in capsys.readouterr().out
-    assert not (tmp_path / "trip_summary.txt").exists()
+    assert list(tmp_path.glob("*.trip_summary.txt")) == []
 
 
-def test_run_trip_summary_synthesizes_across_recordings(monkeypatch, tmp_path):
+def test_run_trip_summary_synthesizes_across_recordings_in_the_same_trip(monkeypatch, tmp_path):
+    """Two recordings close enough together (within TripBuilder's
+    default 5-minute max_gap) are one detected trip, so --trip-summary
+    combines them into one <trip label>.trip_summary.txt - see the
+    "in trips i feel" WORKING_CONTEXT.md entry for why this is keyed by
+    trip label (matching bv-ls --trips/bv-export's own Trip.label)
+    rather than one flat trip_summary.txt for the whole --from/--until
+    selection."""
+
     recording_a = _make_recording("20260715_190000_N", tmp_path)
-    recording_b = _make_recording("20260715_200000_N", tmp_path)
+    recording_b = _make_recording("20260715_190200_N", tmp_path)
 
     monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([recording_a, recording_b]))
 
@@ -335,8 +343,39 @@ def test_run_trip_summary_synthesizes_across_recordings(monkeypatch, tmp_path):
     assert exit_code == bv_scribe.EXIT_OK
     assert len(summarize_calls) == 1
     assert len(summarize_calls[0]) == 2
-    summary_text = (tmp_path / "trip_summary.txt").read_text(encoding="utf-8")
+    summary_text = (
+        tmp_path / "trip_20260715_190000_20260715_190200.trip_summary.txt"
+    ).read_text(encoding="utf-8")
     assert "trip went smoothly" in summary_text
+
+
+def test_run_trip_summary_writes_separate_files_for_separate_trips(monkeypatch, tmp_path):
+    """Two recordings an hour apart are two separate detected trips
+    (well over the default 5-minute max_gap), so each trip's own
+    describe recording count is checked independently - one recording
+    per trip here, so neither trip reaches the 2+ threshold and no
+    summary file is written for either."""
+
+    recording_a = _make_recording("20260715_190000_N", tmp_path)
+    recording_b = _make_recording("20260715_200000_N", tmp_path)
+
+    monkeypatch.setattr(bv_scribe, "Archive", _FakeArchive([recording_a, recording_b]))
+    monkeypatch.setattr(
+        bv_scribe, "describe_scene",
+        lambda *a, **k: "## Description\nRoutine driving.\n\n---\ndisclaimer",
+    )
+    monkeypatch.setattr(
+        bv_scribe, "summarize_trip",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("should not summarize a single-recording trip")
+        ),
+    )
+
+    args = parse_args([str(tmp_path), "--trip-summary"])
+    exit_code = bv_scribe._run(args)
+
+    assert exit_code == bv_scribe.EXIT_OK
+    assert list(tmp_path.glob("*.trip_summary.txt")) == []
 
 
 def _make_front_rear_recording(recording_id: str, tmp_path: Path, *, front=True, rear=True):
