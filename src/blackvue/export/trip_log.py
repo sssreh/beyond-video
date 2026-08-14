@@ -168,7 +168,13 @@ class TripLog:
 
         self._write(f"{recording_id}: {reason}")
 
-    def step(self, message: str, *, elapsed_seconds: float | None = None) -> None:
+    def step(
+        self,
+        message: str,
+        *,
+        elapsed_seconds: float | None = None,
+        live: bool = True,
+    ) -> None:
         """Record one export phase as it happens - e.g. "concatenated
         front video (2 recording(s))" or "rendered map.mp4". A
         wall-clock timestamp (HH:MM:SS) is prefixed automatically.
@@ -177,7 +183,19 @@ class TripLog:
         particular, which can run to minutes on a real archive).
 
         Also echoed live through `self._say`, if one was given to
-        `__init__`/`open()` - see this class's own docstring."""
+        `__init__`/`open()` - see this class's own docstring - unless
+        `live=False`. Christer, re: the per-recording front/rear
+        alignment trim lines specifically: "That als goes for the
+        trimming part, just same thing close to 'Trimming videos so
+        front and rear matches', of course the trip.log can keep that
+        output." Same shape as the trip-name-per-line fix right above:
+        a phase that can legitimately log many lines (one per
+        recording trimmed) still belongs in trip.log in full, but the
+        live stream should show one summary line for the phase, not
+        one line per recording. Callers wanting that split call
+        `step()` once normally for the summary, then `step(...,
+        live=False)` for each detail line - trip.log gets every line
+        either way, since `live` only controls the `self._say` echo."""
 
         if not self._wrote_steps_header:
             self._write("")
@@ -191,7 +209,7 @@ class TripLog:
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._write(f"{timestamp}  {full_message}")
-        if self._say is not None:
+        if live and self._say is not None:
             self._say(f"bv-export: {full_message}")
 
     def warning(self, message: str) -> None:

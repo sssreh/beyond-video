@@ -820,13 +820,31 @@ class _StepLog:
     (and at what severity) without a real trip.log file on disk. A
     message that reaches warning() is recorded here with the same
     "WARNING: " prefix TripLog.warning() itself adds (see
-    trip_log.py), so a test can tell the two apart."""
+    trip_log.py), so a test can tell the two apart.
+
+    `self.steps` records every step()/warning() call regardless of
+    `live` - it stands in for trip.log itself, which (see
+    TripLog.step()'s own docstring) always gets every line whether or
+    not it's echoed live. `self.live_steps` records only the ones that
+    would have reached the live say() echo (`live=True`, the
+    default) - for tests checking that a phase like front/rear
+    alignment collapses its own many per-recording lines down to one
+    live summary (Christer: "the trip.log can keep that output")."""
 
     def __init__(self):
         self.steps: list[str] = []
+        self.live_steps: list[str] = []
 
-    def step(self, message: str, *, elapsed_seconds: float | None = None) -> None:
+    def step(
+        self,
+        message: str,
+        *,
+        elapsed_seconds: float | None = None,
+        live: bool = True,
+    ) -> None:
         self.steps.append(message)
+        if live:
+            self.live_steps.append(message)
 
     def warning(self, message: str) -> None:
         self.step(f"WARNING: {message}")
@@ -870,9 +888,15 @@ def test_align_front_rear_durations_trims_the_longer_side_and_logs_info(tmp_path
     # Not a warning: nothing added to `warnings`, and the trip.log line
     # went through step(), not warning() (no "WARNING: " prefix).
     assert warnings == []
-    assert len(log.steps) == 1
-    assert "trimmed front to match rear" in log.steps[0]
-    assert not log.steps[0].startswith("WARNING:")
+    # Two trip.log lines: the one-time "trimming videos..." phase
+    # banner (live) plus this recording's own detail line (trip.log
+    # only - see _StepLog's own docstring for why live=False still
+    # reaches self.steps but not self.live_steps).
+    assert len(log.steps) == 2
+    assert "trimming videos so front and rear match" in log.steps[0]
+    assert "trimmed front to match rear" in log.steps[1]
+    assert not any(s.startswith("WARNING:") for s in log.steps)
+    assert log.live_steps == ["trimming videos so front and rear match"]
 
 
 def _truncate_moov_atom(path) -> None:
@@ -1083,8 +1107,9 @@ def test_align_front_rear_durations_trims_even_a_small_real_difference(tmp_path)
     # Not a warning (see test_align_front_rear_durations_trims_the_longer_side_and_logs_info) -
     # just a trip.log step.
     assert warnings == []
-    assert len(log.steps) == 1
-    assert "trimmed rear to match front" in log.steps[0]
+    assert len(log.steps) == 2
+    assert "trimming videos so front and rear match" in log.steps[0]
+    assert "trimmed rear to match front" in log.steps[1]
 
 
 def test_align_front_rear_durations_ignores_sub_epsilon_float_noise(tmp_path):
@@ -1711,7 +1736,7 @@ def test_align_front_rear_durations_uses_source_overrides(tmp_path):
     assert list(overrides.keys()) == [(recording_id, Asset.REAR)]
     # Not a warning (see test_align_front_rear_durations_trims_the_longer_side_and_logs_info).
     assert warnings == []
-    assert "trimmed rear to match front" in log.steps[0]
+    assert "trimmed rear to match front" in log.steps[1]
     trimmed_rear_duration = _video_duration(overrides[(recording_id, Asset.REAR)])
     assert trimmed_rear_duration < 3.0
 

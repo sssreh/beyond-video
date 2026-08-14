@@ -11559,3 +11559,60 @@ network) - ran all six updated TripLog scenarios plus a
 `_checkpoint(debug=True)` stderr check directly, all matching the new
 expected output exactly. `ast.parse()` confirms trip_log.py,
 trip_export.py, and test_trip_log.py all still parse.
+
+## Fix: front/rear trim messages collapsed to one live summary line ## (2026-08-14)
+
+Same class of over-delivery as the trip-name fix right above, on the
+same live-progress stream. `_align_front_rear_durations()` (in
+trip_export.py) logs one line per recording whose front/rear video
+pair needed trimming for clock drift ("Log every trim, any size" -
+Christer's own earlier framing, back in task #250). Once `TripLog`
+started echoing every `step()` call live (task #794), a trip with
+several drifted recordings meant several near-identical "trimmed
+front/rear to match ..." lines scrolling past live, one per
+recording. Christer: "That als goes for the trimming part, just same
+thing close to 'Trimming videos so front and rear matches', of
+course the trip.log can keep that output."
+
+`TripLog.step()` gained a `live: bool = True` keyword-only parameter
+- `trip.log` on disk always gets every `step()` call regardless, but
+when `live=False` the call is skipped from the `self._say` echo. This
+generalizes the exact mechanism task #820 already used for the
+trip-name banner (a one-time live line, then per-item detail written
+to trip.log only) into something any caller can opt into per line,
+not just `TripLog` itself.
+
+`_align_front_rear_durations()` now tracks an `announced_trim_phase`
+flag, starting `False`. The first time a recording actually needs
+trimming, it calls `log.step("trimming videos so front and rear
+match")` (plain `step()`, so it's live) and flips the flag; every
+per-recording detail line after that (the existing "{recording_id}:
+front/rear duration differs by ...s - trimmed X to match Y" message)
+is now `log.step(message, live=False)` - still written to trip.log in
+full, just not echoed live. A trip where nothing ever drifts still
+announces nothing at all, matching how every other phase only
+narrates itself when it actually has something to report. The
+existing "could not be aligned" branch (a real, unresolved problem)
+was left untouched - it still calls `log.warning(...)`, which stays
+live, since it represents a degraded outcome rather than routine
+info.
+
+Updated tests/blackvue/export/test_trip_export.py: the `_StepLog`
+test double now accepts `live=` and records live-echoed calls
+separately (`self.live_steps`) from every call (`self.steps`), so
+tests can check both the full trip.log content and what actually
+reached the live stream. Updated the two direct
+`_align_front_rear_durations()` tests plus the
+`source_overrides`-with-trim test to expect the banner line at
+`log.steps[0]` and the per-recording detail at `log.steps[1]`. The
+`log_text`-based end-to-end test (reading a real on-disk trip.log
+after a real `export_trip()` run) and the unrelated "no rear video"
+placeholder test needed no changes - trip.log's own content is
+unaffected by `live`.
+
+Verified via the tomllib-stub standalone-script technique: opened a
+real `TripLog`, called `step()` for the banner then two detail lines
+with `live=False`, and confirmed the live `say()` callable received
+only the banner while trip.log on disk got all three lines.
+`ast.parse()` confirms trip_log.py, trip_export.py, and
+test_trip_export.py all still parse.

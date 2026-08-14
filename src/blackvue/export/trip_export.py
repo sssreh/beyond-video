@@ -627,6 +627,19 @@ def _align_front_rear_durations(
     """
 
     overrides: dict[tuple[RecordingId, Asset], Path] = {}
+    # Christer: "That als goes for the trimming part, just same thing
+    # close to 'Trimming videos so front and rear matches', of course
+    # the trip.log can keep that output." - same shape as the
+    # trip-name-once fix above: this loop can log one line per
+    # recording (every trim, any size - "Log every trim, any size",
+    # Christer's own earlier framing, see the per-recording message
+    # below), which trip.log should keep in full, but the live stream
+    # only needs to say once that this phase is trimming things, not
+    # repeat that for every recording. Set the moment the first real
+    # trim happens - a trip where nothing ever drifts announces
+    # nothing here at all, matching how every other phase only
+    # narrates itself when it actually has something to report.
+    announced_trim_phase = False
 
     for recording in trip.recordings:
         if recording.id.is_parking and not include_parking:
@@ -702,7 +715,10 @@ def _align_front_rear_durations(
             f"match {shorter_label}"
         )
         if log is not None:
-            log.step(message)
+            if not announced_trim_phase:
+                log.step("trimming videos so front and rear match")
+                announced_trim_phase = True
+            log.step(message, live=False)
 
     return overrides
 
