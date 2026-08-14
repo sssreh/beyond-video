@@ -10391,3 +10391,37 @@ update to the existing `test_do_describe_scene_skips_parking_mode_ok`
 (now monkeypatches the repair helper as an identity pass-through so
 it keeps isolating just the behavior it's named for). `ast.parse`
 clean on both touched files.
+
+## Note: scene model never unloads from GPU memory (future improvement)
+
+Christer, after a bv-web `--describe-scene` job finished (and even
+after cancelling a separate concurrent CLI job), noticed Task Manager
+still showing ~19.3/24.0 GB dedicated GPU memory in use with 0%
+utilization and nothing actively running. Root cause: `generate/
+scene.py`'s `_SCENE_MODEL_CACHE` (module-level dict, `_get_scene_model()`)
+caches a loaded vision model (Qwen3-VL-8B, ~16GB) forever, by design,
+so repeat `--describe-scene` calls within the same process don't pay
+the reload cost each time - same pattern `speech.py`'s Whisper model
+cache already uses. Since bv-web's job runner runs jobs in-process
+(`web/jobs.py`'s own docstring: "each job runs the target CLI
+module's own _run() function directly, in a background thread,
+in-process - deliberately not a subprocess"), that cache lives for
+the lifetime of the whole `bv-web serve` process, not just one job -
+so the model stays pinned in VRAM until bv-web itself is restarted,
+with no idle-timeout or manual-unload path today.
+
+Not a bug in the sense of anything being stuck or leaking - it's the
+intended trade-off (avoid a ~16GB reload for every recording in a
+batch). But it does mean a long-running `bv-web serve` process
+permanently reserves a large chunk of GPU memory after its first
+`--describe-scene` job, which could matter for anything else on the
+same GPU (Christer's own worry here started from `bv-generate --cpu`
+CLI/bv-web GPU contention hurting YouTube playback, task noted
+2026-08-14 above - a related but distinct problem from this one).
+
+**Not implemented.** Christer asked this be noted rather than fixed
+right now. Candidates if picked up later: an idle-timeout eviction
+(unload + `torch.cuda.empty_cache()` after N minutes with no new
+`--describe-scene` call), an explicit "unload model" action/route in
+bv-web, or simply documenting that restarting `bv-web serve`
+reclaims the memory.
