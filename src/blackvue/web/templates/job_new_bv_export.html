@@ -85,6 +85,59 @@
       </label>
     </div>
 
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="stitch_layout">
+          Stitch layout
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Camera arrangement for stitch.mp4: side by side, stacked, or rearview-mirror inset. Auto picks side-by-side or top-down from the trip's own GPS extent; rearview_mirror is never auto-picked. Only used if "Create stitched video" above is checked.</span></span>
+        </label>
+        <select id="stitch_layout" name="stitch_layout">
+          <option value="auto" selected>auto</option>
+          <option value="side_by_side">side_by_side</option>
+          <option value="top_down">top_down</option>
+          <option value="rearview_mirror">rearview_mirror</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="stitch_map">
+          Stitch map panel
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also compose a map panel alongside the camera composite in stitch.mp4 - a whole-trip overview, or a follow-camera view (needs the map follow-camera radius in Advanced map too). Only used if "Create stitched video" above is checked.</span></span>
+        </label>
+        <select id="stitch_map" name="stitch_map">
+          <option value="" selected>(none)</option>
+          <option value="map">whole-trip overview</option>
+          <option value="zoom">follow-camera</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="stitch_gsensor" name="stitch_gsensor" value="true" style="width: auto; margin: 0;">
+        Overlay g-sensor gauge onto stitch.mp4
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="stitch_graph" name="stitch_graph" value="true" style="width: auto; margin: 0;">
+        Compose g-sensor strip-chart panel onto stitch.mp4
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="map_track_up" name="map_track_up" value="true" style="width: auto; margin: 0;">
+        Rotate map(s) to vehicle heading (track-up) instead of north-up
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Applies to both "Include map" and the follow-camera radius in Advanced map - the vehicle's current heading always points "up" on screen, like a phone turn-by-turn app. Costs extra render time on the whole-trip overview map specifically.</span></span>
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="render_gsensor" name="render_gsensor" value="true" style="width: auto; margin: 0;">
+        Render gsensor.mp4 (dot-gauge overlay video)
+      </label>
+      <label class="filter-checkbox">
+        <input type="checkbox" id="render_gsensor_graph" name="render_gsensor_graph" value="true" style="width: auto; margin: 0;">
+        Render gsensor_graph.mp4 (strip-chart overlay video)
+      </label>
+    </div>
+
     <div class="checkbox-row">
       <label class="filter-checkbox">
         <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
@@ -165,28 +218,13 @@
         <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" placeholder="skip">
       </div>
     </div>
-    <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="map_track_up" name="map_track_up" value="true" style="width: auto; margin: 0;">
-        Rotate map(s) to vehicle heading (track-up) instead of north-up
-        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Applies to both Include map and the follow-camera radius above - the vehicle's current heading always points "up" on screen, like a phone turn-by-turn app. Costs extra render time on the whole-trip overview map specifically.</span></span>
-      </label>
-    </div>
   </details>
 
   <details class="option-group" id="advanced-gsensor">
     <summary>Advanced g-sensor</summary>
-    <p class="hint">Standalone g-sensor overlay videos, separate from the front/rear/stitch footage itself.</p>
+    <p class="hint">Fine-tunes the standalone gsensor_graph.mp4 overlay video enabled above. Opens automatically once "Render gsensor_graph.mp4" is checked.</p>
 
     <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="render_gsensor" name="render_gsensor" value="true" style="width: auto; margin: 0;">
-        Render gsensor.mp4 (dot-gauge overlay video)
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="render_gsensor_graph" name="render_gsensor_graph" value="true" style="width: auto; margin: 0;">
-        Render gsensor_graph.mp4 (strip-chart overlay video)
-      </label>
       <label class="filter-checkbox">
         <input type="checkbox" id="gsensor_graph_x" name="gsensor_graph_x" value="true" style="width: auto; margin: 0;">
         Also plot X (up/down) on the g-sensor graph
@@ -197,17 +235,6 @@
   <details class="option-group" id="advanced-stitch">
     <summary>Advanced stitching</summary>
     <p class="hint">Opens automatically once "Create stitched video" above is checked. Everything here only affects stitch.mp4.</p>
-
-    <label class="field-label" for="stitch_layout">
-      Stitch layout
-      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Camera arrangement for stitch.mp4: side by side, stacked, or rearview-mirror inset. Auto picks side-by-side or top-down from the trip's own GPS extent; rearview_mirror is never auto-picked.</span></span>
-    </label>
-    <select id="stitch_layout" name="stitch_layout">
-      <option value="auto" selected>auto</option>
-      <option value="side_by_side">side_by_side</option>
-      <option value="top_down">top_down</option>
-      <option value="rearview_mirror">rearview_mirror</option>
-    </select>
 
     <div class="field-row">
       <div class="field">
@@ -300,20 +327,9 @@
 
     <div class="field-row">
       <div class="field">
-        <label class="field-label" for="stitch_map">
-          Stitch map panel
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also compose a map panel alongside the camera composite in stitch.mp4 - a whole-trip overview, or a follow-camera view (needs the map follow-camera radius in Advanced map too).</span></span>
-        </label>
-        <select id="stitch_map" name="stitch_map">
-          <option value="" selected>(none)</option>
-          <option value="map">whole-trip overview</option>
-          <option value="zoom">follow-camera</option>
-        </select>
-      </div>
-      <div class="field">
         <label class="field-label" for="stitch_map_side">
           Stitch map panel side
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Override the map panel's side. Default: left for top_down layout, bottom for side_by_side/rearview_mirror.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Override the map panel's side. Default: left for top_down layout, bottom for side_by_side/rearview_mirror. Only meaningful once Stitch map panel above is set.</span></span>
         </label>
         <select id="stitch_map_side" name="stitch_map_side">
           <option value="" selected>(auto)</option>
@@ -332,22 +348,11 @@
       </div>
     </div>
 
-    <div class="checkbox-row">
-      <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_gsensor" name="stitch_gsensor" value="true" style="width: auto; margin: 0;">
-        Overlay g-sensor gauge onto stitch.mp4
-      </label>
-      <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_graph" name="stitch_graph" value="true" style="width: auto; margin: 0;">
-        Compose g-sensor strip-chart panel onto stitch.mp4
-      </label>
-    </div>
-
     <div class="field-row">
       <div class="field">
         <label class="field-label" for="stitch_gsensor_size">
           G-sensor overlay size (%)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Overlay size as a percentage of the camera composite's width (5-40). Only used together with Overlay g-sensor gauge above.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Overlay size as a percentage of the camera composite's width (5-40). Only used together with "Overlay g-sensor gauge onto stitch.mp4" above.</span></span>
         </label>
         <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" min="5" max="40" step="0.1" placeholder="15">
       </div>
@@ -418,6 +423,7 @@
     var triggers = [
       ["stitch", "advanced-stitch"],
       ["render_map", "advanced-map"],
+      ["render_gsensor_graph", "advanced-gsensor"],
     ];
     triggers.forEach(function (pair) {
       var checkbox = document.getElementById(pair[0]);

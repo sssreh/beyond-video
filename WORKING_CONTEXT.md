@@ -11103,3 +11103,44 @@ noted for tasks #799/#805, confirmed unrelated) and `test_trip_log.py`
 General options section gained a paragraph explaining the per-trip
 prefix and when it kicks in (multi-trip runs only, in both the
 always-on live output and `--debug`'s stderr).
+
+## Feature: bv-export web form - only hide fine-tuning defaults, not feature choices
+## (2026-08-14)
+
+Christer: "I just want the advanced stuff with defaults to be hidden,
+not common selections." The Advanced sections (task #526/#527) had
+been collapsing two different kinds of things together: numeric/
+positional fields that already have a sensible default and rarely
+need touching (mirror pan/zoom, stitch resolution/bitrate/scale,
+gap-detection tolerances), and deliberate feature choices with no
+real "default behavior" to fall back on - picking a stitch layout,
+turning on the g-sensor overlay videos, enabling the stitch map/graph
+panels, choosing track-up. Burying the second kind behind a click
+made every export start with an extra "expand Advanced, find the
+thing I always set" step.
+
+**Fix.** Moved 7 controls out of their collapsed `<details>` sections
+into the always-visible Options group in `job_new_bv_export.html`:
+`stitch_layout` and `stitch_map` (now a `field-row` right under the
+core stitch/map checkboxes), `stitch_gsensor`, `stitch_graph`, and
+`map_track_up` (a new checkbox-row), and `render_gsensor`/
+`render_gsensor_graph` (another checkbox-row). Left every numeric/
+positional fine-tuning field behind - mirror size/radius/zoom/pan/
+icon, stitch resolution/bitrate/scale/max-width/max-height, map
+panel side/size, g-sensor overlay size/position, graph panel side/
+size, subtitle background toggle, and the trip-detection gap/duration
+fields - since those genuinely do have workable defaults and stay out
+of the way until wanted. "Advanced g-sensor" now holds only
+`gsensor_graph_x` (its hint/auto-open trigger updated to describe
+that single remaining fine-tuning toggle, gated on "Render
+gsensor_graph.mp4" instead of the removed render checkboxes it used
+to share the section with). Field `name=`/`id=` attributes were left
+untouched, so `web/app.py`'s form-parsing route needed no changes -
+this was purely a template reorganization.
+
+**Verification.** No pytest in this sandbox. Confirmed via grep that
+none of the 7 moved ids ended up duplicated or orphaned, loaded the
+template through Jinja2's own `Environment.get_template()` to confirm
+it still parses, and grepped `tests/` for any test asserting on these
+fields' old Advanced-section placement (none exist - `test_jobs.py`
+tests `JobRunner`, not the template's HTML structure).
