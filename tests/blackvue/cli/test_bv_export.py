@@ -1,5 +1,6 @@
 import json
 import subprocess
+import threading
 
 import pytest
 
@@ -289,6 +290,41 @@ def test_bv_export_overwrite_flag_wipes_existing_folder(tmp_path):
     assert folder.is_dir()
     assert not stale_file.exists()
     assert (folder / "front.mp4").exists()
+
+
+def test_interactive_requires_the_main_thread(monkeypatch):
+    """Same bug/fix as bv_generate.py's/bv_scribe.py's own
+    _interactive() (see WORKING_CONTEXT.md's "Fix _interactive() false
+    positive hanging bv-web jobs on input()" entry) - missed here at
+    first because bv_export.py's own interactive prompt (wipe-vs-keep
+    an already-existing trip folder, see _ask_wipe_existing()) only
+    triggers on a rerun against a trip that's already been exported,
+    not on every run. A background thread (bv-web's job runner always
+    runs jobs on one) must never be treated as interactive even if the
+    whole process happens to have a real terminal attached - isatty()
+    is process-wide, not per-thread - or a bv-web job re-run against an
+    existing trip folder calls input() and hangs forever with no
+    output in the browser."""
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(bv_export_module.sys, "stdin", FakeTTY())
+    monkeypatch.setattr(bv_export_module.sys, "stdout", FakeTTY())
+
+    assert bv_export_module._interactive() is True
+
+    result = {}
+
+    def check():
+        result["value"] = bv_export_module._interactive()
+
+    thread = threading.Thread(target=check)
+    thread.start()
+    thread.join()
+
+    assert result["value"] is False
 
 
 def test_bv_export_interactive_prompt_wipes_when_answered_yes(

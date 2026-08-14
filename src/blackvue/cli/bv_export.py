@@ -14,6 +14,7 @@ import argparse
 import shlex
 import shutil
 import sys
+import threading
 from collections.abc import Callable
 from collections.abc import Iterable
 from datetime import timedelta
@@ -131,9 +132,40 @@ def _resolve_icon_path(
 
 
 def _interactive() -> bool:
-    """Return True if running attached to a real terminal."""
+    """Return True if running attached to a real terminal, on the
+    main thread.
 
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    sys.stdin/sys.stdout are process-wide, not per-thread - if
+    bv-web's own server process happens to be launched attached to a
+    real terminal (Christer's native, non-Docker setup: `bv-web
+    serve ...` typed directly into a pwsh window), isatty() returns
+    True even inside a background job thread, where there is no one
+    actually watching that console for this specific prompt. Without
+    the main-thread check below, the `folder.exists()` branch in
+    `_run()` below then calls `_ask_wipe_existing()` -> `input()` on
+    that thread, which blocks forever - the job's own output box
+    shows nothing (the prompt text goes to the server's own,
+    unwatched console) and the job just sits "Running" indefinitely.
+    Same root cause, same fix, as `_should_write()`'s own
+    `_interactive()` in bv_scribe.py/bv_generate.py (see
+    WORKING_CONTEXT.md's "Fix _interactive() false positive hanging
+    bv-web jobs on input()" entry) - this one was missed there because
+    it only triggers when a trip's own folder already exists (a rerun
+    of the same trip without --overwrite), not on every run. Requiring
+    the main thread too means only a genuine direct CLI invocation
+    (always main-thread) can hit the interactive wipe/keep prompt;
+    every bv-web job (always a background thread, per
+    JobRunner._spawn()) now safely falls through to the `else False`
+    branch instead - "keep existing files, only update what this run
+    actually produces", the same non-interactive default documented in
+    `overwrite`'s own docstring above.
+    """
+
+    return (
+        sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and threading.current_thread() is threading.main_thread()
+    )
 
 
 def _default_warn(message: str) -> None:

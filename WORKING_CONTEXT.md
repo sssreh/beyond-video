@@ -10672,3 +10672,67 @@ these field names) - it already exercises `start_bv_export()` with
 fix doesn't touch, so no test changes were needed. No route-level
 test posts to the bv-export form with defaults, so there was nothing
 else to update.
+
+## Fix: bv-export web jobs hang forever re-running an already-exported
+## trip (`_interactive()` missing the same main-thread check) (2026-08-14)
+
+Christer reran a job from the web UI (the very same `--map-track-up`
+command from the raster-fix comparison above, against the same trip)
+and it just sat there: "I rerun the first one and nothing happen, is
+it waiting for an answer, i though you fixed that." He was right on
+both counts - it genuinely was waiting for an answer, and it genuinely
+is the same bug class as the "Fix `_interactive()` false positive
+hanging bv-web jobs on input()" entry earlier in this file - just in
+a file that fix didn't touch.
+
+**Root cause.** `bv_export.py` has its own separate `_interactive()`
+(`sys.stdin.isatty() and sys.stdout.isatty()`, no main-thread check),
+used by `_run()`'s wipe-vs-keep prompt: when a trip's own output
+folder already exists and `--overwrite` wasn't passed, it calls
+`_ask_wipe_existing(folder) if _interactive() else False` - and
+`_ask_wipe_existing()` is a raw `input()` call. Christer runs
+`bv-web serve` directly in an interactive pwsh window rather than as a
+detached service, so the whole process has a real terminal attached;
+`sys.stdin`/`sys.stdout` are process-wide, not per-thread, so
+`_interactive()` returned `True` even inside bv-web's background job
+thread. `input()` then blocked that thread forever, its prompt text
+going to the server's own unwatched console, not the job's output box
+- zero web output, no error, "Running" indefinitely. Exactly
+Christer's symptoms, and exactly why it only surfaced now: this is the
+first time a web job re-ran an already-exported trip without
+`--overwrite` - every earlier run in this project either targeted a
+fresh trip or explicitly overwrote.
+
+The earlier `_interactive()` fix (see above in this file) only
+touched `_should_write()` in `bv_scribe.py`/`bv_generate.py` - a
+different function facing a different prompt (per-file overwrite),
+in different modules. `bv_export.py` has always had its own
+independent `_interactive()`/`input()` pair for its own wipe-vs-keep
+prompt and was never covered.
+
+**Fix.** Same fix, same place in the reasoning: `_interactive()` in
+`bv_export.py` now also requires
+`threading.current_thread() is threading.main_thread()`. A genuine
+direct CLI invocation is always on the main thread, so its
+interactive wipe/keep prompt behavior is unchanged. Every bv-web job
+(always a background `threading.Thread`, per `JobRunner._spawn()`)
+now always takes the `else False` branch instead - keep existing
+files, only update what the run actually produces - the same
+non-interactive default already documented on `overwrite`'s own
+docstring, instead of hanging.
+
+**Verification.** No pytest in this sandbox; `ast.parse` clean on
+`cli/bv_export.py` and `tests/blackvue/cli/test_bv_export.py`. Added
+`test_interactive_requires_the_main_thread`, mirroring the existing
+`bv_generate.py`/`bv_scribe.py` test of the same name and shape.
+Directly exercised the real (not mocked) `_interactive()` function in
+this sandbox with a faked always-tty `sys.stdin`/`sys.stdout`: on the
+main thread it returned `True` (interactive behavior preserved); run
+inside a real `threading.Thread`, it returned `False` (the fix).
+Existing wipe-vs-keep tests
+(`test_bv_export_interactive_prompt_wipes_when_answered_yes`,
+`..._keeps_on_default_answer`, `..._only_asked_once_per_run`) all
+monkeypatch `_interactive()` itself directly rather than
+`sys.stdin`/`sys.stdout`, so they exercise `_ask_wipe_existing()`'s
+own wipe/keep/ask-once logic unaffected by this change - no updates
+needed there.
