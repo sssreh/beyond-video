@@ -10522,3 +10522,96 @@ since `start_bv_export()` now always passes it.
 `docs/man/bv-export.md` updated: the `--debug` row now mentions
 phase-start lines, and a new paragraph after the wipe-vs-keep section
 explains what Cancel now does and doesn't guarantee.
+
+## Fix: `--map-track-up`'s static overview no longer redraws every road on every frame (2026-08-14)
+
+Follow-up to task #79/#512's own track-up feature. Christer, after
+being told `--map-track-up` was the likely cause of a slow `map.mp4`
+render on a real job (`--map --map-zoom 60 --map-track-up`, 10:09:17
+"starting map.mp4 render is taken so long time"): "I thought you only
+needed a few static maps and could turn them around when needed, not
+creating a new map for every frame." Correct, and not what the code
+did - `render_frame_visual()`'s `track_up` handling rotated every
+projected road/area/route/marker *point* individually
+(`_rotate_point()`) as part of a full from-scratch redraw, every
+single frame, rather than rotating a rendered *image*.
+
+**The fix (static `--map` overview only, `zoom_meters=None`):**
+`map_render.render_track_up_base_map()` renders the background+roads
+once, same as the existing `render_base_map()`, but padded on every
+side (`_track_up_raster_padding()`) so the result can be rotated by
+any heading around its own center and cropped back to a plain frame
+without ever exposing a blank edge - the padding math: rotating a
+fixed-size rectangle through every possible angle around its own
+center sweeps out a disk whose radius is the rectangle's own
+half-diagonal, so padding out to that radius on every axis guarantees
+every pixel any rotation could ever need is already drawn.
+`render_frame_visual()` (new `track_up_raster` param) then just calls
+Pillow's `Image.rotate(heading, center=..., resample=BICUBIC)` on that
+raster and crops back to frame size - a cheap image-level op - instead
+of redrawing. The route line and marker are still drawn per-frame with
+their own (much cheaper - a route/marker is a handful of points, a
+road network is thousands) per-point rotation on top, using the exact
+same pivot the raster was rotated around, so the two layers stay
+aligned. `render_map_video()` builds the raster once (mirroring how it
+already built `base_image` once) and hands the same object to every
+frame.
+
+**Real bug caught before shipping:** the first draft baked road-name
+labels (`_draw_roads()`'s second pass) into the raster along with the
+lines. Since the whole raster then gets rotated as a unit, every label
+would have visibly tipped over/gone upside-down as heading changed -
+turn-by-turn map conventions (and this project's own old per-point
+behavior) keep labels upright regardless of scene rotation. Fixed by
+splitting `_draw_roads()`: a new `draw_labels: bool` param (default
+True, unchanged for every existing caller) lets `render_track_up_base_map()`
+draw lines only and get the picked `(name, point)` label list back
+without drawing it; `render_frame_visual()` then redraws those labels
+itself every frame via the new `_draw_labels()` helper, always
+upright, at each anchor point rotated the same way the route/marker
+points already are. Caught by rendering old-vs-new output side by
+side and diffing pixels (max diff, % of pixels differing) across
+several headings - `heading=0.0` matches the old full-redraw output
+exactly (confirming the padding/crop offset math), non-zero headings
+showed the labels visibly rotated before this fix and match (up to
+ordinary BICUBIC-vs-vector antialiasing noise along road edges,
+visually confirmed) after it.
+
+**Deliberately not applied to `--map-zoom`'s follow-camera mode**
+(the config in Christer's own slow job): a zoomed frame recenters on
+the vehicle's current position every single frame, so there's no
+single bbox - and therefore no single raster - that covers every
+frame's own view the way a fixed whole-trip bbox does. That mode
+already only redraws its own small, bbox-filtered road set per frame
+(`roads_within_bbox()`), track_up or not - this fix doesn't speed that
+case up further, called out explicitly in both
+`render_track_up_base_map()`'s own docstring and
+`docs/man/bv-export.md`'s `--map-track-up` row so it isn't assumed to
+cover a case it doesn't.
+
+**Verification.** No pytest in this sandbox; `ast.parse` clean on
+`export/map_render.py` and `export/map_video.py`. Real (not mocked)
+PIL rendering checks run directly in the sandbox confirmed: pixel
+-exact match between the old full-redraw path and the new raster path
+at `heading=0.0`; visually-identical output at `heading=40.0` (diff
+confined to thin antialiasing bands right along road/area edges, not
+a positional/mirroring bug - checked via a rendered diff mask image);
+and the label-upright fix specifically (before the fix, the same
+comparison showed ~3.5% of pixels differing at `heading=40.0`,
+dropping to ~2.1% once labels stopped being baked into the rotated
+raster - the remaining difference is ordinary antialiasing, not
+label rotation). New tests in `tests/blackvue/export/test_map_render.py`
+(`render_track_up_base_map()`'s padding/labels-not-drawn behavior,
+`render_frame_visual()`'s raster path matching/diverging at the right
+headings, labels redrawn upright via a rotated anchor, `_draw_roads()`'s
+new `draw_labels` param) and `tests/blackvue/export/test_map_video.py`
+(`render_track_up_base_map()` called once and reused, skipped
+entirely when zoomed or when track_up is off, a real end-to-end
+render with `track_up=True`) - 145 tests across both files (13 new)
+run directly against the real `blackvue` package in this sandbox, all
+passing.
+
+`docs/man/bv-export.md`'s `--map-track-up` row rewritten to describe
+the new cost model (roughly free on `--map`'s static overview now,
+unchanged/still-redrawing on `--map-zoom`) instead of the old blanket
+"costs real extra render time" warning.

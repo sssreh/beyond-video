@@ -446,6 +446,174 @@ def test_render_map_video_defaults_track_up_to_false(tmp_path, monkeypatch):
     assert all(value is False for value in captured_track_up)
 
 
+def test_render_map_video_builds_the_track_up_raster_once_and_reuses_it(
+    tmp_path, monkeypatch
+):
+    # The raster-based replacement for the old "redraw everything, every
+    # frame" track_up cost (task #512 follow-up, Christer: "I thought
+    # you only needed a few static maps and could turn them around when
+    # needed, not creating a new map for every frame") - confirms
+    # render_track_up_base_map() is only ever called once per render,
+    # with the exact same object then handed to every render_frame_
+    # visual() call as track_up_raster, mirroring the existing base
+    # -image reuse test above.
+    raster_calls = []
+    sentinel_raster = object()
+
+    def fake_render_track_up_base_map(*args, **kwargs):
+        raster_calls.append((args, kwargs))
+        return sentinel_raster
+
+    captured_rasters = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_rasters.append(kwargs.get("track_up_raster"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module,
+        "render_track_up_base_map",
+        fake_render_track_up_base_map,
+    )
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2, track_up=True,
+    )
+
+    assert len(raster_calls) == 1
+    assert len(captured_rasters) >= 2
+    assert all(raster is sentinel_raster for raster in captured_rasters)
+
+
+def test_render_map_video_skips_the_track_up_raster_when_zoomed(
+    tmp_path, monkeypatch
+):
+    # A follow-camera frame gets a fresh, freshly-recentered bbox every
+    # frame - there's no single bbox (and therefore no single raster)
+    # that could cover every frame's own view, so zoom_meters + track_up
+    # together should still fall back to the old per-frame redraw path,
+    # same as zoom_meters alone already does for the plain base_image.
+    def fail_render_track_up_base_map(*_args, **_kwargs):
+        raise AssertionError(
+            "render_track_up_base_map() should not be called when zoomed"
+        )
+
+    captured_rasters = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_rasters.append(kwargs.get("track_up_raster"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module,
+        "render_track_up_base_map",
+        fail_render_track_up_base_map,
+    )
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2, track_up=True, zoom_meters=50.0,
+    )
+
+    assert len(captured_rasters) >= 2
+    assert all(raster is None for raster in captured_rasters)
+
+
+def test_render_map_video_skips_the_track_up_raster_when_not_track_up(
+    tmp_path, monkeypatch
+):
+    def fail_render_track_up_base_map(*_args, **_kwargs):
+        raise AssertionError(
+            "render_track_up_base_map() should not be called without track_up"
+        )
+
+    captured_rasters = []
+
+    def fake_render_frame_visual(*_args, **kwargs):
+        captured_rasters.append(kwargs.get("track_up_raster"))
+        return _FakeFrameImage()
+
+    monkeypatch.setattr(
+        map_video_module,
+        "render_track_up_base_map",
+        fail_render_track_up_base_map,
+    )
+    monkeypatch.setattr(
+        map_video_module, "render_frame_visual", fake_render_frame_visual
+    )
+    monkeypatch.setattr(
+        map_video_module, "compose_frame_overlay", _passthrough_compose_frame_overlay
+    )
+    monkeypatch.setattr(
+        map_video_module, "encode_frame_sequence", lambda *_a, **_k: None
+    )
+
+    fixes = (_fix(0, 59.300, 18.000), _fix(4, 59.310, 18.020))
+    static_bbox = BoundingBox(
+        min_lat=59.29, min_lon=17.99, max_lat=59.32, max_lon=18.03
+    )
+
+    render_map_video(
+        fixes, roads=(), bbox=static_bbox,
+        destination=tmp_path / "map.mp4", fps=2,
+    )
+
+    assert len(captured_rasters) >= 2
+    assert all(raster is None for raster in captured_rasters)
+
+
+def test_render_map_video_renders_a_real_track_up_frame_end_to_end(tmp_path):
+    # No mocking - a real render_track_up_base_map() + render_frame_
+    # visual() round trip through an actual moving trip, confirming the
+    # raster path produces a real, playable video rather than just
+    # satisfying the mocked-out wiring tests above.
+    fixes = (
+        _fix(0, 59.300, 18.000, course=10.0),
+        _fix(1, 59.302, 18.004, course=50.0),
+        _fix(2, 59.304, 18.008, course=90.0),
+    )
+    roads = (Road(points=((59.29, 17.99), (59.31, 18.02)), highway="primary"),)
+    bbox = BoundingBox(min_lat=59.29, min_lon=17.99, max_lat=59.31, max_lon=18.01)
+    destination = tmp_path / "map.mp4"
+
+    result = render_map_video(
+        fixes, roads=roads, bbox=bbox, destination=destination, fps=2,
+        track_up=True,
+    )
+
+    assert result == destination
+    assert destination.exists()
+
+
 def test_render_map_video_stays_fast_with_many_roads_in_static_mode(tmp_path):
     # End-to-end regression guard (real render_base_map()/render_frame()
     # calls, no mocking) for the bug above: with the fix, road cost is

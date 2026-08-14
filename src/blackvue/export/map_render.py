@@ -469,29 +469,71 @@ def _polyline_length(pixels: list[tuple[float, float]]) -> float:
     )
 
 
+def _draw_labels(
+    draw: ImageDraw.ImageDraw,
+    labels: list[tuple[str, tuple[float, float]]],
+) -> None:
+    """Draw each `(name, point)` label - always upright, regardless of
+    whatever rotation (if any) `point` has already had applied to it by
+    the caller. `stroke_width`/`stroke_fill` draws a background-colored
+    halo behind each label so it stays legible over a road/area fill of
+    a similar shade to the text itself, without needing a separate
+    background box.
+
+    Split out of `_draw_roads()` so render_frame_visual()'s
+    `track_up_raster` path can call this with freshly rotated anchor
+    points every frame, instead of drawing (and thereby baking a fixed
+    rotation into) the text as part of a raster - see `_draw_roads()`'s
+    own `draw_labels` parameter for why that distinction matters.
+    """
+
+    if not labels:
+        return
+
+    font = _load_font(_ROAD_LABEL_FONT_SIZE)
+    for name, point in labels:
+        draw.text(
+            point, name, font=font, fill=TEXT_COLOR, anchor="mm",
+            stroke_width=2, stroke_fill=BACKGROUND_COLOR,
+        )
+
+
 def _draw_roads(
     draw: ImageDraw.ImageDraw,
     proj,
     roads: tuple[Road, ...],
-) -> None:
+    *,
+    draw_labels: bool = True,
+) -> list[tuple[str, tuple[float, float]]]:
     """Draw every road's own line, styled by its OSM `highway=*` tag
-    (see `_ROAD_STYLE_BY_HIGHWAY`), then - in a second pass, so a label
-    is never immediately overdrawn by a later road's own line crossing
-    it - a name label for each sufficiently long, major, named road
-    (see `_LABELED_HIGHWAY_TYPES`/`_MIN_LABELED_ROAD_LENGTH_PX`).
+    (see `_ROAD_STYLE_BY_HIGHWAY`), then - so a label is never
+    immediately overdrawn by a later road's own line crossing it - a
+    name label for each sufficiently long, major, named road (see
+    `_LABELED_HIGHWAY_TYPES`/`_MIN_LABELED_ROAD_LENGTH_PX`), via
+    `_draw_labels()`.
 
     A single real street is usually split into many separate OSM ways
     (one per intersection) - labeling every segment would repeat the
     same name over and over along one street, so this keeps only the
     single longest on-screen segment per distinct name and labels that
-    one. `stroke_width`/`stroke_fill` draws a background-colored halo
-    behind each label so it stays legible over a road/area fill of a
-    similar shade to the text itself, without needing a separate
-    background box.
+    one.
 
-    Shared by `render_base_map()` and `render_frame()`'s own
-    from-scratch (no `base_image`) path so the two styling/labeling
-    rules can't drift apart from each other.
+    Always returns the resulting `(name, point)` label list (the exact
+    input `_draw_labels()` expects), regardless of `draw_labels`.
+    `draw_labels=False` (render_track_up_base_map()'s own use, see that
+    function's docstring) draws the road *lines* only and leaves the
+    caller to draw the labels itself later, upright, at a point of its
+    own choosing - baking upright label text into a raster that's then
+    rotated as a whole (render_frame_visual()'s `track_up_raster` path)
+    would make every label visibly tip over/go upside-down as heading
+    changes, unlike a road *line*, which has no "upright" orientation
+    of its own and looks identical either way. `draw_labels=True` (the
+    default, every other caller) preserves this function's original,
+    single-call behavior exactly.
+
+    Shared by `render_base_map()`, render_track_up_base_map(), and
+    `render_frame()`'s own from-scratch (no `base_image`) path so the
+    three styling/labeling rules can't drift apart from each other.
     """
 
     labels_by_name: dict[str, tuple[tuple[float, float], float]] = {}
@@ -511,13 +553,12 @@ def _draw_roads(
                 if existing is None or length > existing[1]:
                     labels_by_name[road.name] = (pixels[len(pixels) // 2], length)
 
-    if labels_by_name:
-        font = _load_font(_ROAD_LABEL_FONT_SIZE)
-        for name, (point, _length) in labels_by_name.items():
-            draw.text(
-                point, name, font=font, fill=TEXT_COLOR, anchor="mm",
-                stroke_width=2, stroke_fill=BACKGROUND_COLOR,
-            )
+    labels = [(name, point) for name, (point, _length) in labels_by_name.items()]
+
+    if draw_labels:
+        _draw_labels(draw, labels)
+
+    return labels
 
 
 def render_base_map(
@@ -566,6 +607,121 @@ def render_base_map(
     return image
 
 
+# How much of a margin, in pixels, to render *outside* the visible
+# width x height frame when pre-building a whole-trip raster for
+# track-up rotation (render_track_up_base_map() below) - large enough
+# that rotating that raster by any heading around its own center and
+# then cropping the same central width x height rectangle back out
+# never exposes a blank, undrawn edge.
+#
+# The math: rotating a fixed-size rectangle around its own center
+# through every possible angle sweeps out a disk whose radius is the
+# rectangle's own half-diagonal (the distance from its center to a
+# corner) - so as long as the raster extends at least that far past
+# center on every axis, *every* pixel any rotation could ever need is
+# already drawn. The couple of extra pixels on top of that exact math
+# (see _track_up_raster_padding()) cover BICUBIC's own small
+# neighboring-pixel sampling footprint right at the crop edge.
+_TRACK_UP_RASTER_SAFETY_MARGIN_PX = 2
+
+
+def _track_up_raster_padding(width: int, height: int) -> tuple[int, int]:
+    """Padding needed on each axis (see _TRACK_UP_RASTER_SAFETY_MARGIN_PX
+    for the reasoning) so a width x height frame can be rotated by any
+    heading around its own center, then cropped back to width x height,
+    without ever exposing a blank edge.
+    """
+
+    half_diagonal = math.hypot(width, height) / 2
+    pad_x = max(0, math.ceil(half_diagonal - width / 2)) + _TRACK_UP_RASTER_SAFETY_MARGIN_PX
+    pad_y = max(0, math.ceil(half_diagonal - height / 2)) + _TRACK_UP_RASTER_SAFETY_MARGIN_PX
+    return pad_x, pad_y
+
+
+def render_track_up_base_map(
+    bbox: BoundingBox,
+    roads: tuple[Road, ...],
+    *,
+    areas: tuple[Area, ...] = (),
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    margin: int = DEFAULT_MARGIN_PX,
+) -> tuple[Image.Image, int, int, list[tuple[str, tuple[float, float]]]]:
+    """Render the background + road network for `bbox`, padded on every
+    side (see _track_up_raster_padding()) so the result can be rotated
+    by any heading around its own center and cropped back to a plain
+    width x height frame in render_frame_visual() - the track-up
+    (task #512) equivalent of what render_base_map() already does for
+    the plain, unrotated static overview: draw the part of the frame
+    that's identical on every output frame exactly once, instead of
+    re-projecting and re-drawing every road/area point from scratch
+    (this time with a per-point rotation too - see _rotate_point()) on
+    every single one.
+
+    Returns `(raster, pad_x, pad_y, labels)`. `pad_x`/`pad_y` are how
+    far the plain (unrotated) frame's own (0, 0) corner sits inside the
+    padded raster, i.e. the crop offset render_frame_visual() needs to
+    get back to a plain width x height frame once rotation is done.
+
+    `labels` is the same `(name, point)` list `_draw_roads()`/
+    `_draw_labels()` use, but deliberately NOT drawn into `raster`
+    itself (drawn with `draw_labels=False`) - unlike a road *line*, a
+    label is upright text, and rotating that text along with the rest
+    of the raster would make every road name visibly tip over/go
+    upside-down as heading changes, unlike this project's own old
+    per-point-rotation behavior (and unlike what turn-by-turn map
+    conventions do), which keeps labels upright and only moves their
+    anchor point. `point` here is already converted back to the same
+    plain (unpadded) width x height coordinate space render_frame_
+    visual()'s own `proj()` uses (`_project()`'s raw output, before
+    render_frame_visual()'s own per-frame `_rotate_point()` rotation) -
+    just `_draw_roads()`'s own padded-raster point with `(pad_x, pad_y)`
+    subtracted back out - so render_frame_visual() can rotate each
+    label's anchor exactly the same way it already rotates the route
+    line and marker position, and redraw the (always upright) text at
+    that point on top of the rotated+cropped raster, every frame.
+
+    Christer, after the cached-base-image/per-frame-visual-cache
+    explanation for why `--map-track-up` renders slower than the plain
+    north-up default: "I thought you only needed a few static maps and
+    could turn them around when needed, not creating a new map for
+    every frame" - this is that: one raster, rendered once, rotated (a
+    cheap image-level op) per frame instead of redrawn per frame.
+
+    Only meaningful for a *static* (whole-trip) bbox, the same
+    restriction render_base_map()'s own caching already has - a
+    `--map-zoom` follow-camera frame gets a fresh bbox centered on the
+    vehicle's own current position every frame, so there's no single
+    bbox (and therefore no single raster) that covers every frame's
+    own view; that mode keeps redrawing its own (already small,
+    bbox-filtered) road/area set per frame regardless of track_up. See
+    render_map_video()'s own track_up handling for where this and
+    render_base_map() are chosen between.
+    """
+
+    pad_x, pad_y = _track_up_raster_padding(width, height)
+    raster_width = width + 2 * pad_x
+    raster_height = height + 2 * pad_y
+
+    image = Image.new("RGB", (raster_width, raster_height), BACKGROUND_COLOR)
+    draw = ImageDraw.Draw(image)
+
+    def proj(lat: float, lon: float) -> tuple[float, float]:
+        x, y = _project(lat, lon, bbox, width, height, margin)
+        return x + pad_x, y + pad_y
+
+    for area in areas:
+        pixels = [proj(lat, lon) for lat, lon in area.points]
+        if len(pixels) >= 3:
+            fill = WATER_COLOR if area.kind == "water" else GREEN_COLOR
+            draw.polygon(pixels, fill=fill)
+
+    raw_labels = _draw_roads(draw, proj, roads, draw_labels=False)
+    labels = [(name, (x - pad_x, y - pad_y)) for name, (x, y) in raw_labels]
+
+    return image, pad_x, pad_y, labels
+
+
 def render_frame_visual(
     bbox: BoundingBox,
     roads: tuple[Road, ...],
@@ -581,6 +737,7 @@ def render_frame_visual(
     margin: int = DEFAULT_MARGIN_PX,
     base_image: Image.Image | None = None,
     track_up: bool = False,
+    track_up_raster: tuple[Image.Image, int, int, list[tuple[str, tuple[float, float]]]] | None = None,
 ) -> Image.Image:
     """Render everything in a map-overlay frame that depends only on
     position/route/roads - background, roads, areas, the route driven
@@ -588,23 +745,41 @@ def render_frame_visual(
     text or the live-GPS badge (see compose_frame_overlay() for those).
 
     `track_up` (default False, task #512): when True and `heading` is
-    known, every projected point (roads, areas, the route line, and the
-    marker's own position) is rotated around the frame's own center by
+    known, every projected point (the route line and the marker's own
+    position - and roads/areas too, whenever `track_up_raster` isn't
+    usable, see below) is rotated around the frame's own center by
     `-heading` via `_rotate_point()`, so the vehicle's current heading
     always points "up" on screen instead of true north - the same
     convention phone turn-by-turn apps default to. The marker glyph
     itself is drawn pointing straight up in this mode (its own rotation
     would otherwise double up with the scene rotation it's now sitting
     inside) rather than at `heading` against a fixed north-up scene.
-    Requires `base_image=None` when combined with a static (whole-trip)
-    `bbox`, since a cached base image was drawn for one specific
-    rotation (none) and can't be reused once rotation changes every
-    frame - render_map_video() enforces this by not building/passing a
-    base_image at all whenever `track_up` is on, even in its normally-
-    cached static overview mode (see that module's own `track_up`
-    handling). No effect when `heading` is None (nothing to rotate
-    to) - same "falls back to the unrotated/no-arrow behavior" spirit
-    as the marker's own heading=None fallback below.
+    No effect when `heading` is None (nothing to rotate to) - same
+    "falls back to the unrotated/no-arrow behavior" spirit as the
+    marker's own heading=None fallback below.
+
+    `track_up_raster`, if given (a `(raster, pad_x, pad_y)` triple from
+    render_track_up_base_map()) and `track_up`/`heading` both apply,
+    replaces the per-point road/area rotation above with a cheap
+    image-level one instead: `raster` (already rendered once, padded
+    on every side) is rotated by `heading` degrees around its own
+    center via Pillow's `Image.rotate()` and cropped back down to
+    `width` x `height`, instead of every road/area point being
+    re-projected and individually rotated via `_rotate_point()` on this
+    call. The route line and marker still get their own (cheap by
+    comparison - a route/marker is a handful of points, a road network
+    is thousands) per-point rotation on top, using the exact same
+    frame-center pivot the raster was rotated around, so the two layers
+    stay aligned. Ignored (falls back to the per-point road/area
+    rotation) when `track_up_raster` is None, `track_up` is False, or
+    `heading` is None - see render_map_video()'s own `track_up`
+    handling for when a raster is actually built and passed in (only
+    the static whole-trip overview; `--map-zoom` still redraws its own
+    small, already bbox-filtered road set per frame regardless).
+    Requires `base_image=None` whenever a raster IS used (checked by
+    precedence below, not asserted) - the two are different ways of
+    avoiding the same per-frame road/area redraw and only one can apply
+    to a given frame.
 
     Split out of what used to be all of render_frame() so
     render_map_video() can cache and reuse this (expensive: background
@@ -627,14 +802,29 @@ def render_frame_visual(
     step instead.
     """
 
-    if base_image is not None:
-        image = base_image.copy()
-    else:
-        image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
-    draw = ImageDraw.Draw(image)
-
     rotate_scene = track_up and heading is not None
     center = (width / 2, height / 2)
+    skip_background_draw = False
+    raster_labels: list[tuple[str, tuple[float, float]]] = []
+
+    if rotate_scene and track_up_raster is not None:
+        raster, pad_x, pad_y, raster_labels = track_up_raster
+        raster_center = (pad_x + width / 2, pad_y + height / 2)
+        rotated = raster.rotate(
+            heading,
+            resample=Image.BICUBIC,
+            center=raster_center,
+            fillcolor=BACKGROUND_COLOR,
+        )
+        image = rotated.crop((pad_x, pad_y, pad_x + width, pad_y + height))
+        skip_background_draw = True
+    elif base_image is not None:
+        image = base_image.copy()
+        skip_background_draw = True
+    else:
+        image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
+
+    draw = ImageDraw.Draw(image)
 
     def proj(lat: float, lon: float) -> tuple[float, float]:
         point = _project(lat, lon, bbox, width, height, margin)
@@ -643,14 +833,15 @@ def render_frame_visual(
         return point
 
     # In track-up mode the *scene* itself is already rotated so the
-    # current heading reads as "up" (via `proj` above) - the marker
-    # glyph then just needs to point straight up (heading 0) rather
-    # than at `heading` again, or it would visibly over-rotate, always
-    # pointing off to one side instead of always forward. Left as
-    # `heading` unchanged in the normal (non-track-up) case.
+    # current heading reads as "up" (via `proj` above, or already baked
+    # into `image` when `track_up_raster` was used) - the marker glyph
+    # then just needs to point straight up (heading 0) rather than at
+    # `heading` again, or it would visibly over-rotate, always pointing
+    # off to one side instead of always forward. Left as `heading`
+    # unchanged in the normal (non-track-up) case.
     marker_heading = 0.0 if rotate_scene else heading
 
-    if base_image is None:
+    if not skip_background_draw:
         for area in areas:
             pixels = [proj(lat, lon) for lat, lon in area.points]
             if len(pixels) >= 3:
@@ -658,6 +849,23 @@ def render_frame_visual(
                 draw.polygon(pixels, fill=fill)
 
         _draw_roads(draw, proj, roads)
+    elif raster_labels:
+        # Road *lines* are already baked into the rotated `image` above
+        # (render_track_up_base_map() drew them into the raster before
+        # it was rotated+cropped) - labels aren't, since baking upright
+        # text into a raster that then gets rotated as a whole would
+        # make every road name visibly tip over/go upside-down as
+        # heading changes (see render_track_up_base_map()'s own
+        # docstring). Redrawn here instead, upright, using the exact
+        # same per-point rotation the route line and marker position
+        # get below.
+        _draw_labels(
+            draw,
+            [
+                (name, _rotate_point(point, center, -heading))
+                for name, point in raster_labels
+            ],
+        )
 
     if len(route_points) >= 2:
         pixels = [proj(lat, lon) for lat, lon in route_points]
@@ -791,13 +999,14 @@ def render_frame(
     margin: int = DEFAULT_MARGIN_PX,
     base_image: Image.Image | None = None,
     track_up: bool = False,
+    track_up_raster: tuple[Image.Image, int, int, list[tuple[str, tuple[float, float]]]] | None = None,
 ) -> Image.Image:
     """Render one map-overlay frame: background roads, the route
     driven so far, a position marker, and an optional speed/timestamp
     text overlay in the corner.
 
-    `track_up` is forwarded straight to render_frame_visual() - see its
-    own docstring.
+    `track_up`/`track_up_raster` are forwarded straight to
+    render_frame_visual() - see its own docstring.
 
     The position marker is an arrow rotated to `heading` (compass
     degrees, clockwise from north) when `heading` is given, `marker_image`
@@ -847,6 +1056,7 @@ def render_frame(
         areas=areas, heading=heading, marker_image=marker_image,
         show_marker=show_marker, width=width, height=height,
         margin=margin, base_image=base_image, track_up=track_up,
+        track_up_raster=track_up_raster,
     )
     return compose_frame_overlay(
         visual,

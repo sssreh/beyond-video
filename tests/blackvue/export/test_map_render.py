@@ -6,16 +6,19 @@ from PIL import ImageFont
 
 from blackvue.export import map_render as map_render_module
 from blackvue.export.map_render import _arrow_points
+from blackvue.export.map_render import _draw_roads
 from blackvue.export.map_render import _FONT_CANDIDATES
 from blackvue.export.map_render import _load_font
 from blackvue.export.map_render import _project
 from blackvue.export.map_render import _rotate_point
+from blackvue.export.map_render import _track_up_raster_padding
 from blackvue.export.map_render import compose_frame_overlay
 from blackvue.export.map_render import DEFAULT_MARGIN_PX
 from blackvue.export.map_render import draw_caption
 from blackvue.export.map_render import render_base_map
 from blackvue.export.map_render import render_frame
 from blackvue.export.map_render import render_frame_visual
+from blackvue.export.map_render import render_track_up_base_map
 from blackvue.export.map_render import TEXT_MARGIN_PX
 from blackvue.export.osm_roads import BoundingBox
 from blackvue.export.osm_roads import Road
@@ -705,3 +708,244 @@ def test_draw_caption_bar_sits_above_the_bottom_margin():
 
     assert not top_row_changed
     assert bar_bottom_row_changed
+
+
+# --- render_track_up_base_map() / track_up_raster ---------------------
+
+
+def test_track_up_raster_padding_is_at_least_the_half_diagonal():
+    # The geometric guarantee the whole feature depends on: rotating a
+    # width x height frame by any angle around its own center and
+    # cropping back to width x height sweeps out (across every possible
+    # heading) a disk of radius = half the frame's own diagonal - the
+    # raster has to extend at least that far past center on both axes,
+    # or some heading would crop a real, drawn edge.
+    import math
+
+    width, height = 320, 240
+    pad_x, pad_y = _track_up_raster_padding(width, height)
+    half_diagonal = math.hypot(width, height) / 2
+
+    assert width / 2 + pad_x >= half_diagonal
+    assert height / 2 + pad_y >= half_diagonal
+
+
+def test_render_track_up_base_map_returns_a_raster_padded_on_every_side():
+    width, height = 320, 240
+    pad_x, pad_y = _track_up_raster_padding(width, height)
+
+    raster, returned_pad_x, returned_pad_y, _labels = render_track_up_base_map(
+        _BBOX, roads=(), width=width, height=height,
+    )
+
+    assert returned_pad_x == pad_x
+    assert returned_pad_y == pad_y
+    assert raster.size == (width + 2 * pad_x, height + 2 * pad_y)
+
+
+def test_render_track_up_base_map_draws_roads_into_the_raster():
+    width, height = 320, 240
+    blank, _px, _py, _labels = render_track_up_base_map(
+        _BBOX, roads=(), width=width, height=height,
+    )
+
+    roads = (Road(points=((59.30, 18.00), (59.34, 18.08))),)
+    with_road, _px, _py, _labels = render_track_up_base_map(
+        _BBOX, roads=roads, width=width, height=height,
+    )
+
+    assert list(blank.getdata()) != list(with_road.getdata())
+
+
+def test_render_track_up_base_map_does_not_bake_labels_into_the_raster(
+    monkeypatch,
+):
+    # The bug this guards against: a label baked into a raster that's
+    # later rotated as a whole would visibly tip over/go upside-down as
+    # heading changes, unlike this project's old per-point-rotation
+    # behavior (which always keeps label text upright). Confirmed here
+    # by spying on _draw_labels() - it must never be called while
+    # building the raster, even though a labelable road is present.
+    calls = []
+    monkeypatch.setattr(
+        map_render_module,
+        "_draw_labels",
+        lambda draw, labels: calls.append(labels),
+    )
+
+    named_major_road = Road(
+        points=((59.31, 18.02), (59.34, 18.08)),
+        highway="primary",
+        name="Test Road",
+    )
+
+    _raster, _px, _py, labels = render_track_up_base_map(
+        _BBOX, roads=(named_major_road,), width=320, height=320,
+    )
+
+    assert calls == []  # never drawn into the raster
+    assert any(name == "Test Road" for name, _point in labels)
+
+
+def test_render_frame_visual_with_track_up_raster_matches_full_redraw_at_zero_heading():
+    # heading=0.0 means the rotation is a no-op (Image.rotate(0) is the
+    # identity) - at that one angle, the raster-rotate-crop path and the
+    # old full per-point-rotation redraw should agree pixel-for-pixel,
+    # confirming the raster's own padding/crop offset lines up exactly
+    # with the plain (unpadded) width x height frame.
+    roads = (Road(points=((59.31, 18.02), (59.34, 18.08)), highway="primary"),)
+    route = ((59.31, 18.02), (59.33, 18.06))
+    width, height = 320, 320
+
+    full_redraw = render_frame_visual(
+        _BBOX, roads, route, route[-1],
+        heading=0.0, show_marker=True, width=width, height=height, track_up=True,
+    )
+
+    raster = render_track_up_base_map(_BBOX, roads, width=width, height=height)
+    via_raster = render_frame_visual(
+        _BBOX, roads, route, route[-1],
+        heading=0.0, show_marker=True, width=width, height=height, track_up=True,
+        track_up_raster=raster,
+    )
+
+    assert list(full_redraw.getdata()) == list(via_raster.getdata())
+
+
+def test_render_frame_visual_with_track_up_raster_changes_output_for_a_real_heading():
+    roads = (Road(points=((59.31, 18.02), (59.34, 18.08)), highway="primary"),)
+    width, height = 320, 320
+
+    raster = render_track_up_base_map(_BBOX, roads, width=width, height=height)
+
+    unrotated = render_frame_visual(
+        _BBOX, roads, (), (59.32, 18.05),
+        heading=0.0, show_marker=False, width=width, height=height, track_up=True,
+        track_up_raster=raster,
+    )
+    rotated = render_frame_visual(
+        _BBOX, roads, (), (59.32, 18.05),
+        heading=90.0, show_marker=False, width=width, height=height, track_up=True,
+        track_up_raster=raster,
+    )
+
+    assert list(unrotated.getdata()) != list(rotated.getdata())
+
+
+def test_render_frame_visual_ignores_track_up_raster_without_a_heading():
+    # No heading -> nothing to rotate to, same "falls back to the plain
+    # unrotated behavior" spirit as track_up itself without a heading -
+    # the raster path must not kick in just because one was passed.
+    roads = (Road(points=((59.31, 18.02), (59.34, 18.08)), highway="primary"),)
+    width, height = 320, 320
+
+    raster = render_track_up_base_map(_BBOX, roads, width=width, height=height)
+
+    without_raster = render_frame_visual(
+        _BBOX, roads, (), (59.32, 18.05),
+        heading=None, show_marker=True, width=width, height=height, track_up=True,
+    )
+    with_raster_but_no_heading = render_frame_visual(
+        _BBOX, roads, (), (59.32, 18.05),
+        heading=None, show_marker=True, width=width, height=height, track_up=True,
+        track_up_raster=raster,
+    )
+
+    assert list(without_raster.getdata()) == list(with_raster_but_no_heading.getdata())
+
+
+def test_render_frame_visual_with_track_up_raster_redraws_labels_upright(
+    monkeypatch,
+):
+    # The fix for the bug above: labels aren't baked into the raster,
+    # so render_frame_visual() has to redraw them itself, every frame -
+    # always upright (via _draw_labels(), which never rotates the text
+    # glyph), at an anchor point rotated the exact same way the route
+    # line and marker position already are.
+    named_major_road = Road(
+        points=((59.31, 18.02), (59.34, 18.08)),
+        highway="primary",
+        name="Test Road",
+    )
+    width, height = 320, 320
+    center = (width / 2, height / 2)
+    heading = 35.0
+
+    raster, _pad_x, _pad_y, raw_labels = render_track_up_base_map(
+        _BBOX, roads=(named_major_road,), width=width, height=height,
+    )
+    assert raw_labels  # sanity: the fixture road actually produced a label
+
+    captured = []
+    original_draw_labels = map_render_module._draw_labels
+
+    def spy_draw_labels(draw, labels):
+        captured.append(labels)
+        return original_draw_labels(draw, labels)
+
+    monkeypatch.setattr(map_render_module, "_draw_labels", spy_draw_labels)
+
+    render_frame_visual(
+        _BBOX, (named_major_road,), (), None,
+        heading=heading, show_marker=False, width=width, height=height,
+        track_up=True, track_up_raster=(raster, _pad_x, _pad_y, raw_labels),
+    )
+
+    assert len(captured) == 1
+    expected = [
+        (name, _rotate_point(point, center, -heading))
+        for name, point in raw_labels
+    ]
+    assert captured[0] == expected
+
+
+def test_draw_roads_with_draw_labels_false_returns_but_does_not_draw_labels(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        map_render_module,
+        "_draw_labels",
+        lambda draw, labels: calls.append(labels),
+    )
+
+    named_major_road = Road(
+        points=((59.31, 18.02), (59.34, 18.08)),
+        highway="primary",
+        name="Test Road",
+    )
+    image = Image.new("RGB", (320, 320), (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+
+    def proj(lat, lon):
+        return _project(lat, lon, _BBOX, 320, 320, DEFAULT_MARGIN_PX)
+
+    labels = _draw_roads(draw, proj, (named_major_road,), draw_labels=False)
+
+    assert calls == []
+    assert any(name == "Test Road" for name, _point in labels)
+
+
+def test_draw_roads_with_draw_labels_true_draws_labels_by_default(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        map_render_module,
+        "_draw_labels",
+        lambda draw, labels: calls.append(labels),
+    )
+
+    named_major_road = Road(
+        points=((59.31, 18.02), (59.34, 18.08)),
+        highway="primary",
+        name="Test Road",
+    )
+    image = Image.new("RGB", (320, 320), (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+
+    def proj(lat, lon):
+        return _project(lat, lon, _BBOX, 320, 320, DEFAULT_MARGIN_PX)
+
+    labels = _draw_roads(draw, proj, (named_major_road,))
+
+    assert len(calls) == 1
+    assert calls[0] == labels

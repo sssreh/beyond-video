@@ -30,6 +30,7 @@ from .map_render import compose_frame_overlay
 from .map_render import draw_caption
 from .map_render import render_base_map
 from .map_render import render_frame_visual
+from .map_render import render_track_up_base_map
 from .media import ExportCancelled
 from .media import _FRAME_CHECKPOINT_INTERVAL
 from .media import encode_frame_sequence
@@ -530,16 +531,24 @@ def render_map_video(
     map_render.render_frame_visual()'s own `track_up` handling - so the
     vehicle's current heading always points "up" instead of true north.
     Applies to both the static overview (`zoom_meters=None`) and the
-    zoomed follow-camera (`zoom_meters` given) modes; in the static
-    case it also disables the whole-render `base_image` reuse this
-    function otherwise relies on (see the `base_image` local below),
-    since a cached background was drawn for a fixed, unrotated scene
-    and can't be shared across frames whose rotation now changes with
-    every heading change - a real (opt-in) cost, not free like the
-    default north-up render. No effect on frames with no heading
-    available (a stationary/single-fix span) - those fall back to the
-    plain unrotated draw, same as map_render.py's own no-heading
-    fallback.
+    zoomed follow-camera (`zoom_meters` given) modes. No effect on
+    frames with no heading available (a stationary/single-fix span) -
+    those fall back to the plain unrotated draw, same as map_render.py's
+    own no-heading fallback.
+
+    In the static overview case, this builds `track_up_raster` (see the
+    local below) instead of the plain `base_image` - a padded, once
+    -rendered background that gets a cheap image-level rotate+crop per
+    frame (map_render.render_track_up_base_map()/render_frame_visual())
+    rather than a full road/area redraw with a per-point rotation.
+    That's the same cost as the default north-up render, just with one
+    extra per-frame image rotation - not the "redraw everything, every
+    frame" cost this used to have. The zoomed follow-camera case still
+    redraws its own (already small, bbox-filtered) road/area set per
+    frame regardless of `track_up` - a single raster can't cover every
+    frame's own freshly-recentered view the way it can for a fixed
+    whole-trip bbox, so there's no equivalent shortcut there (see
+    render_track_up_base_map()'s own docstring for why).
 
     `bbox` frames the whole trip at once by default (a static
     overview, the same every frame). `zoom_meters`, if given, switches
@@ -668,21 +677,33 @@ def render_map_video(
     # of a real-scale render, well past the interpolation cost
     # render_map_video()'s own O(fixes x frames) fix already addressed
     # (see render_base_map()'s own docstring). Rendered once here and
-    # handed to every render_frame() call below as a base to copy
-    # instead. Follow-camera (`--map-zoom`) mode gets a fresh bbox/
-    # road-set every frame, so there's no single base image to
-    # precompute - stays None there, and render_frame() falls back to
-    # its own per-frame road drawing. `track_up` also forces this to
-    # None even in static mode - a cached base image was drawn once for
-    # a fixed, unrotated scene, and track-up needs a fresh rotation
-    # (and therefore a fresh road/area redraw) on every frame whose
-    # heading differs from the last, so there's nothing safe to reuse
-    # (see this function's own `track_up` docstring paragraph).
-    base_image = (
-        None
-        if zoom_meters is not None or track_up
-        else render_base_map(bbox, roads, areas=areas, width=width, height=height)
-    )
+    # handed to every render_frame_visual() call below as a base to
+    # copy instead. Follow-camera (`--map-zoom`) mode gets a fresh
+    # bbox/road-set every frame, so there's no single base image to
+    # precompute - stays None there, and render_frame_visual() falls
+    # back to its own per-frame road drawing.
+    #
+    # `track_up` used to force this to None even in static mode (no
+    # safe way to reuse a background drawn for one fixed, unrotated
+    # scene once every frame needs its own rotation) - it now instead
+    # builds `track_up_raster` below, a padded version of the same
+    # background that CAN be reused: rotating and cropping that raster
+    # per frame (a cheap image-level op) reproduces the same per-frame
+    # rotation `_rotate_point()` used to redo from scratch, without
+    # redrawing a single road. See render_track_up_base_map()'s own
+    # docstring for the padding math, and Christer's own "I thought you
+    # only needed a few static maps and could turn them around when
+    # needed" that prompted this.
+    track_up_raster = None
+    if zoom_meters is not None:
+        base_image = None
+    elif track_up:
+        base_image = None
+        track_up_raster = render_track_up_base_map(
+            bbox, roads, areas=areas, width=width, height=height
+        )
+    else:
+        base_image = render_base_map(bbox, roads, areas=areas, width=width, height=height)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -844,6 +865,7 @@ def render_map_video(
                     height=height,
                     base_image=base_image,
                     track_up=track_up,
+                    track_up_raster=track_up_raster,
                 )
                 cached_visual = visual
                 cached_signature = signature
