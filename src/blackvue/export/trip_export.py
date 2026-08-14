@@ -1934,7 +1934,7 @@ def export_trip(
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
-    stitch_map_circle: bool = False,
+    stitch_map_circle: bool | None = None,
     stitch_gsensor: bool = False,
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
@@ -2199,6 +2199,13 @@ def export_trip(
     circle") - see stitch.stitch_cameras()'s own docstring for exactly
     how, and _map_panel_circle_mask_filter() for why an ellipse rather
     than reusing `stitch_mirror_radius`'s corner-rounding approach.
+    Defaults to `None` (auto): resolves to `True` when `stitch_map`
+    is the zoom variant, `False` for the static overview - Christer,
+    after trying the zoom-mode circle in practice: "maaybe circel
+    should be default, it looks so much better", then, asked which
+    variant: "Make it the default zoom map" - explicit `True`/`False`
+    (bv_export.py's `--stitch-map-circle`/`--no-stitch-map-circle`)
+    always overrides the auto pick.
 
     `stitch_gsensor=True` (also requires `stitch_layout`) composites a
     gsensor.mp4 as a transparent chroma-keyed overlay on top of the
@@ -3217,6 +3224,17 @@ def export_trip(
             resolved_stitch_layout = picked_layout
             log.step(f"auto-picked stitch layout: {resolved_stitch_layout}")
 
+    # Christer, after trying --stitch-map-circle in zoom mode: "maaybe
+    # circel should be default, it looks so much better", then, asked
+    # which variant: "Make it the default zoom map" - so None (the
+    # default) auto-picks True only for the zoom variant, leaving the
+    # static overview rectangular unless asked for explicitly. Explicit
+    # True/False from the CLI (--stitch-map-circle/--no-stitch-map
+    # -circle) always wins over the auto pick.
+    resolved_stitch_map_circle = (
+        stitch_map_circle if stitch_map_circle is not None else stitch_map == "zoom"
+    )
+
     stitch_path = None
     if stitch_layout is not None:
         log.step(f"starting stitch.mp4 render (layout={resolved_stitch_layout})")
@@ -3260,7 +3278,7 @@ def export_trip(
                 map_video_duration_seconds=video_duration_seconds,
                 map_recording_breakpoints=recording_breakpoints,
                 map_track_up=map_track_up,
-                map_circle=stitch_map_circle,
+                map_circle=resolved_stitch_map_circle,
                 gsensor_video=stitch_gsensor_source,
                 gsensor_size=stitch_gsensor_size,
                 gsensor_pos=stitch_gsensor_pos,

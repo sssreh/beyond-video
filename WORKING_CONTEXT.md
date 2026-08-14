@@ -11702,3 +11702,57 @@ Verified end to end with a real `export_trip()` run (ffmpeg-built 1s
 source video, tomllib-stub script since pytest itself isn't runnable
 here) - confirms the banner line and every subsequent say()-echoed
 line match the new assertion.
+
+## Change: --map-zoom default 120m -> 60m, --stitch-map-circle auto-defaults for zoom (2026-08-14)
+
+After the marker-scaling fix above, Christer tried --stitch-map-circle
+and the new zoom-radius scaling in practice and reported back:
+"bv-export now looks much easier witj the cli option inside
+paranteses." (no action - just positive feedback on an earlier
+change), "Note, maaybe circel should be default, it looks so much
+better.", and "Zoom is much better, now, 60 m or maybe even 30 should
+be default. It depends what you your goal is..". Asked to firm these
+up: circle should default on "for the default zoom map" specifically
+(not the static overview), and 60m for the zoom radius.
+
+**--map-zoom default**: `DEFAULT_ZOOM_RADIUS_METERS` in osm_roads.py
+changed from 120.0 to 60.0. Nothing else needed changing structurally
+- `_marker_scale_for_zoom()` (task #822) is defined relative to this
+constant, so the marker's "unaffected" point moves to 60m for free.
+Updated two tests in test_map_video.py that had hardcoded 120-based
+math (30m -> 15m, keeping the same clamp-to-3.0x demonstration, just
+against the new default) and the stale "120m default" comment in
+map_video.py's own marker-scale block.
+
+**--stitch-map-circle auto-default**: `stitch_map_circle` changed from
+`bool = False` to `bool | None = None` in both bv_export.py and
+trip_export.py's `export_trip()`. A new `resolved_stitch_map_circle`
+in export_trip() (right before the stitch_cameras() call) picks
+`stitch_map_circle if stitch_map_circle is not None else stitch_map
+== "zoom"` - so leaving it unset auto-enables the circle only for
+`--stitch-map zoom`, not the static overview, while an explicit
+`--stitch-map-circle`/`--no-stitch-map-circle` always wins. Added
+`--no-stitch-map-circle` (store_false, same dest, default=None on the
+first-registered action per argparse's own shared-dest resolution
+order) alongside the existing `--stitch-map-circle` (store_true,
+default=None) in bv_export.py.
+
+bv-web's job form needed no changes - `stitch_map_circle: bool =
+Form(False)` in app.py only appends `--stitch-map-circle` to argv when
+checked (jobs.py's `if stitch_map_circle: argv.append(...)`), so an
+unchecked box already omits the flag entirely and falls through to
+the CLI's own new auto-pick, same as a bare CLI invocation would.
+
+Updated test_bv_export.py's stale
+`test_main_defaults_stitch_map_circle_to_false` (renamed, now expects
+`None`) and added a `--no-stitch-map-circle` parse test. Added two new
+end-to-end tests in test_trip_export.py covering the auto-pick (True
+for `stitch_map="zoom"`, explicit False still overriding it).
+
+Verified end to end: parsed real CLI argv for all four combinations
+(bare `--stitch-map`, `--stitch-map-circle`, `--no-stitch-map-circle`,
+bare `--map-zoom`) via `bv_export.parse_args()`, and ran
+`export_trip()` against a real ffmpeg-built two-camera trip with
+`stitch_cameras()`'s `map_circle` kwarg captured, confirming all four
+resolution cases (unset+static, unset+zoom, explicit True, explicit
+False overriding zoom) via tomllib-stub scripts.

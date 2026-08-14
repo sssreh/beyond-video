@@ -199,8 +199,9 @@ MARKER_IMAGE_SCALE = 0.5
 # the way zooming in on everything else already looked.
 #
 # _marker_scale_for_zoom() below multiplies the marker's normal size
-# by DEFAULT_ZOOM_RADIUS_METERS (osm_roads.py's own 120m --map-zoom
-# default) divided by the actual radius requested - 1.0 (unchanged)
+# by DEFAULT_ZOOM_RADIUS_METERS (osm_roads.py's own --map-zoom
+# default, currently 60m - see that constant's own comment for why)
+# divided by the actual radius requested - 1.0 (unchanged)
 # at the default itself, bigger at a tighter radius, smaller at a
 # wider one. Only applies in --map-zoom follow-camera mode
 # (render_map_video()'s own `zoom_meters` is not None) - the
@@ -719,7 +720,7 @@ def render_map_video(
     # See _marker_scale_for_zoom()'s own comment (Christer: "Yes, thats
     # the whole idea of zooming") - 1.0 (unaffected) in static overview
     # mode, bigger/smaller than normal in --map-zoom mode depending on
-    # how tight the requested radius is relative to the 120m default.
+    # how tight the requested radius is relative to the default.
     marker_scale = _marker_scale_for_zoom(zoom_meters)
     marker_image = _load_marker_image(marker_image_path, scale=marker_scale)
 

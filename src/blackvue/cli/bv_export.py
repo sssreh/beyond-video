@@ -499,7 +499,7 @@ def bv_export(
     stitch_map: str | None = None,
     stitch_map_side: str | None = None,
     stitch_map_size: float | None = None,
-    stitch_map_circle: bool = False,
+    stitch_map_circle: bool | None = None,
     stitch_gsensor: bool = False,
     stitch_gsensor_size: float = DEFAULT_GSENSOR_SIZE_PERCENT,
     stitch_gsensor_pos: str | None = None,
@@ -1587,13 +1587,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--stitch-map-circle",
+        dest="stitch_map_circle",
         action="store_true",
+        default=None,
         help=(
             "Mask --stitch-map's panel into a full ellipse (a circle "
             "if the panel happens to be square, an oval otherwise) "
             "instead of a plain rectangle - corners render as solid "
             "black. Applies to either --stitch-map variant. Only used "
-            "together with --stitch-map."
+            "together with --stitch-map. Default: on automatically "
+            "for --stitch-map zoom (Christer: \"maaybe circel should "
+            "be default, it looks so much better\" -> \"Make it the "
+            "default zoom map\"), off for the static overview - use "
+            "--no-stitch-map-circle to force it off in zoom mode too."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-stitch-map-circle",
+        dest="stitch_map_circle",
+        action="store_false",
+        help=(
+            "Force --stitch-map's panel to stay a plain rectangle even "
+            "in --stitch-map zoom mode, where circle is on by default."
         ),
     )
 

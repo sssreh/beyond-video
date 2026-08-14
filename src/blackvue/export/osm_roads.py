@@ -65,8 +65,13 @@ _METERS_PER_DEGREE_LATITUDE = _EARTH_RADIUS_METERS * math.pi / 180
 # A street-level "follow camera" default for bv-export --map-zoom:
 # half-width of the view, so the full frame covers roughly this
 # distance x2 - close enough to read individual streets/turns, not so
-# close the route runs off-frame between GPS fixes.
-DEFAULT_ZOOM_RADIUS_METERS = 120.0
+# close the route runs off-frame between GPS fixes. Was 120.0; Christer,
+# after trying it in practice: "Zoom is much better, now, 60 m or maybe
+# even 30 should be default. It depends what you your goal is.." ->
+# settled on 60.0 (map_video.py's marker-scale-for-zoom is defined
+# relative to this constant, so the marker stays at its normal 1.0x
+# size at whatever this default is, not hardcoded to the old 120m).
+DEFAULT_ZOOM_RADIUS_METERS = 60.0
 
 # Floors bounding_box_around_point()'s radius so a caller-supplied
 # --map-zoom of 0 (or a negative/tiny value) can't produce a

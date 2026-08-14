@@ -3381,6 +3381,66 @@ def test_export_trip_stitch_map_circle_defaults_to_false_for_stitch_cameras(
     assert captured["map_circle"] is False
 
 
+def test_export_trip_stitch_map_circle_auto_picks_true_for_zoom_variant(
+    tmp_path, monkeypatch
+):
+    # Christer, after trying --stitch-map-circle in zoom mode: "maaybe
+    # circel should be default, it looks so much better", then, asked
+    # which variant specifically: "Make it the default zoom map" - so
+    # leaving stitch_map_circle unset (None) should auto-resolve to
+    # True only when stitch_map is the zoom variant, not the static
+    # overview (see the sibling test above, which covers that case).
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side",
+        stitch_map="zoom", map_zoom_meters=60.0,
+    )
+
+    assert captured["map_circle"] is True
+
+
+def test_export_trip_stitch_map_circle_explicit_false_overrides_zoom_auto_pick(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+    trip = _trip_with_front_and_rear(source_dir)
+
+    captured = {}
+    original_stitch_cameras = trip_export_module.stitch_cameras
+
+    def _capture_stitch_cameras(*args, **kwargs):
+        captured.update(kwargs)
+        return original_stitch_cameras(*args, **kwargs)
+
+    monkeypatch.setattr(
+        trip_export_module, "stitch_cameras", _capture_stitch_cameras
+    )
+
+    export_trip(
+        trip, dest_dir, stitch_layout="side_by_side",
+        stitch_map="zoom", map_zoom_meters=60.0, stitch_map_circle=False,
+    )
+
+    assert captured["map_circle"] is False
+
+
 def test_export_trip_stitch_mirror_icon_is_forwarded(tmp_path, monkeypatch):
     from PIL import Image
     from PIL import ImageDraw

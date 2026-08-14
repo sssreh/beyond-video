@@ -2171,7 +2171,13 @@ def test_main_parses_stitch_map_circle_flag(tmp_path, monkeypatch):
     assert captured["stitch_map_circle"] is True
 
 
-def test_main_defaults_stitch_map_circle_to_false(tmp_path, monkeypatch):
+def test_main_defaults_stitch_map_circle_to_none_for_auto_pick(tmp_path, monkeypatch):
+    # Christer: "maaybe circel should be default, it looks so much
+    # better" -> "Make it the default zoom map" - the CLI itself stays
+    # neutral (None) when neither flag is given; export_trip() is what
+    # resolves None to True/False based on --stitch-map's own variant
+    # (zoom vs static). See test_trip_export.py's own coverage of that
+    # resolution.
     captured = {}
 
     def _fake_bv_export(**kwargs):
@@ -2185,6 +2191,27 @@ def test_main_defaults_stitch_map_circle_to_false(tmp_path, monkeypatch):
     target = tmp_path / "out"
 
     main(["--target", str(target), str(archive), "--stitch", "--stitch-map"])
+
+    assert captured["stitch_map_circle"] is None
+
+
+def test_main_parses_no_stitch_map_circle_flag(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--stitch", "--stitch-map", "zoom", "--no-stitch-map-circle",
+    ])
 
     assert captured["stitch_map_circle"] is False
 

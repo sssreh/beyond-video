@@ -1523,15 +1523,17 @@ def test_marker_scale_for_zoom_is_unaffected_in_static_overview_mode():
 
 def test_marker_scale_for_zoom_grows_for_a_tighter_radius():
     # Christer, retrying --stitch-map circle at 30m instead of the
-    # 120m default: "The car was even smaller on 30 meter", then "Yes,
-    # thats the whole idea of zooming" once told the marker never
-    # actually changed size with zoom radius.
+    # then-120m default: "The car was even smaller on 30 meter", then
+    # "Yes, thats the whole idea of zooming" once told the marker never
+    # actually changed size with zoom radius. (Default has since moved
+    # to 60m - see osm_roads.DEFAULT_ZOOM_RADIUS_METERS's own comment -
+    # so this uses 15m to keep demonstrating the clamp.)
     from blackvue.export.map_video import MARKER_ZOOM_SCALE_MAX
     from blackvue.export.map_video import _marker_scale_for_zoom
 
-    scale = _marker_scale_for_zoom(30.0)
+    scale = _marker_scale_for_zoom(15.0)
     assert scale > 1.0
-    assert scale == MARKER_ZOOM_SCALE_MAX  # 120/30=4.0, clamped
+    assert scale == MARKER_ZOOM_SCALE_MAX  # 60/15=4.0, clamped
 
 
 def test_marker_scale_for_zoom_shrinks_for_a_wider_radius():
@@ -1582,10 +1584,10 @@ def test_render_map_video_scales_the_marker_bigger_at_a_tighter_zoom_radius(
 
     render_map_video(
         fixes, roads=(), bbox=bbox, destination=tmp_path / "map.mp4", fps=2,
-        marker_image_path=icon_path, zoom_meters=30.0,
+        marker_image_path=icon_path, zoom_meters=15.0,
     )
 
-    # 30m vs the 120m default -> 4.0x raw, clamped to 3.0x - see
+    # 15m vs the 60m default -> 4.0x raw, clamped to 3.0x - see
     # MARKER_ZOOM_SCALE_MAX. Combined with MARKER_IMAGE_SCALE (0.5),
     # a 128x64 source lands at 128*0.5*3.0 x 64*0.5*3.0 = 192x96.
     assert captured_sizes[0] == (192, 96)
