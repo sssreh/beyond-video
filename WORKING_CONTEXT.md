@@ -11756,3 +11756,17 @@ bare `--map-zoom`) via `bv_export.parse_args()`, and ran
 `stitch_cameras()`'s `map_circle` kwarg captured, confirming all four
 resolution cases (unset+static, unset+zoom, explicit True, explicit
 False overriding zoom) via tomllib-stub scripts.
+
+## Note: no single --map-zoom default is really "right" (2026-08-14)
+
+Christer, right after the 60m default landed: "The default zoom
+meters, depends a lot of what you want to achieve. Overview, close up
+or something in between." Confirmed he wants to keep 60m as the
+one-size-fits-all default for now (no code change) - just logging the
+underlying tension for whoever revisits this: a tight radius (~30m)
+reads as close-up/detailed, a wide one (~120m+) reads as more of an
+overview, and 60m is a middle-ground guess, not a fit for every use
+case. If this comes up again, worth considering named presets (e.g.
+`--map-zoom overview/medium/closeup`) alongside the existing numeric
+`METERS` value, so a user can express *intent* instead of guessing a
+number.
