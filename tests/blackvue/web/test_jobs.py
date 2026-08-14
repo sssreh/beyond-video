@@ -868,6 +868,8 @@ def _export_kwargs(**overrides):
         map_icon=None,
         map_zoom_meters=None,
         map_track_up=False,
+        render_map_intro=False,
+        map_intro_seconds=None,
         render_gsensor=False,
         render_gsensor_graph=False,
         gsensor_graph_x=False,
@@ -898,6 +900,7 @@ def _export_kwargs(**overrides):
         stitch_subtitles=False,
         no_subtitles_bg=False,
         include_parking=False,
+        parking_speed=None,
         overwrite=False,
         dry_run=False,
         debug=False,
@@ -1039,6 +1042,55 @@ def test_start_bv_export_stitch_map_circle_defaults_to_false(monkeypatch):
 
     _wait_until(lambda: "args" in captured)
     assert captured["args"].stitch_map_circle is False
+
+
+def test_start_bv_export_map_intro_and_parking_speed_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_export(
+        **_export_kwargs(
+            render_map_intro=True,
+            map_intro_seconds=8.5,
+            include_parking=True,
+            parking_speed=2.5,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.render_map_intro is True
+    assert args.map_intro_seconds == 8.5
+    assert args.include_parking is True
+    assert args.parking_speed == 2.5
+
+
+def test_start_bv_export_map_intro_and_parking_speed_default_to_off(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_export(**_export_kwargs())
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.render_map_intro is False
+    # bv_export.py's own --map-intro-seconds default (DEFAULT_INTRO_SECONDS)
+    # applies whenever the web form leaves it blank, same as every other
+    # None-means-omit-the-flag field in this form.
+    assert args.map_intro_seconds == pytest.approx(5.0)
+    assert args.parking_speed == pytest.approx(1.0)
 
 
 def test_start_bv_export_never_exposes_target_as_a_form_field():

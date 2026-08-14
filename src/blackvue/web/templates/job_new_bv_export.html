@@ -80,6 +80,11 @@
         Include map (whole-trip route overview, map.mp4)
       </label>
       <label class="filter-checkbox">
+        <input type="checkbox" id="render_map_intro" name="render_map_intro" value="true" style="width: auto; margin: 0;">
+        Render an intro flyover clip (intro.mp4)
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">A short zoomed-out-to-zoomed-in flyover of the trip's start location, with a caption - meant to lead into the trip's video. Length is set in Advanced map.</span></span>
+      </label>
+      <label class="filter-checkbox">
         <input type="checkbox" id="include_parking" name="include_parking" value="true" style="width: auto; margin: 0;">
         Include Parking-mode recordings in the exported video/audio
       </label>
@@ -189,6 +194,13 @@
         </label>
         <input type="number" id="max_parking_duration_minutes" name="max_parking_duration_minutes" min="1" step="1" placeholder="60">
       </div>
+      <div class="field">
+        <label class="field-label" for="parking_speed">
+          Parking-footage playback speed
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Speed up (or slow down) Parking-mode footage in the exported video, 0.10-10. Only meaningful once "Include Parking-mode recordings" above is checked. Default: 1 (no change).</span></span>
+        </label>
+        <input type="number" id="parking_speed" name="parking_speed" min="0.10" max="10" step="0.01" placeholder="1">
+      </div>
     </div>
 
     <div class="checkbox-row">
@@ -209,7 +221,7 @@
 
   <details class="option-group" id="advanced-map">
     <summary>Advanced map</summary>
-    <p class="hint">Opens automatically once "Include map" above is checked.</p>
+    <p class="hint">Opens automatically once "Include map" or "Render an intro flyover clip" above is checked.</p>
 
     <div class="field-row">
       <div class="field">
@@ -225,6 +237,13 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also render a scrolling follow-camera map view of this real-world half-width in meters, independent of Include map above. Leave blank to skip. Default when enabled with no value: 120.</span></span>
         </label>
         <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" placeholder="skip">
+      </div>
+      <div class="field">
+        <label class="field-label" for="map_intro_seconds">
+          Intro flyover length (seconds)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Length of intro.mp4's flyover. Only meaningful once "Render an intro flyover clip" above is checked. Default: 5.</span></span>
+        </label>
+        <input type="number" id="map_intro_seconds" name="map_intro_seconds" min="0.1" step="0.1" placeholder="5">
       </div>
     </div>
   </details>
@@ -429,7 +448,9 @@
     var triggers = [
       ["stitch", "advanced-stitch"],
       ["render_map", "advanced-map"],
+      ["render_map_intro", "advanced-map"],
       ["render_gsensor_graph", "advanced-gsensor"],
+      ["include_parking", "advanced-trip"],
     ];
     triggers.forEach(function (pair) {
       var checkbox = document.getElementById(pair[0]);

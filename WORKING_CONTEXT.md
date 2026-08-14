@@ -11415,3 +11415,60 @@ since min(W,H) == W == H in that case, so it stays as a same-shape
 sanity check. The two existing stitch_cameras()-level circle tests
 (square-ish 128x120 panel) still hold under the new formula - their
 sampled corner was already well outside even the old ellipse.
+
+## Feature: --map-intro/--map-intro-seconds/--parking-speed on the
+## bv-export web form (2026-08-14)
+
+Christer, after asking about several confusing/mismatched bv-web
+option labels (noted separately, task #816 - explicitly not acted on
+since none turned out to be a real problem): "yes add the missing
+options" - referring to three bv-export CLI flags that had full CLI
+support but no field at all in job_new_bv_export.html:
+`--map-intro`, `--map-intro-seconds`, and `--parking-speed`.
+
+Wired all three through the same five-layer path every other flag
+already uses: `JobRunner.start_bv_export()` gained
+`render_map_intro: bool`, `map_intro_seconds: float | None`, and
+`parking_speed: float | None` parameters, each turned into
+`--map-intro` / `--map-intro-seconds VALUE` / `--parking-speed VALUE`
+in the argv list it hands to `bv_export.parse_args()` for real
+validation. The `/jobs/bv-export` POST route in app.py gained
+matching `Form(...)` parameters (`render_map_intro` a plain bool,
+`map_intro_seconds`/`parking_speed` blank-defaulting strings run
+through the route's existing `_clean()` helper, same pattern as
+`map_zoom_meters`) and passes them straight through.
+
+Template placement, per the #807 progressive-disclosure policy:
+`render_map_intro` is a feature-choice checkbox with no real default,
+so it went in the always-visible Options checkbox-row next to
+"Include map", with a tooltip pointing at Advanced map for the length
+setting. `map_intro_seconds` (fine-tune, sensible default 5.0) went
+into the existing Advanced map `<details>` section alongside the
+other map fields. `parking_speed` (fine-tune, default 1.0, range
+0.10-10 per task #581/#582) went into Advanced trip detection
+alongside `max_parking_duration_minutes`, since that's already where
+Parking-mode-adjacent settings live. Extended the auto-reveal JS's
+trigger list so checking "Render an intro flyover clip" opens
+Advanced map (in addition to "Include map" already doing so) and
+checking "Include Parking-mode recordings" opens Advanced trip
+detection.
+
+Updated `_export_kwargs()` in test_jobs.py to include the three new
+now-required start_bv_export() kwargs (matching how every other
+required-with-no-default param is handled there), and added
+test_start_bv_export_map_intro_and_parking_speed_reach_parsed_args
+and its _default_to_off counterpart, mirroring the existing
+stitch_map_circle reach/defaults test pair.
+
+Verified via the same tomllib-stub standalone-script technique used
+earlier this session (this sandbox's Python is 3.10; pytest itself
+isn't installed and there's no network access to pip install it) -
+ran JobRunner.start_bv_export() directly with a fake `_run` and
+asserted the parsed argparse Namespace carries the right values, both
+when the three fields are set and when left at their web-form
+defaults (blank/unchecked -> bv_export.py's own CLI defaults of
+False/5.0/1.0). Also confirmed app.py, jobs.py, and test_jobs.py all
+still parse (`ast.parse()`) and that job_new_bv_export.html still
+loads under a real Jinja2 `Environment`/`FileSystemLoader`. There's no
+existing route-level test file exercising `/jobs/bv-export` POST
+directly, so nothing needed updating there.

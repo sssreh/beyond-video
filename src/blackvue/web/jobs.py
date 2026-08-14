@@ -641,6 +641,8 @@ class JobRunner:
         map_icon: str | None,
         map_zoom_meters: float | None,
         map_track_up: bool,
+        render_map_intro: bool,
+        map_intro_seconds: float | None,
         render_gsensor: bool,
         render_gsensor_graph: bool,
         gsensor_graph_x: bool,
@@ -671,6 +673,7 @@ class JobRunner:
         stitch_subtitles: bool,
         no_subtitles_bg: bool,
         include_parking: bool,
+        parking_speed: float | None,
         overwrite: bool,
         dry_run: bool,
         debug: bool,
@@ -752,6 +755,10 @@ class JobRunner:
             argv += ["--map-zoom", str(map_zoom_meters)]
         if map_track_up:
             argv.append("--map-track-up")
+        if render_map_intro:
+            argv.append("--map-intro")
+        if map_intro_seconds is not None:
+            argv += ["--map-intro-seconds", str(map_intro_seconds)]
         if render_gsensor:
             argv.append("--gsensor-video")
         if render_gsensor_graph:
@@ -812,6 +819,8 @@ class JobRunner:
             argv.append("--no-subtitles-bg")
         if include_parking:
             argv.append("--include-parking")
+        if parking_speed is not None:
+            argv += ["--parking-speed", str(parking_speed)]
         if overwrite:
             argv.append("--overwrite")
         if dry_run:
