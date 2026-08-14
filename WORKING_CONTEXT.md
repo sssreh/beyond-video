@@ -11508,3 +11508,54 @@ already-present skip, 0 unmapped-but-expected misses) and re-read the
 whole file afterward to confirm every label looks right and no
 mapping was wrong. Confirmed job_new_bv_export.html still loads under
 a real Jinja2 `Environment`/`FileSystemLoader`.
+
+## Fix: trip name printed once per trip, not on every bv-export line
+## (2026-08-14)
+
+Christer: "i asked for the trip name in bv-export, but not for every
+output, just one time to show where we are working." Task #806's
+implementation over-delivered: `TripLog.step()`'s live `say()` echo
+prefixed `trip_label` onto every single phase line (concatenation,
+map, gsensor, stitch, intro - every step), and `_checkpoint()`'s
+`--debug` stderr print did the same at all 8 of its call sites in
+`export_trip()` - a multi-line wall of "bv-export: trip_2026...: ..."
+instead of one banner followed by plain phase lines.
+
+Fixed both channels the same way - announce the trip once, then stop
+repeating it:
+- `TripLog.__init__` now calls `self._say(f"bv-export: {trip_label}")`
+  once, immediately after writing the header, before any `step()` is
+  ever called. `step()` itself no longer prefixes `self._trip_label`
+  onto its own live echo - just `f"bv-export: {full_message}"`, same
+  as `warning()` (which routes through `step()`).
+- `_checkpoint()` in trip_export.py dropped its `trip_label` parameter
+  entirely - its `--debug` print is now just `f"bv-export: {phase}"`,
+  unprefixed. Removed `trip_label=trip.label` from all 8 call sites
+  inside `export_trip()` (7 via a small regex script, the 8th by hand
+  since its phase argument is an f-string the regex's `"[^"]*"` match
+  didn't cover).
+
+A multi-trip run still gets the original "print trip name too, in
+case there are more than 1 trips" disambiguation (Christer's earlier
+ask, also referenced in task #806) - each trip's own `TripLog.open()`
+call announces that trip's name once, so two trips' output in the
+same run still reads as two clearly separated blocks; it's just that
+the block itself is no longer noisy.
+
+Updated docstrings on both `TripLog` (class-level) and `_checkpoint()`
+to describe the new once-only behavior. Updated
+tests/blackvue/export/test_trip_log.py: renamed
+`test_step_echoes_live_through_say_when_given` to
+`test_step_echoes_live_through_say_without_repeating_the_trip_name`
+and added a new `test_open_announces_the_trip_once_through_say`;
+updated the elapsed-seconds/warning echo tests and the multi-trip
+distinguishing test for the new one-banner-then-plain-lines shape.
+`_checkpoint()`'s own tests in test_trip_export.py never used
+`trip_label=`, so they were unaffected.
+
+Verified via the same tomllib-stub standalone-script technique used
+throughout this session (sandbox Python is 3.10, no pytest, no
+network) - ran all six updated TripLog scenarios plus a
+`_checkpoint(debug=True)` stderr check directly, all matching the new
+expected output exactly. `ast.parse()` confirms trip_log.py,
+trip_export.py, and test_trip_log.py all still parse.

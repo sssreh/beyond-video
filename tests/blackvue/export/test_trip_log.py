@@ -122,24 +122,37 @@ def test_a_trip_with_no_membership_or_steps_still_reads_cleanly(tmp_path):
     assert "Finished:" in text
 
 
-def test_step_echoes_live_through_say_when_given(tmp_path):
+def test_open_announces_the_trip_once_through_say(tmp_path):
     # Christer: "could bv-export be more talkative, not like trip.txt,
-    # but tell what its doing, now i dont get anything" - step() now
-    # also calls the optional say() callable, not just trip.log's own
-    # file. Prefixed "bv-export: " to match every other say() line
-    # bv-export already prints (see bv_export.py's own "bv-export:
-    # {folder} - N file(s) written"), and - Christer: "print trip name
-    # too, in case there are more than 1 trips" - also prefixed with
-    # trip_label, so a multi-trip run's live output can be told apart
-    # trip by trip.
+    # but tell what its doing, now i dont get anything" - opening a
+    # TripLog now also calls the optional say() callable once, with
+    # the trip name, so a multi-trip run's live output can be told
+    # apart trip by trip (Christer's earlier "print trip name too, in
+    # case there are more than 1 trips"). Prefixed "bv-export: " to
+    # match every other say() line bv-export already prints.
     said = []
     log = TripLog.open(
         tmp_path, trip_label="trip", command="bv-export", say=said.append
     )
+    log.close()
+
+    assert said == ["bv-export: trip"]
+
+
+def test_step_echoes_live_through_say_without_repeating_the_trip_name(tmp_path):
+    # Christer: "i asked for the trip name in bv-export, but not for
+    # every output, just one time to show where we are working." -
+    # the trip name is announced once by open() (see the test above);
+    # step()'s own live echo must not repeat it on every line.
+    said = []
+    log = TripLog.open(
+        tmp_path, trip_label="trip", command="bv-export", say=said.append
+    )
+    said.clear()
     log.step("starting map.mp4 render")
     log.close()
 
-    assert said == ["bv-export: trip: starting map.mp4 render"]
+    assert said == ["bv-export: starting map.mp4 render"]
 
 
 def test_step_echoes_elapsed_seconds_through_say_too(tmp_path):
@@ -147,10 +160,11 @@ def test_step_echoes_elapsed_seconds_through_say_too(tmp_path):
     log = TripLog.open(
         tmp_path, trip_label="trip", command="bv-export", say=said.append
     )
+    said.clear()
     log.step("rendered map.mp4", elapsed_seconds=181.3)
     log.close()
 
-    assert said == ["bv-export: trip: rendered map.mp4 (181.3s)"]
+    assert said == ["bv-export: rendered map.mp4 (181.3s)"]
 
 
 def test_warning_echoes_through_say_too(tmp_path):
@@ -158,11 +172,12 @@ def test_warning_echoes_through_say_too(tmp_path):
     log = TripLog.open(
         tmp_path, trip_label="trip", command="bv-export", say=said.append
     )
+    said.clear()
     log.warning("stitch: no GPS data to auto-pick a layout from")
     log.close()
 
     assert said == [
-        "bv-export: trip: WARNING: stitch: no GPS data to auto-pick a layout from"
+        "bv-export: WARNING: stitch: no GPS data to auto-pick a layout from"
     ]
 
 
@@ -171,8 +186,9 @@ def test_say_echo_distinguishes_different_trips_in_the_same_run(tmp_path):
     # case there are more than 1 trips" - a multi-trip run reuses the
     # same say() callable (bv_export.py's main() calls export_trip()
     # once per trip in a loop, print()/job.append_output passed
-    # through unchanged each time), so without a per-trip prefix two
-    # trips' step lines would be indistinguishable in the live output.
+    # through unchanged each time). Each TripLog.open() announces its
+    # own trip_label once, so two trips' output stays distinguishable
+    # in the live stream without repeating the label on every step.
     said = []
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -195,10 +211,10 @@ def test_say_echo_distinguishes_different_trips_in_the_same_run(tmp_path):
     second.close()
 
     assert said == [
-        "bv-export: trip_20260814_041047_20260814_042633: "
-        "starting map.mp4 render",
-        "bv-export: trip_20260814_050000_20260814_051500: "
-        "starting map.mp4 render",
+        "bv-export: trip_20260814_041047_20260814_042633",
+        "bv-export: starting map.mp4 render",
+        "bv-export: trip_20260814_050000_20260814_051500",
+        "bv-export: starting map.mp4 render",
     ]
 
 

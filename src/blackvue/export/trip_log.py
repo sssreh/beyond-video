@@ -74,15 +74,18 @@ class TripLog:
     concatenation detail (Christer's own "not like trip.txt"), so it
     doesn't need debug's extra opt-in to stay readable.
 
-    The live-echoed line is prefixed with `trip_label` (e.g.
-    "bv-export: trip_20260814_...: starting map.mp4 render"), unlike
-    trip.log's own on-disk lines, which don't repeat it (each trip.log
-    is already scoped to one trip via its own header). A single
-    bv-export run processes its trips one at a time, but Christer's
-    own "print trip name too, in case there are more than 1 trips"
-    request still applies: without it, a multi-trip run's live output
-    is a single undifferentiated stream of step lines with no way to
-    tell which trip is currently being reported on.
+    `trip_label` is announced live exactly once, as its own line
+    ("bv-export: trip_20260814_..."), right when the trip log opens -
+    not repeated on every subsequent step() line. The first version of
+    this prefixed trip_label onto every single live-echoed line
+    instead; Christer: "i asked for the trip name in bv-export, but
+    not for every output, just one time to show where we are working."
+    A single bv-export run processes its trips one at a time, but
+    Christer's own earlier "print trip name too, in case there are
+    more than 1 trips" request still applies: without the one-time
+    banner, a multi-trip run's live output would be a single
+    undifferentiated stream of step lines with no way to tell which
+    trip is currently being reported on.
     """
 
     def __init__(
@@ -112,6 +115,17 @@ class TripLog:
             f"Started: {datetime.now().isoformat(timespec='seconds')}"
         )
         self._write(f"Command: {command}")
+
+        # Announce which trip we're working on exactly once, live, when
+        # the trip starts - Christer: "i asked for the trip name in
+        # bv-export, but not for every output, just one time to show
+        # where we are working." The first version (see this class's
+        # own docstring) prefixed trip_label onto every single step()
+        # line instead, which over-delivered on "print trip name too,
+        # in case there are more than 1 trips" into needless repetition
+        # on every phase line. step() below no longer repeats it.
+        if self._say is not None:
+            self._say(f"bv-export: {trip_label}")
 
     @classmethod
     def open(
@@ -178,7 +192,7 @@ class TripLog:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._write(f"{timestamp}  {full_message}")
         if self._say is not None:
-            self._say(f"bv-export: {self._trip_label}: {full_message}")
+            self._say(f"bv-export: {full_message}")
 
     def warning(self, message: str) -> None:
         """Record a warning - the same text that also goes into
