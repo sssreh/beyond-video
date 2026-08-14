@@ -11472,3 +11472,39 @@ still parse (`ast.parse()`) and that job_new_bv_export.html still
 loads under a real Jinja2 `Environment`/`FileSystemLoader`. There's no
 existing route-level test file exercising `/jobs/bv-export` POST
 directly, so nothing needed updating there.
+
+## Feature: bv-export web form labels now show their CLI flag name
+## (2026-08-14)
+
+Christer, after I explained what "Map follow-camera radius" meant:
+"Why not call it for map_zoom_meters then???" - the same "call a
+chair a chair" complaint as the earlier --debug label issue, but now
+pointed at task #816's shelved naming-mismatch note. Asked whether to
+fix just that one field or the whole form; he picked the whole form.
+
+Appended " (--flag-name)" to every field label in
+job_new_bv_export.html that maps to a real bv-export CLI flag - 49
+labels across all five sections (Time range, Options, Advanced trip
+detection, Advanced map, Advanced g-sensor, Advanced stitching).
+Descriptive label text is unchanged; the flag name is appended in
+parentheses so the field stays readable for a first-time user while
+still being traceable back to `bv-export --help`. One field is
+deliberately left unannotated: "Camera" (`id`) doesn't map to a
+`--flag` at all - it corresponds to bv-export's positional `path`
+argument, which the web form resolves from the camera picker rather
+than exposing as a flag. `no_duration`'s checkbox label already had
+"(--no-duration)" hardcoded in its text before this change (added
+organically, apparently by past-me getting it right once) - left
+as-is rather than duplicated.
+
+Applied via a small Python script (not by hand across 49 labels):
+walks the template's lines, matches each `<label class="field-label"
+for="ID">` or checkbox `<input id="ID" ...>` against a hardcoded
+ID->--flag mapping built straight from bv_export.py's own
+`add_argument()` calls, and appends " (--flag)" to the very next
+line (the label's visible text) unless that flag string is already
+present. Verified the script's own report (49 applied, 1
+already-present skip, 0 unmapped-but-expected misses) and re-read the
+whole file afterward to confirm every label looks right and no
+mapping was wrong. Confirmed job_new_bv_export.html still loads under
+a real Jinja2 `Environment`/`FileSystemLoader`.
