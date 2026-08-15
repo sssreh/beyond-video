@@ -2,18 +2,36 @@
 {% block title %}{{ recording_id }} location - Beyond Video{% endblock %}
 {% block content %}
 <p class="back-link"><a href="/archive/{{ camera_id }}/{{ recording_id }}">&larr; {{ recording_id }}</a></p>
-<h2>Start location</h2>
 
 {% if error %}
 <p class="error">{{ error }}</p>
 {% else %}
-<p class="hint">The first GPS fix with a real position in this recording's GPS log - same format as <code>bv-gps</code>'s own output.</p>
-<p>Coordinates: {{ coordinates }}</p>
-<p>Google Maps: <a href="{{ google_maps_url }}" target="_blank" rel="noopener">{{ google_maps_url }}</a></p>
-{% if address_error %}
-<p>Address: unavailable ({{ address_error }})</p>
+<h2>Start location</h2>
+{% if start_error %}
+<p class="error">{{ start_error }}</p>
 {% else %}
-<p>Address: {{ address or "no address found for this location" }}</p>
+<p class="hint">The first GPS fix with a real position in this recording's GPS log - same format as <code>bv-gps</code>'s own output.</p>
+<p>Coordinates: {{ start_coordinates }}</p>
+<p>Google Maps: <a href="{{ start_google_maps_url }}" target="_blank" rel="noopener">{{ start_google_maps_url }}</a></p>
+{% if start_address_error %}
+<p>Address: unavailable ({{ start_address_error }})</p>
+{% else %}
+<p>Address: {{ start_address or "no address found for this location" }}</p>
+{% endif %}
+{% endif %}
+
+<h2>Stop location</h2>
+{% if stop_error %}
+<p class="error">{{ stop_error }}</p>
+{% else %}
+<p class="hint">The last GPS fix with a real position in this recording's GPS log.</p>
+<p>Coordinates: {{ stop_coordinates }}</p>
+<p>Google Maps: <a href="{{ stop_google_maps_url }}" target="_blank" rel="noopener">{{ stop_google_maps_url }}</a></p>
+{% if stop_address_error %}
+<p>Address: unavailable ({{ stop_address_error }})</p>
+{% else %}
+<p>Address: {{ stop_address or "no address found for this location" }}</p>
+{% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

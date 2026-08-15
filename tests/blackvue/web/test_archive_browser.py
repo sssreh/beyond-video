@@ -21,6 +21,7 @@ from blackvue.web.archive_browser import ArchiveRecordingCache
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
 from blackvue.web.archive_browser import first_valid_gps_fix
+from blackvue.web.archive_browser import last_valid_gps_fix
 from blackvue.web.archive_browser import group_by_day
 from blackvue.web.archive_browser import kind_options
 from blackvue.web.archive_browser import scan_archive
@@ -446,10 +447,11 @@ def test_scene_summary_skips_direction_on_read_error_placeholder(tmp_path, monke
 
 
 # ---------------------------------------------------------------------------
-# first_valid_gps_fix() - added for the archive detail page's "Show start
-# location" link (see app.py's archive_recording_location route). Fixture
-# NMEA text mirrors tests/blackvue/telemetry/test_gps_reader.py's own -
-# real read_gps() parsing is exercised end-to-end here, not mocked.
+# first_valid_gps_fix()/last_valid_gps_fix() - added for the archive detail
+# page's "Show Start and stop location" link (see app.py's
+# archive_recording_location route). Fixture NMEA text mirrors
+# tests/blackvue/telemetry/test_gps_reader.py's own - real read_gps()
+# parsing is exercised end-to-end here, not mocked.
 # ---------------------------------------------------------------------------
 
 
@@ -481,6 +483,41 @@ def test_first_valid_gps_fix_returns_none_when_no_fix_ever_has_a_position(
     )
 
     assert first_valid_gps_fix(path) is None
+
+
+def test_last_valid_gps_fix_skips_trailing_no_fix_sentences(tmp_path):
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        # A real position first (mode A).
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+        # Then signal lost again right before the clip ends (mode N).
+        "[1700000001000]$GPRMC,120001.00,V,,,,,,,010124,,,N*7F\n"
+        # A later real position - this is the one last_valid_gps_fix()
+        # should return.
+        "[1700000002000]$GPRMC,120002.00,A,4900.000,N,01200.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+        "[1700000003000]$GPRMC,120003.00,V,,,,,,,010124,,,N*7F\n"
+    )
+
+    fix = last_valid_gps_fix(path)
+
+    assert fix is not None
+    assert fix.valid is True
+    assert fix.latitude == 49
+    assert fix.longitude == 12
+
+
+def test_last_valid_gps_fix_returns_none_when_no_fix_ever_has_a_position(
+    tmp_path,
+):
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000000000]$GPRMC,120000.00,V,,,,,,,010124,,,N*7F\n"
+        "[1700000001000]$GPRMC,120001.00,V,,,,,,,010124,,,N*7F\n"
+    )
+
+    assert last_valid_gps_fix(path) is None
 
 
 def test_known_filenames_matches_what_actually_exists(tmp_path):

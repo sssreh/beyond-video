@@ -11829,3 +11829,61 @@ skips when none matches - real ffmpeg-built videos, not fakes).
 Verified with tomllib-stub standalone scripts (no pytest available in
 this sandbox) exercising the real CLI/`export_trip()` code paths -
 all matched expected behavior on first pass.
+
+## Change: archive detail page's location link now shows start AND stop location (2026-08-15)
+
+Christer: "In archive browser i want to change '[Show start
+location](http://127.0.0.1:19373/archive/Kirby/20260807_092631_E/
+location)' to 'Show Start and stop location'" - a link-text rename,
+but a link promising "start and stop" that only showed the first GPS
+fix would be misleading, so the page itself gained a real stop
+section rather than just the label changing.
+
+1. `archive_browser.py` gained `last_valid_gps_fix(gps_path)`,
+   mirroring the existing `first_valid_gps_fix()` exactly but walking
+   `reversed(read_gps(gps_path))` - `read_gps()` already returns fixes
+   in the file's own chronological order, so reversing is enough, no
+   separate sort needed. Same "valid = real position, not a no-signal
+   placeholder" semantics, same `None` return when no fix in the file
+   ever has a position.
+
+2. `app.py`'s `archive_recording_location()` route now looks up both
+   the first and last valid fix independently (a recording can, in
+   principle, have a fix at the start but lose signal again before it
+   ends, or vice versa), each wrapped in the same
+   `MediaToolError`-guard-don't-500 pattern the original single-fix
+   code already used. The shared coordinate-formatting +
+   reverse-geocode-with-fallback logic was factored out into a new
+   `_describe_gps_fix(fix, geocode_cache_dir)` helper so the route
+   doesn't duplicate it for start and stop. Template variables are now
+   prefixed `start_`/`stop_` instead of the old flat names, plus a
+   `start_error`/`stop_error` pair for "no valid fix in this
+   recording" (as opposed to `error`, which now only means "no GPS log
+   at all").
+
+3. `archive_recording_location.html` now renders two sections, "Start
+   location" and "Stop location", each independently falling back to
+   its own error message.
+
+4. `archive_recording_detail.html`'s link text changed from "Show
+   start location" to "Show Start and stop location" (exact
+   capitalization as given). The separate trip-level "Show start
+   location" link on `trip_detail.html` (a different route, aggregated
+   GPX track via `first_gpx_point()`) was deliberately left untouched
+   - Christer said "archive browser" specifically.
+
+Files: `src/blackvue/web/archive_browser.py`, `src/blackvue/web/
+app.py`, `src/blackvue/web/templates/archive_recording_location.html`,
+`src/blackvue/web/templates/archive_recording_detail.html`. Tests:
+`tests/blackvue/web/test_archive_browser.py` (new
+`last_valid_gps_fix()` unit tests mirroring the existing
+`first_valid_gps_fix()` ones). Verified `last_valid_gps_fix()`/
+`first_valid_gps_fix()` against real NMEA fixtures via a standalone
+script (no pytest in this sandbox), `ast.parse`/`py_compile` on
+`app.py`, and rendered `archive_recording_location.html` standalone
+via Jinja2 for the no-GPS-log, both-fixes-found, and
+one-fix-missing cases - no route-level test added since this route
+has no existing TestClient-based test file to extend (fastapi isn't
+installed in this sandbox either) and the prior "Show start location"
+feature (task #445/#446) only had unit-test coverage at this same
+level.

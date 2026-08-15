@@ -381,7 +381,7 @@ class ArchiveRecording:
 def first_valid_gps_fix(gps_path: Path) -> GpsFix | None:
     """Return the first fix in a .gps sidecar file that has a real
     position - the location "at the start" of the recording, for the
-    archive detail page's "Show start location" link. None if the
+    archive detail page's "Show start and stop location" link. None if the
     file has no valid fix at all (e.g. the camera hadn't acquired a
     GPS signal yet when the clip started - common for the first
     recording after the car's been parked somewhere without sky
@@ -397,6 +397,25 @@ def first_valid_gps_fix(gps_path: Path) -> GpsFix | None:
     """
 
     for fix in read_gps(gps_path):
+        if fix.valid and fix.latitude is not None and fix.longitude is not None:
+            return fix
+    return None
+
+
+def last_valid_gps_fix(gps_path: Path) -> GpsFix | None:
+    """Return the last fix in a .gps sidecar file that has a real
+    position - the location "at the end" of the recording, for the
+    archive detail page's "Show start and stop location" link.
+    Mirrors first_valid_gps_fix() exactly, just walking the fixes in
+    reverse - see its own docstring for what "valid" means and why the
+    file existing (ArchiveRecording.has_gps) doesn't guarantee a fix
+    here either (e.g. GPS signal lost again right before the clip
+    ended). read_gps() already returns fixes in the file's own
+    chronological order, so reversed() alone is enough - no separate
+    sort needed.
+    """
+
+    for fix in reversed(read_gps(gps_path)):
         if fix.valid and fix.latitude is not None and fix.longitude is not None:
             return fix
     return None

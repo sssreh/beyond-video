@@ -53,6 +53,7 @@ from .archive_browser import find_recording
 from .archive_browser import first_valid_gps_fix
 from .archive_browser import group_by_day
 from .archive_browser import kind_options
+from .archive_browser import last_valid_gps_fix
 from .archive_browser import scan_archive
 from .auth import SESSION_COOKIE_NAME
 from .auth import THEME_COOKIE_NAME
@@ -85,6 +86,7 @@ from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
 from ..core.lock import LOCKABLE_ASSETS
 from ..export.geocoding import load_or_reverse_geocode
+from ..telemetry.gps_reader import GpsFix
 from ..export.hevc_preview import load_or_transcode_hevc_preview
 from ..export.kml_writer import gpx_to_kml
 from ..generate.media import MediaToolError
@@ -562,60 +564,88 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             recording_id,
         )
 
-        coordinates = None
-        google_maps_url = None
-        address = None
-        address_error = None
+        start_coordinates = None
+        start_google_maps_url = None
+        start_address = None
+        start_address_error = None
+        start_error = None
+
+        stop_coordinates = None
+        stop_google_maps_url = None
+        stop_address = None
+        stop_address_error = None
+        stop_error = None
+
         error = None
 
         if recording.gps_path is None:
             error = "This recording has no GPS log."
         else:
-            # first_valid_gps_fix() calls read_gps(), which raises
-            # MediaToolError on an unreadable .gps file (permissions,
-            # a truncated/corrupt file, etc.) - trip_export.py's own
-            # _merge_gps() guards the exact same read_gps() call the
+            # Reverse-geocoded and cached under default_config_dir() -
+            # bv-web's own writable scratch space (the same directory
+            # CameraConfigCache/the job runner already use), NOT next to
+            # the camera's archive the way trip_export.py's trip_info.txt
+            # caches (destination.parent / ".osm_cache"): that convention
+            # assumed a writable archive path, true for bv-cli's
+            # container (which mounts /data/archive read-write) but
+            # false for bv-web's own container - docker-compose.yml
+            # mounts /data/archive read-only there (the archive browser
+            # only ever reads recordings), so writing a cache anywhere
+            # under it 500s with "Read-only file system" the moment
+            # reverse geocoding is actually used. Real bug hit on
+            # Christer's NAS - see WORKING_CONTEXT.md.
+            geocode_cache_dir = default_config_dir() / ".osm_cache"
+
+            # first_valid_gps_fix()/last_valid_gps_fix() call read_gps(),
+            # which raises MediaToolError on an unreadable .gps file
+            # (permissions, a truncated/corrupt file, etc.) - trip_export.py's
+            # own _merge_gps() guards the exact same read_gps() call the
             # same way (skip and move on) rather than letting it
             # propagate, and this route needs the same guard: without
             # it, a single bad .gps file 500s the page instead of
-            # showing a friendly message.
+            # showing a friendly message. Start and stop are looked up
+            # independently since a recording can, in principle, lose
+            # its GPS fix again right before it ends even though it had
+            # one at the start (or vice versa).
             try:
-                fix = first_valid_gps_fix(recording.gps_path)
+                start_fix = first_valid_gps_fix(recording.gps_path)
             except MediaToolError as exc:
-                fix = None
-                error = f"could not read this recording's GPS log: {exc}"
+                start_fix = None
+                start_error = f"could not read this recording's GPS log: {exc}"
 
-            if fix is None:
-                if error is None:
-                    error = (
+            if start_fix is None:
+                if start_error is None:
+                    start_error = (
                         "No valid GPS fix found in this recording's GPS "
                         "log (no signal)."
                     )
             else:
-                coordinates = f"{fix.latitude},{fix.longitude}"
-                google_maps_url = f"https://www.google.com/maps?q={coordinates}"
+                (
+                    start_coordinates,
+                    start_google_maps_url,
+                    start_address,
+                    start_address_error,
+                ) = _describe_gps_fix(start_fix, geocode_cache_dir)
 
-                # Reverse-geocoded and cached under default_config_dir()
-                # - bv-web's own writable scratch space (the same
-                # directory CameraConfigCache/the job runner already
-                # use), NOT next to the camera's archive the way
-                # trip_export.py's trip_info.txt caches (destination.
-                # parent / ".osm_cache"): that convention assumed a
-                # writable archive path, true for bv-cli's container
-                # (which mounts /data/archive read-write) but false for
-                # bv-web's own container - docker-compose.yml mounts
-                # /data/archive read-only there (the archive browser
-                # only ever reads recordings), so writing a cache
-                # anywhere under it 500s with "Read-only file system"
-                # the moment reverse geocoding is actually used. Real
-                # bug hit on Christer's NAS - see WORKING_CONTEXT.md.
-                geocode_cache_dir = default_config_dir() / ".osm_cache"
-                try:
-                    address = load_or_reverse_geocode(
-                        fix.latitude, fix.longitude, geocode_cache_dir
+            try:
+                stop_fix = last_valid_gps_fix(recording.gps_path)
+            except MediaToolError as exc:
+                stop_fix = None
+                stop_error = f"could not read this recording's GPS log: {exc}"
+
+            if stop_fix is None:
+                if stop_error is None:
+                    stop_error = (
+                        "No valid GPS fix found in this recording's GPS "
+                        "log (no signal)."
                     )
-                except MediaToolError as exc:
-                    address_error = str(exc)
+            else:
+                (
+                    stop_coordinates,
+                    stop_google_maps_url,
+                    stop_address,
+                    stop_address_error,
+                ) = _describe_gps_fix(stop_fix, geocode_cache_dir)
 
         return templates.TemplateResponse(
             request,
@@ -624,10 +654,16 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "user": user,
                 "camera_id": camera_id,
                 "recording_id": recording_id,
-                "coordinates": coordinates,
-                "google_maps_url": google_maps_url,
-                "address": address,
-                "address_error": address_error,
+                "start_coordinates": start_coordinates,
+                "start_google_maps_url": start_google_maps_url,
+                "start_address": start_address,
+                "start_address_error": start_address_error,
+                "start_error": start_error,
+                "stop_coordinates": stop_coordinates,
+                "stop_google_maps_url": stop_google_maps_url,
+                "stop_address": stop_address,
+                "stop_address_error": stop_address_error,
+                "stop_error": stop_error,
                 "error": error,
             },
         )
@@ -1905,6 +1941,35 @@ def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:
         )
 
     return config.archive
+
+
+def _describe_gps_fix(
+    fix: GpsFix, geocode_cache_dir: Path
+) -> tuple[str, str, str | None, str | None]:
+    """Turn one GpsFix into the (coordinates, google_maps_url, address,
+    address_error) tuple archive_recording_location() renders for both
+    its start and stop fix - factored out so that route doesn't
+    duplicate the coordinate-formatting/reverse-geocode-with-fallback
+    logic twice. `address_error` is the reverse-geocode failure
+    message (MediaToolError, e.g. Nominatim unreachable) if any -
+    `address` stays None in that case rather than raising, same
+    "degrade to a message, don't 500" handling this route's own
+    docstring/history already established for gps_path being missing
+    or unreadable."""
+
+    coordinates = f"{fix.latitude},{fix.longitude}"
+    google_maps_url = f"https://www.google.com/maps?q={coordinates}"
+
+    address = None
+    address_error = None
+    try:
+        address = load_or_reverse_geocode(
+            fix.latitude, fix.longitude, geocode_cache_dir
+        )
+    except MediaToolError as exc:
+        address_error = str(exc)
+
+    return coordinates, google_maps_url, address, address_error
 
 
 def _find_archive_recording(
