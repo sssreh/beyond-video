@@ -2,6 +2,121 @@
 
 ## Unreleased
 
+## [1.0.0] - 2026-08-15
+
+The first stable release. Scene description grows up: a locking mechanism
+so `bv-generate` never redoes finished work, a browser-playable HEVC
+preview pipeline for `bv-web`, a "watch" page for Front/Rear videos, and a
+fix for the biggest correctness bug scene description had left - the
+vision-language model's ~16GB never leaving GPU memory between `bv-web`
+jobs. Job-runner UX grew a persistent command history, rotating job
+logfiles, real mid-job cancellation, and AJAX-polled job pages. Several
+smaller pieces (`bv-ls` columns, `--lrc`, an unused test) were also
+removed or cleaned up now that the surface area has settled.
+
+### Added
+
+- `bv-lock`: new CLI to permanently mark a time range (and, optionally,
+  specific asset types) as "done" for a camera, so `bv-generate` skips it
+  on every future run instead of silently redoing already-finished work.
+  Supports an `all` convenience alias for `--lock-assets`/
+  `--unlock-assets`. Wired into `bv-web` (its own job form, plus an
+  `--ignore-lock` override on the Generate assets form) and given a
+  welcome-page quick-link card.
+- `bv-history`: new command (and `bv-web` page) listing every past
+  `bv-*` invocation - both direct CLI runs and `bv-web` jobs - backed by
+  a new persistent JSON-lines command-history index and a rotating
+  per-job output logfile under `~/beyond-video-data/logs/`.
+  `default_config_dir()`'s default moved to `~/beyond-video-data/.config`
+  to sit next to it.
+- HEVC preview transcoding: `bv-web` now transcodes HEVC-encoded
+  recordings to a browser-playable H.264 preview on the fly, cached and
+  served with progressive streaming (starts playing before the whole
+  transcode finishes), NVDEC hardware decode, a capped 8Mbps bitrate, and
+  size-capped LRU eviction shared with the existing Parking-repair cache.
+- A "watch" page for archive recordings: clicking a Front/Rear video now
+  opens a dedicated player page instead of the raw file.
+- Scene description: default model switched to Qwen3-VL-8B-Instruct;
+  `--describe-scene` wired into `bv-web`'s Generate assets form;
+  `bv-scribe` now skips Parking-mode recordings and survives per-file
+  failures instead of aborting the whole batch; a scene summary panel
+  (description + legible signs only, "not legible" clutter dropped) added
+  to the archive recording detail page; `bv-generate --describe-scene`
+  now runs the existing Parking-container repair step first, same as the
+  export path already did.
+- `bv-export --trip-summary`/`--scene-model`/`--scene-cpu`: trip-level
+  narrative synthesis moved from `bv-scribe` into `bv-export` itself -
+  the command that owns trip folders now also owns the model call that
+  produces `trip_summary.txt`, reading back each recording's already-
+  written `.scene.txt` rather than `bv-scribe` copying a per-trip file
+  in after the fact.
+- `--stitch-map-circle`: circular crop for the `--stitch-map` zoom panel,
+  now the default when zoom mode is on.
+- Show the equivalent replicable `bv-*` CLI command on every `bv-web` job
+  page, and a "reuse this run's parameters" pilot on `bv-scribe`'s web
+  form.
+- `bv-export` job cancellation now actually stops in-flight rendering
+  instead of only marking the job cancelled after the fact; `--debug`
+  now prints a line at the start of each export phase.
+- GPS start *and* stop location shown on the archive recording location
+  page (previously start only); `trip_info.txt`'s content surfaced on
+  the trip detail page.
+
+### Changed
+
+- `bv-web`'s job pages now poll via AJAX instead of a meta-refresh, so
+  the output pane no longer jumps or loses in-progress input while
+  polling; a "quick tail" view was added for peeking at a running job's
+  latest output without loading the whole transcript.
+- `--map-zoom` default lowered from 120m to 60m (auto-circle-cropped);
+  its rendered canvas capped at 640px so it reads as genuinely zoomed in
+  again; the map marker now scales with the zoom radius. Track-up and
+  non-track-up map renders now get distinct filenames so `bv-export`
+  reuses an already-rendered file instead of re-rendering it every run.
+  The static overview frame for `--map-track-up` is now rotated from a
+  pre-rendered raster instead of being redrawn from scratch every frame.
+- `bv-export`'s live progress output now prefixes each line with the
+  trip's label once, instead of repeating it, and collapses per-
+  recording trim messages into one summary line.
+- `bv-web`'s multi-camera archive scanning now looks under each camera's
+  own configured Target directory (and one level of camera-id
+  subfolders) instead of assuming a single shared parent, fixing trips
+  going undiscovered on multi-camera setups.
+- `bv-ls`'s widest column labels shortened (Interior/thumbnails/Audio/
+  Summary) and a data-row column-misalignment bug fixed.
+
+### Fixed
+
+- **Scene model never released GPU memory** in `bv-web`'s job runner -
+  the ~16GB Qwen3-VL-8B-Instruct model stayed cached indefinitely once
+  loaded by any scene-description job (`bv-scribe`, `bv-generate
+  --describe-scene`, `bv-export --trip-summary`), pinning GPU memory for
+  the life of the server process. New `unload_scene_model()` is now
+  called after every job, regardless of outcome.
+- `bv_export.py`'s `_interactive()` prompt helper had two separate hangs
+  in `bv-web`: a false positive that treated any job as needing a
+  terminal prompt, and a second one specific to re-running an export
+  against an existing trip folder.
+- Recordings missing rear video now get a black+red-X placeholder in
+  the export instead of silently dropping the panel.
+- Multi-line sign reads in scene descriptions no longer get truncated;
+  the "See the full text" link now auto-opens its collapsed section.
+- The HEVC preview cache could fail to finalize on client disconnect,
+  leaving a stale temp file instead of a usable cached preview -
+  fixed, along with the underlying transcode needing `-f mp4` forced
+  and an atomic temp-file rename into place.
+- `web-users` is now reserved as a camera id, fixing an account-file
+  name collision that could occur if a camera happened to share that id.
+- A stray pair of `NameError` assertions in `test_bv_generate.py` and a
+  stale trip-label test assertion, both unrelated to any feature in this
+  release, were fixed after breaking CI.
+
+### Removed
+
+- `--lrc`/LRC subtitle export removed entirely (SRT covers the same
+  need with wider tooling support).
+- The dead `GPX`/`SUMMARY` columns removed from `bv-ls` output.
+
 ## [0.5.0] - 2026-08-11
 
 Two new commands: `bv-scribe` (vision-language scene description + OCR) and
