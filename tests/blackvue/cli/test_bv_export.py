@@ -2034,6 +2034,51 @@ def test_main_rejects_a_below_range_parking_speed(tmp_path):
         ])
 
 
+def test_main_defaults_trip_summary_to_false(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main(["--target", str(target), str(archive)])
+
+    assert captured["trip_summary"] is False
+    assert captured["scene_model"] == bv_export_module.SCENE_DEFAULT_MODEL
+    assert captured["scene_cpu"] is False
+
+
+def test_main_parses_trip_summary_scene_model_and_scene_cpu(
+    tmp_path, monkeypatch
+):
+    captured = {}
+
+    def _fake_bv_export(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "bv_export", _fake_bv_export)
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    main([
+        "--target", str(target), str(archive),
+        "--trip-summary", "--scene-model", "some/other-model", "--scene-cpu",
+    ])
+
+    assert captured["trip_summary"] is True
+    assert captured["scene_model"] == "some/other-model"
+    assert captured["scene_cpu"] is True
+
+
 def test_main_leaves_stitch_map_as_none_when_stitch_flag_is_absent(
     tmp_path, monkeypatch
 ):

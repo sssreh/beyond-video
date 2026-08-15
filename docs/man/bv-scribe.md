@@ -22,7 +22,6 @@ bv-scribe [--raw]
           [--zoom-repetition-penalty N] [--zoom-no-repeat-ngram-size N]
           [--zoom-plate-confidence-check | --no-zoom-plate-confidence-check]
           [--cpu]
-          [--trip-summary] [--trip-summary-max-new-tokens N]
           [--config-dir DIR]
           [--overwrite] [--dry-run] [-v]
           [PATH]
@@ -30,7 +29,7 @@ bv-scribe [--raw]
 
 ## DESCRIPTION
 
-`bv-scribe` is the batch-oriented, fully-tunable counterpart to `bv-generate --describe-scene` (see `bv-generate(1)`) - same underlying vision-language model and output (`<recording>.scene.txt`), but with the full set of tuning flags real-footage testing converged on, plus an opt-in `--trip-summary` pass. Selects recordings from a local archive the same way every other `bv-*` command does - by timestamp/`--from`/`--until`/`--timestamp` - rather than the raw file/folder arguments the original standalone scene-scribe prototype took.
+`bv-scribe` is the batch-oriented, fully-tunable counterpart to `bv-generate --describe-scene` (see `bv-generate(1)`) - same underlying vision-language model and output (`<recording>.scene.txt`), but with the full set of tuning flags real-footage testing converged on. Selects recordings from a local archive the same way every other `bv-*` command does - by timestamp/`--from`/`--until`/`--timestamp` - rather than the raw file/folder arguments the original standalone scene-scribe prototype took.
 
 **Parking-mode recordings are never considered.** Unlike `bv-generate --describe-scene` (which deliberately does run on them), `bv-scribe` excludes every Parking-mode (`P`) recording from its selection entirely - a dedicated batch run over a whole archive shouldn't spend GPU time on typically long, uneventful parking footage. A skip count is printed when any are excluded. Point `--raw` directly at a parking `.mp4` if you genuinely want one described - that mode has no recording-id-based filtering at all.
 
@@ -50,6 +49,8 @@ Check [PyTorch's "Get Started" page](https://pytorch.org/get-started/locally/) f
 **Trusting the output.** Real-footage testing surfaced two distinct failure modes: the model can confidently misread a license plate (report the wrong characters rather than flagging it illegible), and it can invent plausible-sounding but unrelated text on an ambiguous scene (a real Stockholm-area trip once got "Palm Jumeirah" - a Dubai landmark - as on-screen text, more than once, across separate runs). Every output file ends with a disclaimer to this effect - treat every read, especially plates/signs/place names, as unverified until checked against the source video. `--zoom-plate-confidence-check` (on by default) mitigates the plate case specifically: each detected plate crop is read twice (once greedy, once with sampling forced on), and reported as unverified rather than picked between if the two disagree.
 
 `--raw` points `bv-scribe` at non-BlackVue footage instead of an archive - a video file or a directory of video files with no BlackVue filename/sidecar structure at all. See "Raw video mode" below.
+
+**Trip-level narrative synthesis lives in `bv-export`, not here.** `bv-scribe` only ever writes one `.scene.txt` per recording - `bv-export --trip-summary` reads those files back and synthesizes the trip-level `trip_summary.txt` itself (see `bv-export(1)`). This used to be a `bv-scribe --trip-summary` pass, but Christer's call once the boundary problems that split showed up ("A trip summary should be created and placed in a trip folder, so it should be done by bv-export only") moved it to the command that actually owns trip folders.
 
 ## ARGUMENTS
 
@@ -120,13 +121,6 @@ After the main pass, a few full-resolution frames are separately checked for sig
 | `--zoom-no-repeat-ngram-size N` | Separate `--no-repeat-ngram-size` for detection/OCR calls. Default: `0` (off). |
 | `--zoom-plate-confidence-check` / `--no-zoom-plate-confidence-check` | Read every detected plate crop twice (once greedy, once with sampling forced on) and flag the read as unverified if the two disagree, instead of reporting a single possibly-wrong read as fact. Default: on. Costs one extra inference call per detected plate. |
 
-### Trip summary
-
-| Option | Description |
-|---|---|
-| `--trip-summary` | After processing every selected recording, run one extra text-only synthesis pass per detected trip (same gap-based grouping `bv-export`/`bv-ls --trips` use) turning each trip's own `## Description` sections into a single trip-level narrative (explicitly tracking how conditions changed over the trip, e.g. "moderate traffic became heavier after a while", rather than restating each segment). Archive mode writes one `<trip label>.trip_summary.txt` per trip to the archive root - `bv-export` automatically copies a matching one into that trip's export folder as `trip_summary.txt` (no synthesis in `bv-export` itself; see its own docs). `--raw` mode (no trip concept) still writes one flat `trip_summary.txt`. Needs 2+ described recordings in a trip for that trip to get a summary. |
-| `--trip-summary-max-new-tokens N` | Cap on generated tokens for the `--trip-summary` pass. Default: `768`. |
-
 ### General
 
 | Option | Description |
@@ -146,7 +140,6 @@ With `--raw`:
 - `--from`/`--until`/`--timestamp` don't apply (raw footage has no BlackVue recording-id timestamp to select on) and `--camera` doesn't apply (no front/rear distinction) - `bv-scribe` exits with an argument error if either is given alongside `--raw`.
 - `--crop-top`/`--crop-bottom` default to `0` (disabled) instead of the BlackVue-tuned defaults, since those defaults exist specifically to cut out BlackVue's own burned-in overlay text, which won't be there on non-BlackVue footage. Pass either explicitly to crop anyway.
 - Output is written next to each source video as `<video-stem>.scene.txt`, rather than into the archive next to a `RecordingId`-named file.
-- `--trip-summary` still works, synthesizing across every processed video's description the same way it does in archive mode; `trip_summary.txt` is written into the directory (or the single video's parent directory, for a single-file `PATH`).
 
 ## EXIT STATUS
 
@@ -168,12 +161,6 @@ OCR only, skipping the sign-zoom pipeline (faster, lower quality on small/distan
 
 ```
 bv-scribe --timestamp 20260715 --task ocr --no-zoom-signs
-```
-
-Describe a trip and get a synthesized trip-level narrative:
-
-```
-bv-scribe --timestamp 20260715 --trip-summary
 ```
 
 Inspect what the sign-zoom pipeline is actually seeing on a plate it keeps reporting as unverified:

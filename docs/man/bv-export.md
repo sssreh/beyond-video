@@ -13,6 +13,7 @@ bv-export [--target DIR] [--config-dir DIR] [--prefix PREFIX]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
           [--include-parking] [--parking-speed SPEED]
+          [--trip-summary] [--scene-model MODEL] [--scene-cpu]
           [--map] [--map-icon PATH] [--map-zoom [METERS]] [--map-track-up]
           [--map-intro] [--map-intro-seconds SECONDS]
           [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-x]
@@ -96,6 +97,14 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 A Parking recording's own raw video also gets an automatic, transparent repair before being probed or concatenated: BlackVue's own Parking-mode container has a known quirk (an empty, unused audio track that still trips ffmpeg's strict validation) that otherwise makes `ffprobe` fail outright on every Parking recording - `--include-parking` would then leave every single one of them out again, unrepaired, defeating the flag. The repair only ever drops that one confirmed-broken, empty audio track from a copy of the file's `moov` box; the real video content is never touched. See `generate/mp4_repair.py`'s own docstring for the full technical detail - this is the same fix already used to make Parking recordings playable in bv-web's archive browser.
 
 An earlier version of this feature replaced a mid-trip Parking recording with a short synthetic "PARKING FOOTAGE SKIPPED" transition clip (optionally one of several bundled or custom clips/images), leaving a leading/trailing Parking recording untouched either way. This was removed after a real export from a 4K HEVC dashcam showed the splice corrupting `front.mp4`/`rear.mp4` from that point onward: MP4's `hvc1`/`avc1` sample-entry tagging declares a track's SPS/PPS/VPS parameter sets once, at the container level, and two files from separate encoder sessions (the dashcam's own hardware encoder vs. anything `bv-export` rendered itself) generally don't share compatible parameter sets - so `ffmpeg`'s concat demuxer (a stream copy, not a re-encode) muxed them together with no error at export time, but no real decoder could parse the result past the splice point. A full decode-and-re-encode would avoid this, but at real trip-length/4K cost for one skipped recording's worth of benefit, so a Parking recording is now simply left out - matching the treatment leading/trailing Parking recordings already had.
+
+### Trip summary
+
+| Option | Description |
+|---|---|
+| `--trip-summary` | Write `trip_summary.txt` into the trip folder: one text-only synthesis pass (`generate.scene.summarize_trip()`) turning this trip's own recordings' already-generated `## Description` scene text (`Asset.SCENE_DESCRIPTION` - `bv-scribe`/`bv-generate --describe-scene` must have already described at least 2 of this trip's recordings) into a single flowing trip-level narrative that tracks how conditions changed over the trip, rather than restating each segment back to back. Needs 2+ described recordings in the trip; otherwise skipped with a `trip.log` note, not an error. This is a deliberate exception to the rule that `bv-export` never calls a model itself elsewhere (see `TEXT_ASSETS`' `scene.txt`/`scene.rear.txt` merge) - a synthesis pass genuinely has nowhere else to live once trip-level narrative generation moved out of `bv-scribe` and into the command that actually owns trip folders (see `bv-scribe(1)`). Requires the `scene` extra whenever actually used - see `bv-scribe(1)`'s own install notes. |
+| `--scene-model MODEL` | Hugging Face model id for `--trip-summary`'s synthesis pass. Default: same as `bv-scribe`'s own default (`Qwen/Qwen3-VL-8B-Instruct`). Meaningless without `--trip-summary`. |
+| `--scene-cpu` | Force `--trip-summary`'s synthesis pass onto CPU instead of GPU. Meaningless without `--trip-summary`. |
 
 ### Pre-record buffer trimming
 
@@ -238,7 +247,7 @@ Each trip becomes a folder named `[PREFIX_]trip_STARTTIMESTAMP_ENDTIMESTAMP` und
 | `trip.srt` | always, if transcript data exists |
 | `transcript.txt`, `transcript.diarized.txt`, `translation.txt`, `translation.diarized.txt` | always, if the corresponding per-recording `bv-generate(1)` output exists - each recording's text concatenated in order, under a `# <recording_id>` header per block |
 | `scene.txt`, `scene.rear.txt` | always, if the corresponding per-recording `bv-generate --describe-scene`/`bv-scribe(1)` output exists - same concatenation as the transcript/translation files above |
-| `trip_summary.txt` | always, if `bv-scribe --trip-summary` already wrote a matching `<trip label>.trip_summary.txt` to the archive root - a plain copy, not generated here (`bv-export` never calls the scene/summary model itself); only found when the two commands' trip-detection settings agree closely enough that the labels line up (see `bv-scribe(1)`'s own `--trip-summary` docs) |
+| `trip_summary.txt` | only with `--trip-summary`, and only if 2+ of this trip's recordings have already been described (see "Trip summary" above) - generated here directly from this trip's own `scene.txt`/`scene.rear.txt`-source `## Description` sections, not copied from anywhere |
 | `trip.log` | always - the exact command line used, trip membership reasoning, and (with `--debug`) phase timings |
 | `trip_info.txt` | always - start/end time, duration, total on-disk size, whether Parking-mode footage is included, and (if GPS data exists) distance, average/max speed, moving/idle time, and a reverse-geocoded start/end address |
 | `map.mp4` (or `map_tu.mp4` with `--map-track-up`) | `--map` |
@@ -282,6 +291,12 @@ bv-export /path/to/archive --target /path/to/trips \
     --stitch --stitch-layout side_by_side \
     --stitch-map --stitch-map-side down \
     --stitch-graph
+```
+
+Export a trip with a synthesized trip-level narrative (needs `bv-scribe`/`bv-generate --describe-scene` to have already described at least 2 recordings in the trip):
+
+```
+bv-export /path/to/archive --target /path/to/trips --trip-summary
 ```
 
 Fast small test render before committing to a full-size one:

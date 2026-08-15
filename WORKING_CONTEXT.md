@@ -12318,3 +12318,90 @@ replicating `_video_label_for_filename()`'s exact logic against a real
 `scan_archive()`-built recording, confirming Front/Rear match
 correctly and both an unknown filename and a real `.gps` sidecar
 return None.
+
+## Feature: trip_summary.txt relocated from bv-scribe to bv-export (2026-08-15)
+
+Christer, on `bv-scribe`'s own per-trip `--trip-summary` (which wrote
+`<trip label>.trip_summary.txt` to the archive root, then relied on
+`bv-export` copying a matching one into the trip's export folder):
+"Ok, thats so wrong in many ways. I think we should remove trip
+summary from bv-scene [bv-scribe]. A trip summary should be created
+and placed in a trip folder, So it should be done by bv-export only."
+The real problem the copy-in step had: `bv-scribe`'s own trip-
+detection boundaries (its own `TripBuilder` run, separately, over
+whatever recordings that particular `bv-scribe` invocation happened to
+cover) had zero guaranteed correlation with `bv-export`'s - so a
+`trip_summary.txt` could silently go missing or land in the wrong
+trip's folder whenever the two commands' trip boundaries didn't line
+up exactly.
+
+This meant `bv-export` had to start calling the scene/summarize model
+itself - a deliberate break from the established "bv-export never
+calls a model" rule (bv-export can run on a CPU-only NAS with no
+GPU/model dependency at all otherwise). Flagged this to Christer
+explicitly; his answer: "Rules are made to be broken. ;*" - so
+`bv-export` now depends on the `scene` extra (transformers/torch/
+qwen-vl-utils) whenever `--trip-summary` is actually requested,
+untouched otherwise.
+
+**bv-scribe** (`cli/bv_scribe.py`): `--trip-summary`/`--trip-summary-
+max-new-tokens` removed entirely - the CLI flags, the `TripBuilder`-
+based trip-splitting block in archive mode, the trip-segment
+accumulation in `--raw` mode, and `_finalize_trip_summary()`. bv-
+scribe now only ever writes one `.scene.txt`/`.rear.scene.txt` per
+recording, same as always.
+
+**bv-export** (`export/trip_export.py`, `cli/bv_export.py`): new
+`trip_summary`/`scene_model`/`scene_cpu` params on `export_trip()` and
+matching `--trip-summary`/`--scene-model`/`--scene-cpu` CLI flags.
+When `trip_summary=True`, gathers each recording's already-written
+`Asset.SCENE_DESCRIPTION` text (`bv-scribe`/`bv-generate
+--describe-scene` must have already described at least 2 of the
+trip's recordings) in trip order via `extract_description_section()`,
+then calls `generate.scene.summarize_trip()` directly to synthesize
+`trip_summary.txt` into the trip folder. Needs 2+ described recordings
+- fewer than that logs a `trip.log` note and skips, not an error; a
+`MediaToolError` from the model call becomes a warning
+(`ExportResult.warnings`) rather than a crash. Replaces the old
+`_archive_path_for()`-based copy-in step, which is deleted.
+
+**Regression caught and fixed in the same pass**: `bv-web`'s job-
+runner plumbing for bv-scribe (`web/jobs.py`'s `JobRunner.
+start_bv_scribe()`, `web/app.py`'s `/jobs/bv-scribe` POST route, and
+`job_new_bv_scribe.html`'s "Also write a trip summary" checkbox +
+"Advanced trip summary" `<details>` section + its progressive-
+disclosure JS trigger) still built `--trip-summary`/`--trip-summary-
+max-new-tokens` argv for bv-scribe - which would have made any bv-web
+bv-scribe job submitted with that checkbox checked fail outright with
+an argparse "unrecognized arguments" error, since bv-scribe no longer
+accepts either flag. All three removed. `bv-export`'s own new
+`--trip-summary`/`--scene-model`/`--scene-cpu` flags are not yet wired
+into bv-web's job form - noted as a follow-up, not done in this pass.
+
+Files: `src/blackvue/cli/bv_scribe.py`, `src/blackvue/export/
+trip_export.py`, `src/blackvue/cli/bv_export.py`, `src/blackvue/web/
+jobs.py`, `src/blackvue/web/app.py`, `src/blackvue/web/templates/
+job_new_bv_scribe.html`, `src/blackvue/cli/bv_generate.py` (stale
+docstring wording fix only - "batch/trip-summary mode" -> "batch
+mode"), `docs/man/bv-scribe.md`, `docs/man/bv-export.md`. Tests:
+`tests/blackvue/cli/test_bv_scribe.py` (five trip-summary tests
+removed), `tests/blackvue/export/test_trip_export.py` (four new tests
+for `export_trip()`'s own trip-summary generation: 2+ described
+recordings triggers `summarize_trip()` with the right segments in
+order, <2 skips with a `trip.log` note, disabled by default, a
+`MediaToolError` becomes a warning not a crash), `tests/blackvue/cli/
+test_bv_export.py` (two new tests for the three new CLI flags reaching
+`bv_export()`'s kwargs), `tests/blackvue/web/test_jobs.py` (`_scribe_
+kwargs()` helper and its dependent tests updated for the removed
+params; the now-dead `test_start_bv_scribe_trip_summary_max_new_
+tokens_reaches_parsed_args()` deleted outright).
+
+Verified via `python3 -m py_compile` on every touched Python file (all
+clean), a Jinja `Environment().get_template()` parse check on the
+edited template (parses OK), and manual review of every doc edit for
+consistency. No pytest in this sandbox (established constraint -
+Python 3.10 here vs. the project's `tomllib`-dependent 3.11+ floor
+means the package doesn't even import standalone), so the new
+`test_trip_export.py`/`test_bv_export.py`/`test_jobs.py` tests
+themselves are unexecuted pending Christer's own CI/local run - flagged
+here rather than silently assumed passing.

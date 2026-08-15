@@ -5346,3 +5346,208 @@ def test_export_trip_keeps_rear_in_sync_when_a_recording_has_no_rear_video(
     assert any(
         "no rear video" in w and str(gap_id) in w for w in result.warnings
     )
+
+
+# --- trip_summary.txt generation -----------------------------------------
+#
+# Relocated here from bv-scribe's own retired --trip-summary (see
+# test_bv_scribe.py's history) - Christer: "I think we should remove trip
+# summary from bv-scene [bv-scribe]. A trip summary should be created and
+# placed in a trip folder, so it should be done by bv-export only." export_
+# trip() now calls generate.scene.summarize_trip() itself when trip_summary=
+# True, gathering each recording's already-written Asset.SCENE_DESCRIPTION
+# text (bv-scribe/--describe-scene must have run first) in trip order.
+
+
+def test_export_trip_writes_trip_summary_with_two_or_more_described(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    scene_a = source_dir / "a.scene.txt"
+    scene_a.write_text(
+        "## Description\nHeavy traffic on a city street.\n\n---\ndisclaimer"
+    )
+    scene_b = source_dir / "b.scene.txt"
+    scene_b.write_text(
+        "## Description\nOpen highway, light traffic.\n\n---\ndisclaimer"
+    )
+
+    captured = []
+
+    def fake_summarize_trip(segments, **kwargs):
+        captured.append((segments, kwargs))
+        return "The trip started in heavy traffic and opened onto a highway."
+
+    monkeypatch.setattr(
+        trip_export_module, "summarize_trip", fake_summarize_trip
+    )
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_a
+                ),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_b
+                ),
+            },
+        ),
+    ))
+
+    result = export_trip(
+        trip, dest_dir, trip_summary=True, scene_model="fake-model",
+        scene_cpu=True,
+    )
+
+    summary_path = dest_dir / "trip_summary.txt"
+    assert summary_path in result.text
+    text = summary_path.read_text(encoding="utf-8")
+    assert "The trip started in heavy traffic" in text
+
+    assert len(captured) == 1
+    segments, kwargs = captured[0]
+    assert [s[1] for s in segments] == [
+        "Heavy traffic on a city street.",
+        "Open highway, light traffic.",
+    ]
+    assert kwargs == {"model": "fake-model", "force_cpu": True}
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "wrote trip_summary.txt" in log_text
+
+
+def test_export_trip_skips_trip_summary_with_fewer_than_two_described(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    scene_a = source_dir / "a.scene.txt"
+    scene_a.write_text("## Description\nA quiet street.\n\n---\ndisclaimer")
+
+    def fail_if_called(segments, **kwargs):
+        raise AssertionError("summarize_trip should not be called")
+
+    monkeypatch.setattr(
+        trip_export_module, "summarize_trip", fail_if_called
+    )
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_a
+                ),
+            },
+        ),
+        Recording(id=RecordingId("20260720_100100_N")),
+    ))
+
+    result = export_trip(trip, dest_dir, trip_summary=True)
+
+    assert not (dest_dir / "trip_summary.txt").exists()
+    assert all(p.name != "trip_summary.txt" for p in result.text)
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "needs 2+ described recordings" in log_text
+
+
+def test_export_trip_trip_summary_disabled_by_default(tmp_path, monkeypatch):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    scene_a = source_dir / "a.scene.txt"
+    scene_a.write_text("## Description\nA quiet street.\n\n---\ndisclaimer")
+    scene_b = source_dir / "b.scene.txt"
+    scene_b.write_text("## Description\nA busy square.\n\n---\ndisclaimer")
+
+    def fail_if_called(segments, **kwargs):
+        raise AssertionError("summarize_trip should not be called")
+
+    monkeypatch.setattr(
+        trip_export_module, "summarize_trip", fail_if_called
+    )
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_a
+                ),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_b
+                ),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir)
+
+    assert not (dest_dir / "trip_summary.txt").exists()
+    assert all(p.name != "trip_summary.txt" for p in result.text)
+
+
+def test_export_trip_trip_summary_model_failure_produces_warning(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    dest_dir = tmp_path / "export"
+
+    scene_a = source_dir / "a.scene.txt"
+    scene_a.write_text("## Description\nA quiet street.\n\n---\ndisclaimer")
+    scene_b = source_dir / "b.scene.txt"
+    scene_b.write_text("## Description\nA busy square.\n\n---\ndisclaimer")
+
+    def fake_summarize_trip(segments, **kwargs):
+        raise MediaToolError("model failed to load")
+
+    monkeypatch.setattr(
+        trip_export_module, "summarize_trip", fake_summarize_trip
+    )
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_a
+                ),
+            },
+        ),
+        Recording(
+            id=RecordingId("20260720_100100_N"),
+            assets={
+                Asset.SCENE_DESCRIPTION: AssetFile(
+                    Asset.SCENE_DESCRIPTION, scene_b
+                ),
+            },
+        ),
+    ))
+
+    result = export_trip(trip, dest_dir, trip_summary=True)
+
+    assert not (dest_dir / "trip_summary.txt").exists()
+    assert any("model failed to load" in w for w in result.warnings)
+
+    log_text = (dest_dir / "trip.log").read_text(encoding="utf-8")
+    assert "model failed to load" in log_text

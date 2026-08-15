@@ -262,8 +262,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "text on ambiguous scenes - treat every read as unverified "
             "until checked against the source video. See bv-scribe for "
             "the full set of tuning flags (frame sampling, resolution, "
-            "the sign-zoom sub-pipeline, batch/trip-summary mode) - "
-            "this flag uses sensible defaults for running scene "
+            "the sign-zoom sub-pipeline, batch mode) - this flag uses "
+            "sensible defaults for running scene "
             "description alongside other bv-generate actions in one "
             "pass."
         ),

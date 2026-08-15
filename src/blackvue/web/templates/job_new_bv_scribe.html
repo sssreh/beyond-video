@@ -115,10 +115,6 @@
     <h3>Optional</h3>
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="trip_summary" name="trip_summary" value="true" style="width: auto; margin: 0;"{% if defaults.get('trip_summary') %} checked{% endif %}>
-        Also write a trip summary
-      </label>
-      <label class="filter-checkbox">
         <input type="checkbox" id="cpu" name="cpu" value="true" style="width: auto; margin: 0;"{% if defaults.get('cpu') %} checked{% endif %}>
         Force CPU (skip GPU)
       </label>
@@ -337,38 +333,9 @@
     </div>
   </details>
 
-  <details class="option-group" id="advanced-trip-summary">
-    <summary>Advanced trip summary</summary>
-    <p class="hint">Opens automatically once "Also write a trip summary" above is checked.</p>
-    <label class="field-label" for="trip_summary_max_new_tokens">
-      Trip summary max tokens
-      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap on generated tokens for the trip summary pass. Default: 768.</span></span>
-    </label>
-    <input type="number" id="trip_summary_max_new_tokens" name="trip_summary_max_new_tokens" min="1" step="1" value="{{ defaults.get('trip_summary_max_new_tokens', '') }}" placeholder="768">
-  </details>
-
   <button type="submit">Start</button>
 </form>
 </div>
-<script>
-  // Progressive disclosure: checking "Also write a trip summary"
-  // opens its matching Advanced <details> section automatically -
-  // same one-directional pattern job_new_bv_export.html's own script
-  // already uses (unchecking never force-closes it again).
-  (function () {
-    var triggers = [
-      ["trip_summary", "advanced-trip-summary"],
-    ];
-    triggers.forEach(function (pair) {
-      var checkbox = document.getElementById(pair[0]);
-      var details = document.getElementById(pair[1]);
-      if (!checkbox || !details) return;
-      checkbox.addEventListener("change", function () {
-        if (checkbox.checked) details.open = true;
-      });
-    });
-  })();
-</script>
 {% else %}
 <p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
 with bv-config</a> first.</p>

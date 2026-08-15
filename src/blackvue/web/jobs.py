@@ -985,8 +985,6 @@ class JobRunner:
         zoom_repetition_penalty: float | None,
         zoom_no_repeat_ngram_size: int | None,
         zoom_plate_confidence_check: bool,
-        trip_summary: bool,
-        trip_summary_max_new_tokens: int | None,
         cpu: bool,
         overwrite: bool,
         dry_run: bool,
@@ -1112,11 +1110,6 @@ class JobRunner:
             argv += ["--zoom-no-repeat-ngram-size", str(zoom_no_repeat_ngram_size)]
         if not zoom_plate_confidence_check:
             argv.append("--no-zoom-plate-confidence-check")
-
-        if trip_summary:
-            argv.append("--trip-summary")
-        if trip_summary_max_new_tokens is not None:
-            argv += ["--trip-summary-max-new-tokens", str(trip_summary_max_new_tokens)]
 
         if cpu:
             argv.append("--cpu")

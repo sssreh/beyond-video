@@ -59,6 +59,7 @@ from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
+from blackvue.generate import SCENE_DEFAULT_MODEL
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import load_or_compute_duration
 from blackvue.generate.media import read_duration_seconds
@@ -511,6 +512,9 @@ def bv_export(
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
     parking_speed: float = 1.0,
+    trip_summary: bool = False,
+    scene_model: str = SCENE_DEFAULT_MODEL,
+    scene_cpu: bool = False,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -659,6 +663,16 @@ def bv_export(
     in the video to speed up in that case. Left at 1.0 (a strict
     no-op, zero extra ffmpeg work), this behaves exactly as before
     `--parking-speed` existed.
+
+    `trip_summary=True` (bv-export's own `--trip-summary`) additionally
+    writes trip_summary.txt per trip - a text-only model synthesis pass
+    over each trip's already-generated scene descriptions. See
+    `export_trip()`'s own docstring for the full mechanism and why this
+    is a deliberate, explicit exception to bv-export otherwise never
+    calling a model itself. `scene_model`/`scene_cpu` (bv-export's own
+    `--scene-model`/`--scene-cpu`) pick the model and force-CPU
+    inference for that pass, same meaning as bv-scribe's own
+    `--model`/`--cpu`.
 
     `should_continue` (default always-True) is forwarded straight into
     every trip's own `export_trip()` call - see that function's own
@@ -885,6 +899,9 @@ def bv_export(
                 stitch_subtitles_background=stitch_subtitles_background,
                 include_parking=include_parking,
                 parking_speed=parking_speed,
+                trip_summary=trip_summary,
+                scene_model=scene_model,
+                scene_cpu=scene_cpu,
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
@@ -1784,6 +1801,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--trip-summary",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Also write trip_summary.txt: one text-only model synthesis "
+            "pass per trip, turning that trip's own recordings' "
+            "already-generated scene descriptions (see bv-scribe/"
+            "bv-generate --describe-scene) into a single trip-level "
+            "narrative that tracks how conditions changed over the "
+            "trip, instead of restating each segment back to back. "
+            "Needs 2+ described recordings in a trip to run - skipped "
+            "with a trip.log note otherwise. This is bv-export's one "
+            "deliberate exception to never calling a model itself - "
+            "off by default, and needs the scene extra (transformers/"
+            "torch/qwen-vl-utils) installed to actually run."
+        ),
+    )
+    parser.add_argument(
+        "--scene-model",
+        default=SCENE_DEFAULT_MODEL,
+        help=(
+            "Vision-language model id for --trip-summary's synthesis "
+            f"pass (default: {SCENE_DEFAULT_MODEL}). Meaningless "
+            "without --trip-summary."
+        ),
+    )
+    parser.add_argument(
+        "--scene-cpu",
+        action="store_true",
+        help=(
+            "Force --trip-summary's synthesis pass onto CPU instead of "
+            "GPU. Meaningless without --trip-summary."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -1972,6 +2025,9 @@ def _run(
             stitch_subtitles_background=args.subtitles_bg,
             include_parking=args.include_parking,
             parking_speed=args.parking_speed,
+            trip_summary=args.trip_summary,
+            scene_model=args.scene_model,
+            scene_cpu=args.scene_cpu,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
             debug=args.debug,

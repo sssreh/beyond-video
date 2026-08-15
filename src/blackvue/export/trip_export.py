@@ -34,6 +34,9 @@ from ..generate.media import probe_audio_format
 from ..generate.media import select_source
 from ..generate.mp4_box_reader import read_mp4_info
 from ..generate.mp4_repair import load_or_repair_parking_video
+from ..generate.scene import DEFAULT_MODEL as SCENE_DEFAULT_MODEL
+from ..generate.scene import extract_description_section
+from ..generate.scene import summarize_trip
 from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
 from ..telemetry.gsensor_reader import read_gsensor
@@ -93,24 +96,6 @@ TEXT_ASSETS = (
     (Asset.SCENE_DESCRIPTION, "scene.txt"),
     (Asset.SCENE_DESCRIPTION_REAR, "scene.rear.txt"),
 )
-
-
-def _archive_path_for(trip: Trip) -> Path | None:
-    """Best-effort archive root directory for `trip`, derived from
-    wherever its own recordings' asset files actually live - the same
-    "recordings sit flat in the archive root" fact merge_text_assets()
-    already relies on, just derived here instead of assumed, since
-    export_trip() itself is never handed the archive root directly.
-    Used only for the trip_summary.txt copy-in step below (see
-    export_trip()'s own TEXT_ASSETS loop) - falls back to None (no
-    copy attempted) if `trip` somehow has no recordings with any asset
-    at all, which shouldn't happen in practice.
-    """
-
-    for recording in trip:
-        for asset_file in recording.assets.values():
-            return asset_file.path.parent
-    return None
 
 
 @dataclass(frozen=True)
@@ -1964,6 +1949,9 @@ def export_trip(
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
     parking_speed: float = 1.0,
+    trip_summary: bool = False,
+    scene_model: str = SCENE_DEFAULT_MODEL,
+    scene_cpu: bool = False,
     command_line: str | None = None,
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
@@ -2348,6 +2336,34 @@ def export_trip(
     Parking recording is now simply left out, matching the treatment
     leading/trailing Parking recordings already had.
 
+    `trip_summary=True` writes trip_summary.txt: one text-only
+    synthesis pass (`generate.scene.summarize_trip()`) turning this
+    trip's own recordings' already-generated '## Description' scene
+    text (Asset.SCENE_DESCRIPTION - `bv-scribe`/`bv-generate
+    --describe-scene` must have already described at least 2 of this
+    trip's recordings, or this step is skipped with a trip.log note)
+    into one flowing trip-level narrative that tracks how conditions
+    changed over the trip, instead of restating each segment back to
+    back. `scene_model`/`scene_cpu` pick the model and force-CPU
+    inference the same way `bv-scribe`'s own `--model`/`--cpu` do.
+
+    This is a deliberate, explicit exception to the rule that
+    bv-export never calls a model itself (see TEXT_ASSETS'
+    scene.txt/scene.rear.txt merge, and bv-scribe's own earlier
+    per-trip trip_summary.txt/copy-in mechanism this replaced) -
+    Christer, after the copy-in mechanism turned out to have a real
+    design gap (bv-scribe's own trip-detection boundaries had zero
+    correlation with bv-export's, so a copied-in file could silently
+    miss or mismatch): "I think we should remove trip summary from
+    bv-scene [bv-scribe]. A trip summary should be created and placed
+    in a trip folder, so it should be done by bv-export only." Told
+    the no-model-call rule existed for a reason (bv-export can run on
+    a CPU-only NAS with no GPU/model dependency at all); his answer:
+    "Rules are made to be broken." So bv-export now depends on the
+    scene extra (transformers/torch/qwen-vl-utils) whenever
+    `trip_summary=True` is actually requested - untouched, and no new
+    dependency, when it isn't.
+
     `command_line`, if given, is written verbatim into this trip's own
     trip.log (see below) as the exact command that produced it - bv-
     export's CLI reconstructs it from sys.argv (see bv_export.py's
@@ -2701,34 +2717,60 @@ def export_trip(
         out.write_text(merged, encoding="utf-8")
         text_paths.append(out)
 
-    # Pick up a matching trip_summary.txt if bv-scribe's --trip-summary
-    # already generated one for this exact trip - Christer: "where does
-    # a trip summary belong, in trips i feel". This is a plain file
-    # copy, not a merge/synthesis - bv-export never calls the model
-    # itself (see bv-scribe's own docstring for why that split exists).
-    # bv-scribe writes one <trip label>.trip_summary.txt per trip it
-    # detects (see bv_scribe.py's _run_dispatch()), using the same
-    # Trip.label naming bv-ls --trips and this trip's own folder name
-    # already use - so this only needs to look for the exact name
-    # `trip.label` produces, via _archive_path_for() above. If
-    # bv-scribe was never run, or was run with different trip-detection
-    # flags than this export (so the boundaries - and therefore the
-    # label - don't line up), nothing is found and this is silently
-    # skipped, same as any other optional missing text asset above.
-    archive_path = _archive_path_for(trip)
-    if archive_path is not None:
-        trip_summary_source = archive_path / f"{trip.label}.trip_summary.txt"
-        if trip_summary_source.exists():
+    # trip_summary.txt: a text-only synthesis pass over this trip's
+    # own recordings' already-generated scene descriptions - see this
+    # function's own docstring for why this is a deliberate exception
+    # to bv-export's usual "never calls a model" rule (Christer: "Rules
+    # are made to be broken."). Gathers each recording's '## Description'
+    # section (Asset.SCENE_DESCRIPTION - the same canonical front-or
+    # -rear-fallback file bv-scribe/--describe-scene already write, not
+    # a separate camera-selection here) in trip order; needs 2+ actually
+    # described recordings for a real "how conditions changed" narrative
+    # to be worth the extra inference call, same threshold bv-scribe's
+    # own retired --trip-summary used.
+    if trip_summary:
+        described_segments: list[tuple[str, str]] = []
+        for recording in trip:
+            asset_file = recording.file(Asset.SCENE_DESCRIPTION)
+            if asset_file is None:
+                continue
             try:
-                summary_text = trip_summary_source.read_text(encoding="utf-8")
+                scene_text = asset_file.path.read_text(encoding="utf-8")
             except OSError as exc:
-                message = f"trip_summary.txt: couldn't copy ({exc})"
+                message = (
+                    f"trip_summary.txt: couldn't read {recording.id}'s "
+                    f"scene description ({exc})"
+                )
+                warnings.append(message)
+                log.warning(message)
+                continue
+            described_segments.append(
+                (str(recording.id), extract_description_section(scene_text))
+            )
+
+        if len(described_segments) < 2:
+            log.step(
+                "trip_summary.txt: needs 2+ described recordings in this "
+                f"trip, only {len(described_segments)} found - skipped"
+            )
+        else:
+            log.step(
+                f"summarizing trip across {len(described_segments)} "
+                "recording(s)..."
+            )
+            try:
+                summary_text = summarize_trip(
+                    described_segments, model=scene_model, force_cpu=scene_cpu,
+                )
+            except MediaToolError as exc:
+                message = f"trip_summary.txt: {exc}"
                 warnings.append(message)
                 log.warning(message)
             else:
                 out = destination / "trip_summary.txt"
-                out.write_text(summary_text, encoding="utf-8")
+                out.write_text(summary_text + "\n", encoding="utf-8")
                 text_paths.append(out)
+                log.step("wrote trip_summary.txt")
 
     if text_paths:
         log.step(

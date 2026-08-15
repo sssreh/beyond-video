@@ -25,7 +25,6 @@ from pathlib import Path
 
 from ..archive import Archive
 from ..archive import Asset
-from ..archive import RecordingId
 from .errors import run_cli
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
@@ -34,12 +33,7 @@ from ..core.joblog import wrap_warn
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import describe_scene
-from ..generate import extract_description_section
-from ..generate import summarize_trip
 from ..lexicaltimeparser import LexicalTimeParser
-from ..trip.trip_builder import DEFAULT_MAX_GAP
-from ..trip.trip_builder import TripBuilder
-from ..trip.trip_builder import recordings_with_front_video
 
 EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
@@ -314,28 +308,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--trip-summary",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help=(
-            "After processing every selected recording, run one extra "
-            "text-only synthesis pass per detected trip (same gap-"
-            "based grouping bv-export/bv-ls --trips use), turning each "
-            "trip's own recordings' '## Description' sections into a "
-            "single trip-level narrative (tracking how conditions "
-            "changed over the trip, not just concatenating them). "
-            "Archive mode writes one <trip label>.trip_summary.txt "
-            "per trip to the archive root - bv-export picks up a "
-            "matching one automatically when exporting that trip. "
-            "--raw mode (no trip concept) still writes one flat "
-            "trip_summary.txt. Needs 2+ described recordings in a "
-            "trip for that trip to get a summary."
-        ),
-    )
-    parser.add_argument("--trip-summary-max-new-tokens", type=int, default=768,
-                         help="Cap on generated tokens for --trip-summary (default: 768).")
-
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -415,9 +387,8 @@ def _should_write(path: Path, *, overwrite: bool, dry_run: bool, warn=_default_w
 
 
 def _scene_kwargs(args: argparse.Namespace) -> dict:
-    """Build describe_scene()/summarize_trip()'s SceneOptions kwargs
-    from parsed CLI args - one place mapping flag names to option
-    fields, since both call sites in _run() need the same mapping."""
+    """Build describe_scene()'s SceneOptions kwargs from parsed CLI
+    args - one place mapping flag names to option fields."""
 
     return dict(
         task=args.task,
@@ -447,7 +418,6 @@ def _scene_kwargs(args: argparse.Namespace) -> dict:
         zoom_repetition_penalty=args.zoom_repetition_penalty,
         zoom_no_repeat_ngram_size=args.zoom_no_repeat_ngram_size,
         zoom_plate_confidence_check=args.zoom_plate_confidence_check,
-        trip_summary_max_new_tokens=args.trip_summary_max_new_tokens,
         force_cpu=args.cpu,
     )
 
@@ -462,14 +432,10 @@ def _run_scene_pass(
     task_override: str | None = None,
     say=print,
     warn=_default_warn,
-) -> tuple[bool, str | None]:
+) -> bool:
     """Run one describe_scene() call for `label` (used only in
     messages) and write its result to `destination`. Returns
-    (had_error, description_section) - the description section comes
-    from whatever text ends up at `destination` (freshly generated,
-    or already there and left alone) for --trip-summary to use, or
-    None if this pass produced no usable text (skipped in dry-run, or
-    errored).
+    had_error.
 
     `task_override`, when given, replaces scene_kwargs['task'] for
     just this call - used for --camera both's OCR-only rear bonus
@@ -481,19 +447,11 @@ def _run_scene_pass(
     )
 
     if not need_write:
-        if destination.exists():
-            try:
-                return False, extract_description_section(
-                    destination.read_text(encoding="utf-8")
-                )
-            except OSError as exc:
-                warn(f"bv-scribe: couldn't read {destination} for the "
-                    f"trip summary ({exc})")
-        return False, None
+        return False
 
     if args.dry_run:
         say(f"{label}: would describe scene -> {destination.name}")
-        return False, None
+        return False
 
     kwargs = dict(scene_kwargs)
     if task_override is not None:
@@ -504,11 +462,11 @@ def _run_scene_pass(
         output_text = describe_scene(video_path, **kwargs)
     except MediaToolError as exc:
         warn(f"bv-scribe: {label}: {exc}")
-        return True, None
+        return True
 
     destination.write_text(output_text + "\n", encoding="utf-8")
     say(f"wrote {destination.name}")
-    return False, extract_description_section(output_text)
+    return False
 
 
 def _describe_recording(
@@ -520,18 +478,13 @@ def _describe_recording(
     prefix: str,
     say=print,
     warn=_default_warn,
-) -> tuple[bool, str | None]:
+) -> bool:
     """Describe one recording's scene/on-screen text for whichever
-    camera(s) --camera selects. Returns (had_error, description) -
-    description is the text --trip-summary should use for this
-    recording: the front pass's, or (with --camera rear, which has no
-    front pass at all) the rear pass's - or None if nothing usable
-    was produced."""
+    camera(s) --camera selects. Returns had_error."""
 
     front_file = recording.file(Asset.FRONT)
     rear_file = recording.file(Asset.REAR)
     had_error = False
-    description: str | None = None
 
     if args.camera in ("front", "both"):
         # Same front-preferred-with-rear-fallback source selection
@@ -543,12 +496,11 @@ def _describe_recording(
             warn(f"bv-scribe: {recording.id}: no front or rear video, skipping")
             had_error = True
         else:
-            err, description = _run_scene_pass(
+            had_error |= _run_scene_pass(
                 f"{prefix}{recording.id}", source_file.path,
                 archive_path / f"{recording.id}.scene.txt",
                 scene_kwargs, args, say=say, warn=warn,
             )
-            had_error |= err
 
     if args.camera in ("rear", "both"):
         if rear_file is None:
@@ -567,18 +519,15 @@ def _describe_recording(
                     "already used it as its own fallback), skipping rear "
                     "scene pass")
         else:
-            err, rear_description = _run_scene_pass(
+            had_error |= _run_scene_pass(
                 f"{prefix}{recording.id} (rear)", rear_file.path,
                 archive_path / f"{recording.id}.rear.scene.txt",
                 scene_kwargs, args,
                 task_override="ocr" if args.camera == "both" else None,
                 say=say, warn=warn,
             )
-            had_error |= err
-            if args.camera == "rear":
-                description = rear_description
 
-    return had_error, description
+    return had_error
 
 
 def _collect_raw_videos(path: Path) -> list[Path]:
@@ -594,40 +543,6 @@ def _collect_raw_videos(path: Path) -> list[Path]:
         p for p in path.iterdir()
         if p.is_file() and p.suffix.lower() in RAW_VIDEO_EXTENSIONS
     )
-
-
-def _finalize_trip_summary(
-    trip_segments: list[tuple[str, str]],
-    scene_kwargs: dict,
-    summary_path: Path,
-    args: argparse.Namespace,
-    *,
-    say=print,
-    warn=_default_warn,
-) -> bool:
-    """Run --trip-summary's extra synthesis pass, if there's enough
-    material for it. Returns True on error. Shared by archive mode
-    (called once per detected trip, with that trip's own segments/
-    summary_path - see _run_dispatch()) and --raw mode (called once
-    for the whole run, no trip concept there)."""
-
-    if not args.trip_summary or args.dry_run:
-        return False
-
-    if len(trip_segments) < 2:
-        say("bv-scribe: trip-summary needs 2+ described recordings, skipping.")
-        return False
-
-    say(f"Summarizing trip across {len(trip_segments)} recording(s)...")
-    try:
-        summary_text = summarize_trip(trip_segments, **scene_kwargs)
-    except MediaToolError as exc:
-        warn(f"bv-scribe: trip-summary: {exc}")
-        return True
-
-    summary_path.write_text(summary_text + "\n", encoding="utf-8")
-    say(f"wrote {summary_path.name}")
-    return False
 
 
 def _run_raw(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
@@ -659,25 +574,15 @@ def _run_raw(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
     scene_kwargs = _scene_kwargs(args)
     had_error = False
-    trip_segments: list[tuple[str, str]] = []
-    summary_dir = raw_path if raw_path.is_dir() else raw_path.parent
 
     for i, video in enumerate(videos, start=1):
         prefix = f"[{i}/{len(videos)}] "
         destination = video.with_name(f"{video.stem}.scene.txt")
 
-        err, description = _run_scene_pass(
+        had_error |= _run_scene_pass(
             f"{prefix}{video.name}", video, destination, scene_kwargs, args,
             say=say, warn=warn,
         )
-        had_error |= err
-        if args.trip_summary and description is not None:
-            trip_segments.append((video.stem, description))
-
-    had_error |= _finalize_trip_summary(
-        trip_segments, scene_kwargs, summary_dir / "trip_summary.txt", args,
-        say=say, warn=warn,
-    )
 
     return EXIT_HAD_ERRORS if had_error else EXIT_OK
 
@@ -763,38 +668,12 @@ def _run_dispatch(args: argparse.Namespace, *, say=print, warn=_default_warn) ->
 
     scene_kwargs = _scene_kwargs(args)
     had_error = False
-    trip_segments_by_label: dict[str, list[tuple[str, str]]] = {}
     failures: list[tuple[str, str]] = []
-
-    # Which trip (by label) each recording belongs to, so a
-    # --trip-summary gets built per detected trip instead of one flat
-    # summary for the whole --from/--until selection - see this
-    # function's own docstring area / WORKING_CONTEXT.md ("in trips i
-    # feel") for why: a trip summary is conceptually a property of one
-    # trip, and bv-export can only auto-pick up a matching one (see
-    # trip_export.py's own trip_summary.txt copy step) if bv-scribe's
-    # trip boundaries actually correspond to a real detected trip
-    # (Trip.label), not an arbitrary time window. Uses TripBuilder's
-    # plain defaults (DEFAULT_MAX_GAP, no --movement bridge/
-    # --duration-heal-archive/--max-parking-duration) - matching
-    # bv-export exactly requires bv-export's own extra flags to be at
-    # their defaults too; when they aren't, the labels simply won't
-    # line up and bv-export's copy step quietly finds nothing, same as
-    # any other optional missing asset.
-    trip_label_by_recording_id: dict[RecordingId, str] = {}
-    if args.trip_summary:
-        front_recordings = recordings_with_front_video(archive.recordings)
-        trips = TripBuilder(max_gap=DEFAULT_MAX_GAP).build_for_interval(
-            front_recordings, interval,
-        )
-        for trip in trips:
-            for trip_recording in trip:
-                trip_label_by_recording_id[trip_recording.id] = trip.label
 
     for i, recording in enumerate(recordings, start=1):
         prefix = f"[{i}/{len(recordings)}] "
         try:
-            err, description = _describe_recording(
+            err = _describe_recording(
                 recording, archive_path, scene_kwargs, args,
                 prefix=prefix, say=say, warn=warn,
             )
@@ -804,19 +683,6 @@ def _run_dispatch(args: argparse.Namespace, *, say=print, warn=_default_warn) ->
             warn(f"bv-scribe: {prefix}{recording.id}: FAILED - {exc}")
             continue
         had_error |= err
-        if args.trip_summary and description is not None:
-            trip_label = trip_label_by_recording_id.get(recording.id)
-            if trip_label is not None:
-                trip_segments_by_label.setdefault(trip_label, []).append(
-                    (str(recording.id), description)
-                )
-
-    for trip_label, trip_segments in trip_segments_by_label.items():
-        had_error |= _finalize_trip_summary(
-            trip_segments, scene_kwargs,
-            archive_path / f"{trip_label}.trip_summary.txt", args,
-            say=say, warn=warn,
-        )
 
     if failures:
         say(f"bv-scribe: {len(failures)} recording(s) failed:")
