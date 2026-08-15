@@ -75,6 +75,7 @@ from enum import Enum
 from pathlib import Path
 
 from ..core.joblog import log_line
+from ..generate import unload_scene_model
 
 
 class BvExportArgError(Exception):
@@ -1317,6 +1318,22 @@ class JobRunner:
                 # job's own now-final status already settled by the
                 # time this runs.
                 _record_job_history(job)
+
+                # "Scene model never unloads from GPU" (Christer).
+                # bv-generate --describe-scene, bv-scribe, and
+                # bv-export --trip-summary all load the ~16GB
+                # Qwen3-VL-8B-Instruct model into generate/scene.py's
+                # module-level _SCENE_MODEL_CACHE. A one-shot CLI
+                # process doesn't care - the OS reclaims everything on
+                # exit - but this server process is long-running and
+                # may run any of those job types back to back, so
+                # nothing was ever releasing that memory. Called here,
+                # unconditionally, for every job type: cheap/no-op if
+                # the job never touched the scene model (cache is
+                # already empty), and releases the GPU as soon as a
+                # job that may have loaded it finishes, regardless of
+                # success/failure/cancellation.
+                unload_scene_model()
 
         threading.Thread(target=target, daemon=True).start()
 

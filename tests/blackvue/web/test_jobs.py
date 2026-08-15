@@ -377,6 +377,84 @@ def test_spawned_job_reaches_failed_when_run_raises():
     assert any("camera on fire" in line for line in output)
 
 
+# ---------------------------------------------------------------------------
+# _spawn()'s unload_scene_model() call - "Scene model never unloads from
+# GPU" (Christer). Every job type shares this one `finally` block, so a
+# single set of tests here covers all of them regardless of which job
+# actually ran.
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_calls_unload_scene_model_after_success(monkeypatch):
+    from blackvue.web import jobs as jobs_module
+
+    calls = []
+    monkeypatch.setattr(jobs_module, "unload_scene_model", lambda: calls.append(1))
+
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+
+    runner._spawn(job, lambda: 0)
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    _wait_until(lambda: len(calls) == 1)
+    assert calls == [1]
+
+
+def test_spawn_calls_unload_scene_model_after_failure(monkeypatch):
+    from blackvue.web import jobs as jobs_module
+
+    calls = []
+    monkeypatch.setattr(jobs_module, "unload_scene_model", lambda: calls.append(1))
+
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+
+    runner._spawn(job, lambda: 1)
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    _wait_until(lambda: len(calls) == 1)
+    assert calls == [1]
+
+
+def test_spawn_calls_unload_scene_model_when_run_raises(monkeypatch):
+    from blackvue.web import jobs as jobs_module
+
+    calls = []
+    monkeypatch.setattr(jobs_module, "unload_scene_model", lambda: calls.append(1))
+
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+
+    def boom() -> int:
+        raise RuntimeError("camera on fire")
+
+    runner._spawn(job, boom)
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    _wait_until(lambda: len(calls) == 1)
+    assert calls == [1]
+
+
+def test_spawn_calls_unload_scene_model_when_cancelled(monkeypatch):
+    from blackvue.web import jobs as jobs_module
+    from blackvue.web.jobs import _JobCancelled
+
+    calls = []
+    monkeypatch.setattr(jobs_module, "unload_scene_model", lambda: calls.append(1))
+
+    runner = JobRunner()
+    job = runner._new_job(command="fake-cmd", username="christer")
+
+    def cancelled() -> int:
+        raise _JobCancelled()
+
+    runner._spawn(job, cancelled)
+
+    _wait_until(lambda: len(calls) == 1)
+    assert calls == [1]
+
+
 def test_make_ask_blocks_until_an_answer_is_submitted_then_echoes_it():
     runner = JobRunner()
     job = runner._new_job(command="fake-cmd", username="christer")

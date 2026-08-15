@@ -306,6 +306,70 @@ def _get_scene_model(model_name: str, *, force_cpu: bool) -> _LoadedSceneModel:
     return _SCENE_MODEL_CACHE[cache_key]
 
 
+def unload_scene_model(model_name: str | None = None, *, force_cpu: bool | None = None) -> None:
+    """Evict loaded scene model(s) from `_SCENE_MODEL_CACHE` and release
+    their GPU memory.
+
+    A one-shot CLI process (`bv-scribe`, `bv-generate --describe-scene`,
+    `bv-export --trip-summary`) never needs this - the cache just lives
+    for the process's lifetime and the OS reclaims everything on exit,
+    same as `speech.py`'s own Whisper model cache. `bv-web`'s in-process
+    job runner is different: it's a long-running server process that
+    may run any of those three job types back to back, and nothing was
+    ever releasing the ~16GB Qwen3-VL-8B-Instruct model each one loads -
+    "Scene model never unloads from GPU" (Christer). This is the fix:
+    called from `JobRunner._spawn()`'s shared `finally` block after
+    every job, so GPU memory is freed as soon as a job that may have
+    touched the scene model finishes, regardless of outcome.
+
+    With no arguments, clears every cached entry - the common case,
+    since a job runner doesn't know in advance which `(model_name,
+    force_cpu)` combination (if any) the job that just finished
+    actually used. Pass `model_name` (and optionally `force_cpu`) to
+    evict a single specific entry instead - `model_name` alone evicts
+    both the `:cpu` and `:auto` variants of that model, matching
+    `_get_scene_model()`'s own cache-key scheme.
+
+    Safe to call when the cache is already empty (nothing loaded this
+    process, or a previous call already cleared it) - a harmless no-op,
+    not an error. Safe to call even when scene description was never
+    used at all in this process (torch/transformers not installed) -
+    the cache is empty in that case too, so the torch import below is
+    never reached.
+    """
+
+    if not _SCENE_MODEL_CACHE:
+        return
+
+    if model_name is None:
+        keys_to_drop = list(_SCENE_MODEL_CACHE)
+    elif force_cpu is None:
+        keys_to_drop = [
+            key
+            for key in _SCENE_MODEL_CACHE
+            if key == f"{model_name}:cpu" or key == f"{model_name}:auto"
+        ]
+    else:
+        keys_to_drop = [f"{model_name}:{'cpu' if force_cpu else 'auto'}"]
+
+    if not keys_to_drop:
+        return
+
+    for key in keys_to_drop:
+        del _SCENE_MODEL_CACHE[key]
+
+    import gc
+    gc.collect()
+
+    try:
+        import torch
+    except ImportError:
+        return
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def build_prompt(task: str) -> str:
     if task == "describe":
         return DESCRIBE_PROMPT

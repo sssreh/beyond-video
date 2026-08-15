@@ -24,6 +24,7 @@ from .scene import SceneOptions
 from .scene import describe_scene
 from .scene import extract_description_section
 from .scene import summarize_trip
+from .scene import unload_scene_model
 from .scene import vision_gpu_available
 from .speech import DEPENDENT_MODELS
 from .speech import DIARIZATION_MODEL
@@ -75,5 +76,6 @@ __all__ = [
     "summarize_trip",
     "transcribe",
     "translate",
+    "unload_scene_model",
     "vision_gpu_available",
 ]

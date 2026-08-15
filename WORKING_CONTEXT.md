@@ -12405,3 +12405,61 @@ means the package doesn't even import standalone), so the new
 `test_trip_export.py`/`test_bv_export.py`/`test_jobs.py` tests
 themselves are unexecuted pending Christer's own CI/local run - flagged
 here rather than silently assumed passing.
+
+## Fix: scene model never unloads from GPU (2026-08-15)
+
+Christer, before stepping away for the day: "fix the 'Scene model
+never unloads from GPU'." `generate/scene.py`'s module-level
+`_SCENE_MODEL_CACHE` caches a loaded ~16GB Qwen3-VL-8B-Instruct model
+keyed by `f"{model_name}:{'cpu' if force_cpu else 'auto'}"`, populated
+by `_get_scene_model()` and consumed by every scene-description code
+path (`bv-scribe`, `bv-generate --describe-scene`, and now `bv-export
+--trip-summary`'s `summarize_trip()` call). For a one-shot CLI
+process this is harmless - the cache just lives for the process's
+lifetime and the OS reclaims everything on exit, same as `speech.py`'s
+own Whisper model cache. `bv-web`'s in-process job runner is
+different: it's a long-running server process that can run any of
+those three job types back to back, and nothing was ever releasing
+that memory once a job finished - the GPU stayed pinned by whichever
+scene model was last loaded, for the lifetime of the server.
+
+**`generate/scene.py`**: new `unload_scene_model(model_name=None, *,
+force_cpu=None)` function, added right after `_get_scene_model()`.
+With no arguments it clears every cache entry - the common case, since
+a job runner doesn't know in advance which `(model_name, force_cpu)`
+combination (if any) the job that just finished actually used. Passing
+`model_name` alone evicts both the `:cpu` and `:auto` variants of that
+model; passing both evicts one exact entry. Deletes the matching
+`_SCENE_MODEL_CACHE` entries, then `gc.collect()`, then
+`torch.cuda.empty_cache()` if CUDA is available. Safe no-op on an
+empty cache (returns before even trying to import torch) and safe if
+torch was never importable in the first place. Exported from
+`generate/__init__.py`.
+
+**`web/jobs.py`**: `JobRunner._spawn()`'s single shared `finally`
+block (used by every job type - bv-config, bv-gps, bv-generate,
+bv-export, bv-download, bv-ls, bv-scribe, bv-search, bv-lock) now
+calls `unload_scene_model()` right after `_record_job_history(job)`,
+unconditionally, regardless of whether the job succeeded, failed,
+raised, or was cancelled. Cheap/no-op for job types that never touch
+the scene model; releases the GPU as soon as any job that may have
+loaded it finishes.
+
+Files: `src/blackvue/generate/scene.py`, `src/blackvue/generate/
+__init__.py`, `src/blackvue/web/jobs.py`. Tests: `tests/blackvue/
+generate/test_scene.py` (six new tests for `unload_scene_model()`:
+no-op on empty cache, no-args clears everything, by-name evicts both
+variants, by-name+force_cpu evicts one exact entry, unknown name is a
+no-op, safe when torch isn't importable), `tests/blackvue/web/
+test_jobs.py` (four new tests confirming `_spawn()` calls
+`unload_scene_model()` after success, after failure, when `run()`
+raises, and when the job is cancelled - each monkeypatches `jobs_
+module.unload_scene_model` to a counting fake rather than touching a
+real model).
+
+Verified via `python3 -m py_compile` on every touched Python file (all
+clean). No pytest in this sandbox (same constraint noted throughout
+this session - Python 3.10 here vs. the project's 3.11+ floor means
+the package doesn't even import standalone), so the six new
+`test_scene.py` tests and four new `test_jobs.py` tests are unexecuted
+pending Christer's own run.

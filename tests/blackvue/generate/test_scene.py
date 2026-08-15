@@ -279,3 +279,105 @@ def test_describe_scene_output_includes_disclaimer(monkeypatch, tmp_path):
 
     assert result.startswith("## Description")
     assert scene.DISCLAIMER in result
+
+
+# --- unload_scene_model() -------------------------------------------------
+#
+# "Scene model never unloads from GPU" (Christer). These tests exercise
+# the cache-eviction logic in isolation - no real torch/transformers
+# needed, since unload_scene_model() only imports torch after it has
+# already found at least one entry to drop, and none of these fake
+# entries require torch to construct.
+
+
+def _fake_loaded_model():
+    return scene._LoadedSceneModel(
+        model=object(),
+        processor=object(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+
+def test_unload_scene_model_noop_on_empty_cache(monkeypatch):
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", {})
+
+    # Must not raise, and must not even try to import torch - if it
+    # did and torch weren't installed, this would blow up instead of
+    # quietly returning.
+    scene.unload_scene_model()
+
+    assert scene._SCENE_MODEL_CACHE == {}
+
+
+def test_unload_scene_model_no_args_clears_everything(monkeypatch):
+    cache = {
+        "model-a:auto": _fake_loaded_model(),
+        "model-b:cpu": _fake_loaded_model(),
+    }
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
+
+    scene.unload_scene_model()
+
+    assert cache == {}
+
+
+def test_unload_scene_model_by_name_evicts_both_variants_only(monkeypatch):
+    cache = {
+        "model-a:auto": _fake_loaded_model(),
+        "model-a:cpu": _fake_loaded_model(),
+        "model-b:auto": _fake_loaded_model(),
+    }
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
+
+    scene.unload_scene_model("model-a")
+
+    assert list(cache) == ["model-b:auto"]
+
+
+def test_unload_scene_model_by_name_and_force_cpu_evicts_one_entry(monkeypatch):
+    cache = {
+        "model-a:auto": _fake_loaded_model(),
+        "model-a:cpu": _fake_loaded_model(),
+    }
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
+
+    scene.unload_scene_model("model-a", force_cpu=True)
+
+    assert list(cache) == ["model-a:auto"]
+
+
+def test_unload_scene_model_unknown_name_is_a_noop(monkeypatch):
+    cache = {"model-a:auto": _fake_loaded_model()}
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
+
+    scene.unload_scene_model("no-such-model")
+
+    # The one real entry survives untouched.
+    assert list(cache) == ["model-a:auto"]
+
+
+def test_unload_scene_model_safe_when_torch_not_installed(monkeypatch):
+    """If torch was never importable, the module wouldn't have been
+    able to load a real scene model in the first place, so the cache
+    would be empty anyway - but guard the import-failure path itself
+    in case that assumption ever changes."""
+
+    import builtins
+
+    cache = {"model-a:auto": _fake_loaded_model()}
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("no torch here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    scene.unload_scene_model()
+
+    assert cache == {}
