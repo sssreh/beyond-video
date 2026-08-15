@@ -12262,6 +12262,9 @@ actually being reused in practice now.
 
 ## Feature: Front/Rear links open a "watch" page instead of the raw file (2026-08-15)
 
+**Confirmed working by Christer** against his real archive/browser -
+"Watch page confirmed working."
+
 Christer, looking at the recording detail page's inline player: "I
 would like that the Front and Rear links goes to a page just like
 that, instead of going straight into play full size(no escape)....
