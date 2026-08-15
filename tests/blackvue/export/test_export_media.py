@@ -1,10 +1,12 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from PIL import Image
 
 from blackvue.export import media as media_module
+from blackvue.export.media import build_ffmpeg_encode_command
 from blackvue.export.media import change_playback_speed
 from blackvue.export.media import check_readable
 from blackvue.export.media import concatenate_media
@@ -375,6 +377,64 @@ def test_encode_with_nvenc_fallback_default_quality_survives_a_real_encode(
 
     assert destination.exists()
     assert destination.stat().st_size > 0
+
+
+def test_build_ffmpeg_encode_command_matches_nvenc_attempt_shape(tmp_path):
+    # Built for hevc_preview.py's progressive-streaming transcode,
+    # which needs Popen-level control over the process instead of
+    # this module's own blocking subprocess.run() - confirms the argv
+    # it gets is exactly what encode_with_nvenc_fallback()'s own NVENC
+    # attempt would run, not a separately-drifting reimplementation.
+    command = build_ffmpeg_encode_command(
+        ["-i", "in.mp4"], Path("-"), "h264_nvenc",
+        extra_codec_args=["-b:v", "8M"],
+    )
+
+    assert command == [
+        "ffmpeg", "-y", "-i", "in.mp4",
+        "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", "-b:v", "8M", "-",
+    ]
+
+
+def test_build_ffmpeg_encode_command_matches_libx264_attempt_shape(tmp_path):
+    command = build_ffmpeg_encode_command(
+        ["-i", "in.mp4"], Path("-"), "libx264",
+        extra_codec_args=["-b:v", "8M"],
+    )
+
+    assert command == [
+        "ffmpeg", "-y", "-i", "in.mp4",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "8M", "-",
+    ]
+
+
+def test_build_ffmpeg_encode_command_applies_default_quality_when_unspecified(
+    tmp_path,
+):
+    # No caller-supplied rate control (no -b:v/-crf/-cq/-qp in
+    # extra_codec_args) - the same default-quality-target policy
+    # encode_with_nvenc_fallback() applies should show up here too,
+    # since both share _build_codec_args() internally.
+    command = build_ffmpeg_encode_command(
+        ["-i", "in.mp4"], tmp_path / "out.mp4", "libx264",
+    )
+
+    assert command == [
+        "ffmpeg", "-y", "-i", "in.mp4",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "19",
+        str(tmp_path / "out.mp4"),
+    ]
+
+
+def test_build_ffmpeg_encode_command_does_not_execute_anything(monkeypatch, tmp_path):
+    # Purely a command builder - must never shell out on its own
+    # (the whole point is letting a caller run it via its own Popen).
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("build_ffmpeg_encode_command() must not run ffmpeg")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    build_ffmpeg_encode_command(["-i", "in.mp4"], tmp_path / "out.mp4", "libx264")
 
 
 def _make_silent_video(path, duration_seconds: float) -> None:

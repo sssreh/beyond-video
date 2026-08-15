@@ -12069,3 +12069,108 @@ falls back to CPU, NVDEC unavailable so CPU used directly) against the
 real function with `encode_with_nvenc_fallback()` mocked - all three
 produced the expected `input_args` and decode-method label. Waiting on
 Christer's real retest for the number that actually matters.
+
+## Change: progressive-streaming HEVC preview transcode (2026-08-15)
+
+Christer's own real retest of the NVDEC fix confirmed it worked
+(`nvdec decode` on a 288MB source, `20.4s` vs the earlier `26.4-28.4s`
+CPU-decode runs) - a real ~25% win, but still a real wait on his
+biggest 4K files. His follow-up: "I guess its already running in
+parallel, so my question is. Can you convert the first 10 to 20%,
+start playing that and during that time convert the rest?"
+
+The reason the whole request blocks isn't decode/encode speed as
+such - a plain MP4's `+faststart` moov atom (the sample-table index a
+browser needs before it can play anything) can't be finalized until
+ffmpeg has already encoded the *entire* file, so nothing plays until
+100% is done, not just the first 10-20%. Explained this to Christer
+and proposed the real fix: a *fragmented* MP4 (empty moov up front,
+then a stream of self-contained moof/mdat fragments a browser can
+start decoding as soon as the first one arrives), with ffmpeg's output
+piped straight to the browser as it's produced instead of written to
+disk and served only once complete. Combined with NVDEC/NVENC already
+comfortably outpacing real-time playback on his hardware, this means
+playback can start within a second or two, and by the time more bytes
+are needed ffmpeg has usually caught up already. Flagged the
+trade-offs up front (rougher in-progress seeking; a failure *after*
+streaming has started sends a truncated/broken preview instead of a
+clean fallback, since bytes already sent to the browser can't be
+un-sent) - Christer: "try it, we can always take it back."
+
+Built as a fully separate code path, not a rewrite of the existing
+`load_or_transcode_hevc_preview()`/`encode_with_nvenc_fallback()`
+machinery - keeping that function completely intact both means every
+existing cache-hit/non-HEVC-passthrough request (the overwhelming
+majority) is untouched, and gives an easy, one-line revert for bv-web's
+route if the streaming path needs to be pulled later.
+
+`export/media.py`: factored `encode_with_nvenc_fallback()`'s inner
+`-c:v`/`-pix_fmt`/quality-arg construction out into a new
+`_build_codec_args()` helper (pure refactor, verified behavior
+-identical via a standalone script diffing captured argv before/
+after), then added a new public `build_ffmpeg_encode_command()` that
+returns the full ffmpeg argv for a single named codec without running
+it - lets a caller that needs real Popen-level control (has to keep
+the process alive while reading its stdout, instead of this module's
+own blocking `subprocess.run()`) get the exact same quality-arg/
+rate-control policy every other encode caller in this codebase already
+gets, rather than a separately-drifting reimplementation.
+
+`export/hevc_preview.py`: new "Progressive (streaming) preview
+transcode" section - `open_hevc_preview_stream(source, cache_dir)`
+returns a `Path` for the fast, unchanged cases (cache hit, non-HEVC,
+probe failure - identical logic to `load_or_transcode_hevc_preview()`)
+or an async byte generator (`_stream_transcode()`) when a fresh
+transcode is needed. `_stream_transcode()` spawns ffmpeg via
+`asyncio.create_subprocess_exec()` (`_spawn_ffmpeg()`), muxing straight
+to stdout (`-f mp4 -movflags frag_keyframe+empty_moov+default_base_moof
+-`) instead of a file, and reads/yields/writes-to-a-tmp-file each chunk
+as it arrives. Prefers NVDEC decode + NVENC encode (mirroring
+`load_or_transcode_hevc_preview()`'s own preference); if the *first*
+chunk read comes back empty, nothing has reached the browser yet, so
+it safely retries once with the known-safe CPU decode + libx264
+combination before giving up - the streaming counterpart to that
+function's own NVDEC-fails-falls-back-to-CPU logic, but keyed on
+"produced literally nothing" rather than a caught exception, since
+Popen failures don't raise the way `encode_with_nvenc_fallback()`'s
+`subprocess.run(check=True)` does. A failure *after* the first chunk
+has already been yielded doesn't retry (Christer's own accepted
+trade-off) - it just stops, leaving the cache directory clean (the
+temp file is unlinked, nothing gets renamed into place) so the next
+request retries cleanly rather than ever serving a corrupted cache
+entry. On success, the temp file is atomically renamed into the same
+cache path `load_or_transcode_hevc_preview()` would use, so a later
+request for the same source lands on the fast, already-cached path.
+
+`web/app.py`'s `archive_recording_file()` route: swapped the
+`load_or_transcode_hevc_preview()` call for
+`open_hevc_preview_stream()`; a `Path` result is served exactly as
+before (`FileResponse`, full Range-request support); an async
+generator result is wrapped in `StreamingResponse(result,
+media_type="video/mp4")` instead.
+
+Files: `src/blackvue/export/media.py`, `src/blackvue/export/
+hevc_preview.py`, `src/blackvue/web/app.py`. Tests: `tests/blackvue/
+export/test_export_media.py` (`build_ffmpeg_encode_command()` argv
+-shape tests, a "never executes anything" guard test);
+`tests/blackvue/export/test_hevc_preview.py` (`open_hevc_preview_
+stream()`/`_stream_transcode()` - cache-hit/non-HEVC passthrough,
+preferred-combo success, empty-first-chunk fallback, both-attempts
+-fail, partial-bytes-then-failure no-retry, plain-CPU-when-no
+-acceleration, plus a `_nvenc_available()` probe test mirroring
+`media.py`'s own). Verified via `py_compile`/`ast.parse` on all
+touched files, a standalone script confirming the
+`encode_with_nvenc_fallback()` refactor produces byte-identical argv
+before/after, and a standalone async script driving the real
+`open_hevc_preview_stream()`/`_stream_transcode()` through three
+scenarios (preferred combo succeeds and caches; preferred combo fails
+before any bytes and falls back to the safe combo; partial bytes are
+yielded then the process fails, with no retry and no cache pollution)
+against fake `asyncio`-shaped process/stream objects - all three
+produced the expected streamed bytes, spawn-attempt sequence, and
+cache-directory contents. No pytest available in this sandbox, so the
+new pytest test file itself is untested by an actual pytest run - only
+by the standalone equivalent above and `ast.parse`. Genuinely
+unverified against real ffmpeg/a real browser from this end (no GPU,
+no browser here) - Christer's own retest is what will confirm whether
+playback actually starts early in practice.

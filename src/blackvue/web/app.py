@@ -43,6 +43,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -87,7 +88,7 @@ from ..core.camera_config import load_camera_config
 from ..core.lock import LOCKABLE_ASSETS
 from ..export.geocoding import load_or_reverse_geocode
 from ..telemetry.gps_reader import GpsFix
-from ..export.hevc_preview import load_or_transcode_hevc_preview
+from ..export.hevc_preview import open_hevc_preview_stream
 from ..export.kml_writer import gpx_to_kml
 from ..generate.media import MediaToolError
 from ..generate.mp4_repair import load_or_repair_parking_video
@@ -741,13 +742,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # (regardless of OS codec packs); the browser still plays the
         # file's audio track fine, which is exactly the "sound only,
         # no picture" symptom he reported. Transparently swap in a
-        # transcoded, cached H.264 copy for just this case -
-        # load_or_transcode_hevc_preview() falls back to `path` itself
+        # transcoded H.264 copy for just this case -
+        # open_hevc_preview_stream() falls back to `path` itself
         # unchanged for anything that isn't HEVC (the normal case for
         # the rest of the archive), so this is always safe to try.
+        # Unlike a plain cache lookup, a fresh transcode comes back as
+        # a live async byte stream instead of a Path - Christer asked
+        # for playback to start before the whole file finishes
+        # converting ("Can you convert the first 10 to 20%, start
+        # playing that and during that time convert the rest?"), so
+        # this streams the transcode straight to the browser instead
+        # of blocking the request until it's fully done (see that
+        # function's own docstring, and hevc_preview.py's "Progressive
+        # (streaming) preview transcode" section, for the full story).
         if is_video_file:
             preview_cache_dir = default_config_dir() / ".hevc_preview_cache"
-            path = load_or_transcode_hevc_preview(path, preview_cache_dir)
+            result = open_hevc_preview_stream(path, preview_cache_dir)
+            if isinstance(result, Path):
+                path = result
+            else:
+                return StreamingResponse(result, media_type="video/mp4")
 
         return FileResponse(path)
 

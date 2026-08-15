@@ -33,17 +33,20 @@ about.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import subprocess
 import sys
 import time
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from ..generate.cache_utils import enforce_cache_size_cap
 from ..generate.media import MediaToolError
 from ..generate.media import probe_video_codec
+from .media import build_ffmpeg_encode_command
 from .media import encode_with_nvenc_fallback
 
 _HEVC_CODEC_NAMES = {"hevc", "h265"}
@@ -379,3 +382,285 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     )
     enforce_cache_size_cap(cache_dir, _MAX_CACHE_BYTES)
     return cache_path
+
+
+# --- Progressive (streaming) preview transcode -----------------------
+#
+# Christer, once the NVDEC fix above landed and confirmed decode really
+# was the bottleneck: "I guess its already running in parallel, so my
+# question is. Can you convert the first 10 to 20%, start playing that
+# and during that time convert the rest?" The reason today's transcode
+# blocks the whole request isn't decode/encode speed as such - it's
+# that a plain MP4's `+faststart` moov atom (the sample-table index a
+# browser needs before it can play anything) can't be finalized until
+# ffmpeg has already encoded the entire file, so nothing can play until
+# 100% is done, not just the first 10-20%. A *fragmented* MP4 (an
+# empty moov up front, then a stream of self-contained moof/mdat
+# fragments) sidesteps that entirely - a browser can start decoding as
+# soon as the first fragment arrives. Combined with NVDEC/NVENC
+# comfortably outpacing real-time playback on Christer's own hardware
+# (a multi-minute clip transcodes in ~20s, per his own retest above),
+# streaming ffmpeg's output directly to the browser as it's produced
+# means playback can start within a second or two, and by the time
+# more bytes are needed, ffmpeg has usually already caught up.
+#
+# Deliberately a separate code path from load_or_transcode_hevc_
+# preview() above, not a rewrite of it: that function's simple
+# Path-in-Path-out contract is still exactly right for a cache hit or
+# a non-HEVC/probe-failed passthrough (the overwhelming majority of
+# requests), and it's an easy, fully-intact fallback to revert bv-web's
+# route back to if this streaming path ever needs to be pulled -
+# Christer's own words going in: "try it, we can always take it back."
+
+
+# Empty moov + self-contained per-fragment moof/mdat headers instead of
+# a single moov built only once the whole encode finishes - see this
+# section's own header comment for why plain `+faststart` (what
+# load_or_transcode_hevc_preview() above still uses) can't support
+# progressive playback at all. default_base_moof avoids duplicating a
+# full absolute base-data-offset in every fragment header, a minor
+# size/compatibility nicety recommended for streaming output generally.
+_FRAGMENTED_MP4_MOVFLAGS = "frag_keyframe+empty_moov+default_base_moof"
+
+# Read/yield/write granularity for the live ffmpeg-stdout-to-browser
+# pipe below. Small enough that the browser starts seeing data
+# promptly rather than waiting for a large buffer to fill, large enough
+# that it isn't spending its time on per-chunk overhead against a
+# multi-hundred-MB stream.
+_STREAM_CHUNK_BYTES = 256 * 1024
+
+# Cached after the first check (per process) - mirrors media.py's own
+# _nvenc_available() exactly (same subprocess probe), but kept as its
+# own local copy rather than imported - see _nvdec_available() above
+# for why this module follows that convention for small hwaccel/
+# encoder probes rather than cross-importing media.py's private one.
+_NVENC_AVAILABLE: bool | None = None
+
+
+def _nvenc_available() -> bool:
+    """Return True if this machine's ffmpeg build lists h264_nvenc
+    among its encoders - see media.py's own _nvenc_available() for the
+    full reasoning (this is the same probe, duplicated per this
+    module's own established convention - see _nvdec_available()
+    above)."""
+
+    global _NVENC_AVAILABLE
+
+    if _NVENC_AVAILABLE is None:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _NVENC_AVAILABLE = "h264_nvenc" in result.stdout
+        except FileNotFoundError:
+            _NVENC_AVAILABLE = False
+
+    return _NVENC_AVAILABLE
+
+
+def open_hevc_preview_stream(
+    source: Path, cache_dir: Path
+) -> Path | AsyncIterator[bytes]:
+    """Progressive-streaming counterpart to load_or_transcode_hevc_
+    preview() for bv-web's file route: returns a Path to serve
+    directly (unchanged original file for anything non-HEVC/probe-
+    failed, or an already-cached preview - both instant, no ffmpeg
+    work at all) exactly like that function, or - the new case - an
+    async byte generator when a fresh transcode is needed, so the
+    caller can start streaming a growing preview to the browser
+    immediately (StreamingResponse) instead of blocking the whole
+    request until a full transcode finishes.
+
+    Callers must check which of the two came back (e.g.
+    `isinstance(result, Path)`) - a Path should be served as a normal
+    static file (FileResponse, full Range-request support and all,
+    since it's either the untouched original or an already-complete
+    cached copy); an async generator should be streamed directly, and
+    is itself responsible for populating the cache as it goes (see
+    _stream_transcode() below) so any later request for the same
+    source naturally lands on the fast cache-hit Path branch here.
+    """
+
+    try:
+        codec = probe_video_codec(source)
+    except MediaToolError as exc:
+        print(
+            f"HEVC preview: codec probe failed for {source.name}, "
+            f"serving the original file unchanged: {exc}",
+            file=sys.stderr,
+        )
+        return source
+
+    if codec is None or codec.lower() not in _HEVC_CODEC_NAMES:
+        return source
+
+    stat = source.stat()
+    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
+    cache_path = cache_dir / f"{digest}-{stat.st_mtime_ns}-{stat.st_size}.mp4"
+
+    if cache_path.is_file():
+        print(
+            f"HEVC preview: reusing cached preview for {source.name} "
+            f"({cache_path.name})",
+            file=sys.stderr,
+        )
+        return cache_path
+
+    print(
+        f"HEVC preview: {source.name} is {codec} - streaming a live H.264 "
+        f"transcode (playback can start before this finishes; the rest "
+        f"keeps converting in the background)...",
+        file=sys.stderr,
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return _stream_transcode(source, cache_path)
+
+
+async def _spawn_ffmpeg(
+    source: Path,
+    extra_codec_args: list[str],
+    *,
+    hw_decode: bool,
+    codec: str,
+) -> asyncio.subprocess.Process:
+    """Launch ffmpeg for `source`, muxing straight to stdout ("-") so
+    _stream_transcode() below can read its output as it's produced,
+    rather than waiting for a finished file on disk - the Popen-level
+    control build_ffmpeg_encode_command() exists for (see that
+    function's own docstring)."""
+
+    command = build_ffmpeg_encode_command(
+        _decode_input_args(source, hw_decode=hw_decode),
+        Path("-"),
+        codec,
+        extra_codec_args=extra_codec_args,
+    )
+    return await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def _stream_transcode(source: Path, cache_path: Path) -> AsyncIterator[bytes]:
+    """Transcode `source` to H.264, yielding bytes as ffmpeg produces
+    them (piped straight from its stdout) instead of waiting for the
+    whole file - see this module's own "Progressive (streaming) preview
+    transcode" section header for the full background.
+
+    Prefers NVDEC decode + NVENC encode when both are available
+    (matching load_or_transcode_hevc_preview()'s own preference),
+    watching only the *first* chunk read from ffmpeg's stdout: if that
+    comes back empty (ffmpeg exited without producing any output at
+    all - exactly how every real failure this codebase has hit so far
+    actually surfaces, an invalid preset or a broken NVDEC attempt,
+    both failing at option-parsing/init time before a single frame is
+    encoded), nothing has been sent to the browser yet, so it's safe to
+    retry once with the known-safe CPU decode + libx264 combination
+    before giving up. A failure *after* the first chunk has already
+    been yielded is a different, accepted risk (see this module's own
+    "we can always take it back" framing above) - the browser gets a
+    truncated/broken preview for that one request rather than a clean
+    fallback, since bytes already sent can't be un-sent.
+
+    Writes every chunk to a private per-call temp file inside
+    `cache_path`'s own parent as it's yielded, and atomically renames
+    it into place once ffmpeg exits successfully - the same temp-file-
+    then-rename cache safety load_or_transcode_hevc_preview() already
+    uses (see that function's own docstring for the corruption this
+    guards against), so a later request for the same source lands on
+    the fast, fully-formed cache-hit path instead of ever seeing a
+    partial file.
+    """
+
+    tmp_path = cache_path.with_name(f"{cache_path.stem}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+
+    hw_decode = _nvdec_available()
+    use_nvenc = _nvenc_available()
+    decode_method = "nvdec" if hw_decode else "cpu"
+    encode_method = "nvenc" if use_nvenc else "libx264"
+
+    extra_codec_args = [
+        "-preset", _PREVIEW_PRESET,
+        "-c:a", "copy",
+        "-movflags", _FRAGMENTED_MP4_MOVFLAGS,
+        "-b:v", _PREVIEW_TARGET_BITRATE,
+        "-maxrate", _PREVIEW_TARGET_BITRATE,
+        "-bufsize", _PREVIEW_TARGET_BITRATE,
+        "-f", "mp4",
+    ]
+
+    start = time.monotonic()
+    proc = await _spawn_ffmpeg(
+        source, extra_codec_args,
+        hw_decode=hw_decode, codec="h264_nvenc" if use_nvenc else "libx264",
+    )
+    first_chunk = await proc.stdout.read(_STREAM_CHUNK_BYTES)
+
+    if not first_chunk and (hw_decode or use_nvenc):
+        # Preferred combination produced nothing before exiting -
+        # nothing sent to the browser yet, so it's safe to retry with
+        # the known-safe combination (see this function's own
+        # docstring).
+        await proc.wait()
+        proc = await _spawn_ffmpeg(
+            source, extra_codec_args, hw_decode=False, codec="libx264",
+        )
+        decode_method, encode_method = "cpu", "libx264"
+        first_chunk = await proc.stdout.read(_STREAM_CHUNK_BYTES)
+
+    if not first_chunk:
+        await proc.wait()
+        stderr = await proc.stderr.read() if proc.stderr else b""
+        elapsed = time.monotonic() - start
+        print(
+            f"HEVC preview: transcode failed for {source.name} after "
+            f"{elapsed:.1f}s (before any bytes were streamed), serving "
+            f"the original (audio-only-playable) file unchanged would "
+            f"be the caller's job here - nothing more to yield: "
+            f"{stderr.decode(errors='replace').strip()}",
+            file=sys.stderr,
+        )
+        return
+
+    total_bytes = 0
+    try:
+        with open(tmp_path, "wb") as tmp_file:
+            chunk = first_chunk
+            while chunk:
+                tmp_file.write(chunk)
+                total_bytes += len(chunk)
+                yield chunk
+                chunk = await proc.stdout.read(_STREAM_CHUNK_BYTES)
+
+        returncode = await proc.wait()
+        if returncode != 0:
+            stderr = await proc.stderr.read() if proc.stderr else b""
+            elapsed = time.monotonic() - start
+            print(
+                f"HEVC preview: transcode failed for {source.name} after "
+                f"{elapsed:.1f}s, mid-stream after already sending "
+                f"{total_bytes} bytes to the browser - this request's "
+                f"playback will be broken/truncated, but the cache is "
+                f"left clean for the next request to retry: "
+                f"{stderr.decode(errors='replace').strip()}",
+                file=sys.stderr,
+            )
+            return
+
+        os.replace(tmp_path, cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    elapsed = time.monotonic() - start
+    print(
+        f"HEVC preview: transcode finished in {elapsed:.1f}s ({decode_method} "
+        f"decode, {encode_method} encode, streamed), cached as "
+        f"{cache_path.name}",
+        file=sys.stderr,
+    )
+    enforce_cache_size_cap(cache_path.parent, _MAX_CACHE_BYTES)

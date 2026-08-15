@@ -148,6 +148,71 @@ _DEFAULT_LIBX264_QUALITY_ARGS = ["-crf", "19"]
 # quality target on top of it.
 _CALLER_RATE_CONTROL_FLAGS = ("-b:v", "-crf", "-cq", "-qp")
 
+def _build_codec_args(codec: str, extra_codec_args: list[str]) -> list[str]:
+    """The `-c:v`/`-pix_fmt`/quality-target/`extra_codec_args` args for
+    a single encode attempt at `codec` (`"h264_nvenc"` or `"libx264"`)
+    - the inner piece `encode_with_nvenc_fallback()` builds for each of
+    its own two attempts, factored out here so
+    `build_ffmpeg_encode_command()` below can build the exact same
+    thing for a caller that needs Popen-level control over the process
+    instead of this module's own synchronous `subprocess.run()`.
+    """
+
+    caller_set_rate_control = any(
+        flag in extra_codec_args for flag in _CALLER_RATE_CONTROL_FLAGS
+    )
+    if codec == "h264_nvenc":
+        quality_args = (
+            [] if caller_set_rate_control else _DEFAULT_NVENC_QUALITY_ARGS
+        )
+    else:
+        quality_args = (
+            [] if caller_set_rate_control else _DEFAULT_LIBX264_QUALITY_ARGS
+        )
+    return ["-c:v", codec, "-pix_fmt", "yuv420p", *quality_args, *extra_codec_args]
+
+
+def build_ffmpeg_encode_command(
+    input_args: list[str],
+    destination: Path,
+    codec: str,
+    extra_codec_args: list[str] | None = None,
+) -> list[str]:
+    """Return the full ffmpeg argv `encode_with_nvenc_fallback()` would
+    run for `codec` (`"h264_nvenc"` or `"libx264"`), without executing
+    it.
+
+    Built for a caller that needs Popen-level control over the actual
+    process rather than this module's own blocking `subprocess.run()`
+    - bv-web's progressive HEVC-preview streaming (`export/
+    hevc_preview.py`) has to keep the process running while it reads
+    bytes off its stdout as they're produced (piping the encode
+    straight to the browser instead of waiting for the whole file), so
+    it needs the exact argv this module's own quality-arg/rate-control
+    policy (`_build_codec_args()`) would produce, without also getting
+    `_run_ffmpeg_encode()`'s blocking wait baked in. `destination` can
+    be a real path or `Path("-")` for stdout - this function doesn't
+    care, it just builds the argv the same way `_run_ffmpeg_encode()`
+    would.
+
+    Unlike `encode_with_nvenc_fallback()`'s own automatic NVENC-then-
+    CPU probe/fallback, `codec` here is the caller's own explicit
+    choice - a caller managing its own subprocess for a live stream
+    can't cleanly discard bytes it's already sent to a client and
+    restart with a different encoder after the fact, so it has to
+    decide up front (see hevc_preview.py's own streaming function for
+    how it picks, and how it still recovers from a bad choice as long
+    as nothing's been streamed yet).
+    """
+
+    extra_codec_args = extra_codec_args or []
+    return [
+        "ffmpeg", "-y", *input_args,
+        *_build_codec_args(codec, extra_codec_args),
+        str(destination),
+    ]
+
+
 def _run_ffmpeg_encode(
     codec_args: list[str], input_args: list[str], destination: Path
 ) -> None:
@@ -202,20 +267,10 @@ def encode_with_nvenc_fallback(
     extra_codec_args = extra_codec_args or []
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    caller_set_rate_control = any(
-        flag in extra_codec_args for flag in _CALLER_RATE_CONTROL_FLAGS
-    )
-
     if _nvenc_available():
-        quality_args = (
-            [] if caller_set_rate_control else _DEFAULT_NVENC_QUALITY_ARGS
-        )
         try:
             _run_ffmpeg_encode(
-                [
-                    "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
-                    *quality_args, *extra_codec_args,
-                ],
+                _build_codec_args("h264_nvenc", extra_codec_args),
                 input_args, destination,
             )
             return
@@ -224,15 +279,9 @@ def encode_with_nvenc_fallback(
         except subprocess.CalledProcessError:
             pass  # fall through to the CPU encoder below
 
-    quality_args = (
-        [] if caller_set_rate_control else _DEFAULT_LIBX264_QUALITY_ARGS
-    )
     try:
         _run_ffmpeg_encode(
-            [
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                *quality_args, *extra_codec_args,
-            ],
+            _build_codec_args("libx264", extra_codec_args),
             input_args, destination,
         )
     except FileNotFoundError as exc:

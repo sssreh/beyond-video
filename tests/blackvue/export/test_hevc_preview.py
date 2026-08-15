@@ -1,9 +1,12 @@
+import asyncio
 import hashlib
+from pathlib import Path
 
 import pytest
 
 from blackvue.export import hevc_preview as hevc_preview_module
 from blackvue.export.hevc_preview import load_or_transcode_hevc_preview
+from blackvue.export.hevc_preview import open_hevc_preview_stream
 from blackvue.generate.media import MediaToolError
 
 
@@ -419,3 +422,277 @@ def test_different_source_bytes_produce_a_different_cache_entry(monkeypatch, tmp
 
     assert first_result != second_result
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# open_hevc_preview_stream() / _stream_transcode() - the progressive
+# ("start playing before the whole transcode finishes") path Christer
+# asked for: "Can you convert the first 10 to 20%, start playing that
+# and during that time convert the rest?" See hevc_preview.py's own
+# "Progressive (streaming) preview transcode" section header for the
+# full design story. Deliberately its own section, separate from
+# load_or_transcode_hevc_preview() above (which is untouched by this
+# feature and still fully tested by everything above this point).
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """Stands in for asyncio.StreamReader - .read(n) pops pre-seeded
+    chunks off a list, returning b"" (EOF) once exhausted, matching
+    real asyncio stream-reading semantics closely enough for this
+    module's own control-flow logic to be exercised."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read(self, _n=-1):
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _FakeProcess:
+    """Stands in for asyncio.subprocess.Process."""
+
+    def __init__(self, stdout_chunks, returncode, stderr=b""):
+        self.stdout = _FakeStream(stdout_chunks)
+        self.stderr = _FakeStream([stderr] if stderr else [])
+        self.returncode = returncode
+
+    async def wait(self):
+        return self.returncode
+
+
+async def _collect(async_gen):
+    return b"".join([chunk async for chunk in async_gen])
+
+
+def test_open_hevc_preview_stream_returns_source_unchanged_when_not_hevc(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "h264")
+
+    result = open_hevc_preview_stream(source, cache_dir)
+
+    assert result == source
+    assert not cache_dir.exists()
+
+
+def test_open_hevc_preview_stream_returns_cached_path_on_a_cache_hit(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    expected_cache_path = _expected_cache_path(source, cache_dir)
+    expected_cache_path.write_bytes(b"already transcoded")
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+
+    def fail_spawn(*_args, **_kwargs):
+        raise AssertionError("should reuse the cached copy, not spawn ffmpeg")
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fail_spawn)
+
+    result = open_hevc_preview_stream(source, cache_dir)
+
+    assert result == expected_cache_path
+
+
+def test_open_hevc_preview_stream_streams_and_caches_a_fresh_transcode(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: True)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: True)
+
+    spawn_calls = []
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        spawn_calls.append((hw_decode, codec))
+        return _FakeProcess([b"frag1", b"frag2", b"frag3"], returncode=0)
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    result = open_hevc_preview_stream(source, cache_dir)
+
+    # Not a Path - a fresh transcode is needed, so the caller gets a
+    # live async generator to stream, not a completed file.
+    assert not isinstance(result, Path)
+
+    collected = asyncio.run(_collect(result))
+
+    assert collected == b"frag1frag2frag3"
+    assert spawn_calls == [(True, "h264_nvenc")]  # preferred combo, first try
+
+    expected_cache_path = _expected_cache_path(source, cache_dir)
+    assert expected_cache_path.is_file()
+    assert expected_cache_path.read_bytes() == b"frag1frag2frag3"
+    # No stray .tmp file left behind once the rename lands.
+    assert list(cache_dir.iterdir()) == [expected_cache_path]
+
+
+def test_open_hevc_preview_stream_falls_back_when_preferred_combo_yields_nothing(
+    monkeypatch, tmp_path
+):
+    """Nothing has been sent to the browser yet when the first chunk
+    comes back empty, so it's safe to retry with the known-safe CPU
+    decode + libx264 combination - the streaming counterpart to
+    load_or_transcode_hevc_preview()'s own NVDEC-fails-falls-back-to-
+    CPU behavior."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: True)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: True)
+
+    spawn_calls = []
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        spawn_calls.append((hw_decode, codec))
+        if len(spawn_calls) == 1:
+            return _FakeProcess([], returncode=1, stderr=b"nvdec init failed")
+        return _FakeProcess([b"safe-bytes"], returncode=0)
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    result = open_hevc_preview_stream(source, cache_dir)
+    collected = asyncio.run(_collect(result))
+
+    assert collected == b"safe-bytes"
+    assert spawn_calls == [
+        (True, "h264_nvenc"),   # preferred combo - fails immediately
+        (False, "libx264"),     # known-safe fallback - succeeds
+    ]
+
+    expected_cache_path = _expected_cache_path(source, cache_dir)
+    assert expected_cache_path.read_bytes() == b"safe-bytes"
+
+
+def test_open_hevc_preview_stream_yields_nothing_when_both_combinations_fail(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: True)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: True)
+
+    spawn_calls = []
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        spawn_calls.append((hw_decode, codec))
+        return _FakeProcess([], returncode=1, stderr=b"total failure")
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    result = open_hevc_preview_stream(source, cache_dir)
+    collected = asyncio.run(_collect(result))
+
+    assert collected == b""
+    assert len(spawn_calls) == 2
+    # No cache entry, and no stray .tmp file - nothing was ever
+    # written since nothing was ever successfully produced. cache_dir
+    # itself does exist by this point (open_hevc_preview_stream()
+    # creates it before handing off to the streaming generator).
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_open_hevc_preview_stream_does_not_retry_after_bytes_already_yielded(
+    monkeypatch, tmp_path
+):
+    """Christer's own accepted trade-off: a failure *after* the first
+    chunk has already been sent to the browser streams a broken/
+    truncated preview for that one request rather than a clean
+    fallback, since bytes already sent can't be un-sent. Confirms
+    _spawn_ffmpeg() is only ever called once in this case (no silent
+    second attempt after real playback bytes went out), and that the
+    cache is left clean (no half-written entry) for the next request
+    to retry cleanly."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: False)
+
+    spawn_calls = []
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        spawn_calls.append((hw_decode, codec))
+        # Some real bytes are produced before the process dies mid-
+        # encode.
+        return _FakeProcess([b"partial-frame"], returncode=1, stderr=b"crashed")
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    result = open_hevc_preview_stream(source, cache_dir)
+    collected = asyncio.run(_collect(result))
+
+    assert collected == b"partial-frame"  # already streamed to the browser
+    assert len(spawn_calls) == 1  # no retry once bytes were sent
+
+    expected_cache_path = _expected_cache_path(source, cache_dir)
+    assert not expected_cache_path.exists()
+    assert list(cache_dir.iterdir()) == []  # no stray .tmp file either
+
+
+def test_open_hevc_preview_stream_uses_plain_cpu_when_no_acceleration_available(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: False)
+
+    spawn_calls = []
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        spawn_calls.append((hw_decode, codec))
+        return _FakeProcess([b"cpu-bytes"], returncode=0)
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    result = open_hevc_preview_stream(source, cache_dir)
+    collected = asyncio.run(_collect(result))
+
+    assert collected == b"cpu-bytes"
+    assert spawn_calls == [(False, "libx264")]
+
+
+def test_nvenc_available_checks_ffmpeg_encoders_output(monkeypatch):
+    """Mirrors media.py's own _nvenc_available() test - this module
+    keeps its own private copy of the probe (see this module's own
+    comment on why), so it gets its own copy of this test too."""
+
+    monkeypatch.setattr(hevc_preview_module, "_NVENC_AVAILABLE", None)
+
+    captured = {}
+
+    class FakeResult:
+        stdout = "... h264_nvenc ...\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeResult()
+
+    monkeypatch.setattr(hevc_preview_module.subprocess, "run", fake_run)
+
+    assert hevc_preview_module._nvenc_available() is True
+    assert captured["command"] == ["ffmpeg", "-hide_banner", "-encoders"]
+
+    captured.clear()
+    assert hevc_preview_module._nvenc_available() is True
+    assert captured == {}
