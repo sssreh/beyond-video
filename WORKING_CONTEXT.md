@@ -12255,10 +12255,10 @@ exercising five scenarios directly against the real `hevc_preview`
 module with `unittest.mock.patch.object` - all five passed, including
 the core regression scenario (cache is fully written and reused after
 an early consumer close) and the dedup/late-joiner scenario (one
-ffmpeg spawn, both requests get the full stream). Not yet verified
-against Christer's own real archive/browser - his next viewing of a
-previously-viewed HEVC recording is what will confirm the cache is
-actually being reused in practice now.
+ffmpeg spawn, both requests get the full stream).
+
+**Confirmed working by Christer** against his real archive/browser -
+"HEVC preview cache-reuse confirmed fix, shows on page reload."
 
 ## Feature: Front/Rear links open a "watch" page instead of the raw file (2026-08-15)
 
