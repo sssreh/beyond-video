@@ -12463,3 +12463,53 @@ this session - Python 3.10 here vs. the project's 3.11+ floor means
 the package doesn't even import standalone), so the six new
 `test_scene.py` tests and four new `test_jobs.py` tests are unexecuted
 pending Christer's own run.
+
+## Feature: wire bv-export's --trip-summary/--scene-model/--scene-cpu into bv-web (2026-08-15)
+
+Christer: "ok wire `--trip-summary`/`--scene-model`/`--scene-cpu` into
+bv-web" - the follow-up gap flagged (but deliberately left out of
+scope) in the trip-summary-relocation entry above. Mirrors the exact
+pattern `--describe-scene`/`--scene-model`/`camera` already established
+for bv-generate's own web form (see "Add describe_scene/scene_model/
+camera to start_bv_generate()").
+
+**`web/jobs.py`**: `JobRunner.start_bv_export()` gained three new
+keyword-only params - `trip_summary: bool`, `scene_model: str | None`,
+`scene_cpu: bool` - added right after the existing `parking_speed`
+param (matching bv-export's own CLI flag ordering). Builds `--trip-
+summary`/`--scene-model MODEL`/`--scene-cpu` onto argv the same way
+every other optional flag in this method already does.
+
+**`web/app.py`**: `/jobs/bv-export`'s POST route gained matching
+`trip_summary: bool = Form(False)`, `scene_model: str = Form("")`,
+`scene_cpu: bool = Form(False)` params, threaded through to
+`start_bv_export()` (`scene_model` cleaned blank-to-`None` via the
+route's existing `_clean()` helper, same as every other optional text
+field here).
+
+**`job_new_bv_export.html`**: added a "Write a trip-level narrative
+summary (trip_summary.txt) (--trip-summary)" checkbox to the form's
+main feature-choice checkbox-row (alongside "Include Parking-mode
+recordings", the same row task #807 promoted feature-choice fields
+into) - not tucked into an Advanced section, since whether to generate
+trip_summary.txt at all is a feature choice, not a fine-tuning knob.
+Added a new "Advanced trip summary" `<details>` section (opens
+automatically once the checkbox above is checked, via the same
+progressive-disclosure JS trigger list every other Advanced section
+uses) holding `scene_model`/`scene_cpu` - the two fine-tuning knobs,
+mirroring bv-generate's own "Scene description" option-group styling
+for the model-id text field.
+
+Files: `src/blackvue/web/jobs.py`, `src/blackvue/web/app.py`, `src/
+blackvue/web/templates/job_new_bv_export.html`. Tests: `tests/
+blackvue/web/test_jobs.py` (`_export_kwargs()` helper extended with
+the three new defaults; two new tests - one confirming all three
+reach `bv_export.parse_args()`'s output when set, one confirming they
+default to off/`SCENE_DEFAULT_MODEL`/off when the web form leaves them
+untouched).
+
+Verified via `python3 -m py_compile` on every touched Python file, and
+a Jinja `Environment().get_template()` parse check on the edited
+template (both clean). No pytest in this sandbox (same constraint
+noted throughout this session), so the two new tests are unexecuted
+pending Christer's own run.

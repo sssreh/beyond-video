@@ -979,6 +979,9 @@ def _export_kwargs(**overrides):
         no_subtitles_bg=False,
         include_parking=False,
         parking_speed=None,
+        trip_summary=False,
+        scene_model=None,
+        scene_cpu=False,
         overwrite=False,
         dry_run=False,
         debug=False,
@@ -1169,6 +1172,50 @@ def test_start_bv_export_map_intro_and_parking_speed_default_to_off(monkeypatch)
     # None-means-omit-the-flag field in this form.
     assert args.map_intro_seconds == pytest.approx(5.0)
     assert args.parking_speed == pytest.approx(1.0)
+
+
+def test_start_bv_export_trip_summary_flags_reach_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_export(
+        **_export_kwargs(
+            trip_summary=True,
+            scene_model="some/other-model",
+            scene_cpu=True,
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.trip_summary is True
+    assert args.scene_model == "some/other-model"
+    assert args.scene_cpu is True
+
+
+def test_start_bv_export_trip_summary_flags_default_to_off(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, command_line, should_continue, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_export_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_export(**_export_kwargs())
+
+    _wait_until(lambda: "args" in captured)
+    args = captured["args"]
+    assert args.trip_summary is False
+    assert args.scene_model == bv_export_module.SCENE_DEFAULT_MODEL
+    assert args.scene_cpu is False
 
 
 def test_start_bv_export_never_exposes_target_as_a_form_field():

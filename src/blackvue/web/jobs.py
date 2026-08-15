@@ -675,6 +675,9 @@ class JobRunner:
         no_subtitles_bg: bool,
         include_parking: bool,
         parking_speed: float | None,
+        trip_summary: bool,
+        scene_model: str | None,
+        scene_cpu: bool,
         overwrite: bool,
         dry_run: bool,
         debug: bool,
@@ -822,6 +825,12 @@ class JobRunner:
             argv.append("--include-parking")
         if parking_speed is not None:
             argv += ["--parking-speed", str(parking_speed)]
+        if trip_summary:
+            argv.append("--trip-summary")
+        if scene_model:
+            argv += ["--scene-model", scene_model]
+        if scene_cpu:
+            argv.append("--scene-cpu")
         if overwrite:
             argv.append("--overwrite")
         if dry_run:
