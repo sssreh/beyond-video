@@ -95,6 +95,7 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
     assert destination.suffix == ".tmp"
     assert not destination.exists()  # renamed away by the time we check
     assert extra_codec_args == [
+        "-preset", "fast",
         "-c:a", "copy",
         "-movflags", "+faststart",
         "-b:v", "8M",

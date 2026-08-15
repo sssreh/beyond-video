@@ -11887,3 +11887,41 @@ has no existing TestClient-based test file to extend (fastapi isn't
 installed in this sandbox either) and the prior "Show start location"
 feature (task #445/#446) only had unit-test coverage at this same
 level.
+
+## Change: speed up the HEVC preview transcode with -preset fast (2026-08-15)
+
+Christer, browsing the archive and waiting on a HEVC-to-H.264 preview
+transcode (`hevc_preview.py`, task #704-#709): "i am wondering if you
+could speed it up somehow, maybe show a log qualiry version first
+Whats your opinion." Laid out the trade-off: neither
+`encode_with_nvenc_fallback()` attempt (NVENC nor libx264) had ever
+passed a `-preset` flag for this caller, so both were defaulting to
+their balanced/compression-tuned preset (libx264: `medium`; NVENC:
+its own unnamed default, roughly `p4`-equivalent) - the wrong target
+for a disposable browser-compat copy that's already bitrate-capped
+and never what Christer reviews footage on for real. Recommended a
+fast-preset change as the low-risk first move over a full low-
+quality-first progressive scheme (bigger lift: two cache tiers, a
+background upgrade job, a way to hot-swap the served file). Christer
+first asked for the full progressive version, then changed his mind:
+"I changed my mind try cut transcode time instead."
+
+`encode_with_nvenc_fallback()` applies `extra_codec_args` identically
+to both its NVENC and libx264 attempts (see `export/media.py`), so
+the flag had to be a preset name valid for *both* encoders - NVENC's
+own p1-p7/hp/hq/bd/ll* names aren't valid libx264 presets, and
+libx264's ultrafast/veryfast/superfast/etc aren't valid NVENC ones.
+`"fast"` is the one name both `h264_nvenc` and `libx264` recognize,
+so `hevc_preview.py` now passes `-preset fast` (new `_PREVIEW_PRESET`
+constant) ahead of the existing bitrate-cap flags in its
+`extra_codec_args` list - a straightforward speedup with no
+architecture change, cache format, or route-level change needed.
+
+Files: `src/blackvue/export/hevc_preview.py`. Tests:
+`tests/blackvue/export/test_hevc_preview.py`
+(`test_transcodes_hevc_source_and_caches_it`'s `extra_codec_args`
+assertion updated for the new `-preset fast` entry - no other test in
+that file asserts on the full flag list). Verified via a standalone
+script (no pytest in this sandbox) confirming
+`load_or_transcode_hevc_preview()` now passes `-preset fast` first in
+`extra_codec_args`, plus `py_compile` on the module.

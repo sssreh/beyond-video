@@ -77,6 +77,25 @@ _MAX_CACHE_BYTES = 5 * 1024 ** 3
 # --stitch-bitrate.
 _PREVIEW_TARGET_BITRATE = "8M"
 
+# encode_with_nvenc_fallback() applies extra_codec_args identically to
+# both its NVENC and libx264 attempts, so this can't be an encoder-
+# specific preset name (NVENC's own p1-p7/hp/hq/bd/ll* names aren't
+# valid libx264 presets, and libx264's ultrafast/veryfast/etc aren't
+# valid NVENC ones). "fast" is the one preset name both ffmpeg's
+# h264_nvenc and libx264 encoders recognize, so it's a single safe
+# flag either way. Christer asked to speed up the wait for a HEVC
+# preview to finish transcoding (a Chrome/Firefox compatibility copy
+# only - never what he reviews footage on for real, see this module's
+# background paragraph), and since neither encoder had a -preset flag
+# at all before this, both were defaulting to their "balanced"
+# preset (libx264: medium; NVENC: its own unnamed default, roughly
+# p4-equivalent) - tuned for compression efficiency, which doesn't
+# matter here since the output is already bitrate-capped anyway
+# (_PREVIEW_TARGET_BITRATE above). "fast" trades some of that
+# efficiency for real wall-clock speed without going as far as
+# ultrafast's much larger output for the same bitrate cap.
+_PREVIEW_PRESET = "fast"
+
 
 def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     """Return a path to a browser-playable copy of `source`, using
@@ -121,6 +140,12 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     encode_with_nvenc_fallback() uses - see that constant's own
     comment for why (Christer's own numbers: a 189MB HEVC source
     became a 511MB H.264 preview at CQ 19).
+
+    Also passes `-preset _PREVIEW_PRESET` ("fast") to speed up the
+    transcode itself - see that constant's own comment for why "fast"
+    specifically (the one preset name valid for both NVENC and
+    libx264, since extra_codec_args is applied to both attempts
+    identically).
 
     Transcodes into a private per-call temp file inside `cache_dir`,
     then atomically renames it to `cache_path` only once the encode
@@ -189,6 +214,7 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
                 ["-i", str(source)],
                 tmp_path,
                 extra_codec_args=[
+                    "-preset", _PREVIEW_PRESET,
                     "-c:a", "copy",
                     "-movflags", "+faststart",
                     "-b:v", _PREVIEW_TARGET_BITRATE,
