@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -46,6 +47,85 @@ from ..generate.media import probe_video_codec
 from .media import encode_with_nvenc_fallback
 
 _HEVC_CODEC_NAMES = {"hevc", "h265"}
+
+# Cached after the first check (per process) - same pattern as
+# media.py's own _NVENC_AVAILABLE and stitch.py's own _NVDEC_AVAILABLE.
+# Kept as its own local copy rather than imported from stitch.py -
+# these two modules already don't share this kind of small hwaccel
+# probe with each other (media.py's _nvenc_available() isn't imported
+# by stitch.py either, which has its own separate copy), so this
+# follows the same established convention rather than introducing a
+# new cross-module dependency for a five-line probe.
+_NVDEC_AVAILABLE: bool | None = None
+
+
+def _nvdec_available() -> bool:
+    """Return True if this machine's ffmpeg build lists "cuda" among
+    its hwaccels (NVIDIA's hardware video decoder, NVDEC).
+
+    Being listed doesn't guarantee this specific source will actually
+    decode via NVDEC (codec/profile support varies) - a failed attempt
+    just falls back to plain CPU decode (see load_or_transcode_hevc_
+    preview()'s own try/except around the NVDEC attempt), so a wrong
+    "True" here costs one failed attempt, not a broken preview.
+    """
+
+    global _NVDEC_AVAILABLE
+
+    if _NVDEC_AVAILABLE is None:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-hwaccels"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _NVDEC_AVAILABLE = "cuda" in result.stdout
+        except FileNotFoundError:
+            _NVDEC_AVAILABLE = False
+
+    return _NVDEC_AVAILABLE
+
+
+# Arbitrary but consistent label for the one CUDA device this module's
+# (always single-source) transcodes are pinned to - see stitch.py's
+# own _shared_hw_device_args() docstring for why an explicit named
+# device matters when a single ffmpeg process decodes *multiple*
+# hwaccel inputs at once (real 5x slowdown measured on Christer's own
+# archive without one). Moot here - this module only ever decodes one
+# source per call - but naming the device explicitly anyway costs
+# nothing and keeps the pattern consistent with stitch.py's rather
+# than silently diverging from a lesson that was expensive to learn
+# once already.
+_HW_DEVICE_NAME = "cu"
+
+
+def _decode_input_args(source: Path, *, hw_decode: bool) -> list[str]:
+    """The -i args for `source`, with NVDEC decode flags prepended and
+    a CPU-downloading filter appended when `hw_decode` is True -
+    mirrors stitch.py's _hwaccel_input_args()/_hw_predecode_filter().
+
+    -hwaccel_output_format cuda keeps decoded frames in GPU memory;
+    the trailing "-vf hwdownload,format=nv12" then brings them back to
+    normal CPU frames before encode_with_nvenc_fallback()'s own
+    "-pix_fmt yuv420p" (a software pixel format) gets applied to
+    whichever encoder actually runs - left out, ffmpeg would have to
+    silently negotiate that GPU-to-CPU conversion on its own, which
+    stitch.py's own hard-won history (see its _hw_predecode_filter()
+    docstring) says isn't safe to leave to chance.
+    """
+
+    if hw_decode:
+        return [
+            "-init_hw_device", f"cuda={_HW_DEVICE_NAME}:0",
+            "-hwaccel", "cuda",
+            "-hwaccel_device", _HW_DEVICE_NAME,
+            "-hwaccel_output_format", "cuda",
+            "-i", str(source),
+            "-vf", "hwdownload,format=nv12",
+        ]
+    return ["-i", str(source)]
+
 
 # Enforced via enforce_cache_size_cap() right after every new cache
 # write - see that function's own module docstring for the eviction
@@ -164,6 +244,23 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     libx264, since extra_codec_args is applied to both attempts
     identically.
 
+    Even with that preset fix confirmed correctly reaching NVENC,
+    Christer's own before/after timings barely moved (28.4s -> 26.4s
+    for similarly-sized ~280-290MB 4K HEVC sources) - too small a gap
+    to be the encoder actually being the bottleneck. The source read
+    is HEVC decode, which this function was, until now, always doing
+    in plain software regardless of preset - a several-hundred-MB 4K
+    HEVC decode is itself heavy enough to plausibly dominate the whole
+    ~26-28s on its own. So this now also tries NVDEC (`_nvdec_available()`)
+    hardware decode on the *input* side first - mirroring stitch.py's
+    own proven `_hwaccel_input_args()`/`_hw_predecode_filter()` pattern
+    - and falls back to plain CPU decode (catching `MediaToolError`) if
+    that fails for any reason (unsupported profile, driver hiccup,
+    etc.), so a bad NVDEC attempt costs one retry, never a broken
+    preview. Unverified on real hardware from this end (no GPU
+    available here to test against) - Christer's own retest is what
+    will actually confirm whether this moves the needle.
+
     Transcodes into a private per-call temp file inside `cache_dir`,
     then atomically renames it to `cache_path` only once the encode
     has fully finished - never writes directly to `cache_path` itself.
@@ -225,22 +322,41 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_name(f"{cache_path.stem}.{uuid.uuid4().hex[:8]}.tmp")
+    extra_codec_args = [
+        "-preset", _PREVIEW_PRESET,
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        "-b:v", _PREVIEW_TARGET_BITRATE,
+        "-maxrate", _PREVIEW_TARGET_BITRATE,
+        "-bufsize", _PREVIEW_TARGET_BITRATE,
+        "-f", "mp4",
+    ]
+    hw_decode = _nvdec_available()
+    decode_method = "nvdec" if hw_decode else "cpu"
     start = time.monotonic()
     try:
         try:
-            encode_with_nvenc_fallback(
-                ["-i", str(source)],
-                tmp_path,
-                extra_codec_args=[
-                    "-preset", _PREVIEW_PRESET,
-                    "-c:a", "copy",
-                    "-movflags", "+faststart",
-                    "-b:v", _PREVIEW_TARGET_BITRATE,
-                    "-maxrate", _PREVIEW_TARGET_BITRATE,
-                    "-bufsize", _PREVIEW_TARGET_BITRATE,
-                    "-f", "mp4",
-                ],
-            )
+            try:
+                encode_with_nvenc_fallback(
+                    _decode_input_args(source, hw_decode=hw_decode),
+                    tmp_path,
+                    extra_codec_args=extra_codec_args,
+                )
+            except MediaToolError:
+                if not hw_decode:
+                    raise
+                # NVDEC decode itself failed (unsupported profile,
+                # driver hiccup, etc.) - not the same thing as NVENC
+                # vs. libx264 encoder fallback, which
+                # encode_with_nvenc_fallback() already handles
+                # internally. Retry once with plain CPU decode before
+                # giving up on this source entirely.
+                decode_method = "cpu"
+                encode_with_nvenc_fallback(
+                    _decode_input_args(source, hw_decode=False),
+                    tmp_path,
+                    extra_codec_args=extra_codec_args,
+                )
         except MediaToolError as exc:
             elapsed = time.monotonic() - start
             print(
@@ -257,8 +373,8 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
 
     elapsed = time.monotonic() - start
     print(
-        f"HEVC preview: transcode finished in {elapsed:.1f}s, cached as "
-        f"{cache_path.name}",
+        f"HEVC preview: transcode finished in {elapsed:.1f}s ({decode_method} "
+        f"decode), cached as {cache_path.name}",
         file=sys.stderr,
     )
     enforce_cache_size_cap(cache_dir, _MAX_CACHE_BYTES)

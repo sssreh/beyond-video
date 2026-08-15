@@ -19,6 +19,35 @@ def _expected_cache_path(source, cache_dir):
     return cache_dir / f"{digest}-{stat.st_mtime_ns}-{stat.st_size}.mp4"
 
 
+def test_nvdec_available_checks_ffmpeg_hwaccels_output(monkeypatch):
+    """Mirrors stitch.py's own test_nvdec_available_checks_ffmpeg_hwaccels_output()
+    - this module keeps its own private probe rather than importing
+    stitch.py's (see hevc_preview.py's own comment on why), so it gets
+    its own copy of this test too."""
+
+    monkeypatch.setattr(hevc_preview_module, "_NVDEC_AVAILABLE", None)
+
+    captured = {}
+
+    class FakeResult:
+        stdout = "Hardware acceleration methods:\ncuda\nqsv\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeResult()
+
+    monkeypatch.setattr(hevc_preview_module.subprocess, "run", fake_run)
+
+    assert hevc_preview_module._nvdec_available() is True
+    assert captured["command"] == ["ffmpeg", "-hide_banner", "-hwaccels"]
+
+    # Cached after the first call - a second call shouldn't shell out
+    # again.
+    captured.clear()
+    assert hevc_preview_module._nvdec_available() is True
+    assert captured == {}
+
+
 def test_returns_source_unchanged_when_not_hevc(monkeypatch, tmp_path):
     source = _make_source(tmp_path)
     cache_dir = tmp_path / "cache"
@@ -67,6 +96,7 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cache"
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     calls = []
 
@@ -84,6 +114,10 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
     assert result.read_bytes() == b"transcoded"
     assert len(calls) == 1
     input_args, destination, extra_codec_args = calls[0]
+    # _nvdec_available() is mocked False above, so this is the plain
+    # CPU-decode input args - NVDEC's own extra flags are covered by
+    # test_transcodes_hevc_source_using_nvdec_decode_when_available()
+    # and test_falls_back_to_cpu_decode_when_nvdec_decode_fails() below.
     assert input_args == ["-i", str(source)]
     # Encodes into a private temp file, not the final cache path
     # directly - only renamed into place once the encode finishes (see
@@ -103,6 +137,86 @@ def test_transcodes_hevc_source_and_caches_it(monkeypatch, tmp_path):
         "-bufsize", "8M",
         "-f", "mp4",
     ]
+
+
+def test_transcodes_hevc_source_using_nvdec_decode_when_available(monkeypatch, tmp_path):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: True)
+
+    calls = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        calls.append(input_args)
+        destination.write_bytes(b"transcoded")
+
+    monkeypatch.setattr(hevc_preview_module, "encode_with_nvenc_fallback", fake_encode)
+
+    load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert len(calls) == 1
+    assert calls[0] == [
+        "-init_hw_device", f"cuda={hevc_preview_module._HW_DEVICE_NAME}:0",
+        "-hwaccel", "cuda",
+        "-hwaccel_device", hevc_preview_module._HW_DEVICE_NAME,
+        "-hwaccel_output_format", "cuda",
+        "-i", str(source),
+        "-vf", "hwdownload,format=nv12",
+    ]
+
+
+def test_falls_back_to_cpu_decode_when_nvdec_decode_fails(monkeypatch, tmp_path):
+    """Christer's own machine is real hardware I can't test against
+    directly - a bad NVDEC attempt (unsupported profile, driver
+    hiccup, etc.) must degrade to the already-working plain CPU decode
+    path rather than breaking the preview outright."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: True)
+
+    calls = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        calls.append(input_args)
+        if len(calls) == 1:
+            raise MediaToolError("ffmpeg: nvdec decode failed")
+        destination.write_bytes(b"transcoded")
+
+    monkeypatch.setattr(hevc_preview_module, "encode_with_nvenc_fallback", fake_encode)
+
+    result = load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert result.is_file()
+    assert result.read_bytes() == b"transcoded"
+    assert len(calls) == 2
+    assert "-hwaccel" in calls[0]  # first attempt: NVDEC decode
+    assert calls[1] == ["-i", str(source)]  # second attempt: plain CPU decode
+
+
+def test_returns_source_unchanged_when_both_nvdec_and_cpu_decode_fail(monkeypatch, tmp_path):
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: True)
+
+    calls = []
+
+    def fake_encode(input_args, destination, extra_codec_args=None):
+        calls.append(input_args)
+        raise MediaToolError("ffmpeg encode failed")
+
+    monkeypatch.setattr(hevc_preview_module, "encode_with_nvenc_fallback", fake_encode)
+
+    result = load_or_transcode_hevc_preview(source, cache_dir)
+
+    assert result == source
+    assert len(calls) == 2
 
 
 def test_reuses_cached_copy_without_transcoding_again(monkeypatch, tmp_path):
@@ -130,6 +244,7 @@ def test_returns_source_unchanged_when_encode_fails(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cache"
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     def fake_encode(*_args, **_kwargs):
         raise MediaToolError("ffmpeg encode failed")
@@ -154,6 +269,7 @@ def test_encode_failure_leaves_no_stray_temp_file_behind(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cache"
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     def fake_encode(_input_args, destination, extra_codec_args=None):
         # Mimic ffmpeg's real behavior: the output file gets created/
@@ -182,6 +298,7 @@ def test_enforces_the_cache_size_cap_after_a_successful_transcode(monkeypatch, t
     cache_dir = tmp_path / "cache"
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     def fake_encode(_input_args, destination, extra_codec_args=None):
         destination.write_bytes(b"transcoded")
@@ -231,6 +348,7 @@ def test_does_not_enforce_the_cache_size_cap_on_a_failed_transcode(monkeypatch, 
     cache_dir = tmp_path / "cache"
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     def fake_encode(*_args, **_kwargs):
         raise MediaToolError("ffmpeg encode failed")
@@ -254,6 +372,7 @@ def test_h265_codec_name_is_also_treated_as_hevc(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cache"
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "h265")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     def fake_encode(input_args, destination, extra_codec_args=None):
         destination.write_bytes(b"transcoded")
@@ -274,6 +393,7 @@ def test_different_source_bytes_produce_a_different_cache_entry(monkeypatch, tmp
 
     cache_dir = tmp_path / "cache"
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
 
     calls = []
 

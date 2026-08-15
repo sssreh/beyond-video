@@ -12016,3 +12016,56 @@ standalone script confirming the code now passes `-preset fast`, and
 `py_compile`. Still waiting on a clean re-test from Christer (NAS-
 side confound resolved earlier, GPU-side regression now fixed) for a
 real before/after number.
+
+## Change: add NVDEC hardware decode to the HEVC preview transcode (2026-08-15)
+
+Christer's clean retest of the `-preset fast` fix above came back
+barely different from before it: `HEVC preview: transcode finished in
+26.4s` for a ~278MB 4K HEVC source, vs. the pre-fix `28.4s` for a
+~283MB one. Too small a gap to be the encoder - a correctly-running
+NVENC hardware encode should have been a much bigger jump over a
+silent CPU fallback. That points at the *other* half of this pipeline:
+the source HEVC *decode*, which was running in plain, unaccelerated
+software the entire time (`["-i", str(source)]`, no `-hwaccel` flag
+at all, in every preset scenario tried so far) - a several-hundred-MB
+4K HEVC decode is itself heavy enough to plausibly dominate the whole
+~26-28s regardless of how fast the subsequent encode is.
+
+Ported stitch.py's own proven NVDEC hardware-decode pattern (already
+battle-tested there, including a hard-won lesson about a real 5x
+slowdown from unshared CUDA devices) into hevc_preview.py: a local
+`_nvdec_available()` probe (own copy, not imported from stitch.py -
+matches the existing convention that media.py's `_nvenc_available()`
+and stitch.py's `_nvdec_available()` already don't share with each
+other), a `_HW_DEVICE_NAME` constant, and `_decode_input_args()`
+building `-init_hw_device`/`-hwaccel cuda`/`-hwaccel_output_format
+cuda`/`-vf hwdownload,format=nv12` flags when NVDEC is available.
+`load_or_transcode_hevc_preview()` now tries NVDEC decode first and
+falls back to plain CPU decode (catching `MediaToolError`, distinct
+from `encode_with_nvenc_fallback()`'s own internal NVENC/libx264
+encoder fallback) if the NVDEC attempt fails for any reason - a bad
+attempt costs one retry, never a broken preview. The final stderr line
+now also reports which decode method actually ran (`"HEVC preview:
+transcode finished in Xs (nvdec decode), cached as ..."` or `(cpu
+decode)`), so Christer's next real-log-line retest will show directly
+whether NVDEC engaged.
+
+Genuinely unverified on real hardware from this end - no GPU available
+in this sandbox to test an actual NVDEC decode against, unlike the
+preset-name validity check earlier, which could be confirmed directly.
+Design leans defensively on the try-then-fall-back structure for
+exactly this reason.
+
+Files: `src/blackvue/export/hevc_preview.py`. Tests:
+`tests/blackvue/export/test_hevc_preview.py` - new
+`test_nvdec_available_checks_ffmpeg_hwaccels_output()` (mirrors
+stitch.py's own test), `test_transcodes_hevc_source_using_nvdec_decode_when_available()`,
+`test_falls_back_to_cpu_decode_when_nvdec_decode_fails()`,
+`test_returns_source_unchanged_when_both_nvdec_and_cpu_decode_fail()`;
+existing tests updated to mock `_nvdec_available()` explicitly for
+determinism. Verified via `py_compile` and a standalone script
+exercising all three decode paths (NVDEC succeeds, NVDEC fails and
+falls back to CPU, NVDEC unavailable so CPU used directly) against the
+real function with `encode_with_nvenc_fallback()` mocked - all three
+produced the expected `input_args` and decode-method label. Waiting on
+Christer's real retest for the number that actually matters.
