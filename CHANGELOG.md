@@ -49,7 +49,9 @@ removed or cleaned up now that the surface area has settled.
   the command that owns trip folders now also owns the model call that
   produces `trip_summary.txt`, reading back each recording's already-
   written `.scene.txt` rather than `bv-scribe` copying a per-trip file
-  in after the fact.
+  in after the fact. All three flags are also wired into `bv-web`'s
+  export job form (a feature-choice checkbox plus an Advanced section
+  for the model/CPU knobs).
 - `--stitch-map-circle`: circular crop for the `--stitch-map` zoom panel,
   now the default when zoom mode is on.
 - Show the equivalent replicable `bv-*` CLI command on every `bv-web` job
