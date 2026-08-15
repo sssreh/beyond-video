@@ -757,7 +757,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # (streaming) preview transcode" section, for the full story).
         if is_video_file:
             preview_cache_dir = default_config_dir() / ".hevc_preview_cache"
-            result = open_hevc_preview_stream(path, preview_cache_dir)
+            result = await open_hevc_preview_stream(path, preview_cache_dir)
             if isinstance(result, Path):
                 path = result
             else:

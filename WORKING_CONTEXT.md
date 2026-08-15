@@ -12174,3 +12174,88 @@ by the standalone equivalent above and `ast.parse`. Genuinely
 unverified against real ffmpeg/a real browser from this end (no GPU,
 no browser here) - Christer's own retest is what will confirm whether
 playback actually starts early in practice.
+
+## Fix: HEVC preview cache never actually finalized in real usage (2026-08-15)
+
+Christer's own real retest of the progressive-streaming feature above
+confirmed playback did start early ("Perfect, you can actually see the
+length of the video increasing"). But his next report was a real,
+separate bug: "I looks lile every time a look at the video, it does
+the same and not playing the cached file." - every viewing of a given
+HEVC recording re-transcoded from scratch instead of reusing the
+cache, even though the code's own intent (temp-file-then-rename, same
+as `load_or_transcode_hevc_preview()`) was to populate it.
+
+Root cause: the first streaming design tied the entire ffmpeg-stdout-
+reading loop directly to the HTTP response's own async generator
+(`_stream_transcode()`), and that generator's rename-into-cache step
+(`os.replace(tmp_path, cache_path)`) only ran after its own `while
+chunk:` loop reached a natural EOF. Starlette closes a streaming
+response's generator early - raising `GeneratorExit` at its current
+`yield` point - the moment a client disconnects before draining the
+whole response, and that's true of essentially all real `<video>`
+playback: pausing, seeking, navigating away, or simply not watching a
+clip start-to-finish. `GeneratorExit` only ran the function's own
+`finally: tmp_path.unlink()`, never reaching the rename - so in
+practice the cache almost never actually got written, and every
+viewing looked exactly like a fresh transcode because, functionally,
+it was one.
+
+Fix: decoupled the background ffmpeg-consuming/cache-writing work from
+any single request's own lifetime entirely. `export/hevc_preview.py`
+now has `_run_transcode_to_cache(broadcast)`, run as its own
+independent `asyncio.Task` (created via `asyncio.create_task()` inside
+`open_hevc_preview_stream()`, which had to become `async def` for
+that - a signature-breaking change updated at its one call site in
+`web/app.py`'s `archive_recording_file()` route). The task is tracked
+in a new module-level `_IN_PROGRESS: dict[Path, _TranscodeBroadcast]`
+registry keyed by `cache_path`, which doubles as free deduplication:
+two overlapping requests for the same not-yet-cached source now join
+the same in-flight transcode instead of each spawning a redundant
+ffmpeg process. A new `_TranscodeBroadcast` class keeps every produced
+chunk in an in-memory `history: list[bytes]` (not re-read from disk -
+considered and rejected tailing the growing tmp file from disk with a
+persistent open handle, given this codebase's own history of real
+Windows file-locking bugs, e.g. "Retry front.mp4 audio-remux swap on
+transient Windows Access Denied", and bv-web running natively on
+Christer's own Windows PC) plus a list of `asyncio.Queue` subscribers;
+`subscribe()` immediately replays the full history into a new
+subscriber's queue (so a late joiner - a second overlapping request
+that arrives after the transcode has already started - still gets the
+complete stream from the beginning, including the fragmented MP4's
+essential empty-moov header, not just whatever's produced from the
+moment it joined; a future-only queue with no replay was considered
+and rejected for exactly this reason). Each HTTP request now gets its
+own lightweight `_consume_broadcast()` async generator that subscribes
+and drains its own queue - closing early only unsubscribes that one
+queue, never touches the shared background task underneath.
+
+Files: `src/blackvue/export/hevc_preview.py` (new
+`_TranscodeBroadcast`, `_run_transcode_to_cache()`,
+`_consume_broadcast()`, `_IN_PROGRESS` registry; `open_hevc_preview_
+stream()` rewritten as `async def`; old `_stream_transcode()` removed
+entirely), `src/blackvue/web/app.py` (added `await` at the one call
+site). Tests: `tests/blackvue/export/test_hevc_preview.py` - the
+existing streaming tests were rewrapped in `asyncio.run()`/async
+scenario functions (the function under test is now a coroutine), plus
+two new tests: `test_background_transcode_finishes_and_caches_even_
+if_consumer_closes_early()` (the actual regression test - pulls one
+chunk, closes the consumer generator early exactly like a
+disconnecting browser, awaits the background task directly, and
+confirms the cache file exists and a follow-up request hits the fast
+cache-hit path with no new ffmpeg call) and `test_open_hevc_preview_
+stream_dedupes_and_replays_history_for_a_late_joiner()` (two
+overlapping requests, the second joining only after the first chunk
+has already been produced via a `_SlowFakeStream` that genuinely
+yields control back to the event loop between chunks - confirms both
+requests get the complete stream and only one real ffmpeg process ran).
+Verified via `py_compile` on both touched source files and the test
+file, plus a standalone async script (no pytest in this sandbox)
+exercising five scenarios directly against the real `hevc_preview`
+module with `unittest.mock.patch.object` - all five passed, including
+the core regression scenario (cache is fully written and reused after
+an early consumer close) and the dedup/late-joiner scenario (one
+ffmpeg spawn, both requests get the full stream). Not yet verified
+against Christer's own real archive/browser - his next viewing of a
+previously-viewed HEVC recording is what will confirm the cache is
+actually being reused in practice now.

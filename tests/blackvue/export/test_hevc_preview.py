@@ -475,7 +475,7 @@ def test_open_hevc_preview_stream_returns_source_unchanged_when_not_hevc(
 
     monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "h264")
 
-    result = open_hevc_preview_stream(source, cache_dir)
+    result = asyncio.run(open_hevc_preview_stream(source, cache_dir))
 
     assert result == source
     assert not cache_dir.exists()
@@ -497,7 +497,7 @@ def test_open_hevc_preview_stream_returns_cached_path_on_a_cache_hit(
 
     monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fail_spawn)
 
-    result = open_hevc_preview_stream(source, cache_dir)
+    result = asyncio.run(open_hevc_preview_stream(source, cache_dir))
 
     assert result == expected_cache_path
 
@@ -520,13 +520,14 @@ def test_open_hevc_preview_stream_streams_and_caches_a_fresh_transcode(
 
     monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
 
-    result = open_hevc_preview_stream(source, cache_dir)
+    async def scenario():
+        result = await open_hevc_preview_stream(source, cache_dir)
+        # Not a Path - a fresh transcode is needed, so the caller gets a
+        # live async generator to stream, not a completed file.
+        assert not isinstance(result, Path)
+        return await _collect(result)
 
-    # Not a Path - a fresh transcode is needed, so the caller gets a
-    # live async generator to stream, not a completed file.
-    assert not isinstance(result, Path)
-
-    collected = asyncio.run(_collect(result))
+    collected = asyncio.run(scenario())
 
     assert collected == b"frag1frag2frag3"
     assert spawn_calls == [(True, "h264_nvenc")]  # preferred combo, first try
@@ -564,8 +565,11 @@ def test_open_hevc_preview_stream_falls_back_when_preferred_combo_yields_nothing
 
     monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
 
-    result = open_hevc_preview_stream(source, cache_dir)
-    collected = asyncio.run(_collect(result))
+    async def scenario():
+        result = await open_hevc_preview_stream(source, cache_dir)
+        return await _collect(result)
+
+    collected = asyncio.run(scenario())
 
     assert collected == b"safe-bytes"
     assert spawn_calls == [
@@ -595,8 +599,11 @@ def test_open_hevc_preview_stream_yields_nothing_when_both_combinations_fail(
 
     monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
 
-    result = open_hevc_preview_stream(source, cache_dir)
-    collected = asyncio.run(_collect(result))
+    async def scenario():
+        result = await open_hevc_preview_stream(source, cache_dir)
+        return await _collect(result)
+
+    collected = asyncio.run(scenario())
 
     assert collected == b""
     assert len(spawn_calls) == 2
@@ -636,8 +643,11 @@ def test_open_hevc_preview_stream_does_not_retry_after_bytes_already_yielded(
 
     monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
 
-    result = open_hevc_preview_stream(source, cache_dir)
-    collected = asyncio.run(_collect(result))
+    async def scenario():
+        result = await open_hevc_preview_stream(source, cache_dir)
+        return await _collect(result)
+
+    collected = asyncio.run(scenario())
 
     assert collected == b"partial-frame"  # already streamed to the browser
     assert len(spawn_calls) == 1  # no retry once bytes were sent
@@ -665,11 +675,174 @@ def test_open_hevc_preview_stream_uses_plain_cpu_when_no_acceleration_available(
 
     monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
 
-    result = open_hevc_preview_stream(source, cache_dir)
-    collected = asyncio.run(_collect(result))
+    async def scenario():
+        result = await open_hevc_preview_stream(source, cache_dir)
+        return await _collect(result)
+
+    collected = asyncio.run(scenario())
 
     assert collected == b"cpu-bytes"
     assert spawn_calls == [(False, "libx264")]
+
+
+# ---------------------------------------------------------------------------
+# Second iteration: Christer reported a real bug in the first streaming
+# design above - "I looks lile every time a look at the video, it does
+# the same and not playing the cached file." Root cause: the old
+# _stream_transcode() tied the entire ffmpeg-reading/cache-write loop
+# directly to the HTTP response's own async generator, so a browser
+# that disconnected before draining the whole response (pausing,
+# seeking, navigating away, or simply not finishing the clip - all
+# completely normal for real video playback) meant Starlette's
+# GeneratorExit on close skipped the rename-into-cache step entirely.
+# These two tests cover the fix: the background transcode now runs as
+# an independent asyncio.Task (_run_transcode_to_cache(), tracked in
+# _IN_PROGRESS), decoupled from any one request's own generator.
+# ---------------------------------------------------------------------------
+
+
+def test_background_transcode_finishes_and_caches_even_if_consumer_closes_early(
+    monkeypatch, tmp_path
+):
+    """The actual regression test for Christer's bug report. A consumer
+    that reads only the first chunk and then closes early (simulating
+    Starlette tearing down the response generator on a client
+    disconnect) must not prevent the shared background transcode from
+    running to completion and populating the cache - the whole point of
+    decoupling _run_transcode_to_cache() from any one request's own
+    async generator."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: False)
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        return _FakeProcess([b"frag1", b"frag2", b"frag3"], returncode=0)
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    expected_cache_path = _expected_cache_path(source, cache_dir)
+
+    async def scenario():
+        result = await open_hevc_preview_stream(source, cache_dir)
+        assert not isinstance(result, Path)
+
+        # Grab a handle to the background task before consuming
+        # anything - _IN_PROGRESS pops its entry once the transcode
+        # finishes, so this reference has to be taken up front.
+        broadcast = hevc_preview_module._IN_PROGRESS.get(expected_cache_path)
+
+        first_chunk = await result.__anext__()
+        assert first_chunk == b"frag1"
+
+        # Simulate the browser disconnecting after only the first
+        # chunk: Starlette closes this one request's generator early.
+        await result.aclose()
+
+        # The background transcode is its own asyncio.Task, independent
+        # of the consumer generator just closed above - wait for it
+        # directly, exactly as it would keep running on the event loop
+        # in real usage regardless of this one request's fate.
+        if broadcast is not None and broadcast.task is not None:
+            await broadcast.task
+
+    asyncio.run(scenario())
+
+    assert expected_cache_path.is_file()
+    assert expected_cache_path.read_bytes() == b"frag1frag2frag3"
+    assert list(cache_dir.iterdir()) == [expected_cache_path]  # no stray .tmp
+
+    # A fresh request for the same source now lands on the fast
+    # cache-hit path - no new ffmpeg process, confirming the cache
+    # really did get finalized rather than just written-then-discarded.
+    def fail_spawn(*_args, **_kwargs):
+        raise AssertionError("should reuse the cached copy, not transcode again")
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fail_spawn)
+
+    second_result = asyncio.run(open_hevc_preview_stream(source, cache_dir))
+    assert second_result == expected_cache_path
+
+
+class _SlowFakeStream:
+    """Like _FakeStream, but each read() genuinely yields control back
+    to the event loop (a real `await asyncio.sleep(0)` suspension,
+    not just a synchronous coroutine call) - needed so a test can
+    deterministically interleave a second, late-joining request partway
+    through an in-progress transcode, the way two overlapping browser
+    requests for the same not-yet-cached source would in real usage."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read(self, _n=-1):
+        await asyncio.sleep(0)
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _SlowFakeProcess:
+    def __init__(self, stdout_chunks, returncode):
+        self.stdout = _SlowFakeStream(stdout_chunks)
+        self.stderr = _FakeStream([])
+        self.returncode = returncode
+
+    async def wait(self):
+        return self.returncode
+
+
+def test_open_hevc_preview_stream_dedupes_and_replays_history_for_a_late_joiner(
+    monkeypatch, tmp_path
+):
+    """A free side-effect of the _IN_PROGRESS/_TranscodeBroadcast design:
+    two overlapping requests for the same not-yet-cached source join a
+    single in-flight transcode instead of each spawning a redundant
+    ffmpeg process. The second request here deliberately joins only
+    after the first chunk has already been produced, confirming the
+    late joiner still gets the *entire* stream from the very
+    beginning - via _TranscodeBroadcast.subscribe()'s history replay -
+    not just whatever's produced from the moment it joined."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: False)
+
+    spawn_calls = []
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        spawn_calls.append((hw_decode, codec))
+        return _SlowFakeProcess([b"frag1", b"frag2", b"frag3"], returncode=0)
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    async def scenario():
+        first_result = await open_hevc_preview_stream(source, cache_dir)
+        assert not isinstance(first_result, Path)
+
+        # Pull one chunk so the background transcode is genuinely
+        # underway before the second request joins.
+        first_chunk = await first_result.__anext__()
+        assert first_chunk == b"frag1"
+
+        second_result = await open_hevc_preview_stream(source, cache_dir)
+        assert not isinstance(second_result, Path)
+
+        rest_of_first = b"".join([chunk async for chunk in first_result])
+        all_of_second = await _collect(second_result)
+        return first_chunk + rest_of_first, all_of_second
+
+    first_total, second_total = asyncio.run(scenario())
+
+    assert first_total == b"frag1frag2frag3"
+    assert second_total == b"frag1frag2frag3"  # late joiner still got everything
+    assert len(spawn_calls) == 1  # dedup: only one real ffmpeg process
 
 
 def test_nvenc_available_checks_ffmpeg_encoders_output(monkeypatch):
