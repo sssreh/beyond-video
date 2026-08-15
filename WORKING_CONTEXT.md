@@ -11973,3 +11973,46 @@ stderr print text, so the elapsed-time addition needed no test
 changes). Verified via a standalone script (no pytest in this
 sandbox) confirming `-preset ultrafast` is passed and the new elapsed-
 time line prints, plus `py_compile`.
+
+## Change: revert -preset ultrafast - it broke NVENC on Christer's real GPU (2026-08-15)
+
+Christer: "i was still slow" + "what time did it take" - couldn't see
+the terminal himself, so I first (wrongly) assumed bv-web was running
+in its usual NAS deployment and gave NAS-log-viewing instructions.
+Christer: "No bv-web runs on my pc" - his test was `bv-web serve`
+running natively on his own PC, which has a real NVIDIA GPU (see
+stitch.py's own NVDEC/RTX 5090 references) - not the GPU-less NAS
+container the previous entry's "ultrafast is safe, NVENC is moot"
+reasoning was actually based on. He pasted the real log line:
+`HEVC preview: transcode finished in 28.4s, cached as ...` for a
+~282MB 4K HEVC source.
+
+That exposed a real regression: `encode_with_nvenc_fallback()`
+applies `extra_codec_args` identically to whichever encoder it tries
+(NVENC first, libx264 fallback), so the `-preset` value has to be
+valid for *both*. Confirmed directly with a local ffmpeg build:
+`-c:v h264_nvenc -preset ultrafast` is rejected outright ("Undefined
+constant... Unable to parse option value") - not a hardware-missing
+error, an invalid-option error. So on a machine where NVENC actually
+works, that NVENC attempt would fail immediately and silently fall
+through to CPU libx264 every time, never touching the GPU - the
+28.4s Christer saw was very likely a pure CPU encode of a 4K source,
+his RTX GPU never used at all. `-preset fast` was confirmed to be
+accepted by h264_nvenc (fails afterward only for lack of a GPU in
+this sandbox, a different and later failure).
+
+Reverted `_PREVIEW_PRESET` from `"ultrafast"` back to `"fast"` - the
+one preset name genuinely valid for both encoders. Not NVENC's
+fastest tier (that's `p1`; `"fast"` maps to NVENC's own "hp 1 pass"),
+but a real improvement over no preset at all (NVENC's unset default
+is roughly `p4`/"medium"), and critically it lets NVENC actually run
+instead of erroring and silently falling back to CPU.
+
+Files: `src/blackvue/export/hevc_preview.py`. Tests:
+`tests/blackvue/export/test_hevc_preview.py` (`-preset` assertion
+reverted to `"fast"`). Verified via `ffmpeg -c:v h264_nvenc -preset
+ultrafast` (rejected) vs `-preset fast` (accepted) directly, a
+standalone script confirming the code now passes `-preset fast`, and
+`py_compile`. Still waiting on a clean re-test from Christer (NAS-
+side confound resolved earlier, GPU-side regression now fixed) for a
+real before/after number.

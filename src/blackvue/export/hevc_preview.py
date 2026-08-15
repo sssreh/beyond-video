@@ -81,32 +81,35 @@ _PREVIEW_TARGET_BITRATE = "8M"
 # Christer asked to speed up the wait for a HEVC preview to finish
 # transcoding (a Chrome/Firefox compatibility copy only - never what
 # he reviews footage on for real, see this module's background
-# paragraph). First tried "fast" (the one preset name valid for both
-# NVENC and libx264, since encode_with_nvenc_fallback() applies
-# extra_codec_args identically to both attempts) - Christer reported
-# no visible difference. Turned out bv-web always runs on the NAS
-# (see docs/DEPLOY.md's "slow on the NAS's CPU-only hardware" note),
-# whose container has no GPU passthrough at all (no `nvidia`/`gpu`
-# entry in docker-compose.yml) - so NVENC was never reachable here in
-# the first place, and staying preset-name-compatible with it was
-# solving for a constraint that doesn't exist in this deployment.
-# Confirmed separately that a concurrent bv-generate run (--transcribe/
-# --diarize/--describe-scene, also CPU-only on the NAS) was likely
-# starving this transcode of CPU time during that first test, which
-# would mask any preset's effect regardless - Christer paused it to
-# retest cleanly.
+# paragraph).
 #
-# Since NVENC is moot here, this is free to go straight to libx264's
-# fastest preset, "ultrafast" - the biggest real wall-clock win
-# available from the encoder side. Normally ultrafast's cost is a much
-# larger output file for the same visual quality (it makes far worse
-# compression decisions per bit), but that doesn't apply here: the
-# encode is already hard-capped to _PREVIEW_TARGET_BITRATE
-# (-b:v/-maxrate/-bufsize all pinned to it), so the file size doesn't
-# move - only visual quality-per-bit drops, which is an easy trade for
-# a browser-compatibility-only preview that's never used for real
-# review.
-_PREVIEW_PRESET = "ultrafast"
+# First tried "fast" - Christer reported no visible difference, and
+# separately mentioned a concurrent bv-generate run that could have
+# masked any effect through CPU contention alone. Wrongly concluded
+# from that (plus bv-web's NAS deployment having no GPU passthrough in
+# docker-compose.yml) that NVENC must be unreachable, and switched to
+# libx264's fastest preset, "ultrafast" - but Christer's actual test
+# was bv-web running natively on his own PC (real NVIDIA GPU, see
+# stitch.py's own NVDEC/RTX 5090 references), not the NAS deployment
+# assumed above.
+#
+# That WAS a real regression: encode_with_nvenc_fallback() applies
+# extra_codec_args identically to whichever encoder it tries (NVENC
+# first, libx264 fallback), so the preset name has to be one both
+# accept. "ultrafast" isn't a valid h264_nvenc preset at all - ffmpeg
+# rejects it outright ("Unable to parse option value") - so on a
+# machine where NVENC is actually available, that NVENC attempt would
+# fail immediately and silently fall through to CPU libx264 every
+# time, never touching the GPU. Confirmed directly: `ffmpeg ... -c:v
+# h264_nvenc -preset ultrafast ...` errors on the option itself, while
+# `-preset fast` is accepted (only fails afterward for lack of a GPU
+# in this sandbox - a different, later failure mode). "fast" is the
+# one preset name genuinely valid for both encoders - not NVENC's
+# fastest tier (that's p1; "fast" maps to NVENC's "hp 1 pass"), but a
+# real improvement over no preset at all (NVENC's own unset default is
+# roughly p4/"medium"), and it actually lets NVENC run instead of
+# silently falling back to CPU.
+_PREVIEW_PRESET = "fast"
 
 
 def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
@@ -153,12 +156,13 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     comment for why (Christer's own numbers: a 189MB HEVC source
     became a 511MB H.264 preview at CQ 19).
 
-    Also passes `-preset _PREVIEW_PRESET` ("ultrafast") to speed up
-    the transcode itself - see that constant's own comment for why
-    ultrafast is safe here (bv-web's NAS container has no GPU, so
-    NVENC is never actually reachable, and the output is already
-    bitrate-capped so ultrafast's usual "much bigger file" downside
-    doesn't apply - only visual quality-per-bit drops).
+    Also passes `-preset _PREVIEW_PRESET` ("fast") to speed up the
+    transcode itself - see that constant's own comment for the full
+    story (including a since-reverted "ultrafast" attempt that broke
+    NVENC on a real GPU by passing it an invalid preset name and
+    silently falling back to CPU). "fast" is valid for both NVENC and
+    libx264, since extra_codec_args is applied to both attempts
+    identically.
 
     Transcodes into a private per-call temp file inside `cache_dir`,
     then atomically renames it to `cache_path` only once the encode
