@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ label }} - {{ recording.id }} - Beyond Video{% endblock %}
+{% block content %}
+<p class="back-link"><a href="/archive/{{ camera_id }}/{{ recording.id }}">&larr; {{ recording.id }}</a></p>
+<div class="content-panel">
+<h2>{{ recording.id }} <span class="badge">{{ label }}</span></h2>
+<p class="hint">{{ recording.timestamp.strftime("%A, %B %d, %Y %H:%M:%S") }} &middot; {{ filename }}</p>
+
+<video controls preload="metadata" autoplay
+       src="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ filename }}"></video>
+</div>
+{% endblock %}

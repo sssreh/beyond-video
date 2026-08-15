@@ -12259,3 +12259,62 @@ ffmpeg spawn, both requests get the full stream). Not yet verified
 against Christer's own real archive/browser - his next viewing of a
 previously-viewed HEVC recording is what will confirm the cache is
 actually being reused in practice now.
+
+## Feature: Front/Rear links open a "watch" page instead of the raw file (2026-08-15)
+
+Christer, looking at the recording detail page's inline player: "I
+would like that the Front and Rear links goes to a page just like
+that, instead of going straight into play full size(no escape)....
+Why, because I would like to go back to previous page without needing
+to press left arrow on browser." The detail page's own asset-list
+links (`Front: <filename>` / `Rear: <filename>`) pointed straight at
+`archive_recording_file()` - the raw video-serving route - so clicking
+one opened the browser's own bare full-page `<video>` view with
+nothing but the back button to get out of it.
+
+Added a new `/archive/{camera_id}/{recording_id}/watch/{filename}`
+route (`archive_recording_watch()` in `web/app.py`) and a small
+`archive_recording_watch.html` template - the same shape as the
+existing `archive_recording_location.html`: a `back-link` to the
+recording detail page at the top, then a `content-panel` with a title,
+timestamp/filename hint, and a single `<video controls preload="metadata"
+autoplay>` pointed at the real file-serving route. The detail page's
+per-direction asset links (`archive_recording_detail.html`) now point
+at `/watch/{filename}` instead of `/files/{filename}` directly;
+`/files/{filename}` itself is untouched and still what the `<video>`
+tag's own `src` resolves to underneath, so HEVC preview transcoding,
+Parking-mode repair, and Range-request seeking all keep working
+exactly as before - this only changes what a *click* on the Front/Rear
+link does, not how the video itself gets served.
+
+Filename validation and the page title's direction label are both
+driven by a new small helper, `_video_label_for_filename(recording,
+filename) -> str | None` (returns "Front"/"Rear"/"Interior", or None
+for anything that isn't actually one of this recording's video files -
+including real sidecars like `.gps`/`.gsensor` that would pass a
+`known_filenames` check but have no business being opened in a
+`<video>` player). Factored out specifically to be unit-testable
+directly, matching this file's own established convention (see
+`_authorize_job_view()`/`_sliced_job_output()`/`_job_camera_id()` and
+their own tests in `test_app_reuse.py`) of testing small app.py
+helpers directly rather than routes through a TestClient, since this
+repo's test suite doesn't depend on httpx/TestClient anywhere.
+
+Files: `src/blackvue/web/app.py` (new route + `_video_label_for_filename()`
+helper), `src/blackvue/web/templates/archive_recording_watch.html` (new),
+`src/blackvue/web/templates/archive_recording_detail.html` (asset-list
+links repointed at `/watch/` instead of `/files/`). Tests:
+`tests/blackvue/web/test_app_reuse.py` - three new tests for
+`_video_label_for_filename()` (matches Front/Rear correctly, returns
+None for an unknown filename, returns None for a real-but-non-video
+sidecar), built against a real `ArchiveRecording` via `scan_archive()`
+on a small fake archive on disk (same convention `test_archive_
+browser.py` already establishes) rather than hand-constructing one.
+Verified via `py_compile` on all touched Python files, a Jinja
+`{% %}`/`{% end %}` block-balance check on the new template, and a
+standalone script (no fastapi/pytest available in this sandbox - same
+constraint `test_app_reuse.py`'s own module docstring already notes)
+replicating `_video_label_for_filename()`'s exact logic against a real
+`scan_archive()`-built recording, confirming Front/Rear match
+correctly and both an unknown filename and a real `.gps` sidecar
+return None.

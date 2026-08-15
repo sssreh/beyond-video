@@ -32,7 +32,9 @@ from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _recent_web_runs
 from blackvue.web.app import _reuse_defaults
 from blackvue.web.app import _sliced_job_output
+from blackvue.web.app import _video_label_for_filename
 from blackvue.web.app import TAIL_LINE_COUNT
+from blackvue.web.archive_browser import scan_archive
 from blackvue.web.jobs import Job
 from blackvue.web.jobs import JobStatus
 from blackvue.web.users import User
@@ -286,3 +288,58 @@ def test_job_camera_id_is_none_when_bv_search_command_has_no_id():
     # job.command to "bv-search {camera_id}"), but the split() guard
     # should not raise on malformed input.
     assert _job_camera_id(_job("bv-search")) is None
+
+
+# ---------------------------------------------------------------------------
+# _video_label_for_filename() - what archive_recording_watch() (the page
+# Front/Rear links on the recording detail page now open, instead of
+# playing the raw file full-page with no way back except the browser's
+# own back button - Christer: "I would like that the Front and Rear
+# links goes to a page just like that, instead of going straight into
+# play full size(no escape)... I would like to go back to previous
+# page without needing to press left arrow on browser") uses to both
+# validate the requested filename and title the page. Built against a
+# real ArchiveRecording via scan_archive() on a small fake archive on
+# disk, same convention test_archive_browser.py already establishes,
+# rather than hand-constructing one - ArchiveRecording is a frozen
+# dataclass wrapping the real Recording/RecordingId parsing logic, not
+# something worth re-deriving by hand here.
+# ---------------------------------------------------------------------------
+
+
+def _write(folder, filename, content=b"x"):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / filename).write_bytes(content)
+
+
+def test_video_label_for_filename_matches_front_and_rear(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(archive, "20260715_140212_NR.mp4")
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert _video_label_for_filename(recording, "20260715_140212_NF.mp4") == "Front"
+    assert _video_label_for_filename(recording, "20260715_140212_NR.mp4") == "Rear"
+
+
+def test_video_label_for_filename_returns_none_for_unknown_filename(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert _video_label_for_filename(recording, "not-a-real-file.mp4") is None
+
+
+def test_video_label_for_filename_returns_none_for_a_non_video_sidecar(tmp_path):
+    """GPS/g-sensor sidecars are real files this recording actually
+    has (they'd pass a known_filenames check) but aren't videos - the
+    watch page has no business serving a <video> player for one, so
+    this must 404 through the route rather than quietly rendering an
+    empty/broken player."""
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(archive, "20260715_140212_N.gps")
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert _video_label_for_filename(recording, "20260715_140212_N.gps") is None

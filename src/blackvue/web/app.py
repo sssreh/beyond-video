@@ -669,6 +669,52 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             },
         )
 
+    @app.get(
+        "/archive/{camera_id}/{recording_id}/watch/{filename}",
+        response_class=HTMLResponse,
+    )
+    async def archive_recording_watch(
+        request: Request,
+        camera_id: str,
+        recording_id: str,
+        filename: str,
+        user: User = Depends(require_login),
+    ):
+        """A small page wrapping a single Front/Rear video in its own
+        <video> element, with a normal in-page back link to the
+        recording detail page - what the detail page's per-direction
+        asset links point at now, instead of straight at
+        archive_recording_file() itself. Christer's own reasoning:
+        clicking a raw video URL plays it full-page with nothing but
+        the browser's own back button (no Escape, no link) to get back
+        to the recording; this page gives that a proper "back" link
+        like every other page in the archive browser already has."""
+
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
+        )
+
+        label = _video_label_for_filename(recording, filename)
+        if label is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="file not found"
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "archive_recording_watch.html",
+            {
+                "user": user,
+                "camera_id": camera_id,
+                "recording": recording,
+                "filename": filename,
+                "label": label,
+            },
+        )
+
     @app.get("/archive/{camera_id}/{recording_id}/thumbnail/{direction}")
     async def archive_recording_thumbnail(
         camera_id: str,
@@ -2021,6 +2067,24 @@ def _find_archive_recording(
             status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"
         )
     return recording
+
+
+def _video_label_for_filename(
+    recording: ArchiveRecording, filename: str
+) -> str | None:
+    """The direction label ("Front"/"Rear"/"Interior") for `filename`
+    within `recording`, or None if it isn't one of this recording's
+    actual video files - what archive_recording_watch() uses to both
+    validate the filename (404 on anything else, including sidecars
+    like .gps/.3gf that were never meant to be "watched") and title the
+    page. Deliberately checked against recording.videos rather than
+    just recording.known_filenames, which also covers non-video
+    sidecars this route has no business serving a <video> player for."""
+
+    for label, video_filename in recording.videos:
+        if video_filename == filename:
+            return label
+    return None
 
 
 def _find_job(job_runner: JobRunner, job_id: str) -> Job:
