@@ -11925,3 +11925,51 @@ that file asserts on the full flag list). Verified via a standalone
 script (no pytest in this sandbox) confirming
 `load_or_transcode_hevc_preview()` now passes `-preset fast` first in
 `extra_codec_args`, plus `py_compile` on the module.
+
+## Change: -preset fast wasn't enough, switch to ultrafast + report elapsed time (2026-08-15)
+
+Christer, after the `-preset fast` change above: "That wasnt faster."
+Asked what he actually observed - "Not sure / didnt time it, just
+felt the same" - and separately: "I also have a running bv-generate
+for 2021, does that make any changew." Confirmed: yes, very likely -
+`bv-generate --transcribe`/`--diarize`/`--describe-scene` is already
+documented as slow because it's CPU-only on the NAS (docs/DEPLOY.md:
+"slow on the NAS's CPU-only hardware"), same box bv-web runs on, so a
+concurrent bv-generate run would starve the HEVC transcode of CPU
+regardless of its own ffmpeg preset - that alone invalidates a same-
+CPU speed comparison. Christer paused bv-generate to retest cleanly
+and said "go ahead" on going further.
+
+Separately caught my own earlier mistake: `-preset fast` was chosen
+to stay compatible with NVENC's preset names (encode_with_nvenc_
+fallback() applies extra_codec_args identically to both its NVENC and
+libx264 attempts). But bv-web's NAS container has no GPU passthrough
+at all (confirmed: no `nvidia`/`gpu` entry anywhere in docker-
+compose.yml, and docs/DEPLOY.md's own "slow on the NAS's CPU-only
+hardware" note) - NVENC was never reachable in this deployment, so
+staying preset-name-compatible with it was solving for a constraint
+that doesn't exist here. Switched `_PREVIEW_PRESET` to libx264's
+fastest preset, `"ultrafast"` - normally a bad trade (much bigger
+output for the same quality), but not here: the encode is already
+hard-capped to `_PREVIEW_TARGET_BITRATE` (`-b:v`/`-maxrate`/
+`-bufsize` all pinned to it), so file size doesn't move: only visual
+quality-per-bit drops, an easy trade for a browser-compatibility-only
+preview Christer never reviews footage on for real.
+
+Also added real elapsed-time reporting (`time.monotonic()` around the
+encode) to both the success and failure stderr prints - previously
+there was no way to see how long a transcode actually took, which is
+exactly the missing piece that made "wasn't faster" impossible to
+verify one way or the other. Now every transcode logs `"transcode
+finished in {elapsed:.1f}s, ..."` or `"transcode failed ... after
+{elapsed:.1f}s, ..."` - the next real test (NAS idle, no concurrent
+bv-generate) will have hard numbers instead of a "felt the same"
+impression.
+
+Files: `src/blackvue/export/hevc_preview.py`. Tests:
+`tests/blackvue/export/test_hevc_preview.py` (`-preset` assertion
+updated from `"fast"` to `"ultrafast"` - no test asserts on the
+stderr print text, so the elapsed-time addition needed no test
+changes). Verified via a standalone script (no pytest in this
+sandbox) confirming `-preset ultrafast` is passed and the new elapsed-
+time line prints, plus `py_compile`.

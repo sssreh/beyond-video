@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -77,24 +78,35 @@ _MAX_CACHE_BYTES = 5 * 1024 ** 3
 # --stitch-bitrate.
 _PREVIEW_TARGET_BITRATE = "8M"
 
-# encode_with_nvenc_fallback() applies extra_codec_args identically to
-# both its NVENC and libx264 attempts, so this can't be an encoder-
-# specific preset name (NVENC's own p1-p7/hp/hq/bd/ll* names aren't
-# valid libx264 presets, and libx264's ultrafast/veryfast/etc aren't
-# valid NVENC ones). "fast" is the one preset name both ffmpeg's
-# h264_nvenc and libx264 encoders recognize, so it's a single safe
-# flag either way. Christer asked to speed up the wait for a HEVC
-# preview to finish transcoding (a Chrome/Firefox compatibility copy
-# only - never what he reviews footage on for real, see this module's
-# background paragraph), and since neither encoder had a -preset flag
-# at all before this, both were defaulting to their "balanced"
-# preset (libx264: medium; NVENC: its own unnamed default, roughly
-# p4-equivalent) - tuned for compression efficiency, which doesn't
-# matter here since the output is already bitrate-capped anyway
-# (_PREVIEW_TARGET_BITRATE above). "fast" trades some of that
-# efficiency for real wall-clock speed without going as far as
-# ultrafast's much larger output for the same bitrate cap.
-_PREVIEW_PRESET = "fast"
+# Christer asked to speed up the wait for a HEVC preview to finish
+# transcoding (a Chrome/Firefox compatibility copy only - never what
+# he reviews footage on for real, see this module's background
+# paragraph). First tried "fast" (the one preset name valid for both
+# NVENC and libx264, since encode_with_nvenc_fallback() applies
+# extra_codec_args identically to both attempts) - Christer reported
+# no visible difference. Turned out bv-web always runs on the NAS
+# (see docs/DEPLOY.md's "slow on the NAS's CPU-only hardware" note),
+# whose container has no GPU passthrough at all (no `nvidia`/`gpu`
+# entry in docker-compose.yml) - so NVENC was never reachable here in
+# the first place, and staying preset-name-compatible with it was
+# solving for a constraint that doesn't exist in this deployment.
+# Confirmed separately that a concurrent bv-generate run (--transcribe/
+# --diarize/--describe-scene, also CPU-only on the NAS) was likely
+# starving this transcode of CPU time during that first test, which
+# would mask any preset's effect regardless - Christer paused it to
+# retest cleanly.
+#
+# Since NVENC is moot here, this is free to go straight to libx264's
+# fastest preset, "ultrafast" - the biggest real wall-clock win
+# available from the encoder side. Normally ultrafast's cost is a much
+# larger output file for the same visual quality (it makes far worse
+# compression decisions per bit), but that doesn't apply here: the
+# encode is already hard-capped to _PREVIEW_TARGET_BITRATE
+# (-b:v/-maxrate/-bufsize all pinned to it), so the file size doesn't
+# move - only visual quality-per-bit drops, which is an easy trade for
+# a browser-compatibility-only preview that's never used for real
+# review.
+_PREVIEW_PRESET = "ultrafast"
 
 
 def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
@@ -141,11 +153,12 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     comment for why (Christer's own numbers: a 189MB HEVC source
     became a 511MB H.264 preview at CQ 19).
 
-    Also passes `-preset _PREVIEW_PRESET` ("fast") to speed up the
-    transcode itself - see that constant's own comment for why "fast"
-    specifically (the one preset name valid for both NVENC and
-    libx264, since extra_codec_args is applied to both attempts
-    identically).
+    Also passes `-preset _PREVIEW_PRESET` ("ultrafast") to speed up
+    the transcode itself - see that constant's own comment for why
+    ultrafast is safe here (bv-web's NAS container has no GPU, so
+    NVENC is never actually reachable, and the output is already
+    bitrate-capped so ultrafast's usual "much bigger file" downside
+    doesn't apply - only visual quality-per-bit drops).
 
     Transcodes into a private per-call temp file inside `cache_dir`,
     then atomically renames it to `cache_path` only once the encode
@@ -208,6 +221,7 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_name(f"{cache_path.stem}.{uuid.uuid4().hex[:8]}.tmp")
+    start = time.monotonic()
     try:
         try:
             encode_with_nvenc_fallback(
@@ -224,9 +238,11 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
                 ],
             )
         except MediaToolError as exc:
+            elapsed = time.monotonic() - start
             print(
-                f"HEVC preview: transcode failed for {source.name}, serving "
-                f"the original (audio-only-playable) file unchanged: {exc}",
+                f"HEVC preview: transcode failed for {source.name} after "
+                f"{elapsed:.1f}s, serving the original (audio-only-playable) "
+                f"file unchanged: {exc}",
                 file=sys.stderr,
             )
             return source
@@ -235,6 +251,11 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    print(f"HEVC preview: transcode finished, cached as {cache_path.name}", file=sys.stderr)
+    elapsed = time.monotonic() - start
+    print(
+        f"HEVC preview: transcode finished in {elapsed:.1f}s, cached as "
+        f"{cache_path.name}",
+        file=sys.stderr,
+    )
     enforce_cache_size_cap(cache_dir, _MAX_CACHE_BYTES)
     return cache_path
