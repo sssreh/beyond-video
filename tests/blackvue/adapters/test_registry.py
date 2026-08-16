@@ -9,6 +9,7 @@ import pytest
 from blackvue.adapters import registry
 from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.adapters.folder.adapter import FolderAdapter
+from blackvue.adapters.gopro.adapter import GoProAdapter
 from blackvue.adapters.manifest import load_manifest
 
 
@@ -42,6 +43,16 @@ def test_get_adapter_returns_a_folder_adapter_instance():
     adapter = registry.get_adapter("folder")
 
     assert isinstance(adapter, FolderAdapter)
+
+
+def test_gopro_is_registered_by_default():
+    assert "gopro" in registry.registered_adapter_ids()
+
+
+def test_get_adapter_returns_a_gopro_adapter_instance():
+    adapter = registry.get_adapter("gopro")
+
+    assert isinstance(adapter, GoProAdapter)
 
 
 def test_get_adapter_unknown_id_raises_adapter_not_found_error():

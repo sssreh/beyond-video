@@ -652,6 +652,118 @@ on-disk shape (GPS5 vs. the newer GPS9 stream present on Hero11+, which
 fields are actually populated) is camera/firmware-dependent and worth
 confirming against a real file before committing the parser to one shape.
 
+## GoPro adapter: GPMF parser + GoProAdapter implementation (2026-08-16)
+
+Step 8's implementation pass (#905), building on the design above. Real,
+tested, registered - `"gopro"` now resolves via `registry.get_adapter()`
+the same as `"blackvue"`/`"folder"`.
+
+**Shared scan logic factored out.** Per Christer's steer on the design
+pass's open question ("Share them as long as it is possible, in worst
+case you make a branch later"): before writing `GoProAdapter`,
+`FolderAdapter`'s recursive-scan/timestamp-resolution/synthesized-
+`RecordingId`/generated-asset-discovery logic was extracted from
+`folder/adapter.py` into a new `adapters/_recursive_scan.py` (leading
+underscore - shared internal machinery, not an adapter in its own
+right). `FolderAdapter` now just delegates to
+`scan_recursive_archive()`/`find_recording_in_recursive_archive()` with
+its own manifest and `_KIND_CODE = "V"`; `test_folder_adapter.py`'s full
+17-test suite passes unmodified against the refactor, confirming
+byte-identical behavior. `GoProAdapter` delegates to the exact same two
+functions - the two adapters now differ only in their manifest and in
+`read_gps()`/`read_gsensor()` (real GPMF telemetry vs. `folder`'s
+`AdapterCapabilityError`).
+
+**No ffmpeg/ffprobe dependency for GPMF extraction - pure-Python MP4 box
+parsing instead**, a change from the design pass's original plan (which
+assumed an `ffprobe`-then-`ffmpeg -map -c copy` extraction). Reason:
+muxing a synthetic `gpmd`-tagged stream via this sandbox's ffmpeg 4.4.2
+to build a test fixture failed outright (`Tag gpmd incompatible with
+output codec id '0'`), and no `MP4Box`/`gpac` alternative was available
+either. Rather than depend on one ffmpeg build's tag-handling behavior in
+production too, `adapters/gopro/gpmf.py`'s `locate_gpmf_stream()` walks
+the MP4's own `moov`/`trak`/`mdia`/`minf`/`stbl` sample-table boxes
+directly (`stsd` for the `'gpmd'` fourcc identifying the GPMF track,
+`stsz`/`stsc`/`stco`/`co64` for per-sample byte ranges - the standard
+ISO-BMFF algorithm every demuxer uses), reusing
+`generate/mp4_box_reader.py`'s existing private box-walking helpers
+(`_find_top_level_box`, `_iter_boxes`, `_find_box`, `_parse_hdlr_type`) -
+the same reuse pattern `generate/mp4_repair.py` already established.
+More robust for real-world files, and fully testable with hand-built
+synthetic MP4 box structures in pure Python with no external tool
+dependency at all.
+
+**GPMF KLV decoding**, also in `gpmf.py`: a generic `_iter_klv()` walker
+over the FourCC/type-char/size/repeat/payload shape (nested containers
+have type char `'\x00'`), `_iter_devc_blocks()`/`_iter_strm_blocks()` to
+walk `DEVC`→`STRM` structure, `_unpack_rows()` to unpack a leaf item's
+payload against a type-character-to-`struct`-format table.
+`extract_gps_fixes()` reads each `STRM`'s `GPS5`/`SCAL`/`GPSF`/`GPSU`;
+`extract_gsensor_samples()` reads `ACCL`/`STMP` (raw, unscaled x/y/z -
+same "unit unconfirmed, use relative variance" contract
+`gsensor_reader.py` already has for BlackVue's `.3gf`). Known,
+documented gaps (see `gpmf.py`'s own module docstring): GPS9 (Hero11+'s
+replacement for GPS5) isn't parsed, only GPS5; GPS5 has no
+heading/course field so every `GpsFix` this module returns has
+`course=None`; within-block row timestamps/offsets are linearly
+interpolated across one assumed second per `DEVC` block rather than
+derived from an explicit per-sample rate.
+
+**Per-recording degradation, not all-or-nothing** - the second design
+constraint Christer added mid-pass ("The worst archive case would be a
+mix of everything video/picture but then it should regress to plain
+folder and have minimal options"): this falls out for free from two
+already-established contracts working together, not new code.
+`open_archive()` never touches GPMF at all - only reading a specific
+recording's telemetry does - so a mixed-content folder scans in full
+regardless of how many clips turn out to have no usable GPMF stream.
+`locate_gpmf_stream()` raises `MediaToolError` for a video with no
+`'gpmd'` track (a re-encoded/trimmed clip, a plain video that happens to
+sit in a GoPro folder) or an unparseable sample table, and
+`telemetry_bridge.py`'s `read_recording_gps()`/`read_recording_gsensor()`
+already catch `MediaToolError` and return `()` rather than propagating
+it (the same "missing/bad telemetry is absent, not fatal" contract every
+other adapter's telemetry already gets) - so `GoProAdapter` needed no
+special-casing here at all. Non-video files (photos, screenshots) are
+already excluded by `video_extensions` matching, same as `FolderAdapter`
+today. `test_gopro_adapter.py`'s
+`test_mixed_content_folder_scans_fully_with_per_recording_telemetry_degradation`
+exercises this directly: a real GPMF-shaped clip, a video with no GPMF
+track, a photo, and a text file in one folder - the scan returns both
+videos, the clean one's telemetry reads normally via
+`read_recording_gps()`/`read_recording_gsensor()`, the other's reads back
+as `()` rather than raising.
+
+**Tests.** `test_gopro_gpmf.py` (12 tests) - `locate_gpmf_stream()`
+against a hand-built, minimal-but-real synthetic MP4 (real `moov`/`stbl`
+box structure, real KLV-encoded `DEVC` samples in `mdat` - no ffmpeg
+needed to build it, see that file's own module docstring), covering the
+happy path, no-`gpmd`-track, and non-MP4-file error cases;
+`extract_gps_fixes()`/`extract_gsensor_samples()` against raw GPMF bytes
+directly, covering scaled-value decoding, block-to-block/row-to-row
+timestamp interpolation, `GPSF`-gated invalidity, and a block with no
+GPS5/ACCL stream at all. `test_gopro_adapter.py` (10 tests) - manifest/
+registration sanity, a spot-check of the shared scan path (full coverage
+already lives in `test_folder_adapter.py`), real end-to-end
+`read_gps()`/`read_gsensor()` against a synthetic GPMF video, the
+capability guards for `connect()`/`config_snapshot_seconds()`, and the
+mixed-content-folder degradation test described above. Also added:
+`test_gopro_manifest_loads()` to `test_manifest.py`,
+`test_gopro_is_registered_by_default()`/
+`test_get_adapter_returns_a_gopro_adapter_instance()` to
+`test_registry.py`. `bv-config`'s own test file needed a small
+mechanical update - `registered_adapter_ids()` is sorted, so the
+wizard's "Adapter (blackvue/folder): " prompt text became "Adapter
+(blackvue/folder/gopro): " once `gopro` registered; every scripted-ask
+dict in `test_bv_config.py` referencing that literal string was updated
+to match (22/22 tests still pass).
+
+Not yet done: testing against Christer's real `X:\gopro` footage (#906)
+- GPMF's exact on-disk shape is camera/firmware-dependent (GPS5 vs.
+GPS9, which fields are actually populated, real `SCAL`/`GPSU` framing)
+and worth confirming against a real file before trusting the synthetic-
+fixture-only test suite above as the last word.
+
 ## bv-config wizard: real adapter selection (2026-08-16)
 
 Closes the gap the GoPro design section above and the third-pass note

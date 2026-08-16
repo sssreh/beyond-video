@@ -44,7 +44,7 @@ _MYCAR_ARCHIVE_PROMPT = f"Archive (download path) [{default_archive_dir('mycar')
 # brand-new config and every existing CameraConfig built without an
 # explicit `adapter=` in this file) is the right answer everywhere
 # except the tests written specifically to exercise adapter selection.
-_ADAPTER_PROMPT = "Adapter (blackvue/folder) [blackvue]: "
+_ADAPTER_PROMPT = "Adapter (blackvue/folder/gopro) [blackvue]: "
 _ACCEPT_DEFAULT_ADAPTER = {_ADAPTER_PROMPT: ""}
 
 
@@ -403,7 +403,7 @@ def test_run_wizard_preserves_existing_endpoints_when_switched_to_a_non_network_
     ask = _scripted_ask(
         {
             "Name [Kirby]: ": "",
-            "Adapter (blackvue/folder) [blackvue]: ": "folder",
+            "Adapter (blackvue/folder/gopro) [blackvue]: ": "folder",
             "Archive (download path) [/tmp/archive]: ": "",
             _target_prompt_for("/tmp/archive"): "",
         }
@@ -432,7 +432,7 @@ def test_run_wizard_defaults_adapter_to_the_existing_configs_adapter():
     ask = _scripted_ask(
         {
             "Name [GP]: ": "",
-            "Adapter (blackvue/folder) [folder]: ": "",
+            "Adapter (blackvue/folder/gopro) [folder]: ": "",
             "Archive (download path) [/tmp/gopro]: ": "",
             _target_prompt_for("/tmp/gopro"): "",
         }

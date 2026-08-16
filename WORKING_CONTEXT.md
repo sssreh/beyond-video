@@ -13508,3 +13508,92 @@ Files: `src/blackvue/cli/bv_config.py`, `src/blackvue/core/
 camera_config.py`, `tests/blackvue/cli/test_bv_config.py`, `docs/
 CAMERA_ADAPTERS.md` (new "bv-config wizard: real adapter selection"
 section).
+
+## Feature: GoProAdapter + GPMF parser implemented and registered (2026-08-16)
+
+Task #905 - the real implementation, building on the design-only pass
+above. `"gopro"` now works end to end: registered in `registry.py`,
+`bv-ls`/`bv-web`/`bv-config` (and anything else going through
+`registry.get_adapter()`) can use it like any other adapter.
+
+Per Christer's "share as long as possible" steer: extracted
+`FolderAdapter`'s recursive-scan/timestamp-resolution/synthesized-
+`RecordingId` logic out of `folder/adapter.py` into a new, shared
+`adapters/_recursive_scan.py` before writing `GoProAdapter` at all - both
+adapters now call the same `scan_recursive_archive()`/
+`find_recording_in_recursive_archive()`, differing only in manifest and
+telemetry. `test_folder_adapter.py`'s existing 17 tests pass unmodified
+against the refactor - confirms the extraction didn't change
+`FolderAdapter`'s behavior at all, just where the code lives.
+
+The GPMF (telemetry embedded in the video's own stream, not a sidecar)
+parser turned into a bigger detour than the design pass expected: an
+attempt to build a synthetic test fixture by muxing a `gpmd`-tagged
+stream into an MP4 via this sandbox's ffmpeg 4.4.2 failed outright ("Tag
+gpmd incompatible with output codec id '0'"), and no `MP4Box`/`gpac`
+alternative existed either. Pivoted to a pure-Python MP4 box parser
+instead (`adapters/gopro/gpmf.py`'s `locate_gpmf_stream()`), reusing
+`generate/mp4_box_reader.py`'s existing private box-walking helpers - the
+same reuse pattern `generate/mp4_repair.py` already established for
+"don't trust ffprobe/ffmpeg to handle every real-world MP4 shape."
+Fully testable in pure Python with a hand-built synthetic MP4 (real
+`moov`/`stbl` sample-table boxes, real KLV-encoded GPMF samples in
+`mdat`) and no external tool dependency - and more robust against real
+footage than depending on one ffmpeg build's tag handling would have
+been anyway.
+
+Mid-pass, Christer added a second design constraint: "The worst archive
+case would be a mix of everything video/picture but then it should
+regress to plain folder and have minimal options." Turned out to need no
+new code at all - it falls out of two contracts already in place working
+together: `open_archive()` never touches GPMF (only reading a specific
+recording's telemetry does), and `telemetry_bridge.py` already catches
+`MediaToolError` from a bad/missing telemetry read and returns `()`
+rather than propagating it. `gpmf.py`'s `locate_gpmf_stream()` just needed
+to raise `MediaToolError` (not something else) for a video with no
+`'gpmd'` track, and the existing pipeline machinery does the rest.
+Verified directly with a new test
+(`test_mixed_content_folder_scans_fully_with_per_recording_telemetry_degradation`):
+a folder with a real GPMF clip, a video with no GPMF track, a photo, and
+a text file scans as a whole, and each recording's telemetry degrades
+independently.
+
+Known, documented gaps (see `gpmf.py`'s own module docstring, not
+guessed at): GPS9 (Hero11+'s replacement for GPS5) isn't parsed; GPS5 has
+no heading field so every `GpsFix` has `course=None`; within-block
+row timestamps are linearly interpolated across an assumed one second
+per `DEVC` block rather than derived from an explicit sample rate.
+
+Tests: `test_gopro_gpmf.py` (12, the MP4-box-parser + KLV-decoder layer
+against synthetic fixtures) and `test_gopro_adapter.py` (10, the adapter
+layer - manifest/registration, real end-to-end telemetry reads, capability
+guards, and the mixed-content degradation test) are both new; added a
+`gopro` manifest test to `test_manifest.py` and two registration tests to
+`test_registry.py`. `test_bv_config.py` needed a small mechanical fix -
+`registered_adapter_ids()` is sorted, so its wizard prompt text grew from
+"Adapter (blackvue/folder): " to "Adapter (blackvue/folder/gopro): "
+once `gopro` registered; every scripted-ask dict referencing that literal
+was updated. Full regression: 79/79 passing across all six
+`tests/blackvue/adapters/*.py` files plus 22/22 in `test_bv_config.py`,
+via the same fake-pytest/fake-tomllib standalone harness pattern used
+throughout this project (no real pytest in this sandbox).
+
+Not done: testing against Christer's real `X:\gopro` footage (#906) -
+queued next, since GPMF's exact on-disk shape (GPS5 vs. GPS9, which
+fields are actually populated) is camera/firmware-dependent and the
+synthetic fixtures above can only prove the parser is internally
+consistent, not that it matches every real file's exact byte layout.
+
+Files: `src/blackvue/adapters/_recursive_scan.py` (new),
+`src/blackvue/adapters/folder/adapter.py` (refactored to delegate),
+`src/blackvue/adapters/gopro/gpmf.py` (new),
+`src/blackvue/adapters/gopro/adapter.py` (new),
+`src/blackvue/adapters/gopro/__init__.py` (new),
+`src/blackvue/adapters/registry.py` (gopro registration),
+`tests/blackvue/adapters/test_gopro_gpmf.py` (new),
+`tests/blackvue/adapters/test_gopro_adapter.py` (new),
+`tests/blackvue/adapters/test_manifest.py`,
+`tests/blackvue/adapters/test_registry.py`,
+`tests/blackvue/cli/test_bv_config.py`,
+`docs/CAMERA_ADAPTERS.md` (new "GoPro adapter: GPMF parser +
+GoProAdapter implementation" section).

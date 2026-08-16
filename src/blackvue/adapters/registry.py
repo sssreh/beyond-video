@@ -11,7 +11,7 @@ iterates "every adapter" for a given camera - see docs/CAMERA_ADAPTERS.md's
 "exactly one active adapter at a time" section for why that's a
 deliberate design choice, not an oversight.
 
-STATUS: "blackvue" and "folder" are both registered. bv-ls and bv-web's
+STATUS: "blackvue", "folder", and "gopro" are all registered. bv-ls and bv-web's
 archive browser call get_adapter() (see cli/bv_ls.py and
 web/archive_browser.py) - see docs/CAMERA_ADAPTERS.md for what's still
 queued (bv-download SD-card import, more adapter variants, bv-analyze).
@@ -24,6 +24,7 @@ from pathlib import Path
 from .base import CameraAdapter
 from .blackvue.adapter import BlackVueAdapter
 from .folder.adapter import FolderAdapter
+from .gopro.adapter import GoProAdapter
 from .manifest import AdapterManifest
 from .manifest import load_manifest
 
@@ -110,3 +111,4 @@ def load_adapter_manifest(adapter_id: str) -> AdapterManifest:
 
 register("blackvue", BlackVueAdapter)
 register("folder", FolderAdapter)
+register("gopro", GoProAdapter)

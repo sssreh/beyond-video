@@ -47,6 +47,20 @@ def test_folder_manifest_loads():
     assert manifest.capabilities["thumbnails"] == "generated"
 
 
+def test_gopro_manifest_loads():
+    manifest = load_manifest(_ADAPTERS_DIR / "gopro" / "manifest.json")
+
+    assert manifest.adapter_id == "gopro"
+    assert manifest.archive_layout == "recursive"
+    assert manifest.primary_direction.code == "V"
+    assert manifest.supports("gps")
+    assert manifest.supports("gsensor")
+    assert not manifest.supports("network_connect")
+    assert manifest.capabilities["thumbnails"] == "generated"
+    assert manifest.gps_source_asset == "FRONT"
+    assert manifest.gsensor_source_asset == "FRONT"
+
+
 def test_blackvue_manifest_asset_suffix_table_matches_archive_reader():
     # The manifest's own docstring/docs/CAMERA_ADAPTERS.md claim this is
     # a byte-for-byte transcription of the real ArchiveReader.ASSETS
