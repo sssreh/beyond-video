@@ -1,5 +1,5 @@
 """
-SD-card camera.
+Media camera.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -39,7 +39,7 @@ _DIRECTION_LETTERS = "FRI"
 # both shapes. Matched strictly (not just VodEntry.recording's own
 # lenient stripping) specifically so a folder of arbitrarily-named
 # files - like Christer's own emulated test card, see this module's
-# own SdCardCamera docstring - is reliably recognized as "nothing
+# own MediaCamera docstring - is reliably recognized as "nothing
 # here" rather than accidentally matching something it shouldn't.
 _FILENAME_RE = re.compile(
     r"^\d{8}_\d{6}_(?P<kind>[" + _KIND_LETTERS + r"])"
@@ -93,12 +93,13 @@ def _matches_generic_video(name: str, extensions: frozenset[str]) -> bool:
 
 
 @dataclass
-class SdCardScanResult:
-    """The result of scanning a mounted SD card / removable media
-    folder for BlackVue-named files - see SdCardCamera's own
-    docstring. `total_files_seen` and `recognized_file_count` exist
-    purely for _run()'s own "N files scanned, 0 recognized" summary
-    message (bv_download.py), not used by the download path itself.
+class MediaScanResult:
+    """The result of scanning a mounted SD card / USB-connected camera /
+    other removable media folder for recognized files - see
+    MediaCamera's own docstring. `total_files_seen` and
+    `recognized_file_count` exist purely for _run()'s own "N files
+    scanned, 0 recognized" summary message (bv_download.py), not used
+    by the download path itself.
     """
 
     recordings: list[Recording]
@@ -107,7 +108,7 @@ class SdCardScanResult:
     recognized_file_count: int
 
 
-def _scan(root: Path, manifest: AdapterManifest | None = None) -> SdCardScanResult:
+def _scan(root: Path, manifest: AdapterManifest | None = None) -> MediaScanResult:
     """Recursively scan `root` for recognized files and group them into
     Recording/VodEntry objects - the same domain model
     BlackVueCamera.recordings() (the network path) already returns, so
@@ -125,7 +126,7 @@ def _scan(root: Path, manifest: AdapterManifest | None = None) -> SdCardScanResu
     convention (`_matches_blackvue_filename()`), timestamp parsed
     straight out of the filename - unchanged from before this
     parameter existed, so every existing BlackVue-only caller
-    (including SdCardCamera's own default construction) behaves
+    (including MediaCamera's own default construction) behaves
     identically.
 
     `manifest` given: a generic, adapter-driven recognizer instead -
@@ -142,7 +143,7 @@ def _scan(root: Path, manifest: AdapterManifest | None = None) -> SdCardScanResu
     already have for any multi-part video (see gopro/manifest.json).
 
     A file that doesn't match is silently skipped, not an error - see
-    SdCardCamera's own docstring for why that's an expected outcome,
+    MediaCamera's own docstring for why that's an expected outcome,
     not a bug, for a card whose files don't follow the active
     recognizer's convention. A genuine same-name collision across two
     subfolders (on-camera filenames are meant to be unique per card)
@@ -200,7 +201,7 @@ def _scan(root: Path, manifest: AdapterManifest | None = None) -> SdCardScanResu
         for recording_id, entries in sorted(entries_by_recording.items())
     ]
 
-    return SdCardScanResult(
+    return MediaScanResult(
         recordings=recordings,
         local_paths=local_paths,
         total_files_seen=total_files_seen,
@@ -208,10 +209,16 @@ def _scan(root: Path, manifest: AdapterManifest | None = None) -> SdCardScanResu
     )
 
 
-class SdCardCamera:
+class MediaCamera:
     """A local, filesystem-based counterpart to BlackVueCamera, used by
-    bv-download's --sdcard mode (see bv_download.py's own module and
+    bv-download's --media mode (see bv_download.py's own module and
     docs/CAMERA_ADAPTERS.md's "Add SD-card import to bv-download" step).
+    Named for what it actually covers - a mounted SD card, a USB-
+    connected camera exposing itself as mass storage, or any other
+    removable media - rather than "sdcard" specifically; --sdcard is
+    still accepted as a hidden alias for the CLI flag (see
+    bv_download.py's own parse_args()) for anyone with the old name in
+    a script or their fingers.
 
     Scans `root` once, eagerly, at construction time for files matching
     BlackVue's own on-camera filename convention (`YYYYMMDD_HHMMSS_KD.
@@ -257,7 +264,7 @@ class SdCardCamera:
 
         return self._scan_result.recordings
 
-    def scan_summary(self) -> SdCardScanResult:
+    def scan_summary(self) -> MediaScanResult:
         """Return the full scan result, including files seen but not
         recognized as BlackVue recordings - see this class's own
         docstring and _run()'s "N files scanned, 0 recognized"
@@ -353,7 +360,7 @@ class SdCardCamera:
     def read_config_text(self) -> str | None:
         """Best-effort read of the card's own config.ini, for
         RecordTime capture (see bv_download.py's own
-        _capture_record_time_from_sdcard()).
+        _capture_record_time_from_media()).
 
         Tries the same relative path the camera serves it at over HTTP
         (`/Config/config.ini` - see BlackVueClient.config()) first,

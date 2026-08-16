@@ -971,6 +971,24 @@ to generalize from rather than one.
    example (BlackVue) risks just re-deriving BlackVue's own pattern rather
    than genuinely generalizing.
 
+## `--sdcard` renamed to `--media` (2026-08-16)
+
+Christer: "May be SD card should be renamed to external source since many
+cameras support a usb connection." Steps 6 and 8 above shipped and
+extended `bv-download --sdcard`, but by step 8 the flag already covered
+non-SD-card sources too - a USB-connected GoPro exposing itself as mass
+storage, not literally an SD card in a reader. Renamed the flag to
+`--media` (and `core/sdcard_camera.py` to `core/media_camera.py`,
+`SdCardCamera` to `MediaCamera`) to match what it actually covers.
+`--sdcard` is kept working as a hidden alias (`help=argparse.SUPPRESS`
+in `cli/bv_download.py`'s `parse_args()`) for the same `dest="media"`,
+since it was a documented, released (v1.0.0) flag name - existing
+scripts or muscle memory typing `--sdcard` still work, just no longer
+shown in `--help`. Pure rename otherwise - no behavior change to the
+scan/download/RecordTime-capture logic described in steps 6 and 8.
+`docs/man/bv-download.md` rewritten for `--media` as primary, noting the
+alias.
+
 ## Future: `bv-analyze <archive>` - an adapter-authoring assistant
 
 Christer's follow-on idea, not built, not started - a sketch for whoever

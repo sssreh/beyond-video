@@ -25,9 +25,9 @@ class Recording:
         """Return the recording kind - the letter after the id's last
         underscore in BlackVue's own YYYYMMDD_HHMMSS_K shape.
 
-        A generic (adapter-driven, e.g. GoPro) SD-card recording's id
-        has no such letter at all - see SdCardCamera's own manifest-
-        driven scan path (core/sdcard_camera.py), which keeps a
+        A generic (adapter-driven, e.g. GoPro) --media-imported
+        recording's id has no such letter at all - see MediaCamera's
+        own manifest-driven scan path (core/media_camera.py), which keeps a
         matched file's own stem as the recording id verbatim, with no
         BlackVue-shaped suffix appended. Returns "" for that case
         rather than raising, so is_normal/is_event/is_manual/

@@ -13,9 +13,10 @@ deliberate design choice, not an oversight.
 
 STATUS: "blackvue", "folder", and "gopro" are all registered. bv-ls and bv-web's
 archive browser call get_adapter() (see cli/bv_ls.py and
-web/archive_browser.py). bv-download's --sdcard import mode also
+web/archive_browser.py). bv-download's --media import mode (--sdcard
+is kept as a deprecated hidden alias for the same flag) also
 consults this registry (via CameraConfig.adapter) for a non-BlackVue
-camera - see cli/bv_download.py and core/sdcard_camera.py. See
+camera - see cli/bv_download.py and core/media_camera.py. See
 docs/CAMERA_ADAPTERS.md for what's still queued (more adapter
 variants, bv-analyze).
 """

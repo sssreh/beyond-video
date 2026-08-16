@@ -1,11 +1,12 @@
 """
-Tests for core/sdcard_camera.py - SdCardCamera, used by bv-download's
---sdcard import mode.
+Tests for core/media_camera.py - MediaCamera, used by bv-download's
+--media import mode (--sdcard is kept working as a deprecated alias
+for the same flag - see cli/bv_download.py's own parse_args()).
 
 Two recognizers: the default (`manifest=None`), which only recognizes
 BlackVue's own on-camera filename convention; and the manifest-driven
 one used for any other adapter (GoPro today), which matches by video
-extension instead - see SdCardCamera/_scan()'s own docstrings. Both
+extension instead - see MediaCamera/_scan()'s own docstrings. Both
 feed the same domain/Recording model bv-download's network path
 already uses.
 """
@@ -15,9 +16,9 @@ from datetime import datetime
 from pathlib import Path
 
 from blackvue.adapters.registry import load_adapter_manifest
-from blackvue.core.sdcard_camera import SdCardCamera
-from blackvue.core.sdcard_camera import _matches_blackvue_filename
-from blackvue.core.sdcard_camera import _matches_generic_video
+from blackvue.core.media_camera import MediaCamera
+from blackvue.core.media_camera import _matches_blackvue_filename
+from blackvue.core.media_camera import _matches_generic_video
 
 
 def _touch(path: Path, *, size: int = 10) -> Path:
@@ -72,7 +73,7 @@ def test_matching_is_case_insensitive_for_kind_and_extension():
 
 
 # ---------------------------------------------------------------------------
-# SdCardCamera.recordings() / scan_summary() - the recursive scan.
+# MediaCamera.recordings() / scan_summary() - the recursive scan.
 # ---------------------------------------------------------------------------
 
 
@@ -81,7 +82,7 @@ def test_recordings_groups_files_by_recording_id(tmp_path):
     _touch(tmp_path / "20260802_162130_NR.mp4")
     _touch(tmp_path / "20260802_162130_N.gps")
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     recordings = camera.recordings()
 
     assert len(recordings) == 1
@@ -98,7 +99,7 @@ def test_recordings_recurses_into_subfolders(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4")
     _touch(sub / "20260802_170000_EF.mp4")
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     recordings = camera.recordings()
 
     assert len(recordings) == 2
@@ -108,7 +109,7 @@ def test_recordings_are_sorted_chronologically(tmp_path):
     _touch(tmp_path / "20260802_170000_EF.mp4")
     _touch(tmp_path / "20260802_162130_NF.mp4")
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     ids = [r.id for r in camera.recordings()]
 
     assert ids == sorted(ids)
@@ -119,7 +120,7 @@ def test_unrecognized_files_are_silently_skipped(tmp_path):
     _touch(tmp_path / "GOPR0001.MP4")
     _touch(tmp_path / "notes.txt")
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
 
     assert len(camera.recordings()) == 1
 
@@ -129,7 +130,7 @@ def test_scan_summary_reports_total_and_recognized_counts(tmp_path):
     _touch(tmp_path / "20260802_162130_N.gps")
     _touch(tmp_path / "GOPR0001.MP4")
 
-    summary = SdCardCamera(tmp_path).scan_summary()
+    summary = MediaCamera(tmp_path).scan_summary()
 
     assert summary.total_files_seen == 3
     assert summary.recognized_file_count == 2
@@ -143,7 +144,7 @@ def test_zero_name_standard_card_yields_zero_recordings(tmp_path):
     _touch(tmp_path / "GOPR0001.MP4")
     _touch(tmp_path / "clip_random.mov")
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
 
     assert camera.recordings() == []
     assert camera.scan_summary().total_files_seen == 2
@@ -157,7 +158,7 @@ def test_zero_name_standard_card_yields_zero_recordings(tmp_path):
 
 def test_probe_missing_sidecars_is_always_a_noop(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4")
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
 
     assert camera.probe_missing_sidecars(camera.recordings()[0]) == []
 
@@ -171,7 +172,7 @@ def test_download_copies_every_entry_by_default(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
     _touch(tmp_path / "20260802_162130_N.gps", size=5)
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
 
     changed = camera.download(camera.recordings()[0], dest)
@@ -185,7 +186,7 @@ def test_download_respects_select(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
     _touch(tmp_path / "20260802_162130_N.gps", size=5)
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
 
     camera.download(
@@ -198,7 +199,7 @@ def test_download_respects_select(tmp_path):
 
 def test_download_calls_on_bytes_for_copied_data(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=200)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
 
     reported = []
     camera.download(
@@ -210,7 +211,7 @@ def test_download_calls_on_bytes_for_copied_data(tmp_path):
 
 def test_download_second_run_is_a_noop_when_file_already_matches(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
 
     first = camera.download(camera.recordings()[0], dest)
@@ -226,7 +227,7 @@ def test_download_recopies_when_destination_size_differs(tmp_path):
     # worth resuming into, unlike BlackVueClient.download()'s range
     # requests over the network.
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
     (dest / "20260802_162130_NF.mp4").write_bytes(b"y" * 10)
@@ -247,7 +248,7 @@ def test_download_recopies_when_destination_size_differs(tmp_path):
 
 def test_is_fully_downloaded_false_before_any_download(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
 
     assert camera.is_fully_downloaded(camera.recordings()[0], dest) is False
@@ -256,7 +257,7 @@ def test_is_fully_downloaded_false_before_any_download(tmp_path):
 def test_is_fully_downloaded_true_after_a_real_download(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
     _touch(tmp_path / "20260802_162130_N.gps", size=5)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
 
     camera.download(camera.recordings()[0], dest)
@@ -267,7 +268,7 @@ def test_is_fully_downloaded_true_after_a_real_download(tmp_path):
 def test_is_fully_downloaded_false_when_one_entry_is_missing(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
     _touch(tmp_path / "20260802_162130_N.gps", size=5)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
     # Only the video made it across on some earlier, interrupted run -
@@ -279,7 +280,7 @@ def test_is_fully_downloaded_false_when_one_entry_is_missing(tmp_path):
 
 def test_is_fully_downloaded_false_when_size_differs(tmp_path):
     _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
     (dest / "20260802_162130_NF.mp4").write_bytes(b"y" * 10)
@@ -293,14 +294,14 @@ def test_is_fully_downloaded_false_when_size_differs(tmp_path):
 
 
 def test_read_config_text_returns_none_when_absent(tmp_path):
-    assert SdCardCamera(tmp_path).read_config_text() is None
+    assert MediaCamera(tmp_path).read_config_text() is None
 
 
 def test_read_config_text_finds_config_subfolder(tmp_path):
     (tmp_path / "Config").mkdir()
     (tmp_path / "Config" / "config.ini").write_text("[Tab1]\nRecordTime=1\n")
 
-    text = SdCardCamera(tmp_path).read_config_text()
+    text = MediaCamera(tmp_path).read_config_text()
 
     assert text is not None
     assert "RecordTime" in text
@@ -309,7 +310,7 @@ def test_read_config_text_finds_config_subfolder(tmp_path):
 def test_read_config_text_falls_back_to_card_root(tmp_path):
     (tmp_path / "config.ini").write_text("[Tab1]\nRecordTime=1\n")
 
-    text = SdCardCamera(tmp_path).read_config_text()
+    text = MediaCamera(tmp_path).read_config_text()
 
     assert text is not None
     assert "RecordTime" in text
@@ -320,7 +321,7 @@ def test_read_config_text_prefers_config_subfolder_over_root(tmp_path):
     (tmp_path / "Config" / "config.ini").write_text("[Tab1]\nRecordTime=1\n")
     (tmp_path / "config.ini").write_text("[Tab1]\nRecordTime=99\n")
 
-    text = SdCardCamera(tmp_path).read_config_text()
+    text = MediaCamera(tmp_path).read_config_text()
 
     assert "RecordTime=1" in text
 
@@ -352,7 +353,7 @@ def test_matches_generic_video_rejects_hidden_appledouble_files():
 
 
 # ---------------------------------------------------------------------------
-# SdCardCamera(manifest=...) - the manifest-driven scan path end to end.
+# MediaCamera(manifest=...) - the manifest-driven scan path end to end.
 # ---------------------------------------------------------------------------
 
 
@@ -365,7 +366,7 @@ def test_manifest_scan_recognizes_gopro_filenames_the_blackvue_scan_rejects(
 ):
     _touch(tmp_path / "GH010123.MP4")
 
-    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    camera = MediaCamera(tmp_path, manifest=_gopro_manifest())
 
     assert len(camera.recordings()) == 1
     assert camera.recordings()[0].id == "GH010123"
@@ -376,7 +377,7 @@ def test_manifest_scan_default_stays_blackvue_only(tmp_path):
     # exact same scenario task #901's zero-match test already covers.
     _touch(tmp_path / "GH010123.MP4")
 
-    camera = SdCardCamera(tmp_path)
+    camera = MediaCamera(tmp_path)
 
     assert camera.recordings() == []
 
@@ -388,7 +389,7 @@ def test_manifest_scan_each_file_is_its_own_recording(tmp_path):
     _touch(tmp_path / "GH010123.MP4")
     _touch(tmp_path / "GH020123.MP4")
 
-    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    camera = MediaCamera(tmp_path, manifest=_gopro_manifest())
     ids = sorted(r.id for r in camera.recordings())
 
     assert ids == ["GH010123", "GH020123"]
@@ -399,7 +400,7 @@ def test_manifest_scan_timestamp_comes_from_mtime(tmp_path):
     mtime = datetime(2026, 3, 1, 9, 0, 0).timestamp()
     os.utime(path, (mtime, mtime))
 
-    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    camera = MediaCamera(tmp_path, manifest=_gopro_manifest())
     entry = camera.recordings()[0].entries[0]
 
     assert entry.timestamp == datetime(2026, 3, 1, 9, 0, 0)
@@ -410,7 +411,7 @@ def test_manifest_scan_ignores_non_video_files(tmp_path):
     _touch(tmp_path / "GOPR0001.JPG")
     _touch(tmp_path / "notes.txt")
 
-    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    camera = MediaCamera(tmp_path, manifest=_gopro_manifest())
     summary = camera.scan_summary()
 
     assert len(camera.recordings()) == 1
@@ -421,7 +422,7 @@ def test_manifest_scan_ignores_non_video_files(tmp_path):
 def test_manifest_scan_downloads_the_same_way_as_the_default_scan(tmp_path):
     _touch(tmp_path / "GH010123.MP4", size=100)
 
-    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    camera = MediaCamera(tmp_path, manifest=_gopro_manifest())
     dest = tmp_path / "dest"
 
     changed = camera.download(camera.recordings()[0], dest)

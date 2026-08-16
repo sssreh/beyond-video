@@ -13782,3 +13782,55 @@ harness used throughout this project.
 Files: `src/blackvue/core/sdcard_camera.py`, `src/blackvue/cli/
 bv_download.py`, `tests/blackvue/core/test_sdcard_camera.py`,
 `tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
+
+## Rename bv-download --sdcard to --media (done, this session)
+
+Christer: "May be SD card should be renamed to external source since
+many cameras support a usb connection." The `--sdcard` flag (and its
+supporting `SdCardCamera`/`core/sdcard_camera.py`) already covered more
+than literal SD cards by this point - task #924's GoPro adapter-aware
+import works equally well over a USB-connected camera exposing itself
+as mass storage, not just a card in a reader - so the name no longer
+matched what the feature does. Clarified naming with Christer via a
+quick multiple-choice check: new name is `--media`/`MediaCamera` (not
+`--source`/`SourceCamera` or `--external`/`ExternalCamera`), and
+`--sdcard` stays working as a hidden alias since it was a documented,
+released (v1.0.0) flag - not something to break silently.
+
+Renamed throughout: `core/sdcard_camera.py` -> `core/media_camera.py`
+(`SdCardCamera` -> `MediaCamera`, `SdCardScanResult` -> `MediaScanResult`),
+`cli/bv_download.py`'s primary flag `--sdcard` -> `--media` (`dest=
+"media"` throughout - validation errors, `--host`/`--target` help
+text, `_capture_record_time_from_sdcard()` ->
+`_capture_record_time_from_media()`, `sdcard_adapter_id` ->
+`media_adapter_id`, `is_generic_sdcard` -> `is_generic_media`), plus a
+second, hidden `add_argument("--sdcard", dest="media", help=argparse.
+SUPPRESS)` so the old flag keeps writing to the same `args.media`
+attribute - existing scripts or muscle-memory typing `--sdcard` still
+work, just no longer shown in `--help`. `adapters/registry.py` and
+`domain/recording.py` docstrings updated to reference `--media`/
+`MediaCamera`/`core/media_camera.py` instead of the old names.
+
+Test files renamed to match (`test_sdcard_camera.py` ->
+`test_media_camera.py`, class/fixture/test-function renames in
+`test_bv_download.py`), plus one new dedicated test confirming the
+alias itself works
+(`test_parse_args_sdcard_still_works_as_a_hidden_alias_for_media`).
+Full suite: 66/66 in `test_bv_download.py`, 38/38 in
+`test_media_camera.py` (104 total), same fake-pytest/fake-tomllib
+harness used throughout this project. `docs/man/bv-download.md`
+rewritten for `--media` as the primary flag throughout (synopsis,
+description, arguments/options table, examples), noting `--sdcard`'s
+deprecated-alias status. `docs/CAMERA_ADAPTERS.md` got a short new
+dated section recording the rename rather than rewriting its existing
+`--sdcard`-era historical entries (steps 6/8 in that doc's roadmap
+list describe what was true when they were written and are left as
+they are, per this file's own append-only convention).
+
+Files: `src/blackvue/core/media_camera.py` (new, replaces
+`sdcard_camera.py`), `src/blackvue/cli/bv_download.py`,
+`src/blackvue/adapters/registry.py`, `src/blackvue/domain/
+recording.py`, `tests/blackvue/core/test_media_camera.py` (new,
+replaces `test_sdcard_camera.py`), `tests/blackvue/cli/
+test_bv_download.py`, `tests/blackvue/domain/test_recording.py`,
+`docs/man/bv-download.md`, `docs/CAMERA_ADAPTERS.md`.

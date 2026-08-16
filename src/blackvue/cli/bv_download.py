@@ -33,7 +33,7 @@ from ..core.joblog import wrap_warn
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
 from ..core.endpoint import Endpoint
-from ..core.sdcard_camera import SdCardCamera
+from ..core.media_camera import MediaCamera
 from ..domain.recording import Recording
 from ..domain.vod_entry import VodEntry
 from ..humantimeformatter import HumanTimeFormatter
@@ -241,30 +241,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Connect directly to this camera address instead of "
             "looking up a configured id - e.g. its WiFi IP. Requires "
-            "--target; cannot be combined with ID or --sdcard."
+            "--target; cannot be combined with ID or --media."
         ),
     )
 
     parser.add_argument(
-        "--sdcard",
+        "--media",
         type=Path,
         metavar="DIR",
         help=(
-            "Import recordings directly from a mounted SD card / "
-            "removable media at DIR instead of connecting over the "
-            "network - no CGI protocol, just BlackVue's own file "
-            "layout on disk. Combine with ID to import into that "
-            "camera's configured archive, or with --target for a "
+            "Import recordings directly from a mounted SD card, USB-"
+            "connected camera, or other removable media at DIR instead "
+            "of connecting over the network - no CGI protocol, just a "
+            "plain filesystem copy. Combine with ID to import into "
+            "that camera's configured archive, or with --target for a "
             "one-off import with no config. Cannot be combined with "
             "--host."
         ),
+    )
+
+    # Deprecated name for --media, kept working silently - --sdcard was
+    # the documented, released (v1.0.0) flag name before Christer
+    # pointed out that many cameras (GoPro included) are imported over
+    # USB rather than via a card reader, so "sdcard" undersold what
+    # this actually covers. help=SUPPRESS keeps it out of --help/usage
+    # without breaking any existing script or muscle memory that still
+    # types --sdcard.
+    parser.add_argument(
+        "--sdcard",
+        dest="media",
+        type=Path,
+        metavar="DIR",
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument(
         "--target",
         type=Path,
         metavar="DIR",
-        help="Directory to download into. Requires --host or --sdcard.",
+        help="Directory to download into. Requires --host or --media.",
     )
 
     parser.add_argument(
@@ -360,14 +375,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.files and not args.dry_run:
         parser.error("--files requires --dry-run")
 
-    if args.id is None and args.host is None and args.sdcard is None:
-        parser.error("either ID, --host, or --sdcard is required")
+    if args.id is None and args.host is None and args.media is None:
+        parser.error("either ID, --host, or --media is required")
 
     if args.id is not None and args.host is not None:
         parser.error("--host cannot be combined with ID")
 
-    if args.host is not None and args.sdcard is not None:
-        parser.error("--host cannot be combined with --sdcard")
+    if args.host is not None and args.media is not None:
+        parser.error("--host cannot be combined with --media")
 
     if args.id is not None and args.target is not None:
         parser.error("--target cannot be combined with ID")
@@ -375,11 +390,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.host is not None and args.target is None:
         parser.error("--host requires --target")
 
-    if args.sdcard is not None and args.id is None and args.target is None:
-        parser.error("--sdcard requires ID or --target")
+    if args.media is not None and args.id is None and args.target is None:
+        parser.error("--media requires ID or --target")
 
-    if args.target is not None and args.host is None and args.sdcard is None:
-        parser.error("--target requires --host or --sdcard")
+    if args.target is not None and args.host is None and args.media is None:
+        parser.error("--target requires --host or --media")
 
     return args
 
@@ -409,10 +424,11 @@ def _write_record_time_snapshot_if_needed(
     new file every time.
 
     Shared by both `_capture_record_time()` (the network path - reads
-    config.ini over the wire) and `_capture_record_time_from_sdcard()`
-    (the --sdcard path - reads it directly off the mounted card): once
-    a raw RecordTime integer has been obtained, from either source,
-    what to do with it is identical - only how it's obtained differs.
+    config.ini over the wire) and `_capture_record_time_from_media()`
+    (the --media path - reads it directly off the mounted card/drive):
+    once a raw RecordTime integer has been obtained, from either
+    source, what to do with it is identical - only how it's obtained
+    differs.
 
     `recording_id` anchors the snapshot to the earliest recording this
     run is considering (see each call site above) - since changing a
@@ -490,7 +506,7 @@ def _capture_record_time(
     """Fetch the camera's current config.ini over the network, extract
     RecordTime, and hand off to _write_record_time_snapshot_if_needed()
     - see that function's own docstring for the write logic shared
-    with the --sdcard path.
+    with the --media path.
 
     Best-effort: any failure here (endpoint unavailable on this
     firmware, unexpected config.ini shape, a transient network error)
@@ -516,8 +532,8 @@ def _capture_record_time(
     )
 
 
-def _capture_record_time_from_sdcard(
-    camera: SdCardCamera,
+def _capture_record_time_from_media(
+    camera: MediaCamera,
     destination: Path,
     recording_id: str,
     *,
@@ -525,13 +541,13 @@ def _capture_record_time_from_sdcard(
     say=print,
     warn=_default_warn,
 ) -> None:
-    """Read config.ini directly off the mounted SD card (see
-    SdCardCamera.read_config_text()'s own docstring for the candidate
+    """Read config.ini directly off the mounted card/drive (see
+    MediaCamera.read_config_text()'s own docstring for the candidate
     paths tried), extract RecordTime, and hand off to
-    _write_record_time_snapshot_if_needed() - the --sdcard counterpart
+    _write_record_time_snapshot_if_needed() - the --media counterpart
     to _capture_record_time()'s network version.
 
-    Best-effort, same as the network version: a card with no readable
+    Best-effort, same as the network version: media with no readable
     config.ini (its real on-disk location isn't confirmed yet - see
     docs/CAMERA_ADAPTERS.md) only means bv-export's own --max-gap
     default goes unset, never a reason to fail an import run.
@@ -542,8 +558,8 @@ def _capture_record_time_from_sdcard(
     if text is None:
         if verbose:
             warn(
-                "bv-download: no config.ini found on the SD card - "
-                "skipping RecordTime capture"
+                "bv-download: no config.ini found on the imported "
+                "media - skipping RecordTime capture"
             )
         return
 
@@ -552,8 +568,8 @@ def _capture_record_time_from_sdcard(
     except Exception as exc:
         if verbose:
             warn(
-                "bv-download: couldn't read RecordTime from the SD "
-                f"card's config.ini: {exc}"
+                "bv-download: couldn't read RecordTime from the "
+                f"imported media's config.ini: {exc}"
             )
         return
 
@@ -631,30 +647,34 @@ def _run(
     """
 
     # Three ways to say where recordings come from and where they go:
-    # --host/--target (one-off network connection, no config), --sdcard
+    # --host/--target (one-off network connection, no config), --media
     # alone/with --target (one-off local import, no config), or ID
-    # (either over the network or, combined with --sdcard, from a
-    # mounted card) using a saved camera config for the destination.
-    # `endpoints`/`client` stay None on the --sdcard path - there's no
-    # network connection to make at all (see the `camera` construction
-    # a little further down).
+    # (either over the network or, combined with --media, from a
+    # mounted card/drive) using a saved camera config for the
+    # destination. `endpoints`/`client` stay None on the --media path -
+    # there's no network connection to make at all (see the `camera`
+    # construction a little further down).
     endpoints: list[Endpoint] | None = None
     client: BlackVueClient | None = None
-    # Non-None only for an ID-backed --sdcard import whose camera config
+    # Non-None only for an ID-backed --media import whose camera config
     # picked a non-BlackVue adapter (e.g. "gopro") - drives both
-    # SdCardCamera's recognizer (see the construction below) and the
+    # MediaCamera's recognizer (see the construction below) and the
     # mode-default decision further down, since a manifest-driven
     # camera has no event/manual/parking kind vocabulary at all for
     # select_by_context()'s own BlackVue-specific heuristic to work
     # with.
-    sdcard_adapter_id: str | None = None
+    media_adapter_id: str | None = None
 
-    if args.sdcard is not None:
+    if args.media is not None:
         #
-        # --sdcard: import recordings directly from a mounted SD card
-        # / removable media - no CGI wire protocol, just the camera's
-        # own file layout on disk (see SdCardCamera's own docstring
-        # and docs/CAMERA_ADAPTERS.md's "Add SD-card import" step).
+        # --media: import recordings directly from a mounted SD card,
+        # USB-connected camera, or other removable media - no CGI wire
+        # protocol, just the camera's own file layout on disk (see
+        # MediaCamera's own docstring and docs/CAMERA_ADAPTERS.md's
+        # "Add SD-card import" step - the flag itself was renamed from
+        # --sdcard, kept working as a hidden alias, once it became
+        # clear this covers USB-connected cameras too, not just card
+        # readers).
         #
         if args.id is not None:
             path = config_path(args.config_dir, args.id)
@@ -667,26 +687,26 @@ def _run(
 
             destination = config.archive
             display_name = config.name
-            sdcard_adapter_id = config.adapter
+            media_adapter_id = config.adapter
         else:
             destination = args.target
-            display_name = str(args.sdcard)
+            display_name = str(args.media)
 
-        if sdcard_adapter_id is None or sdcard_adapter_id == DEFAULT_ADAPTER_ID:
-            # BlackVue (or a bare --sdcard with no config at all, which
+        if media_adapter_id is None or media_adapter_id == DEFAULT_ADAPTER_ID:
+            # BlackVue (or a bare --media with no config at all, which
             # has no adapter to consult) - the original, strict
             # filename-convention recognizer, byte-for-byte unchanged.
-            camera = SdCardCamera(args.sdcard)
+            camera = MediaCamera(args.media)
         else:
             # A non-BlackVue adapter (GoPro today) - its own manifest
             # drives recognition instead (extension match, mtime
-            # timestamp - see SdCardCamera/_scan()'s own docstring).
+            # timestamp - see MediaCamera/_scan()'s own docstring).
             try:
-                manifest = load_adapter_manifest(sdcard_adapter_id)
+                manifest = load_adapter_manifest(media_adapter_id)
             except AdapterNotFoundError as exc:
                 warn(f"bv-download: {exc}")
                 return EXIT_CONFIG_ERROR
-            camera = SdCardCamera(args.sdcard, manifest=manifest)
+            camera = MediaCamera(args.media, manifest=manifest)
     elif args.host is not None:
         #
         # --host/--target: a one-off connection with no saved config,
@@ -735,9 +755,9 @@ def _run(
     #
     # A specific range was asked for explicitly - default to
     # fetching everything in it, unless --mode said otherwise. (A
-    # non-BlackVue adapter's --sdcard import - e.g. GoPro - is handled
+    # non-BlackVue adapter's --media import - e.g. GoPro - is handled
     # separately below, bypassing mode/kind selection entirely: see
-    # is_generic_sdcard.)
+    # is_generic_media.)
     #
     mode = args.mode
     if mode is None and has_range:
@@ -751,28 +771,28 @@ def _run(
     # it. So bypass both: every matched recording just downloads,
     # matching gopro/manifest.json's own "no --mode filtering... every
     # file is just 'a video'" contract.
-    is_generic_sdcard = (
-        sdcard_adapter_id is not None and sdcard_adapter_id != DEFAULT_ADAPTER_ID
+    is_generic_media = (
+        media_adapter_id is not None and media_adapter_id != DEFAULT_ADAPTER_ID
     )
 
-    if args.sdcard is not None:
-        # `camera` (an SdCardCamera) was already constructed above,
-        # eagerly scanning the card - see the source-setup block.
-        # Nothing to connect to.
+    if args.media is not None:
+        # `camera` (a MediaCamera) was already constructed above,
+        # eagerly scanning the card/drive - see the source-setup
+        # block. Nothing to connect to.
         scan = camera.scan_summary()
         recognized_label = (
-            "recordings" if is_generic_sdcard else "BlackVue-named recordings"
+            "recordings" if is_generic_media else "BlackVue-named recordings"
         )
 
         if scan.recognized_file_count == 0:
             say(
-                f"bv-download: {args.sdcard}: no {recognized_label} "
+                f"bv-download: {args.media}: no {recognized_label} "
                 f"found ({scan.total_files_seen} file(s) "
                 "scanned)"
             )
         elif args.verbose:
             say(
-                f"bv-download: {args.sdcard}: found "
+                f"bv-download: {args.media}: found "
                 f"{len(scan.recordings)} recording(s) across "
                 f"{scan.recognized_file_count} recognized file(s) "
                 f"(of {scan.total_files_seen} scanned)"
@@ -792,10 +812,10 @@ def _run(
 
         camera = BlackVueCamera(client)
 
-    if is_generic_sdcard:
+    if is_generic_media:
         # A manifest-driven camera's recording id is just the source
         # file's own stem (e.g. GoPro's "GH010123" - see
-        # SdCardCamera/_scan()'s manifest-driven path) with no
+        # MediaCamera/_scan()'s manifest-driven path) with no
         # timestamp in it at all, unlike BlackVue's YYYYMMDD_HHMMSS
         # convention. TimeInterval.__contains__() does a lexical
         # string comparison assuming that convention - id shapes like
@@ -818,11 +838,11 @@ def _run(
     # here, before the "Matching recordings" listing/confirmation
     # prompt even builds - Christer: "ignore files already fully
     # downloaded". download() already skipped re-copying their bytes
-    # (see SdCardCamera.download()'s own docstring), but that's a
+    # (see MediaCamera.download()'s own docstring), but that's a
     # separate concern from the UX one: without this, the same
     # recording kept showing up in the listing and needing
     # re-confirming on every re-run even though it needed nothing
-    # further. Only SdCardCamera implements is_fully_downloaded() - a
+    # further. Only MediaCamera implements is_fully_downloaded() - a
     # network listing has no local "already there" concept the way a
     # filesystem scan does - so this is a no-op (hasattr() is False)
     # for a --host/ID network download.
@@ -869,17 +889,17 @@ def _run(
     # RecordTime snapshot capture is a beyond-video-specific
     # bookkeeping step (see _write_record_time_snapshot_if_needed()'s
     # own docstring) - skipped for a bare one-off run with no archive
-    # conventions imposed (--host, or --sdcard used without ID). If
+    # conventions imposed (--host, or --media used without ID). If
     # this same directory is later downloaded/imported into via a real
     # bv-config id, the snapshot just gets written on that first run
     # instead.
     bare_run = args.host is not None or (
-        args.sdcard is not None and args.id is None
+        args.media is not None and args.id is None
     )
 
     if not args.dry_run and recordings and not bare_run:
-        if args.sdcard is not None:
-            _capture_record_time_from_sdcard(
+        if args.media is not None:
+            _capture_record_time_from_media(
                 camera,
                 destination,
                 recordings[0].id,
@@ -897,7 +917,7 @@ def _run(
                 warn=warn,
             )
 
-    if is_generic_sdcard:
+    if is_generic_media:
         selection = ((recording, True) for recording in recordings)
     elif mode is not None:
         selection = select_by_mode(recordings, mode)

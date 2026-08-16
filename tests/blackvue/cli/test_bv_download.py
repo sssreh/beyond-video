@@ -12,7 +12,7 @@ from blackvue.cli.bv_download import EXIT_OK
 from blackvue.cli.bv_download import EXIT_PARTIAL_FAILURE
 from blackvue.cli.bv_download import DotProgress
 from blackvue.cli.bv_download import _capture_record_time
-from blackvue.cli.bv_download import _capture_record_time_from_sdcard
+from blackvue.cli.bv_download import _capture_record_time_from_media
 from blackvue.cli.bv_download import _destination_message
 from blackvue.cli.bv_download import _run
 from blackvue.cli.bv_download import _summarize_found_kinds
@@ -25,7 +25,7 @@ from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import save_camera_config
 from blackvue.core.endpoint import Endpoint
-from blackvue.core.sdcard_camera import SdCardCamera
+from blackvue.core.media_camera import MediaCamera
 from blackvue.domain.recording import Recording
 from blackvue.domain.vod_entry import VodEntry
 
@@ -339,9 +339,9 @@ def test_capture_record_time_swallows_unparseable_config(tmp_path):
     assert list(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}")) == []
 
 
-class _FakeSdCardConfigCamera:
-    """A minimal stand-in for SdCardCamera - _capture_record_time_from_
-    sdcard() only ever calls .read_config_text() on it."""
+class _FakeMediaConfigCamera:
+    """A minimal stand-in for MediaCamera - _capture_record_time_from_
+    media() only ever calls .read_config_text() on it."""
 
     def __init__(self, config_text: str | None):
         self._config_text = config_text
@@ -350,10 +350,10 @@ class _FakeSdCardConfigCamera:
         return self._config_text
 
 
-def test_capture_record_time_from_sdcard_writes_a_snapshot(tmp_path):
-    camera = _FakeSdCardConfigCamera("[Tab1]\nRecordTime=3\n")
+def test_capture_record_time_from_media_writes_a_snapshot(tmp_path):
+    camera = _FakeMediaConfigCamera("[Tab1]\nRecordTime=3\n")
 
-    _capture_record_time_from_sdcard(
+    _capture_record_time_from_media(
         camera, tmp_path, "20260801_095509_N", verbose=False
     )
 
@@ -362,13 +362,13 @@ def test_capture_record_time_from_sdcard_writes_a_snapshot(tmp_path):
     assert snapshots[0].read_text(encoding="utf-8") == "180\n"
 
 
-def test_capture_record_time_from_sdcard_is_a_noop_when_unchanged(tmp_path):
-    camera = _FakeSdCardConfigCamera("[Tab1]\nRecordTime=3\n")
+def test_capture_record_time_from_media_is_a_noop_when_unchanged(tmp_path):
+    camera = _FakeMediaConfigCamera("[Tab1]\nRecordTime=3\n")
 
-    _capture_record_time_from_sdcard(
+    _capture_record_time_from_media(
         camera, tmp_path, "20260801_095509_N", verbose=False
     )
-    _capture_record_time_from_sdcard(
+    _capture_record_time_from_media(
         camera, tmp_path, "20260801_120000_N", verbose=False
     )
 
@@ -376,25 +376,25 @@ def test_capture_record_time_from_sdcard_is_a_noop_when_unchanged(tmp_path):
     assert len(snapshots) == 1
 
 
-def test_capture_record_time_from_sdcard_skips_when_no_config_ini(
+def test_capture_record_time_from_media_skips_when_no_config_ini(
     tmp_path, capsys
 ):
-    camera = _FakeSdCardConfigCamera(None)
+    camera = _FakeMediaConfigCamera(None)
 
-    _capture_record_time_from_sdcard(
+    _capture_record_time_from_media(
         camera, tmp_path, "20260801_095509_N", verbose=True
     )
 
     assert list(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}")) == []
-    assert "no config.ini found on the SD card" in capsys.readouterr().err
+    assert "no config.ini found on the imported media" in capsys.readouterr().err
 
 
-def test_capture_record_time_from_sdcard_swallows_unparseable_config(
+def test_capture_record_time_from_media_swallows_unparseable_config(
     tmp_path,
 ):
-    camera = _FakeSdCardConfigCamera("[Tab1]\nNormalRecord=1\n")
+    camera = _FakeMediaConfigCamera("[Tab1]\nNormalRecord=1\n")
 
-    _capture_record_time_from_sdcard(
+    _capture_record_time_from_media(
         camera, tmp_path, "20260801_095509_N", verbose=False
     )
 
@@ -447,7 +447,7 @@ def test_parse_args_requires_id_or_host(capsys):
     with pytest.raises(SystemExit):
         parse_args([])
 
-    assert "either ID, --host, or --sdcard is required" in capsys.readouterr().err
+    assert "either ID, --host, or --media is required" in capsys.readouterr().err
 
 
 def test_parse_args_host_cannot_combine_with_id(capsys):
@@ -479,44 +479,56 @@ def test_parse_args_host_and_target_accepted():
     assert args.target == Path("/tmp/x")
 
 
-def test_parse_args_sdcard_alone_requires_id_or_target(capsys):
+def test_parse_args_media_alone_requires_id_or_target(capsys):
     with pytest.raises(SystemExit):
-        parse_args(["--sdcard", "/tmp/sd"])
+        parse_args(["--media", "/tmp/sd"])
 
-    assert "--sdcard requires ID or --target" in capsys.readouterr().err
+    assert "--media requires ID or --target" in capsys.readouterr().err
 
 
-def test_parse_args_sdcard_cannot_combine_with_host(capsys):
+def test_parse_args_media_cannot_combine_with_host(capsys):
     with pytest.raises(SystemExit):
         parse_args(
-            ["--host", "192.168.0.1", "--sdcard", "/tmp/sd", "--target", "/tmp/x"]
+            ["--host", "192.168.0.1", "--media", "/tmp/sd", "--target", "/tmp/x"]
         )
 
-    assert "--host cannot be combined with --sdcard" in capsys.readouterr().err
+    assert "--host cannot be combined with --media" in capsys.readouterr().err
 
 
-def test_parse_args_id_and_sdcard_accepted():
-    args = parse_args(["mycar", "--sdcard", "/tmp/sd"])
+def test_parse_args_id_and_media_accepted():
+    args = parse_args(["mycar", "--media", "/tmp/sd"])
 
     assert args.id == "mycar"
-    assert args.sdcard == Path("/tmp/sd")
+    assert args.media == Path("/tmp/sd")
     assert args.target is None
 
 
-def test_parse_args_sdcard_and_target_accepted_without_id():
-    args = parse_args(["--sdcard", "/tmp/sd", "--target", "/tmp/out"])
+def test_parse_args_media_and_target_accepted_without_id():
+    args = parse_args(["--media", "/tmp/sd", "--target", "/tmp/out"])
 
     assert args.id is None
-    assert args.sdcard == Path("/tmp/sd")
+    assert args.media == Path("/tmp/sd")
     assert args.target == Path("/tmp/out")
 
 
 def test_parse_args_id_and_target_rejected():
-    # --target only ever pairs with --host or a bare --sdcard (no ID) -
+    # --target only ever pairs with --host or a bare --media (no ID) -
     # combining it with ID as well is ambiguous about which
     # destination wins, so it's rejected rather than guessed at.
     with pytest.raises(SystemExit):
-        parse_args(["mycar", "--sdcard", "/tmp/sd", "--target", "/tmp/out"])
+        parse_args(["mycar", "--media", "/tmp/sd", "--target", "/tmp/out"])
+
+
+def test_parse_args_sdcard_still_works_as_a_hidden_alias_for_media():
+    # --sdcard was the original, released (v1.0.0) flag name - Christer:
+    # "May be SD card should be renamed to external source since many
+    # cameras support a usb connection". Renamed to --media, but kept
+    # accepting the old name silently (help=SUPPRESS - see
+    # parse_args()'s own --sdcard add_argument call) so an existing
+    # script or muscle memory typing --sdcard still works.
+    args = parse_args(["mycar", "--sdcard", "/tmp/sd"])
+
+    assert args.media == Path("/tmp/sd")
 
 
 def test_describe_recording_files_all_downloaded_when_video_wanted():
@@ -871,7 +883,7 @@ def test_run_prints_a_line_per_downloaded_recording_without_verbose(
 
 
 # ---------------------------------------------------------------------------
-# --sdcard: import from a mounted SD card / removable media.
+# --media: import from a mounted SD card, USB-connected camera, or other removable media.
 # ---------------------------------------------------------------------------
 
 
@@ -881,10 +893,10 @@ class _FakeScanSummary:
         self.recognized_file_count = recognized_file_count
 
 
-class _FakeSdCardCamera:
-    """A stand-in for SdCardCamera - mirrors _FakeDownloadCamera's own
+class _FakeMediaCamera:
+    """A stand-in for MediaCamera - mirrors _FakeDownloadCamera's own
     shape but adds scan_summary()/read_config_text(), the two methods
-    only the --sdcard path calls."""
+    only the --media path calls."""
 
     def __init__(
         self,
@@ -906,10 +918,10 @@ class _FakeSdCardCamera:
         )
         self._config_text = config_text
         self.downloaded_ids: list[str] = []
-        # Real SdCardCamera.is_fully_downloaded() compares on-disk file
+        # Real MediaCamera.is_fully_downloaded() compares on-disk file
         # sizes; this fake just takes the answer directly, since
         # bv_download.py only cares about the return value, not how
-        # it's computed - see test_run_sdcard_skips_already_fully_downloaded_recordings.
+        # it's computed - see test_run_media_skips_already_fully_downloaded_recordings.
         self._fully_downloaded_ids = fully_downloaded_ids or set()
 
     def recordings(self) -> list[Recording]:
@@ -932,11 +944,11 @@ class _FakeSdCardCamera:
         return self._config_text
 
 
-def _sdcard_args(tmp_path: Path, sdcard: Path, **overrides) -> argparse.Namespace:
+def _media_args(tmp_path: Path, media: Path, **overrides) -> argparse.Namespace:
     args = parse_args(
         [
-            "--sdcard",
-            str(sdcard),
+            "--media",
+            str(media),
             "--target",
             str(tmp_path),
             "--yes",
@@ -949,17 +961,17 @@ def _sdcard_args(tmp_path: Path, sdcard: Path, **overrides) -> argparse.Namespac
     return args
 
 
-def test_run_sdcard_zero_match_prints_a_clear_message(
+def test_run_media_zero_match_prints_a_clear_message(
     tmp_path, monkeypatch, capsys
 ):
     # Christer's own emulated test card scenario: the mounted folder
     # has files, but none of them follow BlackVue's naming convention.
-    camera = _FakeSdCardCamera(
+    camera = _FakeMediaCamera(
         [], total_files_seen=2, recognized_file_count=0
     )
-    monkeypatch.setattr(bv_download, "SdCardCamera", lambda root: camera)
+    monkeypatch.setattr(bv_download, "MediaCamera", lambda root: camera)
 
-    args = _sdcard_args(tmp_path, Path("/fake/sdcard"), id=None)
+    args = _media_args(tmp_path, Path("/fake/media"), id=None)
     exit_code = _run(args)
 
     assert exit_code == EXIT_OK
@@ -968,16 +980,16 @@ def test_run_sdcard_zero_match_prints_a_clear_message(
     assert "2 file(s) scanned" in out
 
 
-def test_run_sdcard_bare_run_downloads_and_skips_record_time(
+def test_run_media_bare_run_downloads_and_skips_record_time(
     tmp_path, monkeypatch
 ):
-    # --sdcard + --target with no ID is a bare one-off, same as
+    # --media + --target with no ID is a bare one-off, same as
     # --host/--target - no RecordTime snapshot should be written.
     rec = recording("20260802_162130_N")
-    camera = _FakeSdCardCamera([rec], config_text="[Tab1]\nRecordTime=3\n")
-    monkeypatch.setattr(bv_download, "SdCardCamera", lambda root: camera)
+    camera = _FakeMediaCamera([rec], config_text="[Tab1]\nRecordTime=3\n")
+    monkeypatch.setattr(bv_download, "MediaCamera", lambda root: camera)
 
-    args = _sdcard_args(tmp_path, Path("/fake/sdcard"))
+    args = _media_args(tmp_path, Path("/fake/media"))
     exit_code = _run(args)
 
     assert exit_code == EXIT_OK
@@ -985,7 +997,7 @@ def test_run_sdcard_bare_run_downloads_and_skips_record_time(
     assert list(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}")) == []
 
 
-def test_run_sdcard_skips_already_fully_downloaded_recordings(
+def test_run_media_skips_already_fully_downloaded_recordings(
     tmp_path, monkeypatch, capsys
 ):
     # Christer: "And ignore files already fully downloaded." - a
@@ -995,13 +1007,13 @@ def test_run_sdcard_skips_already_fully_downloaded_recordings(
     # did before this).
     already = recording("13532784_1080_1920_60fps")
     fresh = recording("14624624_2160_3840_30fps")
-    camera = _FakeSdCardCamera(
+    camera = _FakeMediaCamera(
         [already, fresh],
         fully_downloaded_ids={"13532784_1080_1920_60fps"},
     )
-    monkeypatch.setattr(bv_download, "SdCardCamera", lambda root: camera)
+    monkeypatch.setattr(bv_download, "MediaCamera", lambda root: camera)
 
-    args = _sdcard_args(tmp_path, Path("/fake/sdcard"))
+    args = _media_args(tmp_path, Path("/fake/media"))
     exit_code = _run(args)
 
     assert exit_code == EXIT_OK
@@ -1012,12 +1024,12 @@ def test_run_sdcard_skips_already_fully_downloaded_recordings(
     assert "14624624_2160_3840_30fps: downloaded" in out
 
 
-def test_run_sdcard_with_id_uses_the_configured_archive_as_destination(
+def test_run_media_with_id_uses_the_configured_archive_as_destination(
     tmp_path, monkeypatch
 ):
     rec = recording("20260802_162130_N")
-    camera = _FakeSdCardCamera([rec], config_text="[Tab1]\nRecordTime=3\n")
-    monkeypatch.setattr(bv_download, "SdCardCamera", lambda root: camera)
+    camera = _FakeMediaCamera([rec], config_text="[Tab1]\nRecordTime=3\n")
+    monkeypatch.setattr(bv_download, "MediaCamera", lambda root: camera)
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1030,8 +1042,8 @@ def test_run_sdcard_with_id_uses_the_configured_archive_as_destination(
     args = parse_args(
         [
             "GP",
-            "--sdcard",
-            "/fake/sdcard",
+            "--media",
+            "/fake/media",
             "--config-dir",
             str(config_dir),
             "--yes",
@@ -1043,21 +1055,21 @@ def test_run_sdcard_with_id_uses_the_configured_archive_as_destination(
 
     assert exit_code == EXIT_OK
     assert camera.downloaded_ids == ["20260802_162130_N"]
-    # RecordTime capture runs for an ID-backed --sdcard import, same as
+    # RecordTime capture runs for an ID-backed --media import, same as
     # a normal network download - a snapshot should land in the real
     # configured archive directory.
     assert list(archive.glob(f"*{RECORD_TIME_SUFFIX}")) != []
 
 
-def test_run_sdcard_with_id_does_not_require_configured_endpoints(
+def test_run_media_with_id_does_not_require_configured_endpoints(
     tmp_path, monkeypatch
 ):
-    # A camera config used only for --sdcard imports may have zero
-    # [[endpoint]] entries - unlike the network path, --sdcard never
+    # A camera config used only for --media imports may have zero
+    # [[endpoint]] entries - unlike the network path, --media never
     # touches them, so the "no [[endpoint]] entries found" guard must
     # not fire here.
-    camera = _FakeSdCardCamera([])
-    monkeypatch.setattr(bv_download, "SdCardCamera", lambda root: camera)
+    camera = _FakeMediaCamera([])
+    monkeypatch.setattr(bv_download, "MediaCamera", lambda root: camera)
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1070,8 +1082,8 @@ def test_run_sdcard_with_id_does_not_require_configured_endpoints(
     args = parse_args(
         [
             "GP",
-            "--sdcard",
-            "/fake/sdcard",
+            "--media",
+            "/fake/media",
             "--config-dir",
             str(config_dir),
             "--yes",
@@ -1082,7 +1094,7 @@ def test_run_sdcard_with_id_does_not_require_configured_endpoints(
     assert exit_code == EXIT_OK
 
 
-def test_run_sdcard_with_id_uses_manifest_driven_scan_for_a_gopro_config(
+def test_run_media_with_id_uses_manifest_driven_scan_for_a_gopro_config(
     tmp_path, monkeypatch
 ):
     # A GH010123-shaped id has no BlackVue kind letter at all - this
@@ -1092,14 +1104,14 @@ def test_run_sdcard_with_id_uses_manifest_driven_scan_for_a_gopro_config(
     # gopro/manifest.json's own "no --mode filtering, every file is
     # just 'a video'" contract).
     rec = recording("GH010123")
-    camera = _FakeSdCardCamera([rec])
+    camera = _FakeMediaCamera([rec])
     calls = []
 
-    def fake_sdcard_camera(root, manifest=None):
+    def fake_media_camera(root, manifest=None):
         calls.append((root, manifest))
         return camera
 
-    monkeypatch.setattr(bv_download, "SdCardCamera", fake_sdcard_camera)
+    monkeypatch.setattr(bv_download, "MediaCamera", fake_media_camera)
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1114,8 +1126,8 @@ def test_run_sdcard_with_id_uses_manifest_driven_scan_for_a_gopro_config(
     args = parse_args(
         [
             "GP",
-            "--sdcard",
-            "/fake/sdcard",
+            "--media",
+            "/fake/media",
             "--config-dir",
             str(config_dir),
             "--yes",
@@ -1131,19 +1143,19 @@ def test_run_sdcard_with_id_uses_manifest_driven_scan_for_a_gopro_config(
     assert manifest.adapter_id == "gopro"
 
 
-def test_run_sdcard_blackvue_config_still_uses_the_default_recognizer(
+def test_run_media_blackvue_config_still_uses_the_default_recognizer(
     tmp_path, monkeypatch
 ):
     # A camera config with no explicit adapter (or adapter="blackvue")
-    # must construct SdCardCamera exactly as before this feature -
+    # must construct MediaCamera exactly as before this feature -
     # single positional arg, no manifest kwarg at all.
     rec = recording("20260802_162130_N")
-    camera = _FakeSdCardCamera([rec])
+    camera = _FakeMediaCamera([rec])
 
-    def fake_sdcard_camera(root):
+    def fake_media_camera(root):
         return camera
 
-    monkeypatch.setattr(bv_download, "SdCardCamera", fake_sdcard_camera)
+    monkeypatch.setattr(bv_download, "MediaCamera", fake_media_camera)
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1156,8 +1168,8 @@ def test_run_sdcard_blackvue_config_still_uses_the_default_recognizer(
     args = parse_args(
         [
             "BV",
-            "--sdcard",
-            "/fake/sdcard",
+            "--media",
+            "/fake/media",
             "--config-dir",
             str(config_dir),
             "--yes",
@@ -1171,12 +1183,12 @@ def test_run_sdcard_blackvue_config_still_uses_the_default_recognizer(
     assert camera.downloaded_ids == ["20260802_162130_N"]
 
 
-def test_run_sdcard_zero_match_message_is_adapter_agnostic_for_gopro(
+def test_run_media_zero_match_message_is_adapter_agnostic_for_gopro(
     tmp_path, monkeypatch, capsys
 ):
-    camera = _FakeSdCardCamera([], total_files_seen=3, recognized_file_count=0)
+    camera = _FakeMediaCamera([], total_files_seen=3, recognized_file_count=0)
     monkeypatch.setattr(
-        bv_download, "SdCardCamera", lambda root, manifest=None: camera
+        bv_download, "MediaCamera", lambda root, manifest=None: camera
     )
 
     config_dir = tmp_path / "config"
@@ -1192,8 +1204,8 @@ def test_run_sdcard_zero_match_message_is_adapter_agnostic_for_gopro(
     args = parse_args(
         [
             "GP",
-            "--sdcard",
-            "/fake/sdcard",
+            "--media",
+            "/fake/media",
             "--config-dir",
             str(config_dir),
             "--yes",

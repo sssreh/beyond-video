@@ -11,7 +11,7 @@ bv-download [--config-dir DIR] [--timeout SECONDS]
             [--mode {A,E,M,N,P,all}[,...]]
             [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
             [--dry-run] [--files] [--yes] [-v] [--trace]
-            (ID | --host HOST --target DIR | --sdcard DIR (ID | --target DIR))
+            (ID | --host HOST --target DIR | --media DIR (ID | --target DIR))
 ```
 
 ## DESCRIPTION
@@ -20,9 +20,9 @@ bv-download [--config-dir DIR] [--timeout SECONDS]
 
 - `ID` - a camera set up with `bv-config(1)`, tried over its configured endpoints in order, downloading into that camera's own archive directory.
 - `--host HOST --target DIR` - a direct one-off network connection, no config needed: connects straight to `HOST` (e.g. the camera's WiFi IP) and downloads into `DIR`. Useful for a quick download without ever running `bv-config`. It gives up the fallback-endpoint list (a config can list several endpoints tried in order, e.g. home WiFi then a cellular router; `--host` only ever tries the one address given) and the RecordTime snapshot bookkeeping (see below) - both are conveniences tied to the rest of the toolkit's archive conventions, skipped here to keep this path a bare download with nothing extra written beyond the recordings themselves. Every other flag on this page works the same either way.
-- `--sdcard DIR` - import recordings directly from a mounted SD card / removable media at `DIR` instead of connecting over the network at all: no CGI protocol, just a plain filesystem copy of BlackVue's own on-camera files. Combine with `ID` to import into that camera's configured archive (with the same RecordTime snapshot bookkeeping as a normal network download), or with `--target DIR` for a one-off import with no config, same as `--host`. `DIR` is scanned recursively for files matching BlackVue's own filename convention (`YYYYMMDD_HHMMSS_KD.ext`, the same shape `bv-download` itself writes) - anything else on the card is silently ignored, not an error; a card with no recognizable filenames simply reports zero recordings found. Cannot be combined with `--host`. A recording already fully present at the destination (every file, matching size) is dropped from the "Matching recordings" listing/confirmation prompt entirely, not just skipped internally - re-running an import against the same card only ever lists and confirms what's actually new.
+- `--media DIR` - import recordings directly from a mounted SD card, USB-connected camera, or other removable media at `DIR` instead of connecting over the network at all: no CGI protocol, just a plain filesystem copy of BlackVue's own on-camera files. Combine with `ID` to import into that camera's configured archive (with the same RecordTime snapshot bookkeeping as a normal network download), or with `--target DIR` for a one-off import with no config, same as `--host`. `DIR` is scanned recursively for files matching BlackVue's own filename convention (`YYYYMMDD_HHMMSS_KD.ext`, the same shape `bv-download` itself writes) - anything else on the card is silently ignored, not an error; a card with no recognizable filenames simply reports zero recordings found. Cannot be combined with `--host`. A recording already fully present at the destination (every file, matching size) is dropped from the "Matching recordings" listing/confirmation prompt entirely, not just skipped internally - re-running an import against the same card only ever lists and confirms what's actually new. `--sdcard` is accepted as a deprecated hidden alias for `--media` (same flag, kept working for anyone with the old name in a script) - it's the original, released (v1.0.0) name, from before the flag also covered USB-connected cameras like GoPro.
 
-Exactly one source is required. `--host` can't be combined with `ID` or `--sdcard`. `--sdcard` can be combined with `ID`; otherwise it needs `--target`. `--target` can't be combined with `ID` (it only ever pairs with `--host`, or a bare `--sdcard`).
+Exactly one source is required. `--host` can't be combined with `ID` or `--media`. `--media` can be combined with `ID`; otherwise it needs `--target`. `--target` can't be combined with `ID` (it only ever pairs with `--host`, or a bare `--media`).
 
 By default it downloads video for **event** and **manual** recordings, plus the recording immediately before each one (for context leading up to the event). **Metadata** - thumbnails, GPS, g-sensor logs - is always downloaded for every recording regardless of mode, since it's small and useful even for recordings whose video isn't fetched. Use `--mode all` to download video for everything, including routine normal-driving and parking-mode footage.
 
@@ -36,23 +36,23 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 
 If a network error (timeout, dropped connection) interrupts sidecar-checking or downloading for one recording, that recording is skipped - reported on stderr with its id and the underlying error - and the run continues with the rest of the range, rather than aborting the whole batch on one bad recording. The run's exit status reflects whether anything was skipped this way (see EXIT STATUS below).
 
-For `--sdcard`, a recording every one of whose files already matches (by size) what's at the destination is skipped before the range is even printed - `bv-download: N recording(s) already fully downloaded, skipping` - so a repeat import against a card that's already been pulled reports and confirms only genuinely new recordings, not a full re-listing of everything on the card.
+For `--media`, a recording every one of whose files already matches (by size) what's at the destination is skipped before the range is even printed - `bv-download: N recording(s) already fully downloaded, skipping` - so a repeat import against a card that's already been pulled reports and confirms only genuinely new recordings, not a full re-listing of everything on the card.
 
-Each `ID`-based run also reads the camera's current `config.ini` (over the network for `ID`/`--host` runs, directly off the card for `ID`-backed `--sdcard` runs - tried at `Config/config.ini` and the card's own root) and, if either the configured `RecordTime` (recording segment length) differs from the last value recorded for this archive, or this run's earliest recording isn't already covered by an existing snapshot (e.g. you downloaded an earlier batch after a later one), writes a small snapshot file (`<recording>.record_time.txt`, holding just that one number in seconds) - never a copy of `config.ini` itself, which also carries Wi-Fi/cloud credentials that must never leave the camera. `bv-export` uses these snapshots to derive its own `--max-gap` default from the camera's real segment length instead of a flat constant - see `bv-export(1)`. Snapshots apply forward from the recording they're anchored to, never retroactively, so a recording earlier than every existing snapshot needs its own (even if the value is unchanged) or `bv-export`/`bv-ls` will fall back to a flat 300-second default for it. This is best-effort: any failure reading `config.ini` (older firmware, a transient network error, no `config.ini` found on the card) is silently ignored (or reported with `-v`) and never fails the download itself. A bare one-off run - `--host`, or `--sdcard` used without `ID` - skips this step entirely (see above).
+Each `ID`-based run also reads the camera's current `config.ini` (over the network for `ID`/`--host` runs, directly off the card for `ID`-backed `--media` runs - tried at `Config/config.ini` and the card's own root) and, if either the configured `RecordTime` (recording segment length) differs from the last value recorded for this archive, or this run's earliest recording isn't already covered by an existing snapshot (e.g. you downloaded an earlier batch after a later one), writes a small snapshot file (`<recording>.record_time.txt`, holding just that one number in seconds) - never a copy of `config.ini` itself, which also carries Wi-Fi/cloud credentials that must never leave the camera. `bv-export` uses these snapshots to derive its own `--max-gap` default from the camera's real segment length instead of a flat constant - see `bv-export(1)`. Snapshots apply forward from the recording they're anchored to, never retroactively, so a recording earlier than every existing snapshot needs its own (even if the value is unchanged) or `bv-export`/`bv-ls` will fall back to a flat 300-second default for it. This is best-effort: any failure reading `config.ini` (older firmware, a transient network error, no `config.ini` found on the imported media) is silently ignored (or reported with `-v`) and never fails the download itself. A bare one-off run - `--host`, or `--media` used without `ID` - skips this step entirely (see above).
 
 ## ARGUMENTS
 
 | Argument | Description |
 |---|---|
-| `ID` | Camera system id (see `bv-config(1)`). Omit this and use `--host`/`--target` (or `--sdcard`/`--target`) instead for a config-free connection. Required unless `--host` or `--sdcard` is given; can't be combined with `--host`, and can't be combined with `--target`. |
+| `ID` | Camera system id (see `bv-config(1)`). Omit this and use `--host`/`--target` (or `--media`/`--target`) instead for a config-free connection. Required unless `--host` or `--media` is given; can't be combined with `--host`, and can't be combined with `--target`. |
 
 ## OPTIONS
 
 | Option | Description |
 |---|---|
-| `--host HOST` | Connect directly to this camera address (e.g. its WiFi IP) instead of looking up a configured id. Requires `--target`; can't be combined with `ID` or `--sdcard`. |
-| `--sdcard DIR` | Import recordings from a mounted SD card / removable media at `DIR` instead of connecting over the network. Combine with `ID` to import into that camera's configured archive, or with `--target` for a one-off import with no config. Can't be combined with `--host`. |
-| `--target DIR` | Directory to download into. Requires `--host` or a bare `--sdcard` (no `ID`). |
+| `--host HOST` | Connect directly to this camera address (e.g. its WiFi IP) instead of looking up a configured id. Requires `--target`; can't be combined with `ID` or `--media`. |
+| `--media DIR` | Import recordings from a mounted SD card, USB-connected camera, or other removable media at `DIR` instead of connecting over the network. Combine with `ID` to import into that camera's configured archive, or with `--target` for a one-off import with no config. Can't be combined with `--host`. `--sdcard` still works as a deprecated hidden alias for this flag. |
+| `--target DIR` | Directory to download into. Requires `--host` or a bare `--media` (no `ID`). |
 | `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--mode {A,E,M,N,P,all}[,...]` | Recording kinds to download video for (comma-separated, case-insensitive), or `all`. `E`=event, `M`=manual, `N`=normal, `P`=parking, `A`=unknown meaning (observed on real hardware but not yet identified - see `WORKING_CONTEXT.md`). Default: event/manual recordings plus the recording before each. |
@@ -134,13 +134,13 @@ bv-download --host 10.99.88.1 --target ~/blackvue-archive
 Import from a mounted SD card into a configured camera's own archive:
 
 ```
-bv-download Kirby --sdcard /Volumes/BLACKVUE
+bv-download Kirby --media /Volumes/BLACKVUE
 ```
 
 Import from a mounted SD card with no config at all, straight into a folder:
 
 ```
-bv-download --sdcard /Volumes/BLACKVUE --target ~/blackvue-archive
+bv-download --media /Volumes/BLACKVUE --target ~/blackvue-archive
 ```
 
 ## SEE ALSO
