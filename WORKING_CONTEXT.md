@@ -12516,3 +12516,73 @@ a Jinja `Environment().get_template()` parse check on the edited
 template (both clean). No pytest in this sandbox (same constraint
 noted throughout this session), so the two new tests are unexecuted
 pending Christer's own run.
+
+## Feature: default archive browser to "Show only with videos" (2026-08-16)
+
+Christer: "Jag har en önskan om att archive browser som standard bara
+visar inspelningar med videos (Show only with videos) och som tillval
+visar inspelningar som saknar videos" - the "Show only with videos"
+checkbox (task #433) has existed for a while but defaulted off; he
+wants it on by default, with showing video-less recordings as the
+opt-in instead.
+
+The wrinkle: an HTML checkbox that's left unchecked simply isn't
+submitted at all, even by a real form POST/GET - there's no way for
+`archive_recording_list()` to tell "fresh page load, `videos_only`
+never touched" apart from "user explicitly unchecked it and hit
+Apply" by looking at `videos_only` alone; both arrive with the query
+param completely absent. Fixed by adding a hidden `<input type=
+"hidden" name="filtered" value="1">` to the filter form
+(`archive_recording_list.html`) - hidden fields are always submitted
+regardless of any checkbox's state, so its presence/absence in the
+query string is what actually distinguishes the two cases. A bare/
+fresh visit (first click into a camera, or the "Clear filters" link,
+neither of which carries any query string) has `filtered` absent, so
+`videos_only` defaults on; a real form submission always carries
+`filtered=1`, so a missing `videos_only` there is trusted as a
+genuine "user unchecked it."
+
+Extracted the whole decision into a new `_archive_filter_flags()`
+helper in `app.py` (module-level, called from the route) rather than
+inlining it, so it's directly unit-testable per this codebase's
+established convention for `web/app.py` (see `test_app_reuse.py`'s
+own docstring on why this suite tests route helpers directly instead
+of going through fastapi's TestClient/httpx). It returns three values:
+the effective `videos_only` (after applying the default), plus two
+values for the template that needed splitting apart because
+`videos_only` is no longer "off unless touched" - `filters_active`
+(does *anything*, including a defaulted-on videos_only, explain a
+possibly-empty result - used for the "No recordings match these
+filters." vs "No recordings found... yet." choice) and
+`show_clear_filters` (has the user actually deviated from the bare
+default - used for whether the "Clear filters" link shows at all).
+Naively reusing the old "any filter set" condition for both would
+have made "Clear filters" appear, and the "no recordings match"
+message read, on every ordinary page load just because the new
+default itself counts as active filtering - `show_clear_filters` only
+counts `videos_only` when it's been turned *off*, since turning it on
+is just the default reasserting itself.
+
+`filter_recordings()` itself (`archive_browser.py`) is untouched -
+its own `videos_only: bool = False` default is a plain function
+default for direct/library callers, not what the web route actually
+uses; the route-level default-on behavior lives entirely in
+`_archive_filter_flags()`.
+
+Files: `src/blackvue/web/app.py` (new `_archive_filter_flags()`,
+route wiring), `src/blackvue/web/templates/archive_recording_list.html`
+(hidden `filtered` marker, swapped both inline "any filter set"
+conditions for the new `show_clear_filters`/`filters_active` context
+vars). Tests: `tests/blackvue/web/test_app_reuse.py` - five new tests
+covering a fresh visit, a resubmitted-checked form, an explicit
+uncheck, an explicit uncheck alongside another real filter, and a
+fresh visit that happens to carry a bookmarked mode filter (still
+defaults videos_only on, since `filtered` is what matters, not
+whether other params are present). Docs:
+`docs/WEB_ARCHITECTURE.md` updated.
+
+Verified via `python3 -m py_compile` on both touched Python files, a
+Jinja `Environment().get_template()` parse check on the edited
+template, and a standalone script re-deriving `_archive_filter_flags()`'s
+exact logic and asserting all five scenarios (no pytest in this
+sandbox, same constraint as always) - all passed.

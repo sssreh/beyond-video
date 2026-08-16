@@ -136,7 +136,14 @@ src/blackvue/web/
                    filter_recordings() also takes videos_only, for the
                    list page's "Show only with videos" checkbox - it
                    hides recordings whose ArchiveRecording.has_video is
-                   False (thumbnail downloaded, video never did).
+                   False (thumbnail downloaded, video never did). The
+                   route defaults this checkbox on for a fresh page
+                   load and lets a real submission turn it off - see
+                   _archive_filter_flags() in app.py for how it tells
+                   the two apart (an unchecked checkbox is never
+                   actually submitted, so a hidden `filtered` marker
+                   field disambiguates "never touched" from
+                   "explicitly unchecked").
                    find_recording() uses ArchiveReader's targeted
                    read_recording() rather than a full scan - see
                    "Archive browser" above for why that matters.

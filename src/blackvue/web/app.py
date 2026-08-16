@@ -464,6 +464,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         from_: str | None = Query(default=None, alias="from"),
         until: str | None = Query(default=None, alias="until"),
         videos_only: bool = Query(default=False),
+        filtered: str | None = Query(default=None),
     ):
         # A GET form always submits every named field, even ones the
         # user left blank - an empty text box arrives here as "", not
@@ -487,6 +488,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # mode at all", not "show nothing" - see
         # archive_browser.filter_recordings()'s own docstring on why.
         selected_modes = set(mode)
+
+        # See _archive_filter_flags()'s own docstring for the full
+        # reasoning - short version: an unchecked checkbox never reaches
+        # the server at all, so "Show only with videos" being on by
+        # default (Christer's ask) needs the hidden `filtered` marker to
+        # tell a fresh page load apart from a real submission with it
+        # deliberately turned off.
+        videos_only, filters_active, show_clear_filters = _archive_filter_flags(
+            filtered=filtered,
+            videos_only=videos_only,
+            selected_modes=selected_modes,
+            timestamp=timestamp,
+            from_=from_,
+            until=until,
+        )
 
         error = None
         time_interval = None
@@ -526,6 +542,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "from_value": from_ or "",
                 "until_value": until or "",
                 "videos_only": videos_only,
+                "filters_active": filters_active,
+                "show_clear_filters": show_clear_filters,
                 "error": error,
             },
         )
@@ -1958,6 +1976,57 @@ def _camera_options() -> list[dict[str, str]]:
         label = id_ if config.name == id_ else f"{config.name} ({id_})"
         options.append({"id": id_, "label": label})
     return options
+
+
+def _archive_filter_flags(
+    *,
+    filtered: str | None,
+    videos_only: bool,
+    selected_modes: set[str],
+    timestamp: str | None,
+    from_: str | None,
+    until: str | None,
+) -> tuple[bool, bool, bool]:
+    """Resolve archive_recording_list()'s three filter-related values
+    from its raw query params: the effective `videos_only` (after
+    applying its default), `filters_active` (does *any* filter -
+    including a defaulted-on videos_only - explain a possibly-empty
+    result), and `show_clear_filters` (has the user actually deviated
+    from the bare default, i.e. is there anything real to clear).
+
+    An unchecked HTML checkbox simply isn't submitted at all, so a
+    request with no `videos_only` in its query string can't be told
+    apart from "fresh, never-touched page load" versus "user
+    explicitly unchecked it and submitted" - both arrive identically.
+    Christer asked for "Show only with videos" to be on by default but
+    still overridable, so the filter form sends a hidden `filtered`
+    marker alongside every real submission (always present once the
+    form itself has been submitted, checkbox state or not - see
+    archive_recording_list.html). `filtered is None` therefore means a
+    bare/fresh visit - the first click into a camera, or the "Clear
+    filters" link, both of which carry no query string at all - and
+    that's the one case this defaults videos_only on by itself.
+
+    `filters_active` and `show_clear_filters` diverge only on a
+    defaulted-on videos_only: showing "Clear filters" or "No
+    recordings match these filters." on every ordinary page load (just
+    because the default itself counts as "a filter") would be
+    misleading - `show_clear_filters` only counts videos_only when the
+    user has turned it *off*, since turning it on is just the default
+    reasserting itself.
+    """
+
+    if filtered is None:
+        videos_only = True
+
+    filters_active = bool(
+        selected_modes or timestamp or from_ or until or videos_only
+    )
+    show_clear_filters = bool(
+        selected_modes or timestamp or from_ or until or not videos_only
+    )
+
+    return videos_only, filters_active, show_clear_filters
 
 
 def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:

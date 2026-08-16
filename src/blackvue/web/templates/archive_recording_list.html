@@ -5,6 +5,13 @@
 <h2>Archive: {{ camera_id }}</h2>
 
 <form method="get" action="/archive/{{ camera_id }}" class="filter-bar">
+  {# Always sent once this form is submitted, checked or not - unlike the
+     videos_only checkbox itself, a hidden field can't just go missing when
+     "unchecked". Lets the route tell a fresh/bare page load (this marker
+     absent) apart from a real submission with "Show only with videos"
+     deliberately turned off (marker present, videos_only absent) - see
+     app.py's archive_recording_list() for the other half. #}
+  <input type="hidden" name="filtered" value="1">
   <div class="filter-row">
     <span class="filter-label">
       Mode
@@ -41,7 +48,7 @@
   </div>
   <div class="filter-row filter-actions">
     <button type="submit">Apply</button>
-    {% if selected_modes or timestamp_value or from_value or until_value or videos_only %}
+    {% if show_clear_filters %}
     <a href="/archive/{{ camera_id }}">Clear filters</a>
     {% endif %}
   </div>
@@ -84,7 +91,7 @@
 </div>
 {% endfor %}
 {% else %}
-{% if selected_modes or timestamp_value or from_value or until_value or videos_only %}
+{% if filters_active %}
 <p class="empty">No recordings match these filters.</p>
 {% else %}
 <p class="empty">No recordings found in this camera's archive yet.</p>
