@@ -13386,3 +13386,74 @@ the adapter" section + roadmap step marked done).
 
 GoPro adapter work (manifest, `GoProAdapter`, GPMF parser) is next,
 now unblocked from also having to fix this gap along the way.
+
+## Design: GoPro adapter manifest + code-hook interface (2026-08-16)
+
+Christer: "go" - first real step on the GoPro adapter now that the GPS/
+g-sensor pipeline rewire above closed the gap that would otherwise have
+had to be discovered mid-way through this work. Design-only pass, same
+shape as the earlier BlackVue/folder manifest-first passes: a real
+`manifest.json`, no adapter class yet.
+
+New `src/blackvue/adapters/gopro/manifest.json`. Closest relative is
+`folder` (no filename-embedded timestamp - GoPro's own on-camera names
+like `GH010001.MP4` carry a chapter+file counter, not a date, so
+`filename_pattern: null` and the same `["ffprobe_creation_time",
+"file_mtime"]` fallback chain; `archive_layout: "recursive"`; single
+kind/direction vocabulary entries; `thumbnails: "generated"`;
+`config_snapshot`/`multi_direction_video` both false) but with real
+telemetry: `capabilities.gps`/`.gsensor` both `true`, and
+`gps_source_asset`/`gsensor_source_asset` both `"FRONT"` - GPMF lives
+inside the video's own stream rather than a sidecar file, so both point
+at the same asset the video itself already lives under, exactly the
+shape the GPS/g-sensor rewire's own `gps_source_asset` field was
+designed to cover before this adapter existed. `asset_suffix_table` is
+byte-identical to `folder`'s (only the shared generated-asset suffixes -
+no GPMF-specific sidecar to register, since telemetry isn't a separate
+file). `code_hooks_required` adds three GPMF-specific hooks on top of
+folder's three: `gpmf_stream_locator`, `gpmf_gps_parser`,
+`gpmf_gsensor_parser`.
+
+`unsupported_notes` records real scope decisions rather than guesses:
+GPMF's own fix-type/precision fields (`GPSF`/`GPSP`) will only gate fix
+validity, not be surfaced as separate accuracy data; camera-chaptered
+>4GB recordings (`GH010001.MP4` + `GH020001.MP4`, etc.) are treated as
+separate recordings for now, the same limitation `FolderAdapter` already
+has for any multi-part video; no 360/dual-lens (GoPro MAX) support;
+GoPro's own same-stem `.THM` thumbnail sidecar isn't read yet since it
+isn't confirmed to survive a plain file copy onto Christer's archive -
+`thumbnails: "generated"` stays the safe default until real footage
+confirms otherwise.
+
+Also sketched (in `docs/CAMERA_ADAPTERS.md`, not built) the planned
+code-hook interface for the implementation pass: a new
+`adapters/gopro/gpmf.py` with `locate_gpmf_stream(path) -> bytes`
+(ffprobe-then-ffmpeg extraction of the MP4's `gpmd`-tagged stream, not
+hand-parsed MP4 boxes - `mp4_box_reader.py`'s existing fallback only
+walks container-level boxes, not stream payloads), a generic
+`parse_gpmf()` KLV-tree walker over GPMF's nested `DEVC`/`STRM` format,
+and `extract_gps_fixes()`/`extract_gsensor_samples()` producing the
+exact same `GpsFix`/`GSensorSample` shapes `telemetry/gps_reader.py`/
+`gsensor_reader.py` already return, so `GoProAdapter.read_gps()`/
+`.read_gsensor()` slot into `adapters/telemetry_bridge.py` with zero
+change there - confirmed that bridge already resolves an embedded-
+telemetry adapter's own video path correctly, built generically enough
+for this case before this adapter existed. Flagged one real decision
+for the implementation pass rather than guessing at it now: whether
+`GoProAdapter.open_archive()`/`.find_recording()` should share
+`FolderAdapter`'s recursive-scan/synthesized-id logic via a factored-out
+helper, or duplicate it (both adapters' scan shape is otherwise
+identical) - a call worth making against real code, not here.
+
+Verified: `load_manifest()` loads and structurally validates the new
+manifest.json (`gps_source_asset`/`gsensor_source_asset` both resolve to
+`"FRONT"`, `capabilities.gps`/`.gsensor` both `True`, `primary_direction`
+resolves correctly); valid JSON. No GPMF-parsing code exists yet - next
+is #905 (`GoProAdapter` + real GPMF parser), tested against Christer's
+real `X:\gopro` footage (#906) before committing to one GPMF stream shape
+(GPS5 vs. the newer GPS9 on Hero11+ firmware is camera-dependent and
+worth confirming against a real file rather than guessed).
+
+Files: `src/blackvue/adapters/gopro/manifest.json` (new),
+`docs/CAMERA_ADAPTERS.md` (new "GoPro adapter: manifest + code-hook
+interface design" section).

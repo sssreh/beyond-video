@@ -1,0 +1,63 @@
+{
+  "adapter_id": "gopro",
+  "schema_version": 1,
+  "display_name": "GoPro action camera",
+  "description": "A folder of GoPro clips (already copied off the camera's SD card, or a mounted card itself) with real GPS/g-sensor telemetry embedded in each MP4's own GPMF ('GoPro Metadata Format') data stream - not a sidecar file the way BlackVue's .gps/.3gf are. Structurally close to the plain 'folder' adapter (recursive scan, no camera-specific config snapshot, no multi-direction video) but with real telemetry capability, so it gets its own manifest + GPMF-parsing code hooks rather than being force-fit into folder's capabilities:false-everywhere shape. See docs/CAMERA_ADAPTERS.md's 'Adapter families' section for why, and unsupported_notes below for what's still deliberately not offered.",
+  "source": {
+    "kind": "local_folder",
+    "requires_network": false
+  },
+  "archive_layout": "recursive",
+  "video_extensions": [".mp4"],
+  "filename_pattern": null,
+  "timestamp_source": ["ffprobe_creation_time", "file_mtime"],
+  "kind_vocabulary": [
+    {"code": "V", "label": "Video", "low_signal": false, "default_included": true}
+  ],
+  "direction_vocabulary": [
+    {"code": "V", "label": "Video", "primary": true}
+  ],
+  "asset_suffix_table": [
+    {"suffix": ".aac", "asset": "AUDIO", "kind": "generated"},
+    {"suffix": ".duration.txt", "asset": "DURATION", "kind": "generated"},
+    {"suffix": ".diarized.transcript.txt", "asset": "TRANSCRIPT_DIARIZED", "kind": "generated"},
+    {"suffix": ".diarized.translation.txt", "asset": "TRANSLATION_DIARIZED", "kind": "generated"},
+    {"suffix": ".transcript.txt", "asset": "TRANSCRIPT", "kind": "generated"},
+    {"suffix": ".translation.txt", "asset": "TRANSLATION", "kind": "generated"},
+    {"suffix": ".srt", "asset": "SUBTITLES", "kind": "generated"},
+    {"suffix": ".scene.txt", "asset": "SCENE_DESCRIPTION", "direction": "V", "kind": "generated"}
+  ],
+  "capabilities": {
+    "network_connect": false,
+    "download": false,
+    "live_view": false,
+    "live_telemetry": false,
+    "gps": true,
+    "gsensor": true,
+    "thumbnails": "generated",
+    "config_snapshot": false,
+    "multi_direction_video": false
+  },
+  "code_hooks_required": [
+    "recursive_scanner",
+    "timestamp_resolver",
+    "gpmf_stream_locator",
+    "gpmf_gps_parser",
+    "gpmf_gsensor_parser",
+    "thumbnail_generator"
+  ],
+  "default_trip_gap_seconds": 300,
+  "gps_source_asset": "FRONT",
+  "gsensor_source_asset": "FRONT",
+  "grouping_hint": "subfolder",
+  "unsupported_notes": [
+    "GPMF's own fix-type/precision fields (GPSF/GPSP) are used only to mark a fix invalid (no lock) the way BlackVue's NMEA mode indicator is - not surfaced as separate accuracy data.",
+    "Chaptered (>4GB) recordings split by the camera across multiple files (e.g. GH010001.MP4 + GH020001.MP4) aren't stitched back into one recording - each chapter is its own recording, the same limitation FolderAdapter already has for any multi-part video today.",
+    "No 360/dual-lens (GoPro MAX-style) support - single video track per recording only, same as FolderAdapter.",
+    "No config.ini equivalent: trip gap threshold always uses default_trip_gap_seconds (300s) instead of a per-camera auto-derived nominal segment length.",
+    "No Event/Manual/Parking distinction: no --mode filtering, no --include-parking skip-and-replace, no max_parking_duration cap - every file is just 'a video'.",
+    "No live camera connection: bv-download, bv-config's endpoint setup, bv-gps, and bv-live are not applicable to this adapter and shouldn't be offered for it.",
+    "Thumbnails are generated on demand via an ffmpeg frame-grab, not read from GoPro's own same-stem .THM sidecar (present on-camera but not confirmed to survive a plain file copy) - revisit once real footage confirms it's there.",
+    "Timestamp comes from ffprobe's embedded creation_time metadata, falling back to file mtime - GoPro's own on-camera filenames (e.g. GH010001.MP4) carry a chapter+file counter, not a timestamp, so unlike BlackVue there's no filename-based source to prefer."
+  ]
+}

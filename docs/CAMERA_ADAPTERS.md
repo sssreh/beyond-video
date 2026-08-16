@@ -554,6 +554,104 @@ nothing to import - the files are already the archive. Not added to the
 schema yet since it's speculative until bv-download's SD-card path is
 actually being built (next section) and the real shape is known.
 
+## GoPro adapter: manifest + code-hook interface design (2026-08-16)
+
+First real step on step 8 below, now that the GPS/g-sensor pipeline rewire
+above means this adapter's own work is purely a GPMF-parsing exercise, not
+also the thing that has to fix a pipeline gap along the way. Design-only
+pass - no `GoProAdapter` class yet, not registered, nothing wired.
+
+**New `adapters/gopro/manifest.json`.** Structurally closest to `folder`
+(no BlackVue-style filename convention, `filename_pattern: null`,
+`timestamp_source: ["ffprobe_creation_time", "file_mtime"]`,
+`archive_layout: "recursive"`, a single `kind_vocabulary`/
+`direction_vocabulary` entry each, `thumbnails: "generated"`,
+`config_snapshot: false`, `multi_direction_video: false`) but with real
+telemetry: `capabilities.gps`/`capabilities.gsensor` both `true`, and
+`gps_source_asset`/`gsensor_source_asset` both `"FRONT"` - GPMF lives
+inside the video's own stream, not a sidecar file, so both point at the
+same asset the video itself is stored under, exactly the shape
+`manifest.schema.json`'s own `gps_source_asset` docstring anticipated back
+when the GPS/g-sensor rewire added that field. `asset_suffix_table` only
+lists the shared generated-asset suffixes (transcript/audio/subtitles/
+scene description) - byte-identical to `folder`'s - since there's no
+GPMF-specific sidecar suffix to register; the video itself carries its own
+telemetry. `code_hooks_required` adds three GPMF-specific hooks beyond
+`folder`'s `recursive_scanner`/`timestamp_resolver`/`thumbnail_generator`:
+`gpmf_stream_locator`, `gpmf_gps_parser`, `gpmf_gsensor_parser` (see below).
+
+`unsupported_notes` records what's deliberately out of scope for a first
+real pass rather than guessed at: GPMF's own fix-type/precision fields
+(`GPSF`/`GPSP`) will only gate fix validity, not be surfaced as accuracy
+data; chaptered >4GB recordings (camera-split across
+`GH010001.MP4`/`GH020001.MP4`-style files) are treated as separate
+recordings, the same limitation `FolderAdapter` already has for any
+multi-part video; no 360/dual-lens (GoPro MAX) support; GoPro's own
+same-stem `.THM` sidecar isn't read for thumbnails yet since it isn't
+confirmed to survive a plain file copy onto Christer's archive - worth
+revisiting once `X:\gopro` is actually scanned in #906/step 8's
+implementation pass.
+
+**Planned code-hook interface** (for the implementation pass, not built
+yet): a new `adapters/gopro/gpmf.py` module, parallel to how
+`telemetry/gps_reader.py`/`telemetry/gsensor_reader.py` are the parsing
+layer `BlackVueAdapter` delegates to -
+
+- `locate_gpmf_stream(path: Path) -> bytes` - find and extract the raw
+  GPMF ('gpmd'-tagged) data stream from an MP4 container. GPMF isn't a
+  separate file the way `.gps`/`.3gf` are, so this is the `gpmf_stream_
+  locator` hook: almost certainly an `ffprobe`-then-`ffmpeg -map -c copy`
+  extraction (the same subprocess pattern `generate/media.py` already
+  uses elsewhere in this project) rather than hand-parsing MP4 box
+  structure, since the pure-Python `mp4_box_reader.py` fallback built
+  earlier for duration/dimensions doesn't need to (and wasn't designed
+  to) walk into stream *payloads*, only container-level boxes.
+- `parse_gpmf(data: bytes) -> ...` - a generic KLV-style tree walker over
+  GPMF's nested `DEVC`/`STRM` container format (FourCC + type char +
+  structure size + repeat count + payload, repeating) - the shared
+  low-level parser both telemetry extractors below sit on top of.
+- `extract_gps_fixes(data: bytes) -> tuple[GpsFix, ...]` - the
+  `gpmf_gps_parser` hook: reads a `STRM` container's `GPS5`/`GPS9`
+  payload (lat/lon/altitude/speed) plus its `STMP` (sample timing) and
+  `GPSU` (UTC anchor) siblings to produce `GpsFix` timestamps directly
+  comparable to `RecordingId.timestamp`/BlackVue's own `.gps` fixes,
+  `GPSF` gating `.valid` the same way BlackVue's NMEA mode indicator
+  does today (see gps_reader.py's own docstring on why that field, not
+  the older status one, is the right validity signal).
+- `extract_gsensor_samples(data: bytes) -> tuple[GSensorSample, ...]` -
+  the `gpmf_gsensor_parser` hook: reads `ACCL`'s payload plus `STMP`/
+  `SCAL` to produce `GSensorSample`s offset from recording start, same
+  shape `.3gf`'s reader already returns (raw axis units unconfirmed
+  either way, per that reader's own docstring - relative variance, not a
+  calibrated g-force threshold, either way).
+- `GoProAdapter.read_gps(path)`/`.read_gsensor(path)` (in the not-yet-
+  written `adapters/gopro/adapter.py`) each call `locate_gpmf_stream()`
+  then the matching extractor - `path` here is the *video's own* path,
+  since `gps_source_asset`/`gsensor_source_asset` are both `"FRONT"`,
+  exactly the shape `adapters/telemetry_bridge.py` already resolves
+  correctly for an embedded-telemetry adapter without needing any change
+  of its own (built and verified generically enough for this case back
+  in the GPS/g-sensor rewire pass, before this adapter existed).
+- `open_archive()`/`find_recording()` are expected to mirror
+  `FolderAdapter`'s recursive-scan/synthesized-`RecordingId`/single-
+  `Asset.FRONT`-slot shape closely enough that the implementation pass
+  should decide whether to factor the shared scanning logic out (both
+  adapters would then differ only in their manifest and telemetry code
+  hooks) or duplicate it (simpler, but the two copies drift) - a real
+  call worth making once `GoProAdapter` is actually being written
+  against real footage, not guessed at here.
+
+Verified: `load_manifest()` loads and structurally validates the new
+manifest.json cleanly (`gps_source_asset`/`gsensor_source_asset` both
+resolve to `"FRONT"`, `capabilities.gps`/`.gsensor` both `True`,
+`primary_direction` resolves to the single `"V"` entry); the file is
+valid JSON. No GPMF-parsing code exists yet - that's step 8's
+implementation pass (#905), to be tested against Christer's real `X:\gopro`
+footage (#906) rather than synthetic fixtures alone, since GPMF's exact
+on-disk shape (GPS5 vs. the newer GPS9 stream present on Hero11+, which
+fields are actually populated) is camera/firmware-dependent and worth
+confirming against a real file before committing the parser to one shape.
+
 ## Suggested next steps (re-sequenced 2026-08-16; #1-3 done, see above)
 
 Re-sequenced per Christer's steer (2026-08-16): read paths first (lowest
