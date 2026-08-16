@@ -180,26 +180,22 @@ def test_reuse_defaults_falls_back_to_latest_for_non_numeric_reuse_param(tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# _archive_filter_flags() - archive_recording_list()'s "Show only with
-# videos" default-on logic (Christer: "i have a wish that archive browser
-# as default only shows recordings with videos (Show only with videos)
-# and as an option shows recordings that lack videos"). A plain HTML
-# checkbox never reaches the server when left unchecked, so the route
-# can't tell "fresh page load" apart from "user explicitly unchecked it"
-# by videos_only alone - the hidden `filtered` marker (see
-# archive_recording_list.html) is what disambiguates the two; see the
-# function's own docstring for the full reasoning.
+# _archive_filter_flags() - archive_recording_list()'s "hide recordings
+# with no video by default" logic. Christer first got a `videos_only`
+# checkbox that defaulted to checked ("Show only with videos"), then
+# said that was unclear and asked for the option to read more like
+# "Show all recordings" instead. The form's checkbox is therefore the
+# opt-in `include_no_video` ("Show all recordings (including ones
+# without video)"), unchecked by default - see the function's own
+# docstring for why framing it as an opt-in sidesteps the whole
+# fresh-visit-vs-explicit-uncheck ambiguity a checked-by-default
+# checkbox would need a hidden marker field to resolve.
 # ---------------------------------------------------------------------------
 
 
-def test_archive_filter_flags_defaults_videos_only_on_for_a_fresh_visit():
-    # filtered=None is what a bare "/archive/kirby" (first click into a
-    # camera, or the "Clear filters" link) looks like - no query string
-    # at all, so videos_only=False here is Query()'s own bare default,
-    # not a real user choice.
+def test_archive_filter_flags_defaults_to_videos_only_when_box_is_unchecked():
     videos_only, filters_active, show_clear_filters = _archive_filter_flags(
-        filtered=None,
-        videos_only=False,
+        include_no_video=False,
         selected_modes=set(),
         timestamp=None,
         from_=None,
@@ -211,28 +207,9 @@ def test_archive_filter_flags_defaults_videos_only_on_for_a_fresh_visit():
     assert show_clear_filters is False
 
 
-def test_archive_filter_flags_keeps_videos_only_on_when_form_resubmits_it_checked():
+def test_archive_filter_flags_include_no_video_turns_off_the_videos_only_filter():
     videos_only, filters_active, show_clear_filters = _archive_filter_flags(
-        filtered="1",
-        videos_only=True,
-        selected_modes=set(),
-        timestamp=None,
-        from_=None,
-        until=None,
-    )
-
-    assert videos_only is True
-    assert filters_active is True
-    assert show_clear_filters is False
-
-
-def test_archive_filter_flags_honors_explicit_uncheck():
-    # filtered="1" alongside a missing videos_only is exactly what a real
-    # form submission with the box unchecked looks like - unlike a fresh
-    # visit, this must NOT be defaulted back on.
-    videos_only, filters_active, show_clear_filters = _archive_filter_flags(
-        filtered="1",
-        videos_only=False,
+        include_no_video=True,
         selected_modes=set(),
         timestamp=None,
         from_=None,
@@ -244,10 +221,9 @@ def test_archive_filter_flags_honors_explicit_uncheck():
     assert show_clear_filters is True
 
 
-def test_archive_filter_flags_other_filters_count_even_with_videos_only_off():
+def test_archive_filter_flags_other_filters_count_even_with_include_no_video_on():
     videos_only, filters_active, show_clear_filters = _archive_filter_flags(
-        filtered="1",
-        videos_only=False,
+        include_no_video=True,
         selected_modes={"E"},
         timestamp=None,
         from_=None,
@@ -259,14 +235,11 @@ def test_archive_filter_flags_other_filters_count_even_with_videos_only_off():
     assert show_clear_filters is True
 
 
-def test_archive_filter_flags_fresh_visit_with_a_bookmarked_mode_still_defaults_videos_only():
-    # A bookmarked/old link like "/archive/kirby?mode=E" has no `filtered`
-    # marker either (it predates - or was typed independent of - the
-    # form), so it's still a "fresh visit" for videos_only purposes even
-    # though it does carry a real mode filter.
+def test_archive_filter_flags_a_mode_filter_alone_does_not_count_as_clearable():
+    # videos_only stays on (the default), so the mode filter is the only
+    # real deviation from the bare default here.
     videos_only, filters_active, show_clear_filters = _archive_filter_flags(
-        filtered=None,
-        videos_only=False,
+        include_no_video=False,
         selected_modes={"E"},
         timestamp=None,
         from_=None,

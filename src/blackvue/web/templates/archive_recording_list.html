@@ -5,13 +5,6 @@
 <h2>Archive: {{ camera_id }}</h2>
 
 <form method="get" action="/archive/{{ camera_id }}" class="filter-bar">
-  {# Always sent once this form is submitted, checked or not - unlike the
-     videos_only checkbox itself, a hidden field can't just go missing when
-     "unchecked". Lets the route tell a fresh/bare page load (this marker
-     absent) apart from a real submission with "Show only with videos"
-     deliberately turned off (marker present, videos_only absent) - see
-     app.py's archive_recording_list() for the other half. #}
-  <input type="hidden" name="filtered" value="1">
   <div class="filter-row">
     <span class="filter-label">
       Mode
@@ -41,8 +34,8 @@
     <span class="filter-label">Options</span>
     <span class="filter-modes">
       <label class="filter-checkbox">
-        <input type="checkbox" name="videos_only" value="1" {% if videos_only %}checked{% endif %}>
-        Show only with videos
+        <input type="checkbox" name="include_no_video" value="1" {% if include_no_video %}checked{% endif %}>
+        Show all recordings (including ones without video)
       </label>
     </span>
   </div>
@@ -63,7 +56,7 @@
 {% for day, recordings in days %}
 <h3 class="day-heading">{{ day.strftime("%A, %B %d, %Y") }}</h3>
 <div class="thumb-grid">
-  {# Carry this page's own filter query string (mode/date/videos_only)
+  {# Carry this page's own filter query string (mode/date/include_no_video)
      onto each recording link, so the detail page's own back-link
      (archive_recording_detail.html) can hand it straight back rather
      than resetting to the unfiltered list - see that template for

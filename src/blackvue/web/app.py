@@ -463,8 +463,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         timestamp: str | None = Query(default=None),
         from_: str | None = Query(default=None, alias="from"),
         until: str | None = Query(default=None, alias="until"),
-        videos_only: bool = Query(default=False),
-        filtered: str | None = Query(default=None),
+        include_no_video: bool = Query(default=False),
     ):
         # A GET form always submits every named field, even ones the
         # user left blank - an empty text box arrives here as "", not
@@ -490,14 +489,13 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         selected_modes = set(mode)
 
         # See _archive_filter_flags()'s own docstring for the full
-        # reasoning - short version: an unchecked checkbox never reaches
-        # the server at all, so "Show only with videos" being on by
-        # default (Christer's ask) needs the hidden `filtered` marker to
-        # tell a fresh page load apart from a real submission with it
-        # deliberately turned off.
+        # reasoning - short version: the checkbox is framed as the
+        # opt-in "show me the video-less ones too" rather than an
+        # opt-out "only show ones with video" that defaults to
+        # checked, so an unchecked/unsubmitted checkbox correctly means
+        # "no" whether this is a fresh page load or a real resubmission.
         videos_only, filters_active, show_clear_filters = _archive_filter_flags(
-            filtered=filtered,
-            videos_only=videos_only,
+            include_no_video=include_no_video,
             selected_modes=selected_modes,
             timestamp=timestamp,
             from_=from_,
@@ -541,7 +539,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "timestamp_value": timestamp or "",
                 "from_value": from_ or "",
                 "until_value": until or "",
-                "videos_only": videos_only,
+                "include_no_video": include_no_video,
                 "filters_active": filters_active,
                 "show_clear_filters": show_clear_filters,
                 "error": error,
@@ -1980,50 +1978,50 @@ def _camera_options() -> list[dict[str, str]]:
 
 def _archive_filter_flags(
     *,
-    filtered: str | None,
-    videos_only: bool,
+    include_no_video: bool,
     selected_modes: set[str],
     timestamp: str | None,
     from_: str | None,
     until: str | None,
 ) -> tuple[bool, bool, bool]:
     """Resolve archive_recording_list()'s three filter-related values
-    from its raw query params: the effective `videos_only` (after
-    applying its default), `filters_active` (does *any* filter -
-    including a defaulted-on videos_only - explain a possibly-empty
+    from its raw query params: `videos_only` (the actual value
+    filter_recordings() wants), `filters_active` (does *any* filter -
+    including the default video-only view - explain a possibly-empty
     result), and `show_clear_filters` (has the user actually deviated
     from the bare default, i.e. is there anything real to clear).
 
-    An unchecked HTML checkbox simply isn't submitted at all, so a
-    request with no `videos_only` in its query string can't be told
-    apart from "fresh, never-touched page load" versus "user
-    explicitly unchecked it and submitted" - both arrive identically.
-    Christer asked for "Show only with videos" to be on by default but
-    still overridable, so the filter form sends a hidden `filtered`
-    marker alongside every real submission (always present once the
-    form itself has been submitted, checkbox state or not - see
-    archive_recording_list.html). `filtered is None` therefore means a
-    bare/fresh visit - the first click into a camera, or the "Clear
-    filters" link, both of which carry no query string at all - and
-    that's the one case this defaults videos_only on by itself.
+    The form's checkbox is `include_no_video` ("Show all recordings
+    (including ones without video)") rather than a `videos_only`
+    checkbox that defaults to checked - Christer initially got a
+    `videos_only` checkbox that was checked by default, and found that
+    confusing to reason about ("i wanted the option to be 'Show all
+    recordings' or something better"). Framing the checkbox as the
+    opt-in ("include the video-less ones") instead of the opt-out
+    ("only show ones with video") means an unticked/unsubmitted
+    checkbox - which is indistinguishable from a fresh page load
+    either way, since HTML never submits an unchecked box - correctly
+    reads as "no, don't include them" in both cases. That sidesteps
+    the whole fresh-visit-vs-explicit-uncheck disambiguation problem
+    the old `videos_only`-checked-by-default design needed a hidden
+    `filtered` marker field for; this version needs no such marker.
 
-    `filters_active` and `show_clear_filters` diverge only on a
-    defaulted-on videos_only: showing "Clear filters" or "No
+    `filters_active` and `show_clear_filters` diverge only on the
+    video-only view being the default: showing "Clear filters" or "No
     recordings match these filters." on every ordinary page load (just
-    because the default itself counts as "a filter") would be
-    misleading - `show_clear_filters` only counts videos_only when the
-    user has turned it *off*, since turning it on is just the default
-    reasserting itself.
+    because the default view itself counts as "filtered") would be
+    misleading - `show_clear_filters` only counts `include_no_video`
+    when it's actually been checked, since leaving it unchecked is
+    just the default.
     """
 
-    if filtered is None:
-        videos_only = True
+    videos_only = not include_no_video
 
     filters_active = bool(
         selected_modes or timestamp or from_ or until or videos_only
     )
     show_clear_filters = bool(
-        selected_modes or timestamp or from_ or until or not videos_only
+        selected_modes or timestamp or from_ or until or include_no_video
     )
 
     return videos_only, filters_active, show_clear_filters

@@ -133,17 +133,18 @@ src/blackvue/web/
                    blackvue.archive.Archive/ArchiveReader rather than
                    scanning the filesystem itself, and
                    lexicaltimeparser.py for the time-range filter.
-                   filter_recordings() also takes videos_only, for the
-                   list page's "Show only with videos" checkbox - it
-                   hides recordings whose ArchiveRecording.has_video is
-                   False (thumbnail downloaded, video never did). The
-                   route defaults this checkbox on for a fresh page
-                   load and lets a real submission turn it off - see
-                   _archive_filter_flags() in app.py for how it tells
-                   the two apart (an unchecked checkbox is never
-                   actually submitted, so a hidden `filtered` marker
-                   field disambiguates "never touched" from
-                   "explicitly unchecked").
+                   filter_recordings() also takes videos_only, hiding
+                   recordings whose ArchiveRecording.has_video is False
+                   (thumbnail downloaded, video never did) - on by
+                   default. The list page's own checkbox is the
+                   opt-in "Show all recordings (including ones without
+                   video)" (`include_no_video`), not a videos_only
+                   checkbox that defaults to checked - see
+                   _archive_filter_flags() in app.py for why that
+                   framing was chosen (an unchecked checkbox is never
+                   actually submitted, so an opt-in that defaults to
+                   unchecked needs no extra marker field to tell a
+                   fresh page load apart from a real submission).
                    find_recording() uses ArchiveReader's targeted
                    read_recording() rather than a full scan - see
                    "Archive browser" above for why that matters.

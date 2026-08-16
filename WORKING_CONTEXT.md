@@ -12586,3 +12586,42 @@ Jinja `Environment().get_template()` parse check on the edited
 template, and a standalone script re-deriving `_archive_filter_flags()`'s
 exact logic and asserting all five scenarios (no pytest in this
 sandbox, same constraint as always) - all passed.
+
+**Follow-up, same day:** Christer: "Good, i was a little unclear. I
+wanted the option to be 'Show all recordings' or something better."
+The `videos_only`-checked-by-default checkbox above was confusing to
+read even though it worked - reworked the whole thing to flip the
+checkbox's framing instead of its default state. The form's checkbox
+is now the opt-in `include_no_video` ("Show all recordings (including
+ones without video)"), unchecked by default, rather than a `videos_only`
+checkbox defaulting to checked. This is a strictly simpler design, not
+just clearer wording: since an unchecked/unsubmitted checkbox and a
+fresh page load are indistinguishable at the HTTP level either way,
+framing the checkbox as "opt in to see more" means that ambiguity
+resolves to the *same* correct answer (don't include the video-less
+ones) in both cases - no hidden `filtered` marker field needed at all.
+Deleted that hidden input from `archive_recording_list.html` entirely
+and dropped the `filtered` parameter from `_archive_filter_flags()`
+and the route. `_archive_filter_flags()` now just takes
+`include_no_video: bool` and computes `videos_only = not
+include_no_video` internally - same `filters_active`/
+`show_clear_filters` outputs and reasoning as before, still needed
+since `videos_only` is still "on by default" from `filter_recordings()`'s
+point of view.
+
+Files: `src/blackvue/web/app.py` (`_archive_filter_flags()` signature
+simplified, route's `videos_only`/`filtered` query params replaced
+with `include_no_video`), `src/blackvue/web/templates/
+archive_recording_list.html` (hidden `filtered` input removed,
+checkbox renamed to `include_no_video` with the new label). Tests:
+`tests/blackvue/web/test_app_reuse.py` - the five prior
+`_archive_filter_flags()` tests replaced with four reflecting the new
+signature (default unchecked, checked turns videos_only off, checked
+alongside a mode filter, unchecked alongside a mode filter). Docs:
+`docs/WEB_ARCHITECTURE.md` updated to describe the opt-in framing
+instead of the hidden-marker mechanism (which no longer exists).
+
+Verified via `python3 -m py_compile` on both touched Python files, a
+Jinja parse check on the template, and a standalone script re-deriving
+the simplified `_archive_filter_flags()` logic and asserting all four
+scenarios - all passed.
