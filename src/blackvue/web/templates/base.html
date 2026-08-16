@@ -313,6 +313,14 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--panel-border); }
     th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+    /* history_list.html's "When" column - "2026-08-16 08:18:34" has a
+       legal wrap point at that space, and once the adjacent long
+       command-line column started squeezing it, the date and time
+       started splitting onto two lines while every other cell in the
+       row stayed on one - Christer: "does this look like 1 row?"
+       (screenshot showed exactly that split). A fixed-format
+       timestamp should never need to wrap, so force it to stay put. */
+    .history-when { white-space: nowrap; }
     .badge {
       display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem;
       border-radius: 1rem; background: var(--badge-bg); color: var(--badge-text); margin-left: 0.35rem;
@@ -641,7 +649,7 @@
     }
     .reuse-list a:hover { background: var(--badge-bg); }
     .reuse-list li.active a { background: var(--badge-bg); }
-    .reuse-date { font-size: 0.8rem; color: var(--muted); flex-shrink: 0; }
+    .reuse-date { font-size: 0.8rem; color: var(--muted); flex-shrink: 0; white-space: nowrap; }
     .reuse-command {
       font-size: 0.85rem; overflow-x: auto; white-space: nowrap;
       flex: 1 1 auto; min-width: 0;

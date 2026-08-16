@@ -12810,3 +12810,25 @@ Verified via `python3 -m py_compile` on `app.py`, and a standalone
 Jinja `Environment` render of all six templates with a fake entry
 whose `started_at` has real microseconds/UTC-offset - asserted the raw
 ISO string does not appear anywhere in any of the six rendered outputs.
+
+## Fix: "When" column wrapping date/time onto two lines (2026-08-16)
+
+Follow-up to the earlier "2 rows" question - the real culprit wasn't
+the command-line column (already reverted, see above) but the "When"
+column: "2026-08-16 08:18:34" has a legal wrap point at the space
+between date and time, and once the neighboring long command-line
+column started squeezing the row, that space wrapped - splitting one
+entry's timestamp onto two lines while every other cell in the same
+row stayed on one. Christer caught it from a screenshot: "does this
+look like 1 row?" showing exactly that split (date on its own line,
+time below it, misaligned against Duration/Status/Who/Command).
+
+Fix: `white-space: nowrap` on the new `.history-when` class (applied
+to `history_list.html`'s timestamp `<td>`) and on `.reuse-date` (the
+same timestamp format shown in each job-trigger page's reuse-panel
+list) - a fixed-format timestamp should never need to wrap.
+
+Files: `src/blackvue/web/templates/base.html` (`.history-when` new
+class + `.reuse-date` nowrap addition), `src/blackvue/web/templates/
+history_list.html` (added the `history-when` class to the timestamp
+cell).
