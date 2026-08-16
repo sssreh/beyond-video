@@ -12929,3 +12929,38 @@ valid JSON; the blackvue manifest's `asset_suffix_table` was diffed
 programmatically against the real `ArchiveReader.ASSETS` tuple and matches
 exactly; a manifest missing a required field correctly raises
 `ManifestError`.
+
+## Design: re-sequence adapter next-steps + adapter families (2026-08-16)
+
+Christer, continuing the camera-adapter design work: "I think i will be
+many folder adapters or maybe adapter adaptions, like Go Pro
+files/videos, drone footage etc. I think we should start with bv-ls and
+browse archive to begin with. Then bv-download with support for reading
+cameras sd cards(easy one) and move the requested files to an archive."
+
+Updated `docs/CAMERA_ADAPTERS.md`: added an "Adapter families" section
+noting the `folder` manifest shipped in the prior entry is the
+zero-metadata baseline only - GoPro (GPMF telemetry embedded in the MP4
+stream itself) and DJI-style drone footage (per-clip `.srt` GPS/gimbal
+telemetry) both have real structure worth their own manifest +
+code-hooks rather than being force-fit into `folder`'s
+capabilities:false-everywhere shape; each becomes its own
+`adapters/<id>/manifest.json` as real footage/need shows up, same as
+`blackvue`/`folder` were built from real findings, not guessed. Noted
+`source.kind` will likely need a third value (`removable_media`) for
+SD-card import once that's built - real download capability but no
+network protocol - not added to the schema yet since it's speculative
+until built.
+
+Re-sequenced "Suggested next steps" to match Christer's stated order:
+registry + `CameraConfig.adapter` field -> `BlackVueAdapter` as a pure
+delegation wrapper (interface validation) -> wire `bv-ls` + the `bv-web`
+archive browser through the adapter abstraction (his stated starting
+point - both read-only/display-heavy, per the earlier investigation) ->
+`FolderAdapter` for real (so step 3 has a second genuine adapter to prove
+against) -> SD-card import in `bv-download` (his stated second step,
+"the easy one" - no CGI protocol, just a mounted filesystem to filter/
+copy from) -> further adapter variants as real need shows up ->
+`bv-analyze` once 2+ real adapters exist to generalize from.
+
+Still design-only - no code changed. File: `docs/CAMERA_ADAPTERS.md`.

@@ -272,10 +272,48 @@ component.
 This was deliberate, per Christer's "we start with number 1" - design doc
 and schema only, reviewed before any of the above gets built.
 
+## Adapter families: more than one "folder adapter"
+
+Christer's steer (2026-08-16): don't expect one generic folder adapter to
+cover every non-BlackVue source. GoPro and drone footage are the two he
+named, and both have real structure the plain `folder` manifest
+deliberately doesn't assume: GoPro embeds GPMF telemetry (GPS, g-sensor)
+directly inside each MP4's own stream, and drones - DJI in particular -
+commonly ship a companion `.srt` file per clip carrying per-frame GPS/
+gimbal telemetry. Neither of those is "no metadata," they're just *not
+BlackVue's* `.gps`/`.3gf` sidecar format - which is exactly what the
+manifest+code-hooks split was designed for: a `gopro` or `dji_drone`
+adapter would set `capabilities.gps: true`/`capabilities.gsensor: true`
+like BlackVue does, but point `code_hooks_required` at a GPMF-stream
+parser or an SRT-telemetry parser instead of the NMEA/`.3gf` ones. The
+`folder` adapter shipped in this pass stays what it's meant to be: the
+zero-assumptions baseline for footage with genuinely no embedded metadata,
+not a stand-in for every other adapter that will exist. Each real source
+gets its own `adapters/<id>/manifest.json` as evidence for it shows up,
+same as `blackvue`'s and `folder`'s were both built from real, checked
+findings rather than guessed.
+
+This also means `source.kind` (currently `network_camera` | `local_folder`
+in `manifest.schema.json`) will likely need a third value once SD-card
+import (next section) is built - something like `removable_media`:
+`requires_network: false` like `local_folder`, but with a real
+`download`/import step (copy files off a mounted card into the archive),
+unlike `local_folder` where `download` is always `false` because there's
+nothing to import - the files are already the archive. Not added to the
+schema yet since it's speculative until bv-download's SD-card path is
+actually being built (next section) and the real shape is known.
+
 ## Suggested next steps (future passes, not started)
 
+Re-sequenced per Christer's steer (2026-08-16): read paths first (lowest
+risk, no existing behavior to regress), then the "easy" half of writing
+(local file copy, no network protocol), letting later steps - more adapter
+variants, `bv-analyze` - fall out of having two real, exercised adapters
+to generalize from rather than one.
+
 1. Add `CameraConfig.adapter: str = "blackvue"` plus a load-time migration
-   default, so every existing config keeps working unmodified.
+   default, so every existing config keeps working unmodified. Prerequisite
+   plumbing, zero behavior change.
 2. Write `src/blackvue/adapters/base.py`: a `CameraAdapter` Protocol/ABC
    whose methods correspond 1:1 to each manifest's `code_hooks_required`
    entries, plus the registry (`adapter_id -> (manifest, adapter class)`).
@@ -284,21 +322,38 @@ and schema only, reviewed before any of the above gets built.
    alone is a good regression-safe validation of the interface: if
    `BlackVueAdapter` can be built as a pure delegation layer with zero
    behavior change, the interface is right.
-4. Implement `FolderAdapter` for real: the recursive scanner, the
-   ffprobe/mtime timestamp fallback chain, and the on-demand thumbnail
-   generator named in its manifest's `code_hooks_required`.
-5. Wire adapter selection through `bv-ls` first - the lowest-risk command,
-   mostly display logic per the investigation - and verify byte-identical
-   output against today's behavior for existing BlackVue archives before
-   touching `bv-download`/`bv-export`/`bv-web`.
-6. Build `bv-analyze` (sketched below) once at least one non-BlackVue
-   adapter exists to test it against - an inference tool is hard to
-   validate with only one real example on hand.
+4. **Wire `bv-ls` and the `bv-web` archive browser through the adapter
+   abstraction** - Christer's stated starting point. Both are read-only
+   and display-heavy (per the investigation, `bv-ls`'s own BlackVue
+   coupling is one filter-policy line plus `display_group.py`'s kind-
+   letter/RecordTime comparisons; the archive browser's is a handful of
+   small fixed tables - `_DIRECTIONS`, `_KIND_LABELS`, `_SIDECARS`) -
+   good first real consumers of `AdapterManifest`, and a place a
+   regression shows up immediately as a wrong table cell, not silent data
+   loss.
+5. Implement `FolderAdapter` for real (the recursive scanner, the
+   ffprobe/mtime timestamp fallback, on-demand thumbnails) so step 4 has
+   a second, genuinely different adapter to prove itself against, not
+   just `BlackVueAdapter` in a trench coat.
+6. **Add SD-card import to `bv-download`** - Christer's stated second
+   step, and rightly called "the easy one": no CGI wire protocol, no
+   never-closing multipart streams, no `blackvue_vod.cgi` sidecar-missing
+   workaround - just a mounted filesystem with the camera's own file
+   layout (BlackVue's SD card mirrors what `bv-download` already produces)
+   to filter and copy into the archive. Likely the first real user of the
+   `removable_media` source kind discussed above.
+7. Build further adapter variants (GoPro, drone footage, ...) as real
+   need/footage shows up, informed by whatever steps 4-6 taught about the
+   interface.
+8. Build `bv-analyze` (sketched below) once at least two real adapters
+   exist to test it against - an inference tool tuned against a single
+   example (BlackVue) risks just re-deriving BlackVue's own pattern rather
+   than genuinely generalizing.
 
 ## Future: `bv-analyze <archive>` - an adapter-authoring assistant
 
 Christer's follow-on idea, not built, not started - a sketch for whoever
-picks up step 6 above. The manifest schema makes writing an adapter by
+picks up step 8 above. The manifest schema makes writing an adapter by
 hand tractable, but most of a manifest's *declarative* fields are exactly
 the kind of thing pattern-matching over a real folder of files can infer
 - so instead of a human starting from a blank `manifest.json`, `bv-analyze`
