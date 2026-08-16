@@ -12858,3 +12858,74 @@ Verified via a standalone Jinja `Environment` render with three fake
 `recording.videos` states (Front present, Front missing/Rear
 present, no videos at all) - asserted the hint text is present/absent
 exactly where expected in each case.
+
+## Design: camera adapter model - schema + BlackVue/folder manifests (2026-08-16)
+
+Christer: "bv-video has been so successful and powerful, its full of good
+reusable stuff. To bad the market is so small... Do you think you can
+create a blackvue model/config/adapter file that get whats so special
+with blackvue dashcams... Maybe even a basic adapter file for listings of
+ordinary videos in different folders... I am thinking it could be a base
+model(adapter) for importing handling for other cameras in the future."
+Scoped explicitly to design + schema only for this pass ("We start with
+number 1"), with two corrections to my first framing: adapters are a
+*plugin* model - exactly one active adapter per camera config, not all
+adapters running at once - and the generic folder adapter is meant to be
+a real usable feature, not just a proof of concept.
+
+Investigated (via a research-only subagent, cross-checked by hand against
+`archive_reader.py`) every place BlackVue's own conventions are baked into
+otherwise-generic code: the `YYYYMMDD_HHMMSS_<kind><direction>` filename
+scheme (independently re-parsed in at least 2 places), the kind-letter
+(N/E/M/P/A) and direction-letter (F/R/I) vocabularies (each independently
+defined in 4 separate files), the `.gps`/`.3gf` sidecar formats, the
+`ArchiveReader.ASSETS` suffix table, the BlackVue CGI wire protocol
+(`core/blackvue_client.py`), `config.ini`'s `RecordTime` schema, and
+`ArchiveReader`'s flat (non-recursive) directory-scan assumption - the
+single biggest structural blocker for a folder-of-videos source. Also
+found what's *already* adapter-friendly with zero change needed:
+`TripBuilder`'s gap-based algorithm only touches `.id.timestamp`, and
+GPS/g-sensor movement-bridging already degrades to "no evidence" when a
+sidecar is simply absent.
+
+Designed a manifest + code-hooks hybrid rather than pure JSON, since
+several things genuinely can't be declarative (NMEA/binary sidecar
+parsing, the camera network protocol, `config.ini` parsing, ffprobe-based
+timestamp resolution) - a `code_hooks_required` list in each manifest
+names these explicitly rather than pretending JSON can do everything.
+Everything else (filename regex, kind/direction vocab tables, the ordered
+suffix->Asset mapping, flat-vs-recursive layout, capability flags) is
+plain JSON.
+
+Shipped: a formal JSON Schema (`manifest.schema.json`), a dependency-free
+loader/validator (`manifest.py` - no `jsonschema` package added), and two
+real manifests: `adapters/blackvue/manifest.json` (a faithful snapshot of
+the current BlackVue conventions - its `asset_suffix_table` is a
+byte-for-byte transcription of the real `ArchiveReader.ASSETS` tuple,
+verified programmatically to match exactly, order included) and
+`adapters/folder/manifest.json` (the generic adapter: recursive scan,
+subfolder grouping hint, ffprobe-creation-time-then-mtime timestamp
+fallback, generated-on-demand thumbnails, explicit `unsupported_notes`
+listing what's deliberately not offered - no GPS/g-sensor features, no
+`--stitch` multi-camera layouts, no mode filtering, no live camera
+connection - and why).
+
+Files: `docs/CAMERA_ADAPTERS.md` (the design doc - rationale, the
+declarative-vs-code split, manifest field reference, cross-cutting
+duplication found as a bonus finding, explicit "not done in this pass"
+list, and suggested next steps), `src/blackvue/adapters/manifest.schema.json`,
+`src/blackvue/adapters/manifest.py`, `src/blackvue/adapters/blackvue/manifest.json`,
+`src/blackvue/adapters/folder/manifest.json` (new `folder/` package).
+
+Explicitly NOT done: no `CameraConfig.adapter` field, no adapter registry,
+no `BlackVueAdapter`/`FolderAdapter` classes, no change to any existing
+BlackVue-specific code path. This is a reviewable design artifact, not a
+refactor - see docs/CAMERA_ADAPTERS.md's "Suggested next steps" for what
+implementing it for real would involve.
+
+Verified: `py_compile` on `manifest.py`; both manifest.json files load and
+structurally validate through `load_manifest()`; the schema file itself is
+valid JSON; the blackvue manifest's `asset_suffix_table` was diffed
+programmatically against the real `ArchiveReader.ASSETS` tuple and matches
+exactly; a manifest missing a required field correctly raises
+`ManifestError`.

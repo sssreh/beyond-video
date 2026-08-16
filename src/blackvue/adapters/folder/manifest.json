@@ -1,0 +1,58 @@
+{
+  "adapter_id": "folder",
+  "schema_version": 1,
+  "display_name": "Plain folder of videos",
+  "description": "A folder tree of ordinary video files - phone clips, GoPro/action-cam footage, downloaded videos, anything with no dashcam-specific metadata at all. Meant to be a real, usable input source in its own right (not just a proof that the adapter boundary works), so the pipeline still produces something useful: a listing, gap-based trip grouping by timestamp, transcripts/translations/subtitles/scene descriptions via bv-generate/bv-scribe (those work off any video's own audio/frames, not off BlackVue conventions). See docs/CAMERA_ADAPTERS.md's 'What breaks' section for what's deliberately not offered, and unsupported_notes below for why.",
+  "source": {
+    "kind": "local_folder",
+    "requires_network": false
+  },
+  "archive_layout": "recursive",
+  "video_extensions": [".mp4", ".mov", ".mkv", ".avi", ".m4v"],
+  "filename_pattern": null,
+  "timestamp_source": ["ffprobe_creation_time", "file_mtime"],
+  "kind_vocabulary": [
+    {"code": "V", "label": "Video", "low_signal": false, "default_included": true}
+  ],
+  "direction_vocabulary": [
+    {"code": "V", "label": "Video", "primary": true}
+  ],
+  "asset_suffix_table": [
+    {"suffix": ".aac", "asset": "AUDIO", "kind": "generated"},
+    {"suffix": ".duration.txt", "asset": "DURATION", "kind": "generated"},
+    {"suffix": ".diarized.transcript.txt", "asset": "TRANSCRIPT_DIARIZED", "kind": "generated"},
+    {"suffix": ".diarized.translation.txt", "asset": "TRANSLATION_DIARIZED", "kind": "generated"},
+    {"suffix": ".transcript.txt", "asset": "TRANSCRIPT", "kind": "generated"},
+    {"suffix": ".translation.txt", "asset": "TRANSLATION", "kind": "generated"},
+    {"suffix": ".srt", "asset": "SUBTITLES", "kind": "generated"},
+    {"suffix": ".scene.txt", "asset": "SCENE_DESCRIPTION", "direction": "V", "kind": "generated"}
+  ],
+  "capabilities": {
+    "network_connect": false,
+    "download": false,
+    "live_view": false,
+    "live_telemetry": false,
+    "gps": false,
+    "gsensor": false,
+    "thumbnails": "generated",
+    "config_snapshot": false,
+    "multi_direction_video": false
+  },
+  "code_hooks_required": [
+    "recursive_scanner",
+    "timestamp_resolver",
+    "thumbnail_generator"
+  ],
+  "default_trip_gap_seconds": 300,
+  "grouping_hint": "subfolder",
+  "unsupported_notes": [
+    "No GPS: no map.mp4, no GPX export, no reverse geocoding, no start/stop location pages, no --movement trip bridging. Trip splitting still works on timestamp gaps alone.",
+    "No g-sensor: no gsensor.mp4/gsensor_graph.mp4, no --stitch-gsensor panel.",
+    "No multi-direction video: no --stitch camera-layout compositor, no rearview_mirror layout - export is a single-track passthrough of whichever video file each recording is.",
+    "No config.ini equivalent: trip gap threshold always uses default_trip_gap_seconds (300s) instead of a per-camera auto-derived nominal segment length.",
+    "No Event/Manual/Parking distinction: no --mode filtering, no --include-parking skip-and-replace, no max_parking_duration cap - every file is just 'a video'.",
+    "No live camera connection: bv-download, bv-config's endpoint setup, bv-gps, and bv-live are not applicable to this adapter and shouldn't be offered for it.",
+    "Thumbnails are generated on demand via an ffmpeg frame-grab, not read from a camera-native .thm sidecar - slower on first view, cacheable after.",
+    "Timestamp comes from ffprobe's embedded creation_time metadata, falling back to file mtime if that's missing or looks wrong (e.g. reset by a file copy) - less reliable than BlackVue's own filename-embedded timestamp, so trip boundaries may be slightly off for files with bad/missing metadata."
+  ]
+}

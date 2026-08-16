@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beyond-video.local/schemas/camera-adapter-manifest.schema.json",
+  "title": "Camera adapter manifest",
+  "description": "Declarative identity/config for one camera adapter (see docs/CAMERA_ADAPTERS.md). Exactly one adapter is active per camera/archive at a time - this file is not a multi-adapter config, it's one adapter's own manifest. Fields this schema can't express (sidecar binary/text parsing, camera network protocol, config-snapshot parsing) are instead *named* in code_hooks_required and implemented by a small adapter class alongside this file.",
+  "type": "object",
+  "required": [
+    "adapter_id",
+    "schema_version",
+    "display_name",
+    "source",
+    "archive_layout",
+    "video_extensions",
+    "kind_vocabulary",
+    "direction_vocabulary",
+    "asset_suffix_table",
+    "capabilities",
+    "code_hooks_required",
+    "default_trip_gap_seconds"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "adapter_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable machine identifier, e.g. 'blackvue' or 'folder'. Matches the adapters/<adapter_id>/ directory this manifest lives in."
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Human-readable name shown in UI/CLI, e.g. 'BlackVue dashcam'."
+    },
+    "description": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind", "requires_network"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["network_camera", "local_folder"],
+          "description": "What this adapter reads from. Future adapters may need more values (e.g. 'cloud_storage') - additions go here, not as a boolean explosion."
+        },
+        "requires_network": {
+          "type": "boolean",
+          "description": "If false, bv-download/bv-config's endpoint setup/bv-gps/bv-live are all inapplicable to this adapter - not degraded, simply not offered."
+        }
+      }
+    },
+    "archive_layout": {
+      "type": "string",
+      "enum": ["flat", "recursive"],
+      "description": "'flat' = recordings live directly in the archive root (BlackVue's own convention). 'recursive' = recordings may be nested in subfolders (e.g. one folder per trip/date). This one flag is enough to pick the right generic scanner - it does not need to be adapter-specific code."
+    },
+    "video_extensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^\\.[a-zA-Z0-9]+$"
+      }
+    },
+    "filename_pattern": {
+      "description": "Regex-based filename convention, or null if this adapter has no naming convention at all (see timestamp_source for the fallback in that case).",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["regex", "timestamp_format"],
+          "additionalProperties": false,
+          "properties": {
+            "regex": {
+              "type": "string",
+              "description": "Must define named groups 'date' and 'time' at minimum; 'kind' and 'direction' groups are optional (omit for adapters with no kind/direction vocabulary)."
+            },
+            "timestamp_format": {
+              "type": "string",
+              "description": "strptime format string applied to the concatenated date+time groups."
+            },
+            "id_group": {
+              "type": ["string", "null"],
+              "description": "Name of the regex group that is the recording id, or null if the whole match is the id."
+            }
+          }
+        }
+      ]
+    },
+    "timestamp_source": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["filename", "ffprobe_creation_time", "file_mtime"]
+      },
+      "description": "Ordered fallback chain for determining a recording's timestamp when filename_pattern is null or doesn't match a given file."
+    },
+    "kind_vocabulary": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The recording-kind letters this adapter's filename_pattern's 'kind' group can produce (BlackVue: Normal/Event/Manual/Parking/Unknown). An adapter with no kind concept still needs exactly one entry (a single default kind).",
+      "items": {
+        "type": "object",
+        "required": ["code", "label", "low_signal", "default_included"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 1},
+          "label": {"type": "string"},
+          "low_signal": {
+            "type": "boolean",
+            "description": "Generalizes BlackVue's Parking mode: a long, low-information segment eligible for caps like max_parking_duration/--include-parking skip-and-replace. False for everything else."
+          },
+          "default_included": {
+            "type": "boolean",
+            "description": "Whether bv-download/bv-ls/bv-export include this kind by default without an explicit --mode filter."
+          }
+        }
+      }
+    },
+    "direction_vocabulary": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The camera-channel letters this adapter's filename_pattern's 'direction' group can produce (BlackVue: Front/Rear/Interior). An adapter with a single video track per recording still needs exactly one entry, marked primary.",
+      "items": {
+        "type": "object",
+        "required": ["code", "label", "primary"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 1},
+          "label": {"type": "string"},
+          "primary": {
+            "type": "boolean",
+            "description": "Exactly one direction must be primary=true - generalizes 'front video' as the reference track trip-building/--stitch/thumbnails default to."
+          }
+        }
+      }
+    },
+    "asset_suffix_table": {
+      "type": "array",
+      "description": "Ordered list mapping an on-disk filename suffix to an Asset identity. Order matters on suffix overlap (e.g. '.diarized.transcript.txt' must be listed before '.transcript.txt') - treat this as a first-match-wins list, not a set/dict.",
+      "items": {
+        "type": "object",
+        "required": ["suffix", "asset"],
+        "additionalProperties": false,
+        "properties": {
+          "suffix": {"type": "string"},
+          "asset": {
+            "type": "string",
+            "description": "Name of an Asset enum member (src/blackvue/archive/asset.py). Camera-native assets (FRONT/REAR/GPS/...) are adapter-specific; generated assets (TRANSCRIPT/AUDIO/...) are shared across all adapters and don't need to be re-listed unless an adapter changes their suffix."
+          },
+          "direction": {
+            "type": ["string", "null"],
+            "description": "One of direction_vocabulary's codes, if this asset belongs to a specific camera channel."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["video", "thumbnail", "sidecar", "generated"]
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "network_connect", "download", "live_view", "live_telemetry",
+        "gps", "gsensor", "thumbnails", "config_snapshot", "multi_direction_video"
+      ],
+      "additionalProperties": false,
+      "description": "What callers (CLI flags, bv-web UI sections) should check before offering a feature, instead of the feature silently no-op'ing or crashing on an unsupported adapter.",
+      "properties": {
+        "network_connect": {"type": "boolean"},
+        "download": {"type": "boolean"},
+        "live_view": {"type": "boolean"},
+        "live_telemetry": {"type": "boolean"},
+        "gps": {"type": "boolean"},
+        "gsensor": {"type": "boolean"},
+        "thumbnails": {
+          "oneOf": [{"type": "boolean"}, {"const": "generated"}],
+          "description": "true = read from a camera-native sidecar, false = unavailable, 'generated' = synthesized on demand (e.g. an ffmpeg frame-grab)."
+        },
+        "config_snapshot": {"type": "boolean"},
+        "multi_direction_video": {"type": "boolean"}
+      }
+    },
+    "code_hooks_required": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Names of adapter-class methods/responsibilities this manifest cannot express declaratively and that must have real code behind them for this adapter to function (e.g. 'gps_sidecar_parser', 'camera_client')."
+    },
+    "default_trip_gap_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Fallback trip-gap threshold used when capabilities.config_snapshot is false (no per-recording nominal-segment-length source)."
+    },
+    "grouping_hint": {
+      "type": "string",
+      "enum": ["none", "subfolder"],
+      "description": "'subfolder' = recordings sharing an immediate parent folder are eligible to be grouped into the same trip before gap-based splitting still applies within it. Only meaningful when archive_layout is 'recursive'."
+    },
+    "unsupported_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Human-readable list of features this adapter deliberately can't do and why - surfaced in UI/CLI help rather than left for the user to discover as an error."
+    }
+  }
+}

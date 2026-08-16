@@ -1,0 +1,68 @@
+{
+  "adapter_id": "blackvue",
+  "schema_version": 1,
+  "display_name": "BlackVue dashcam",
+  "description": "A network-connected BlackVue dashcam and its on-disk archive of downloaded recordings, exactly as this project has worked since day one. This is a snapshot of the real, current conventions found in src/blackvue/{archive,domain,parser,telemetry,core,web} - not a new format, a description of the one that already exists. See docs/CAMERA_ADAPTERS.md for how this manifest was derived and what still needs real adapter code (listed in code_hooks_required below) rather than just this file.",
+  "source": {
+    "kind": "network_camera",
+    "requires_network": true
+  },
+  "archive_layout": "flat",
+  "video_extensions": [".mp4"],
+  "filename_pattern": {
+    "regex": "^(?P<date>\\d{8})_(?P<time>\\d{6})_(?P<kind>[A-Z])(?P<direction>[A-Z])?$",
+    "timestamp_format": "%Y%m%d_%H%M%S",
+    "id_group": null
+  },
+  "kind_vocabulary": [
+    {"code": "N", "label": "Normal", "low_signal": false, "default_included": true},
+    {"code": "E", "label": "Event", "low_signal": false, "default_included": true},
+    {"code": "M", "label": "Manual", "low_signal": false, "default_included": true},
+    {"code": "P", "label": "Parking", "low_signal": true, "default_included": true},
+    {"code": "A", "label": "Unknown", "low_signal": false, "default_included": true}
+  ],
+  "direction_vocabulary": [
+    {"code": "F", "label": "Front", "primary": true},
+    {"code": "R", "label": "Rear", "primary": false},
+    {"code": "I", "label": "Interior", "primary": false}
+  ],
+  "asset_suffix_table": [
+    {"suffix": "F.mp4", "asset": "FRONT", "direction": "F", "kind": "video"},
+    {"suffix": "R.mp4", "asset": "REAR", "direction": "R", "kind": "video"},
+    {"suffix": "I.mp4", "asset": "INTERIOR", "direction": "I", "kind": "video"},
+    {"suffix": ".gps", "asset": "GPS", "kind": "sidecar"},
+    {"suffix": ".3gf", "asset": "GSENSOR", "kind": "sidecar"},
+    {"suffix": "F.thm", "asset": "FRONT_THUMBNAIL", "direction": "F", "kind": "thumbnail"},
+    {"suffix": "R.thm", "asset": "REAR_THUMBNAIL", "direction": "R", "kind": "thumbnail"},
+    {"suffix": "I.thm", "asset": "INTERIOR_THUMBNAIL", "direction": "I", "kind": "thumbnail"},
+    {"suffix": ".aac", "asset": "AUDIO", "kind": "generated"},
+    {"suffix": ".duration.txt", "asset": "DURATION", "kind": "generated"},
+    {"suffix": ".diarized.transcript.txt", "asset": "TRANSCRIPT_DIARIZED", "kind": "generated"},
+    {"suffix": ".diarized.translation.txt", "asset": "TRANSLATION_DIARIZED", "kind": "generated"},
+    {"suffix": ".transcript.txt", "asset": "TRANSCRIPT", "kind": "generated"},
+    {"suffix": ".translation.txt", "asset": "TRANSLATION", "kind": "generated"},
+    {"suffix": ".srt", "asset": "SUBTITLES", "kind": "generated"},
+    {"suffix": ".rear.scene.txt", "asset": "SCENE_DESCRIPTION_REAR", "direction": "R", "kind": "generated"},
+    {"suffix": ".scene.txt", "asset": "SCENE_DESCRIPTION", "direction": "F", "kind": "generated"}
+  ],
+  "capabilities": {
+    "network_connect": true,
+    "download": true,
+    "live_view": true,
+    "live_telemetry": true,
+    "gps": true,
+    "gsensor": true,
+    "thumbnails": true,
+    "config_snapshot": true,
+    "multi_direction_video": true
+  },
+  "code_hooks_required": [
+    "gps_sidecar_parser",
+    "gsensor_sidecar_parser",
+    "camera_client",
+    "config_snapshot_parser",
+    "sidecar_prober"
+  ],
+  "default_trip_gap_seconds": 300,
+  "unsupported_notes": []
+}
