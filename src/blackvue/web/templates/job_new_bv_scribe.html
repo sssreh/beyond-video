@@ -28,7 +28,7 @@
     {% for numbered in recent_runs %}
     <li{% if numbered.number == active_reuse_number %} class="active"{% endif %}>
       <a href="/jobs/bv-scribe?reuse={{ numbered.number }}">
-        <span class="reuse-date">{{ numbered.entry.started_at }}</span>
+        <span class="reuse-date">{{ numbered.entry.started_at|local_time }}</span>
         <code class="reuse-command">{{ numbered.entry.command_line }}</code>
       </a>
     </li>

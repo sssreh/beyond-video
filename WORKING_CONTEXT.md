@@ -12779,3 +12779,34 @@ entries to show (still the most recent `count`, oldest-first
 Files: `src/blackvue/web/app.py`.
 
 Verified via `python3 -m py_compile`.
+
+## Fix: format timestamps for humans instead of dumping raw ISO-8601 (2026-08-16)
+
+Christer asked whether bv-web's history should show subsecond/timezone
+precision. Investigation found the opposite problem: `history_list.html`,
+`history_detail.html`, and all four job-trigger templates' reuse panels
+were already rendering `HistoryEntry.started_at` completely raw - the
+literal stored UTC ISO-8601 string with microseconds, e.g.
+`2026-08-16T14:23:07.482913+00:00` - directly into the page. `bv-history`
+(the CLI)'s own `_format_row()` had already solved this cleanly:
+convert to local time, format as `%Y-%m-%d %H:%M:%S`, no microseconds,
+no explicit offset - "a terminal listing is for a human reading it
+right now, not a machine-parseable log." The web pages just never got
+the same treatment.
+
+Fix: new `local_time` Jinja filter (`app.py`, registered next to the
+existing `capitalize_first`) mirrors that exact CLI formatting -
+`datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")`.
+Applied via `|local_time` everywhere `started_at` was being rendered
+raw: `history_list.html`, `history_detail.html`, and the `reuse-date`
+span in all four reuse-panel templates (`job_new_bv_export.html`,
+`job_new_bv_generate.html`, `job_new_bv_scribe.html`,
+`job_new_bv_search.html`).
+
+Files: `src/blackvue/web/app.py` (new `datetime` import + `local_time`
+filter), the six templates listed above.
+
+Verified via `python3 -m py_compile` on `app.py`, and a standalone
+Jinja `Environment` render of all six templates with a fake entry
+whose `started_at` has real microseconds/UTC-offset - asserted the raw
+ISO string does not appear anywhere in any of the six rendered outputs.

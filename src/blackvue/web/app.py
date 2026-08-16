@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 from argparse import ArgumentTypeError
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends
@@ -189,6 +190,17 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     templates.env.filters["capitalize_first"] = (
         lambda s: (s[0].upper() + s[1:]) if s else s
     )
+    # HistoryEntry.started_at is stored as a UTC ISO-8601 string with
+    # microseconds (see core/history.py's own docstring); the history
+    # templates used to render that raw value straight into the page -
+    # a wall of digits like "2026-08-16T14:23:07.482913+00:00", worse
+    # than useless for a human glancing at the table. bv-history (the
+    # CLI)'s own _format_row() already solved this - convert to local
+    # time, drop the microseconds/offset - so this filter mirrors that
+    # exact formatting rather than inventing a second convention.
+    templates.env.filters["local_time"] = lambda iso: datetime.fromisoformat(
+        iso
+    ).astimezone().strftime("%Y-%m-%d %H:%M:%S")
     # See RECORDING_ID_RE's own comment above - job_detail.html calls
     # this per output line to decide whether to render it as a link
     # rather than plain text.

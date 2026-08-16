@@ -8,7 +8,7 @@
 <table>
   <tbody>
     <tr><th>Command</th><td><code>{{ numbered.entry.command_line }}</code></td></tr>
-    <tr><th>Started</th><td>{{ numbered.entry.started_at }}</td></tr>
+    <tr><th>Started</th><td>{{ numbered.entry.started_at|local_time }}</td></tr>
     <tr><th>Duration</th><td>{{ "%.1f"|format(numbered.entry.duration_seconds) }}s</td></tr>
     <tr><th>Status</th><td>{{ numbered.entry.status }}</td></tr>
     <tr><th>Source</th><td>{% if numbered.entry.source == "bv-web" %}bv-web ({{ numbered.entry.username or "unknown" }}){% else %}terminal{% endif %}</td></tr>
