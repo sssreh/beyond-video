@@ -12832,3 +12832,29 @@ Files: `src/blackvue/web/templates/base.html` (`.history-when` new
 class + `.reuse-date` nowrap addition), `src/blackvue/web/templates/
 history_list.html` (added the `history-when` class to the timestamp
 cell).
+
+## Feature: hint when archive detail player falls back off Front (2026-08-16)
+
+Christer: "In archive browser, if we are missing the front file, do
+we show the rear then." Investigated: yes, already worked, but as an
+emergent side effect rather than a deliberate rule -
+`ArchiveRecording.videos` (`archive_browser.py`) only lists
+directions that exist on disk, fixed Front->Rear->Interior order, and
+`archive_recording_detail.html`'s main player always plays
+`videos[0]` - so a missing Front just makes Rear (or Interior) slide
+into slot 0 with zero indication to the viewer which direction
+they're actually watching. Christer: "ok" to adding a visible hint.
+
+Added one line: `{% if recording.videos[0][0] != "Front" %}` prints
+"No Front video for this recording - showing {label} instead." right
+above the player, silent when Front is present (the common case).
+The per-video link list below the player, and the `/watch/{filename}`
+route, were already unambiguous (they name the exact file/direction)
+and needed no change.
+
+Files: `src/blackvue/web/templates/archive_recording_detail.html`.
+
+Verified via a standalone Jinja `Environment` render with three fake
+`recording.videos` states (Front present, Front missing/Rear
+present, no videos at all) - asserted the hint text is present/absent
+exactly where expected in each case.

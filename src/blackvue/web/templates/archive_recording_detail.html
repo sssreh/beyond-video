@@ -11,6 +11,9 @@
 <p class="hint">{{ recording.timestamp.strftime("%A, %B %d, %Y %H:%M:%S") }} &middot; {{ recording.size_label }}</p>
 
 {% if recording.videos %}
+{% if recording.videos[0][0] != "Front" %}
+<p class="hint">No Front video for this recording - showing {{ recording.videos[0][0] }} instead.</p>
+{% endif %}
 <video controls preload="metadata"
        src="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ recording.videos[0][1] }}"></video>
 {% else %}
