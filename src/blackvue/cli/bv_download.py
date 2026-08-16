@@ -30,6 +30,7 @@ from ..core.joblog import wrap_warn
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
 from ..core.endpoint import Endpoint
+from ..core.sdcard_camera import SdCardCamera
 from ..domain.recording import Recording
 from ..domain.vod_entry import VodEntry
 from ..humantimeformatter import HumanTimeFormatter
@@ -237,7 +238,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Connect directly to this camera address instead of "
             "looking up a configured id - e.g. its WiFi IP. Requires "
-            "--target; cannot be combined with ID."
+            "--target; cannot be combined with ID or --sdcard."
+        ),
+    )
+
+    parser.add_argument(
+        "--sdcard",
+        type=Path,
+        metavar="DIR",
+        help=(
+            "Import recordings directly from a mounted SD card / "
+            "removable media at DIR instead of connecting over the "
+            "network - no CGI protocol, just BlackVue's own file "
+            "layout on disk. Combine with ID to import into that "
+            "camera's configured archive, or with --target for a "
+            "one-off import with no config. Cannot be combined with "
+            "--host."
         ),
     )
 
@@ -245,7 +261,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--target",
         type=Path,
         metavar="DIR",
-        help="Directory to download into. Requires --host.",
+        help="Directory to download into. Requires --host or --sdcard.",
     )
 
     parser.add_argument(
@@ -341,17 +357,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.files and not args.dry_run:
         parser.error("--files requires --dry-run")
 
-    if args.id is None and args.host is None:
-        parser.error("either ID or --host is required")
+    if args.id is None and args.host is None and args.sdcard is None:
+        parser.error("either ID, --host, or --sdcard is required")
 
     if args.id is not None and args.host is not None:
         parser.error("--host cannot be combined with ID")
 
+    if args.host is not None and args.sdcard is not None:
+        parser.error("--host cannot be combined with --sdcard")
+
+    if args.id is not None and args.target is not None:
+        parser.error("--target cannot be combined with ID")
+
     if args.host is not None and args.target is None:
         parser.error("--host requires --target")
 
-    if args.target is not None and args.host is None:
-        parser.error("--target requires --host")
+    if args.sdcard is not None and args.id is None and args.target is None:
+        parser.error("--sdcard requires ID or --target")
+
+    if args.target is not None and args.host is None and args.sdcard is None:
+        parser.error("--target requires --host or --sdcard")
 
     return args
 
@@ -364,28 +389,33 @@ def _default_warn(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def _capture_record_time(
-    client: BlackVueClient,
+def _write_record_time_snapshot_if_needed(
     destination: Path,
     recording_id: str,
+    record_time_seconds: int,
     *,
     verbose: bool,
     say=print,
     warn=_default_warn,
 ) -> None:
-    """Fetch the camera's current config.ini, extract RecordTime, and
-    write a new snapshot (see archive/configuration.py) into
-    `destination` if either the value has changed since the most
+    """Write a new RecordTime snapshot (see archive/configuration.py)
+    into `destination` if either the value has changed since the most
     recently recorded one, or this run's earliest recording isn't
     already covered by an existing snapshot - a no-op only when
     neither is true, so a normal run doesn't grow the archive with a
     new file every time.
 
+    Shared by both `_capture_record_time()` (the network path - reads
+    config.ini over the wire) and `_capture_record_time_from_sdcard()`
+    (the --sdcard path - reads it directly off the mounted card): once
+    a raw RecordTime integer has been obtained, from either source,
+    what to do with it is identical - only how it's obtained differs.
+
     `recording_id` anchors the snapshot to the earliest recording this
-    run is considering (see this function's own call site) - since
-    changing a setting on the camera reformats/wipes the SD card (see
+    run is considering (see each call site above) - since changing a
+    setting on the camera reformats/wipes the SD card (see
     WORKING_CONTEXT.md), every recording still on the card at the time
-    config.ini is fetched was necessarily made under this same
+    config.ini is read was necessarily made under this same
     RecordTime, so anchoring to the earliest one is always correct
     provenance, not just a guess.
 
@@ -405,25 +435,12 @@ def _capture_record_time(
     raw config.ini text, which also carries Wi-Fi/cloud credentials
     (see configuration.py's own module docstring).
 
-    Best-effort: any failure here (endpoint unavailable on this
-    firmware, unexpected config.ini shape, a transient network error)
-    is reported to stderr if --verbose and otherwise silently ignored -
-    this only ever informs bv-export's own --max-gap default, so it
-    must never be allowed to fail a download run.
-
     `say`/`warn` are injectable (default: real stdout/stderr via
     print/`_default_warn`) so bv-web's job runner (see web/jobs.py)
     can capture this function's own --verbose output into a job's
     transcript the same way `_run()` below does for the rest of this
     module.
     """
-
-    try:
-        record_time_seconds = parse_record_time_seconds(client.config())
-    except Exception as exc:
-        if verbose:
-            warn(f"bv-download: couldn't read RecordTime from config.ini: {exc}")
-        return
 
     destination.mkdir(parents=True, exist_ok=True)
 
@@ -456,6 +473,95 @@ def _capture_record_time(
                 f"coverage back to {recording_id} (this run's earliest "
                 "recording predates the archive's existing snapshot)"
             )
+
+
+def _capture_record_time(
+    client: BlackVueClient,
+    destination: Path,
+    recording_id: str,
+    *,
+    verbose: bool,
+    say=print,
+    warn=_default_warn,
+) -> None:
+    """Fetch the camera's current config.ini over the network, extract
+    RecordTime, and hand off to _write_record_time_snapshot_if_needed()
+    - see that function's own docstring for the write logic shared
+    with the --sdcard path.
+
+    Best-effort: any failure here (endpoint unavailable on this
+    firmware, unexpected config.ini shape, a transient network error)
+    is reported to stderr if --verbose and otherwise silently ignored -
+    this only ever informs bv-export's own --max-gap default, so it
+    must never be allowed to fail a download run.
+    """
+
+    try:
+        record_time_seconds = parse_record_time_seconds(client.config())
+    except Exception as exc:
+        if verbose:
+            warn(f"bv-download: couldn't read RecordTime from config.ini: {exc}")
+        return
+
+    _write_record_time_snapshot_if_needed(
+        destination,
+        recording_id,
+        record_time_seconds,
+        verbose=verbose,
+        say=say,
+        warn=warn,
+    )
+
+
+def _capture_record_time_from_sdcard(
+    camera: SdCardCamera,
+    destination: Path,
+    recording_id: str,
+    *,
+    verbose: bool,
+    say=print,
+    warn=_default_warn,
+) -> None:
+    """Read config.ini directly off the mounted SD card (see
+    SdCardCamera.read_config_text()'s own docstring for the candidate
+    paths tried), extract RecordTime, and hand off to
+    _write_record_time_snapshot_if_needed() - the --sdcard counterpart
+    to _capture_record_time()'s network version.
+
+    Best-effort, same as the network version: a card with no readable
+    config.ini (its real on-disk location isn't confirmed yet - see
+    docs/CAMERA_ADAPTERS.md) only means bv-export's own --max-gap
+    default goes unset, never a reason to fail an import run.
+    """
+
+    text = camera.read_config_text()
+
+    if text is None:
+        if verbose:
+            warn(
+                "bv-download: no config.ini found on the SD card - "
+                "skipping RecordTime capture"
+            )
+        return
+
+    try:
+        record_time_seconds = parse_record_time_seconds(text)
+    except Exception as exc:
+        if verbose:
+            warn(
+                "bv-download: couldn't read RecordTime from the SD "
+                f"card's config.ini: {exc}"
+            )
+        return
+
+    _write_record_time_snapshot_if_needed(
+        destination,
+        recording_id,
+        record_time_seconds,
+        verbose=verbose,
+        say=say,
+        warn=warn,
+    )
 
 
 def _destination_message(
@@ -521,7 +627,41 @@ def _run(
     docstring for the forced --yes.
     """
 
-    if args.host is not None:
+    # Three ways to say where recordings come from and where they go:
+    # --host/--target (one-off network connection, no config), --sdcard
+    # alone/with --target (one-off local import, no config), or ID
+    # (either over the network or, combined with --sdcard, from a
+    # mounted card) using a saved camera config for the destination.
+    # `endpoints`/`client` stay None on the --sdcard path - there's no
+    # network connection to make at all (see the `camera` construction
+    # a little further down).
+    endpoints: list[Endpoint] | None = None
+    client: BlackVueClient | None = None
+
+    if args.sdcard is not None:
+        #
+        # --sdcard: import recordings directly from a mounted SD card
+        # / removable media - no CGI wire protocol, just BlackVue's
+        # own file layout on disk (see SdCardCamera's own docstring
+        # and docs/CAMERA_ADAPTERS.md's "Add SD-card import" step).
+        #
+        if args.id is not None:
+            path = config_path(args.config_dir, args.id)
+
+            try:
+                config = load_camera_config(path)
+            except CameraConfigError as exc:
+                warn(f"bv-download: {exc}")
+                return EXIT_CONFIG_ERROR
+
+            destination = config.archive
+            display_name = config.name
+        else:
+            destination = args.target
+            display_name = str(args.sdcard)
+
+        camera = SdCardCamera(args.sdcard)
+    elif args.host is not None:
         #
         # --host/--target: a one-off connection with no saved config,
         # for people who just want to grab recordings and don't care
@@ -574,19 +714,39 @@ def _run(
     if mode is None and has_range:
         mode = ALL_KINDS
 
-    try:
-        endpoint, client = connect(endpoints, timeout=args.timeout)
-    except CameraUnreachableError as exc:
-        warn(f"bv-download: {exc}")
-        return EXIT_UNREACHABLE
+    if args.sdcard is not None:
+        # `camera` (an SdCardCamera) was already constructed above,
+        # eagerly scanning the card - see the source-setup block.
+        # Nothing to connect to.
+        scan = camera.scan_summary()
 
-    if args.verbose:
-        say(
-            f"bv-download: connected to {display_name} "
-            f"via {endpoint.name} ({endpoint.address})"
-        )
+        if scan.recognized_file_count == 0:
+            say(
+                f"bv-download: {args.sdcard}: no BlackVue-named "
+                f"recordings found ({scan.total_files_seen} file(s) "
+                "scanned)"
+            )
+        elif args.verbose:
+            say(
+                f"bv-download: {args.sdcard}: found "
+                f"{len(scan.recordings)} recording(s) across "
+                f"{scan.recognized_file_count} recognized file(s) "
+                f"(of {scan.total_files_seen} scanned)"
+            )
+    else:
+        try:
+            endpoint, client = connect(endpoints, timeout=args.timeout)
+        except CameraUnreachableError as exc:
+            warn(f"bv-download: {exc}")
+            return EXIT_UNREACHABLE
 
-    camera = BlackVueCamera(client)
+        if args.verbose:
+            say(
+                f"bv-download: connected to {display_name} "
+                f"via {endpoint.name} ({endpoint.address})"
+            )
+
+        camera = BlackVueCamera(client)
 
     recordings = [
         recording
@@ -617,20 +777,35 @@ def _run(
 
     #
     # RecordTime snapshot capture is a beyond-video-specific
-    # bookkeeping step (see _capture_record_time's own docstring) -
-    # skipped in --host mode, which is meant to be a bare download
-    # with no archive conventions imposed. If this same directory is
-    # later downloaded into via a real bv-config id, the snapshot
-    # just gets written on that first run instead.
-    if not args.dry_run and recordings and args.host is None:
-        _capture_record_time(
-            client,
-            destination,
-            recordings[0].id,
-            verbose=args.verbose,
-            say=say,
-            warn=warn,
-        )
+    # bookkeeping step (see _write_record_time_snapshot_if_needed()'s
+    # own docstring) - skipped for a bare one-off run with no archive
+    # conventions imposed (--host, or --sdcard used without ID). If
+    # this same directory is later downloaded/imported into via a real
+    # bv-config id, the snapshot just gets written on that first run
+    # instead.
+    bare_run = args.host is not None or (
+        args.sdcard is not None and args.id is None
+    )
+
+    if not args.dry_run and recordings and not bare_run:
+        if args.sdcard is not None:
+            _capture_record_time_from_sdcard(
+                camera,
+                destination,
+                recordings[0].id,
+                verbose=args.verbose,
+                say=say,
+                warn=warn,
+            )
+        else:
+            _capture_record_time(
+                client,
+                destination,
+                recordings[0].id,
+                verbose=args.verbose,
+                say=say,
+                warn=warn,
+            )
 
     if mode is not None:
         selection = select_by_mode(recordings, mode)

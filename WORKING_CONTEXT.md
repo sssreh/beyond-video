@@ -13131,3 +13131,134 @@ machine/CI to run for real.
 Next per docs/CAMERA_ADAPTERS.md's roadmap: SD-card import for
 `bv-download` (Christer already has `X:\SD_card` set up to test
 against), then further adapter variants as real footage shows up.
+
+## Feature: `--sdcard` import for bv-download (2026-08-16)
+
+Christer confirmed two facts before this started: BlackVue's own
+archives have no recursive search (flat only - matches `ArchiveReader`'s
+existing `scandir()`-based scan, nothing to change there), and his
+emulated test card (`X:\SD_card`) is loaded with sample clips that
+don't follow BlackVue's real filename convention. That second point
+shaped the whole feature: zero recognized recordings against that card
+had to be a *correct, clearly-explained* outcome, not a bug to chase -
+the real happy path (a genuine BlackVue-named card) couldn't be tested
+directly this session, so correctness there rests on matching the
+already-documented convention (`YYYYMMDD_HHMMSS_KD.ext`, the same shape
+`bv-download` itself writes - see docs/CAMERA_ADAPTERS.md's "SD-card
+mirrors what bv-download already produces" note) rather than on a live
+round-trip.
+
+New `src/blackvue/core/sdcard_camera.py`: `SdCardCamera`, a filesystem-
+backed counterpart to `BlackVueCamera` - not a delegation wrapper, real
+scanning logic, same shape as `FolderAdapter` from the previous adapter
+work but solving a different problem for a different consumer.
+`_matches_blackvue_filename()` is a strict regex recognizer (15-char
+timestamp, kind letter from `NEMPA`, a direction letter required for
+`.mp4`/`.thm` and forbidden for `.gps`/`.3gf`, matching the real shapes
+`BlackVueCamera.probe_missing_sidecars()`'s own path construction
+already assumes) - stricter than `VodEntry.recording`'s own lenient
+stripping, deliberately, so a folder of arbitrary camera-native
+filenames (GoPro, action cams, whatever Christer's test card actually
+has) reliably matches nothing rather than something it shouldn't.
+`_scan()` walks `root.rglob("*")` (recursive - the real on-disk layout
+of a mounted BlackVue SD card isn't confirmed yet, so this doesn't
+assume a flat root or a `Record/` subfolder, just handles either),
+builds real `VodEntry`/`Recording` objects (the same `domain` model
+`BlackVueCamera.recordings()` already returns, not the unrelated
+`archive.Recording` the read-only adapters use) so every existing piece
+of `bv-download`'s own `_run()` - mode selection, dry-run listing, the
+download loop, RecordTime capture - works completely unmodified once
+`camera.recordings()` returns something. `SdCardCamera.download()`
+copies files directly (64KB chunks, `on_bytes` callback preserved for
+`--trace` parity with the network path); a destination file already
+present with a matching size is skipped, not re-copied - no partial-
+transfer state worth resuming into for a local copy, unlike
+`BlackVueClient.download()`'s HTTP range requests.
+`SdCardCamera.probe_missing_sidecars()` is always a no-op: every file
+physically on the card was already found during the initial scan, so
+there's no "camera's listing omits it but still serves it" gap to fill
+the way there is over HTTP. `SdCardCamera.scan_summary()` exposes
+`total_files_seen`/`recognized_file_count` specifically so `_run()` can
+print "N files scanned, 0 recognized" instead of a silent empty result
+when the card's names don't match - the exact case Christer's own test
+card exercises. `SdCardCamera.read_config_text()` is a best-effort
+local read of the card's own `config.ini` (tried at `Config/config.ini`
+then the card root - two guesses, since the real layout isn't confirmed
+- returns `None` on either miss, never an error).
+
+`cli/bv_download.py`: new `--sdcard DIR` argparse option. Three source
+choices now instead of two - `ID` (network), `--host`+`--target`
+(one-off network), or `--sdcard` (local import, combinable with `ID`
+for a configured archive, or with `--target` for a one-off import).
+Validation rewritten: `--host` and `--sdcard` are mutually exclusive;
+`--sdcard` needs `ID` or `--target`; `--target` needs `--host` or a
+bare `--sdcard`; `--target` can no longer combine with `ID` at all
+(replaces the old implicit "target requires host, host excludes id"
+chain with an explicit rule that also covers the new `--sdcard` case
+cleanly). Error message text changed ("either ID, --host, or --sdcard
+is required", "--target cannot be combined with ID") - existing tests
+asserting the old wording were updated to match.
+`_write_record_time_snapshot_if_needed()` is a new extraction from the
+old `_capture_record_time()` - the compare-and-write logic (the
+"already covered" backfill check from the earlier RecordTime bugfix,
+see this file's own entry above) is identical regardless of how the
+raw RecordTime text was obtained, so it's now shared by both
+`_capture_record_time()` (network - `client.config()`) and the new
+`_capture_record_time_from_sdcard()` (local - `camera.read_config_text()`).
+`_run()`'s source-setup block gained a `--sdcard` branch that
+constructs `SdCardCamera(args.sdcard)` up front (eager scan) and skips
+`connect()`/`BlackVueClient` entirely; a `bare_run` flag (`--host`, or
+`--sdcard` without `ID`) gates RecordTime capture the same way `--host`
+alone used to. The `no [[endpoint]] entries found` config guard only
+fires for the real network `ID` path - a camera config used solely for
+`--sdcard` imports may legitimately have zero endpoints.
+
+Tests: new `tests/blackvue/core/test_sdcard_camera.py` (25 functions -
+filename recognition, recursive scan/grouping/sort order, zero-match
+behavior, download copy/select/on_bytes/resume-by-size-check,
+`read_config_text()`'s two candidate paths). `tests/blackvue/cli/
+test_bv_download.py`: updated the two now-stale error-message
+assertions, added `_capture_record_time_from_sdcard()` tests mirroring
+the existing `_capture_record_time()` coverage, new `parse_args()`
+tests for every `--sdcard` combination (alone, +`ID`, +`--target`,
++`--host` rejected, +`ID`+`--target` rejected), and `_run()` integration
+tests via a `_FakeSdCardCamera` monkeypatched onto `bv_download.
+SdCardCamera` (zero-match message, bare-run RecordTime skip, `ID`-backed
+archive destination + RecordTime capture, no-endpoints-required for
+`ID`+`--sdcard`). 85 new/updated test functions across both files (25 +
+60, i.e. the full file counts, not just the delta) confirmed passing
+function-by-function via the same fake `pytest`+`tomllib` harness used
+for the adapter work - real pytest still isn't available in this
+sandbox.
+
+Also end-to-end verified outside the pytest harness, via standalone
+scripts against real temp-directory fixtures: a full `_run()` pass with
+`--sdcard`+`ID` (real `CameraConfig` saved/loaded, real files copied
+into the real configured archive, real RecordTime snapshot written from
+a card-local `config.ini`), `--dry-run` writing nothing, a bare
+`--sdcard`+`--target` run skipping RecordTime capture, and the zero-
+match case against filenames shaped like Christer's own test card
+(`GOPR0001.MP4`, `clip_random.mov`) - confirmed it reports "no
+BlackVue-named recordings found (N file(s) scanned)" and exits `EXIT_OK`
+rather than erroring.
+
+Files: `src/blackvue/core/sdcard_camera.py` (new),
+`src/blackvue/cli/bv_download.py`,
+`tests/blackvue/core/test_sdcard_camera.py` (new, 25 tests),
+`tests/blackvue/cli/test_bv_download.py` (+27 tests, 2 messages
+updated), `docs/man/bv-download.md` (synopsis/description/arguments/
+options/examples rewritten for the three-way source choice),
+`docs/CAMERA_ADAPTERS.md` (roadmap step 6 marked done with a full
+summary).
+
+Christer's real test card (`X:\SD_card`) is expected to keep reporting
+zero recognized recordings until he has a card with genuine BlackVue-
+named files to test against - that's the correct, already-verified
+behavior for the data currently on it, not a gap in this feature.
+
+Not done / deliberately out of scope: the `removable_media` source-kind
+addition to `manifest.schema.json` discussed in the adapter-family
+section above - `--sdcard` turned out to live entirely inside
+`bv-download`'s own CLI, not the adapter/manifest system, so there was
+nothing there to wire it into. Further adapter variants (GoPro, drone
+footage) remain the next step once real footage is available.

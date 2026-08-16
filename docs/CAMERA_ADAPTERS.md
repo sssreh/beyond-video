@@ -462,14 +462,35 @@ to generalize from rather than one.
    ffprobe/mtime timestamp fallback)~~ - **done**, see above. On-demand
    thumbnail generation specifically was deferred - see that section's
    "Deliberately not built" note.
-6. **Add SD-card import to `bv-download`** - Christer's stated second
-   step, and rightly called "the easy one": no CGI wire protocol, no
-   never-closing multipart streams, no `blackvue_vod.cgi` sidecar-missing
-   workaround - just a mounted filesystem with the camera's own file
-   layout (BlackVue's SD card mirrors what `bv-download` already produces)
-   to filter and copy into the archive. Likely the first real user of the
-   `removable_media` source kind discussed above. Christer has an
-   emulated SD card ready to test against (`X:\SD_card`, 2026-08-16).
+6. ~~Add SD-card import to `bv-download`~~ - **done** (2026-08-16). New
+   `--sdcard DIR` flag: no CGI wire protocol at all, just a recursive
+   filesystem scan of `DIR` for files matching BlackVue's own on-camera
+   filename convention (`YYYYMMDD_HHMMSS_KD.ext`), fed straight into the
+   same `domain.Recording`/`VodEntry` model the network path already
+   uses - so the rest of `bv-download` (mode selection, dry-run
+   listing, the download loop, RecordTime capture) works unmodified.
+   New `core/sdcard_camera.py`: `SdCardCamera`, a filesystem-backed
+   counterpart to `BlackVueCamera` (same `recordings()`/
+   `probe_missing_sidecars()`/`download()` shape, plus `scan_summary()`
+   and `read_config_text()`). A file that doesn't match BlackVue's
+   naming convention is silently skipped, not an error - reported as
+   "N files scanned, 0 recognized" rather than a bare empty result, so
+   a card like Christer's own emulated test card
+   (`X:\SD_card`, non-BlackVue filenames) gets a clear explanation
+   instead of looking broken. Combine `--sdcard` with `ID` to import
+   into that camera's configured archive (RecordTime capture included,
+   reading `config.ini` straight off the card instead of over HTTP -
+   tried at `Config/config.ini` and the card root, since the real
+   on-disk layout isn't confirmed yet), or with `--target` for a bare
+   one-off import with no config, mirroring `--host`/`--target`. This
+   turned out to be the first real user of the `removable_media`
+   source-kind idea discussed above, though the schema itself wasn't
+   touched in this pass - `--sdcard` lives entirely in `bv-download`,
+   not in the adapter/manifest system. 34 new/updated tests across
+   `tests/blackvue/core/test_sdcard_camera.py` and
+   `tests/blackvue/cli/test_bv_download.py`, plus a
+   `docs/man/bv-download.md` rewrite for the new three-way source
+   choice.
 7. Build further adapter variants (GoPro, drone footage, ...) as real
    need/footage shows up, informed by whatever steps 4-6 taught about the
    interface.

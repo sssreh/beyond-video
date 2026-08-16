@@ -1,0 +1,271 @@
+"""
+Tests for core/sdcard_camera.py - SdCardCamera, used by bv-download's
+--sdcard import mode.
+
+Unlike FolderAdapter (adapters/folder/adapter.py), which synthesizes
+brand new ids for footage with no naming convention at all, this class
+only recognizes BlackVue's own on-camera filename convention and feeds
+the same domain/Recording model bv-download's network path already
+uses - see SdCardCamera's own module docstring.
+"""
+
+import os
+from pathlib import Path
+
+from blackvue.core.sdcard_camera import SdCardCamera
+from blackvue.core.sdcard_camera import _matches_blackvue_filename
+
+
+def _touch(path: Path, *, size: int = 10) -> Path:
+    path.write_bytes(b"x" * size)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# _matches_blackvue_filename() - the strict recognizer.
+# ---------------------------------------------------------------------------
+
+
+def test_matches_real_video_filename():
+    assert _matches_blackvue_filename("20260802_162130_NF.mp4")
+
+
+def test_matches_real_gps_filename():
+    assert _matches_blackvue_filename("20260802_162130_N.gps")
+
+
+def test_matches_real_3gf_filename():
+    assert _matches_blackvue_filename("20260802_162130_N.3gf")
+
+
+def test_matches_real_thumbnail_filename():
+    assert _matches_blackvue_filename("20260802_162130_NF.thm")
+
+
+def test_rejects_video_without_a_direction_letter():
+    assert not _matches_blackvue_filename("20260802_162130_N.mp4")
+
+
+def test_rejects_gps_with_a_direction_letter():
+    assert not _matches_blackvue_filename("20260802_162130_NF.gps")
+
+
+def test_rejects_an_unknown_kind_letter():
+    assert not _matches_blackvue_filename("20260802_162130_XF.mp4")
+
+
+def test_rejects_arbitrary_camera_filenames():
+    # Christer's own emulated test card (X:\SD_card, 2026-08-16) is
+    # loaded with sample clips that don't follow BlackVue's real
+    # naming convention - these must not be mistaken for real ones.
+    assert not _matches_blackvue_filename("GOPR0001.MP4")
+    assert not _matches_blackvue_filename("clip_001.mov")
+    assert not _matches_blackvue_filename("video1.mp4")
+
+
+def test_matching_is_case_insensitive_for_kind_and_extension():
+    assert _matches_blackvue_filename("20260802_162130_nf.MP4")
+
+
+# ---------------------------------------------------------------------------
+# SdCardCamera.recordings() / scan_summary() - the recursive scan.
+# ---------------------------------------------------------------------------
+
+
+def test_recordings_groups_files_by_recording_id(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4")
+    _touch(tmp_path / "20260802_162130_NR.mp4")
+    _touch(tmp_path / "20260802_162130_N.gps")
+
+    camera = SdCardCamera(tmp_path)
+    recordings = camera.recordings()
+
+    assert len(recordings) == 1
+    assert recordings[0].id == "20260802_162130_N"
+    assert len(recordings[0].entries) == 3
+
+
+def test_recordings_recurses_into_subfolders(tmp_path):
+    # The real on-disk layout of a mounted BlackVue SD card isn't
+    # confirmed yet (see docs/CAMERA_ADAPTERS.md) - this works whether
+    # files sit at the root or inside a Record/ subfolder.
+    sub = tmp_path / "Record"
+    sub.mkdir()
+    _touch(tmp_path / "20260802_162130_NF.mp4")
+    _touch(sub / "20260802_170000_EF.mp4")
+
+    camera = SdCardCamera(tmp_path)
+    recordings = camera.recordings()
+
+    assert len(recordings) == 2
+
+
+def test_recordings_are_sorted_chronologically(tmp_path):
+    _touch(tmp_path / "20260802_170000_EF.mp4")
+    _touch(tmp_path / "20260802_162130_NF.mp4")
+
+    camera = SdCardCamera(tmp_path)
+    ids = [r.id for r in camera.recordings()]
+
+    assert ids == sorted(ids)
+
+
+def test_unrecognized_files_are_silently_skipped(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4")
+    _touch(tmp_path / "GOPR0001.MP4")
+    _touch(tmp_path / "notes.txt")
+
+    camera = SdCardCamera(tmp_path)
+
+    assert len(camera.recordings()) == 1
+
+
+def test_scan_summary_reports_total_and_recognized_counts(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4")
+    _touch(tmp_path / "20260802_162130_N.gps")
+    _touch(tmp_path / "GOPR0001.MP4")
+
+    summary = SdCardCamera(tmp_path).scan_summary()
+
+    assert summary.total_files_seen == 3
+    assert summary.recognized_file_count == 2
+
+
+def test_zero_name_standard_card_yields_zero_recordings(tmp_path):
+    # Christer's real test scenario: X:\SD_card is loaded with sample
+    # clips that don't follow BlackVue's naming convention - zero
+    # recognized recordings is the correct, expected outcome here, not
+    # an error.
+    _touch(tmp_path / "GOPR0001.MP4")
+    _touch(tmp_path / "clip_random.mov")
+
+    camera = SdCardCamera(tmp_path)
+
+    assert camera.recordings() == []
+    assert camera.scan_summary().total_files_seen == 2
+    assert camera.scan_summary().recognized_file_count == 0
+
+
+# ---------------------------------------------------------------------------
+# probe_missing_sidecars() - always a no-op.
+# ---------------------------------------------------------------------------
+
+
+def test_probe_missing_sidecars_is_always_a_noop(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4")
+    camera = SdCardCamera(tmp_path)
+
+    assert camera.probe_missing_sidecars(camera.recordings()[0]) == []
+
+
+# ---------------------------------------------------------------------------
+# download() - local copy, with select/on_bytes/resume semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_download_copies_every_entry_by_default(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    _touch(tmp_path / "20260802_162130_N.gps", size=5)
+
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+
+    changed = camera.download(camera.recordings()[0], dest)
+
+    assert changed is True
+    assert (dest / "20260802_162130_NF.mp4").stat().st_size == 100
+    assert (dest / "20260802_162130_N.gps").stat().st_size == 5
+
+
+def test_download_respects_select(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    _touch(tmp_path / "20260802_162130_N.gps", size=5)
+
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+
+    camera.download(
+        camera.recordings()[0], dest, select=lambda entry: not entry.is_video
+    )
+
+    assert not (dest / "20260802_162130_NF.mp4").exists()
+    assert (dest / "20260802_162130_N.gps").exists()
+
+
+def test_download_calls_on_bytes_for_copied_data(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=200)
+    camera = SdCardCamera(tmp_path)
+
+    reported = []
+    camera.download(
+        camera.recordings()[0], tmp_path / "dest", on_bytes=reported.append
+    )
+
+    assert sum(reported) == 200
+
+
+def test_download_second_run_is_a_noop_when_file_already_matches(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+
+    first = camera.download(camera.recordings()[0], dest)
+    second = camera.download(camera.recordings()[0], dest)
+
+    assert first is True
+    assert second is False
+
+
+def test_download_recopies_when_destination_size_differs(tmp_path):
+    # A partial/stale file at the destination (different size) is
+    # replaced wholesale - a local copy has no partial-transfer state
+    # worth resuming into, unlike BlackVueClient.download()'s range
+    # requests over the network.
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "20260802_162130_NF.mp4").write_bytes(b"y" * 10)
+
+    changed = camera.download(camera.recordings()[0], dest)
+
+    assert changed is True
+    assert (dest / "20260802_162130_NF.mp4").stat().st_size == 100
+
+
+# ---------------------------------------------------------------------------
+# read_config_text() - best-effort local config.ini read.
+# ---------------------------------------------------------------------------
+
+
+def test_read_config_text_returns_none_when_absent(tmp_path):
+    assert SdCardCamera(tmp_path).read_config_text() is None
+
+
+def test_read_config_text_finds_config_subfolder(tmp_path):
+    (tmp_path / "Config").mkdir()
+    (tmp_path / "Config" / "config.ini").write_text("[Tab1]\nRecordTime=1\n")
+
+    text = SdCardCamera(tmp_path).read_config_text()
+
+    assert text is not None
+    assert "RecordTime" in text
+
+
+def test_read_config_text_falls_back_to_card_root(tmp_path):
+    (tmp_path / "config.ini").write_text("[Tab1]\nRecordTime=1\n")
+
+    text = SdCardCamera(tmp_path).read_config_text()
+
+    assert text is not None
+    assert "RecordTime" in text
+
+
+def test_read_config_text_prefers_config_subfolder_over_root(tmp_path):
+    (tmp_path / "Config").mkdir()
+    (tmp_path / "Config" / "config.ini").write_text("[Tab1]\nRecordTime=1\n")
+    (tmp_path / "config.ini").write_text("[Tab1]\nRecordTime=99\n")
+
+    text = SdCardCamera(tmp_path).read_config_text()
+
+    assert "RecordTime=1" in text
