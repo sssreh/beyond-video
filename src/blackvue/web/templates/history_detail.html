@@ -14,6 +14,9 @@
     <tr><th>Source</th><td>{% if numbered.entry.source == "bv-web" %}bv-web ({{ numbered.entry.username or "unknown" }}){% else %}terminal{% endif %}</td></tr>
   </tbody>
 </table>
+{% if numbered.entry.source == "bv-web" and numbered.entry.params and numbered.entry.command in reuse_supported_commands %}
+<p class="hint"><a href="/jobs/{{ numbered.entry.command }}?reuse={{ numbered.number }}">Rerun with these options &rarr;</a></p>
+{% endif %}
 </div>
 
 <h3>Logged output</h3>

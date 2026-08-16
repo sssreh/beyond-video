@@ -12625,3 +12625,84 @@ Verified via `python3 -m py_compile` on both touched Python files, a
 Jinja parse check on the template, and a standalone script re-deriving
 the simplified `_archive_filter_flags()` logic and asserting all four
 scenarios - all passed.
+
+## Feature: extend "reuse a previous run" to bv-export/bv-generate/bv-search + bv-history rerun links (2026-08-16)
+
+Extended bv-scribe's own "reuse a previous run" pilot (params snapshot
++ picklist + prefill) to `bv-export`, `bv-generate`, and `bv-search` -
+Christer's explicit minimum ask ("At last for bv-export and bv-generate
+it would be very nice to have a panel listing the commands that run
+before and then let you select one of them and populate the form
+accordingly") - and, on his agreement with the proposed command-scope
+ranking, `bv-search` too. `bv-gps`/`bv-download`/`bv-ls` were left out
+(too small a form, or too little run-to-run variation, to be worth
+it); `bv-config` stays excluded as an interactive wizard.
+
+Also built both UI mechanisms he asked for rather than picking one:
+"I like both both options a collapsed list and the bv-history link. So
+i think to myself why choose, when i can have both." (1) The in-page
+picklist is now a collapsible `<details>`/`<summary>` (new
+`.reuse-panel > summary` CSS in `base.html`, matching `.option-group`'s
+own disclosure-triangle treatment) instead of bv-scribe's original
+always-visible panel - open only when a `?reuse=<N>` is actually
+active. (2) `/history` and `/history/{number}` now show a "Rerun"/
+"Rerun with these options" link (`/jobs/<command>?reuse=<N>`) on any
+bv-web-sourced entry that has a params snapshot and whose command is
+in the new `_REUSE_SUPPORTED_COMMANDS` set (`app.py`) - the exact same
+four commands the in-page panels cover.
+
+Mechanism is unchanged from the bv-scribe pilot, just replicated:
+`start_bv_export()`/`start_bv_generate()`/`start_bv_search()` (jobs.py)
+each gained `params: dict | None = None`, threaded into
+`_new_job(..., params=params)`. Each command's GET route now computes
+`recent_runs = _recent_web_runs("bv-<command>")[:5]` and
+`defaults, active_reuse_number = _reuse_defaults(recent_runs,
+request.query_params.get("reuse"))`; each POST route captures a raw
+`{field_name: submitted_value}` dict before any cleaning/type
+conversion and passes it as `params=`. Every field in
+`job_new_bv_export.html`/`job_new_bv_generate.html`/
+`job_new_bv_search.html` now reads `defaults.get('field', <old
+hardcoded default>)` instead of a bare hardcoded default - a stale key
+from an old run (an option since removed) is simply never looked up
+by name, so "ignore options that no longer exist" falls out for free.
+Error-path template renders (validation failures) pass
+`defaults={}`/`recent_runs=[]`/`active_reuse_number=None` so the
+reuse panel/prefill machinery degrades to "no history" rather than
+erroring on missing context keys.
+
+For the bv-history links: confirmed via `core/history.py`'s own
+`HistoryEntry.command` docstring and `_record_job_history()`'s actual
+`command=job.command.split(maxsplit=1)[0]` call that `command` is the
+bare prog name (e.g. `"bv-export"`), not `Job.command`'s own
+`"bv-export kirby"` shape - so matching against
+`_REUSE_SUPPORTED_COMMANDS` and building `/jobs/{entry.command}?reuse=
+{number}` links needed no extra parsing.
+
+Files: `src/blackvue/web/jobs.py` (three `params` kwargs + docstring
+notes), `src/blackvue/web/app.py` (GET/POST routes for all three
+commands, `_REUSE_SUPPORTED_COMMANDS` constant, `/history` and
+`/history/{number}` routes pass it into template context),
+`src/blackvue/web/templates/job_new_bv_export.html`,
+`job_new_bv_generate.html`, `job_new_bv_search.html` (reuse panel +
+`defaults.get()` on every field), `job_new_bv_scribe.html` (retrofitted
+to the same collapsible `<details>` panel for consistency),
+`history_list.html`/`history_detail.html` (Rerun links),
+`base.html` (`.reuse-panel > summary` CSS). Tests:
+`tests/blackvue/web/test_jobs.py` - six new tests
+(`test_start_bv_{generate,export,search}_stores_params_on_the_job` /
+`test_start_bv_{generate,export,search}_defaults_params_to_empty_dict_when_not_given`),
+mirroring bv-scribe's own two existing tests for the same behavior.
+
+Verified via `python3 -m py_compile` on every touched Python file
+(including the test file), a standalone Jinja `Environment` render of
+all five job-trigger templates plus both history templates with both
+populated and empty `defaults`/`recent_runs` contexts (catching a
+`request.cookies`/`capitalize_first` fixture gap, not a real bug, then
+passing clean), and targeted string assertions on the rendered HTML
+(checked/selected attributes present exactly where expected, Rerun
+links present/absent exactly per the source/params/command gating).
+No pytest available in this sandbox (Python 3.10, project needs 3.11+
+for `tomllib` - same constraint noted in every prior session) - the
+new `test_jobs.py` tests themselves are unrun here, written to mirror
+the exact pattern of the two already-passing bv-scribe tests they're
+modeled on.

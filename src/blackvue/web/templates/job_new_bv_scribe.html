@@ -19,8 +19,8 @@
 {% endif %}
 {% if cameras %}
 {% if recent_runs %}
-<div class="content-panel reuse-panel">
-  <h3>Reuse a previous run</h3>
+<details class="content-panel reuse-panel"{% if active_reuse_number %} open{% endif %}>
+  <summary>Reuse a previous run</summary>
   <p class="hint">The form below is pre-filled from
     {% if recent_runs and active_reuse_number == recent_runs[0].number %}your most recent run{% else %}the run you picked below{% endif %}
     - pick a different one, or just edit the fields directly.</p>
@@ -34,7 +34,7 @@
     </li>
     {% endfor %}
   </ul>
-</div>
+</details>
 {% endif %}
 <div class="content-panel">
 <form method="post" action="/jobs/bv-scribe">

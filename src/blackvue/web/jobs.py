@@ -539,6 +539,7 @@ class JobRunner:
         dry_run: bool,
         ignore_lock: bool,
         username: str,
+        params: dict | None = None,
     ) -> Job:
         """Start bv-generate as a job against one already-configured
         camera's archive - full flag parity with the CLI (Christer's
@@ -547,6 +548,11 @@ class JobRunner:
         default and the rest", see job_new_bv_generate.html's own
         Required/Defaults/Optional groups), unlike bv-config/bv-gps's
         deliberately curated subset above.
+
+        `params`, if given, is the raw web-form field dict app.py's
+        own POST route captured before cleaning - see start_bv_scribe's
+        own docstring for the full "reuse a previous run" explanation;
+        this method just threads it through the same way.
 
         `archive_path` is resolved by the caller (app.py's route, via
         the same `_find_camera_archive()` the archive browser already
@@ -613,6 +619,7 @@ class JobRunner:
                 "bv-generate", [camera_id, *argv[1:]]
             ),
             username=username,
+            params=params,
         )
 
         def run() -> int:
@@ -682,6 +689,7 @@ class JobRunner:
         dry_run: bool,
         debug: bool,
         username: str,
+        params: dict | None = None,
     ) -> Job:
         """Start bv-export as a job against one already-configured
         camera's archive - full CLI parity (every bv-export flag gets
@@ -857,6 +865,7 @@ class JobRunner:
                 "bv-export", [camera_id, *argv[1:]]
             ),
             username=username,
+            params=params,
         )
 
         def run() -> int:
@@ -1164,6 +1173,7 @@ class JobRunner:
         radius: float | None,
         trace: bool,
         username: str,
+        params: dict | None = None,
     ) -> Job:
         """Start bv-search as a job against one already-configured
         camera's archive - full flag parity with the CLI (bv-search's
@@ -1224,6 +1234,7 @@ class JobRunner:
                 "bv-search", [camera_id, *argv[1:]]
             ),
             username=username,
+            params=params,
         )
 
         def run() -> int:

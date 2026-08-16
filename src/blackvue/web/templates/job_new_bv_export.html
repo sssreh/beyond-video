@@ -19,6 +19,24 @@
 <p class="error">{{ error }}</p>
 {% endif %}
 {% if cameras %}
+{% if recent_runs %}
+<details class="content-panel reuse-panel"{% if active_reuse_number %} open{% endif %}>
+  <summary>Reuse a previous run</summary>
+  <p class="hint">The form below is pre-filled from
+    {% if recent_runs and active_reuse_number == recent_runs[0].number %}your most recent run{% else %}the run you picked below{% endif %}
+    - pick a different one, or just edit the fields directly.</p>
+  <ul class="reuse-list">
+    {% for numbered in recent_runs %}
+    <li{% if numbered.number == active_reuse_number %} class="active"{% endif %}>
+      <a href="/jobs/bv-export?reuse={{ numbered.number }}">
+        <span class="reuse-date">{{ numbered.entry.started_at }}</span>
+        <code class="reuse-command">{{ numbered.entry.command_line }}</code>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
 <div class="content-panel">
 <form method="post" action="/jobs/bv-export">
   <div class="option-group">
@@ -29,7 +47,7 @@
     </label>
     <select id="id" name="id" autofocus required>
       {% for camera in cameras %}
-      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      <option value="{{ camera.id }}"{% if camera.id == defaults.get('id') %} selected{% endif %}>{{ camera.label }}</option>
       {% endfor %}
     </select>
   </div>
@@ -42,21 +60,21 @@
           Timestamp (--timestamp)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Export every trip matching this timestamp or prefix, in full - an alternative to From/Until for a single recording or day.</span></span>
         </label>
-        <input type="text" id="timestamp" name="timestamp" placeholder="e.g. 20260715_120000 or 20260715">
+        <input type="text" id="timestamp" name="timestamp" value="{{ defaults.get('timestamp', '') }}" placeholder="e.g. 20260715_120000 or 20260715">
       </div>
       <div class="field">
         <label class="field-label" for="from_">
           From (--from)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Export every trip with at least one recording from this timestamp onward, in full (e.g. 20260715_120000), or a shorter prefix - 2026 matches the whole year, 20260715 matches just that day.</span></span>
         </label>
-        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+        <input type="text" id="from_" name="from_" value="{{ defaults.get('from_', '') }}" placeholder="whole archive if blank">
       </div>
       <div class="field">
         <label class="field-label" for="until">
           Until (--until)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Export every trip with at least one recording up to this timestamp, in full.</span></span>
         </label>
-        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+        <input type="text" id="until" name="until" value="{{ defaults.get('until', '') }}" placeholder="whole archive if blank">
       </div>
     </div>
   </div>
@@ -68,28 +86,28 @@
       Trip folder name prefix (--prefix)
       <span class="help-tip" tabindex="0">?<span class="tooltip-text">Prepend PREFIX_ to each trip's folder name, e.g. Holiday -> Holiday_trip_20260715_133458_20260715_141235.</span></span>
     </label>
-    <input type="text" id="prefix" name="prefix" placeholder="none">
+    <input type="text" id="prefix" name="prefix" value="{{ defaults.get('prefix', '') }}" placeholder="none">
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="stitch" name="stitch" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="stitch" name="stitch" value="true" style="width: auto; margin: 0;"{% if defaults.get('stitch') %} checked{% endif %}>
         Create stitched video (front and rear cameras combined into one video) (--stitch)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="render_map" name="render_map" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="render_map" name="render_map" value="true" style="width: auto; margin: 0;"{% if defaults.get('render_map') %} checked{% endif %}>
         Include map (whole-trip route overview, map.mp4) (--map)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="render_map_intro" name="render_map_intro" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="render_map_intro" name="render_map_intro" value="true" style="width: auto; margin: 0;"{% if defaults.get('render_map_intro') %} checked{% endif %}>
         Render an intro flyover clip (intro.mp4) (--map-intro)
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">A short zoomed-out-to-zoomed-in flyover of the trip's start location, with a caption - meant to lead into the trip's video. Length is set in Advanced map.</span></span>
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="include_parking" name="include_parking" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="include_parking" name="include_parking" value="true" style="width: auto; margin: 0;"{% if defaults.get('include_parking') %} checked{% endif %}>
         Include Parking-mode recordings in the exported video/audio (--include-parking)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="trip_summary" name="trip_summary" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="trip_summary" name="trip_summary" value="true" style="width: auto; margin: 0;"{% if defaults.get('trip_summary') %} checked{% endif %}>
         Write a trip-level narrative summary (trip_summary.txt) (--trip-summary)
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Synthesizes trip_summary.txt from this trip's own recordings - needs 2+ of them already described via bv-scribe or bv-generate's Describe scene option first. Skipped with a note in the job log if fewer than 2 are described.</span></span>
       </label>
@@ -102,10 +120,10 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Camera arrangement for stitch.mp4: side by side, stacked, or rearview-mirror inset. Auto picks side-by-side or top-down from the trip's own GPS extent; rearview_mirror is never auto-picked. Only used if "Create stitched video" above is checked.</span></span>
         </label>
         <select id="stitch_layout" name="stitch_layout">
-          <option value="auto" selected>auto</option>
-          <option value="side_by_side">side_by_side</option>
-          <option value="top_down">top_down</option>
-          <option value="rearview_mirror">rearview_mirror</option>
+          <option value="auto"{% if defaults.get('stitch_layout', 'auto') == 'auto' %} selected{% endif %}>auto</option>
+          <option value="side_by_side"{% if defaults.get('stitch_layout', 'auto') == 'side_by_side' %} selected{% endif %}>side_by_side</option>
+          <option value="top_down"{% if defaults.get('stitch_layout', 'auto') == 'top_down' %} selected{% endif %}>top_down</option>
+          <option value="rearview_mirror"{% if defaults.get('stitch_layout', 'auto') == 'rearview_mirror' %} selected{% endif %}>rearview_mirror</option>
         </select>
       </div>
       <div class="field">
@@ -114,60 +132,60 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also compose a map panel alongside the camera composite in stitch.mp4 - a whole-trip overview, or a follow-camera view (needs the map follow-camera radius in Advanced map too). Only used if "Create stitched video" above is checked.</span></span>
         </label>
         <select id="stitch_map" name="stitch_map">
-          <option value="" selected>(none)</option>
-          <option value="map">whole-trip overview</option>
-          <option value="zoom">follow-camera</option>
+          <option value=""{% if not defaults.get('stitch_map') %} selected{% endif %}>(none)</option>
+          <option value="map"{% if defaults.get('stitch_map') == 'map' %} selected{% endif %}>whole-trip overview</option>
+          <option value="zoom"{% if defaults.get('stitch_map') == 'zoom' %} selected{% endif %}>follow-camera</option>
         </select>
       </div>
     </div>
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_gsensor" name="stitch_gsensor" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="stitch_gsensor" name="stitch_gsensor" value="true" style="width: auto; margin: 0;"{% if defaults.get('stitch_gsensor') %} checked{% endif %}>
         Overlay g-sensor gauge onto stitch.mp4 (--stitch-gsensor)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_graph" name="stitch_graph" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="stitch_graph" name="stitch_graph" value="true" style="width: auto; margin: 0;"{% if defaults.get('stitch_graph') %} checked{% endif %}>
         Compose g-sensor strip-chart panel onto stitch.mp4 (--stitch-graph)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="map_track_up" name="map_track_up" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="map_track_up" name="map_track_up" value="true" style="width: auto; margin: 0;"{% if defaults.get('map_track_up') %} checked{% endif %}>
         Rotate map(s) to vehicle heading (track-up) instead of north-up (--map-track-up)
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Applies to both "Include map" and the follow-camera radius in Advanced map - the vehicle's current heading always points "up" on screen, like a phone turn-by-turn app. Costs extra render time on the whole-trip overview map specifically.</span></span>
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_map_circle" name="stitch_map_circle" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="stitch_map_circle" name="stitch_map_circle" value="true" style="width: auto; margin: 0;"{% if defaults.get('stitch_map_circle') %} checked{% endif %}>
         Crop the stitched map panel into a circle (--stitch-map-circle)
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Masks the map panel composited into stitch.mp4 into an ellipse inscribed in its own frame, with the four corners rendered solid black. Only meaningful once Stitch map panel above is set.</span></span>
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="stitch_subtitles" name="stitch_subtitles" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="stitch_subtitles" name="stitch_subtitles" value="true" style="width: auto; margin: 0;"{% if defaults.get('stitch_subtitles') %} checked{% endif %}>
         Burn in subtitles onto stitch.mp4 (--stitch-subtitles)
       </label>
     </div>
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="render_gsensor" name="render_gsensor" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="render_gsensor" name="render_gsensor" value="true" style="width: auto; margin: 0;"{% if defaults.get('render_gsensor') %} checked{% endif %}>
         Render gsensor.mp4 (dot-gauge overlay video) (--gsensor-video)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="render_gsensor_graph" name="render_gsensor_graph" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="render_gsensor_graph" name="render_gsensor_graph" value="true" style="width: auto; margin: 0;"{% if defaults.get('render_gsensor_graph') %} checked{% endif %}>
         Render gsensor_graph.mp4 (strip-chart overlay video) (--gsensor-graph-video)
       </label>
     </div>
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;"{% if defaults.get('overwrite') %} checked{% endif %}>
         Wipe and rebuild each trip folder from scratch (--overwrite)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;"{% if defaults.get('dry_run') %} checked{% endif %}>
         Dry run (show what would be exported, write nothing) (--dry-run)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="debug" name="debug" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="debug" name="debug" value="true" style="width: auto; margin: 0;"{% if defaults.get('debug') %} checked{% endif %}>
         Debug: print per-trip render timing to the job log (--debug)
       </label>
     </div>
@@ -183,42 +201,42 @@
           Max gap between recordings (minutes) (--max-gap)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Largest gap between two recordings that still counts as the same trip. Default: derived from the camera's own RecordTime if known, else 5.</span></span>
         </label>
-        <input type="number" id="max_gap_minutes" name="max_gap_minutes" min="1" step="1" placeholder="auto">
+        <input type="number" id="max_gap_minutes" name="max_gap_minutes" min="1" step="1" value="{{ defaults.get('max_gap_minutes', '') }}" placeholder="auto">
       </div>
       <div class="field">
         <label class="field-label" for="gap_tolerance_seconds">
           Gap tolerance (seconds) (--gap-tolerance)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Small fixed margin added on top of the max gap before a gap counts as a split. Default: 10.</span></span>
         </label>
-        <input type="number" id="gap_tolerance_seconds" name="gap_tolerance_seconds" min="0" step="1" placeholder="10">
+        <input type="number" id="gap_tolerance_seconds" name="gap_tolerance_seconds" min="0" step="1" value="{{ defaults.get('gap_tolerance_seconds', '') }}" placeholder="10">
       </div>
       <div class="field">
         <label class="field-label" for="max_parking_duration_minutes">
           Max continuous parking duration (minutes) (--max-parking-duration)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">How long a continuous run of Parking-mode footage can span in real elapsed time before it's kept out of the trip it would otherwise end. Default: 60.</span></span>
         </label>
-        <input type="number" id="max_parking_duration_minutes" name="max_parking_duration_minutes" min="1" step="1" placeholder="60">
+        <input type="number" id="max_parking_duration_minutes" name="max_parking_duration_minutes" min="1" step="1" value="{{ defaults.get('max_parking_duration_minutes', '') }}" placeholder="60">
       </div>
       <div class="field">
         <label class="field-label" for="parking_speed">
           Parking-footage playback speed (--parking-speed)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Speed up (or slow down) Parking-mode footage in the exported video, 0.10-10. Only meaningful once "Include Parking-mode recordings" above is checked. Default: 1 (no change).</span></span>
         </label>
-        <input type="number" id="parking_speed" name="parking_speed" min="0.10" max="10" step="0.01" placeholder="1">
+        <input type="number" id="parking_speed" name="parking_speed" min="0.10" max="10" step="0.01" value="{{ defaults.get('parking_speed', '') }}" placeholder="1">
       </div>
     </div>
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="movement" name="movement" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="movement" name="movement" value="true" style="width: auto; margin: 0;"{% if defaults.get('movement') %} checked{% endif %}>
         Use GPS/g-sensor movement to bridge gaps over the max gap (--movement)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;"{% if defaults.get('no_duration') %} checked{% endif %}>
         Ignore recording duration, measure gaps from start timestamps only (--no-duration)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="duration_heal_archive" name="duration_heal_archive" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="duration_heal_archive" name="duration_heal_archive" value="true" style="width: auto; margin: 0;"{% if defaults.get('duration_heal_archive') %} checked{% endif %}>
         Self-heal missing duration data for the whole archive up front (--duration-heal-archive)
       </label>
     </div>
@@ -234,13 +252,13 @@
           Vision-language model (--scene-model)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Model used for the trip-summary synthesis pass. Leave blank for the default. First use on a new model downloads it (~16GB), cached on the server afterward.</span></span>
         </label>
-        <input type="text" id="scene_model" name="scene_model" placeholder="leave blank for default">
+        <input type="text" id="scene_model" name="scene_model" value="{{ defaults.get('scene_model', '') }}" placeholder="leave blank for default">
       </div>
     </div>
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="scene_cpu" name="scene_cpu" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="scene_cpu" name="scene_cpu" value="true" style="width: auto; margin: 0;"{% if defaults.get('scene_cpu') %} checked{% endif %}>
         Force the trip-summary synthesis pass onto CPU (--scene-cpu)
       </label>
     </div>
@@ -256,21 +274,21 @@
           Map marker image (--map-icon)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Custom image for the position marker on map.mp4/map_zoom. Default: a bundled red car icon - type "none" for a plain rotating arrow instead, or a path to use your own image.</span></span>
         </label>
-        <input type="text" id="map_icon" name="map_icon" placeholder="bundled red car icon">
+        <input type="text" id="map_icon" name="map_icon" value="{{ defaults.get('map_icon', '') }}" placeholder="bundled red car icon">
       </div>
       <div class="field">
         <label class="field-label" for="map_zoom_meters">
           Map follow-camera radius (meters) (--map-zoom)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also render a scrolling follow-camera map view of this real-world half-width in meters, independent of Include map above. Leave blank to skip. Default when enabled with no value: 120.</span></span>
         </label>
-        <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" placeholder="skip">
+        <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" value="{{ defaults.get('map_zoom_meters', '') }}" placeholder="skip">
       </div>
       <div class="field">
         <label class="field-label" for="map_intro_seconds">
           Intro flyover length (seconds) (--map-intro-seconds)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Length of intro.mp4's flyover. Only meaningful once "Render an intro flyover clip" above is checked. Default: 5.</span></span>
         </label>
-        <input type="number" id="map_intro_seconds" name="map_intro_seconds" min="0.1" step="0.1" placeholder="5">
+        <input type="number" id="map_intro_seconds" name="map_intro_seconds" min="0.1" step="0.1" value="{{ defaults.get('map_intro_seconds', '') }}" placeholder="5">
       </div>
     </div>
   </details>
@@ -281,7 +299,7 @@
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="gsensor_graph_x" name="gsensor_graph_x" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="gsensor_graph_x" name="gsensor_graph_x" value="true" style="width: auto; margin: 0;"{% if defaults.get('gsensor_graph_x') %} checked{% endif %}>
         Also plot X (up/down) on the g-sensor graph (--gsensor-graph-x)
       </label>
     </div>
@@ -297,21 +315,21 @@
           Mirror inset size (%) (--stitch-mirror-size)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Mirror inset size as a percentage of the composite's own width (10-50). Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_size" name="stitch_mirror_size" min="10" max="50" step="0.1" placeholder="40">
+        <input type="number" id="stitch_mirror_size" name="stitch_mirror_size" min="10" max="50" step="0.1" value="{{ defaults.get('stitch_mirror_size', '') }}" placeholder="40">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_radius">
           Mirror inset corner radius (%) (--stitch-mirror-radius)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Round the mirror inset's four corners (0-100) - 0 leaves them square. Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_radius" name="stitch_mirror_radius" min="0" max="100" step="0.1" placeholder="0">
+        <input type="number" id="stitch_mirror_radius" name="stitch_mirror_radius" min="0" max="100" step="0.1" value="{{ defaults.get('stitch_mirror_radius', '') }}" placeholder="0">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_zoom">
           Mirror inset zoom (%) (--stitch-mirror-zoom)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Zoom the mirror inset in, by cropping this percentage off each edge of the rear source (0-95). Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_zoom" name="stitch_mirror_zoom" min="0" max="95" step="0.1" placeholder="40">
+        <input type="number" id="stitch_mirror_zoom" name="stitch_mirror_zoom" min="0" max="95" step="0.1" value="{{ defaults.get('stitch_mirror_zoom', '') }}" placeholder="40">
       </div>
     </div>
 
@@ -321,21 +339,21 @@
           Mirror inset pan X (%) (--stitch-mirror-pan-x)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Pan the mirror inset's crop window left/right within the margin zoom crops away (-100 to 100). Only has room to move once zoom is above 0.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_pan_x" name="stitch_mirror_pan_x" min="-100" max="100" step="0.1" placeholder="0">
+        <input type="number" id="stitch_mirror_pan_x" name="stitch_mirror_pan_x" min="-100" max="100" step="0.1" value="{{ defaults.get('stitch_mirror_pan_x', '') }}" placeholder="0">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_pan_y">
           Mirror inset pan Y (%) (--stitch-mirror-pan-y)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Pan the mirror inset's crop window up/down within the margin zoom crops away (-100 to 100). Default is panned up, since the default zoom already crops in.</span></span>
         </label>
-        <input type="number" id="stitch_mirror_pan_y" name="stitch_mirror_pan_y" min="-100" max="100" step="0.1" placeholder="-30">
+        <input type="number" id="stitch_mirror_pan_y" name="stitch_mirror_pan_y" min="-100" max="100" step="0.1" value="{{ defaults.get('stitch_mirror_pan_y', '') }}" placeholder="-30">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_mirror_icon">
           Mirror inset frame photo (--stitch-mirror-icon)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Composite the mirror inset into a photo of a real rearview mirror instead of a plain rounded rectangle. Default: a bundled reference photo - type "none" for the plain procedural inset, or a path for your own photo. Only meaningful with stitch layout rearview_mirror.</span></span>
         </label>
-        <input type="text" id="stitch_mirror_icon" name="stitch_mirror_icon" placeholder="bundled reference photo">
+        <input type="text" id="stitch_mirror_icon" name="stitch_mirror_icon" value="{{ defaults.get('stitch_mirror_icon', '') }}" placeholder="bundled reference photo">
       </div>
     </div>
 
@@ -345,14 +363,14 @@
           Stitch resolution override (--stitch-resolution)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Scale stitch.mp4 to this exact resolution (e.g. 320x240) instead of front's own resolution - useful for a fast test render.</span></span>
         </label>
-        <input type="text" id="stitch_resolution" name="stitch_resolution" placeholder="e.g. 1920x1080">
+        <input type="text" id="stitch_resolution" name="stitch_resolution" value="{{ defaults.get('stitch_resolution', '') }}" placeholder="e.g. 1920x1080">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_bitrate">
           Stitch bitrate (--stitch-bitrate)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Target video bitrate for stitch.mp4 (e.g. 256k, 2M). Default: matches the original footage's own bitrate.</span></span>
         </label>
-        <input type="text" id="stitch_bitrate" name="stitch_bitrate" placeholder="e.g. 2M">
+        <input type="text" id="stitch_bitrate" name="stitch_bitrate" value="{{ defaults.get('stitch_bitrate', '') }}" placeholder="e.g. 2M">
       </div>
     </div>
 
@@ -362,21 +380,21 @@
           Stitch scale (%) (--stitch-scale)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Scale stitch.mp4's natural resolution down to this percentage (1-100), always preserving aspect ratio. Combines with the width/height caps below (whichever shrinks most wins).</span></span>
         </label>
-        <input type="number" id="stitch_scale" name="stitch_scale" min="1" max="100" step="0.1" placeholder="100">
+        <input type="number" id="stitch_scale" name="stitch_scale" min="1" max="100" step="0.1" value="{{ defaults.get('stitch_scale', '') }}" placeholder="100">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_max_width">
           Stitch max width (pixels) (--stitch-max-width)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap stitch.mp4's natural width at this many pixels, scaling down (never up) to fit while preserving aspect ratio.</span></span>
         </label>
-        <input type="number" id="stitch_max_width" name="stitch_max_width" min="1" step="1" placeholder="none">
+        <input type="number" id="stitch_max_width" name="stitch_max_width" min="1" step="1" value="{{ defaults.get('stitch_max_width', '') }}" placeholder="none">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_max_height">
           Stitch max height (pixels) (--stitch-max-height)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Cap stitch.mp4's natural height at this many pixels - see max width above.</span></span>
         </label>
-        <input type="number" id="stitch_max_height" name="stitch_max_height" min="1" step="1" placeholder="none">
+        <input type="number" id="stitch_max_height" name="stitch_max_height" min="1" step="1" value="{{ defaults.get('stitch_max_height', '') }}" placeholder="none">
       </div>
     </div>
 
@@ -387,11 +405,11 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Override the map panel's side. Default: left for top_down layout, bottom for side_by_side/rearview_mirror. Only meaningful once Stitch map panel above is set.</span></span>
         </label>
         <select id="stitch_map_side" name="stitch_map_side">
-          <option value="" selected>(auto)</option>
-          <option value="left">left</option>
-          <option value="right">right</option>
-          <option value="top">top</option>
-          <option value="down">down</option>
+          <option value=""{% if not defaults.get('stitch_map_side') %} selected{% endif %}>(auto)</option>
+          <option value="left"{% if defaults.get('stitch_map_side') == 'left' %} selected{% endif %}>left</option>
+          <option value="right"{% if defaults.get('stitch_map_side') == 'right' %} selected{% endif %}>right</option>
+          <option value="top"{% if defaults.get('stitch_map_side') == 'top' %} selected{% endif %}>top</option>
+          <option value="down"{% if defaults.get('stitch_map_side') == 'down' %} selected{% endif %}>down</option>
         </select>
       </div>
       <div class="field">
@@ -399,7 +417,7 @@
           Stitch map panel size (%) (--stitch-map-size)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Override the map panel's width/height as a percent of the camera composite's matching dimension (5-80). Default: sized automatically from the trip's own shape.</span></span>
         </label>
-        <input type="number" id="stitch_map_size" name="stitch_map_size" min="5" max="80" step="0.1" placeholder="auto">
+        <input type="number" id="stitch_map_size" name="stitch_map_size" min="5" max="80" step="0.1" value="{{ defaults.get('stitch_map_size', '') }}" placeholder="auto">
       </div>
     </div>
 
@@ -409,21 +427,21 @@
           G-sensor overlay size (%) (--stitch-gsensor-size)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Overlay size as a percentage of the camera composite's width (5-40). Only used together with "Overlay g-sensor gauge onto stitch.mp4" above.</span></span>
         </label>
-        <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" min="5" max="40" step="0.1" placeholder="15">
+        <input type="number" id="stitch_gsensor_size" name="stitch_gsensor_size" min="5" max="40" step="0.1" value="{{ defaults.get('stitch_gsensor_size', '') }}" placeholder="15">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_gsensor_pos">
           G-sensor overlay position (--stitch-gsensor-pos)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Named overlay position: any combination of left/right/top/down/center (e.g. top-right, center). Default: top-right. Mutually exclusive with the X,Y position below - leave one blank.</span></span>
         </label>
-        <input type="text" id="stitch_gsensor_pos" name="stitch_gsensor_pos" placeholder="e.g. top-right">
+        <input type="text" id="stitch_gsensor_pos" name="stitch_gsensor_pos" value="{{ defaults.get('stitch_gsensor_pos', '') }}" placeholder="e.g. top-right">
       </div>
       <div class="field">
         <label class="field-label" for="stitch_gsensor_xy">
           G-sensor overlay position (X,Y %) (--stitch-gsensor-xy)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Explicit overlay position as X,Y percentages of the footage region's top-left corner, e.g. 80,10. Mutually exclusive with the named position above - leave one blank.</span></span>
         </label>
-        <input type="text" id="stitch_gsensor_xy" name="stitch_gsensor_xy" placeholder="e.g. 80,10">
+        <input type="text" id="stitch_gsensor_xy" name="stitch_gsensor_xy" value="{{ defaults.get('stitch_gsensor_xy', '') }}" placeholder="e.g. 80,10">
       </div>
     </div>
 
@@ -434,11 +452,11 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Override the graph panel's side. Default: whichever side the map panel didn't use, or bottom if there's no map panel.</span></span>
         </label>
         <select id="stitch_graph_side" name="stitch_graph_side">
-          <option value="" selected>(auto)</option>
-          <option value="left">left</option>
-          <option value="right">right</option>
-          <option value="top">top</option>
-          <option value="down">down</option>
+          <option value=""{% if not defaults.get('stitch_graph_side') %} selected{% endif %}>(auto)</option>
+          <option value="left"{% if defaults.get('stitch_graph_side') == 'left' %} selected{% endif %}>left</option>
+          <option value="right"{% if defaults.get('stitch_graph_side') == 'right' %} selected{% endif %}>right</option>
+          <option value="top"{% if defaults.get('stitch_graph_side') == 'top' %} selected{% endif %}>top</option>
+          <option value="down"{% if defaults.get('stitch_graph_side') == 'down' %} selected{% endif %}>down</option>
         </select>
       </div>
       <div class="field">
@@ -446,13 +464,13 @@
           Stitch graph panel size (%) (--stitch-graph-size)
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Override the graph panel's width/height as a percent of the camera composite's matching dimension (5-80). Default: 50.</span></span>
         </label>
-        <input type="number" id="stitch_graph_size" name="stitch_graph_size" min="5" max="80" step="0.1" placeholder="50">
+        <input type="number" id="stitch_graph_size" name="stitch_graph_size" min="5" max="80" step="0.1" value="{{ defaults.get('stitch_graph_size', '') }}" placeholder="50">
       </div>
     </div>
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="no_subtitles_bg" name="no_subtitles_bg" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="no_subtitles_bg" name="no_subtitles_bg" value="true" style="width: auto; margin: 0;"{% if defaults.get('no_subtitles_bg') %} checked{% endif %}>
         Disable the dark background bar behind burned-in subtitles (--no-subtitles-bg)
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only meaningful once "Burn in subtitles onto stitch.mp4" above is checked.</span></span>
       </label>

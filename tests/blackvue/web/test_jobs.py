@@ -917,6 +917,29 @@ def test_start_bv_generate_job_fails_when_run_returns_nonzero(monkeypatch):
     assert any("had errors" in line for line in output)
 
 
+def test_start_bv_generate_stores_params_on_the_job(monkeypatch):
+    # Job.params, extended from bv-scribe's own pilot (see that
+    # command's test of the same name) to bv-generate - the "reuse a
+    # previous run" feature Christer asked to have on both bv-export
+    # and bv-generate at minimum.
+    monkeypatch.setattr(bv_generate_module, "_run", lambda args, *, say, warn: 0)
+
+    runner = JobRunner()
+    raw_params = {"id": "kirby", "transcribe": True}
+    job = runner.start_bv_generate(**_generate_kwargs(params=raw_params))
+
+    assert job.params == raw_params
+
+
+def test_start_bv_generate_defaults_params_to_empty_dict_when_not_given(monkeypatch):
+    monkeypatch.setattr(bv_generate_module, "_run", lambda args, *, say, warn: 0)
+
+    runner = JobRunner()
+    job = runner.start_bv_generate(**_generate_kwargs())
+
+    assert job.params == {}
+
+
 # ---------------------------------------------------------------------------
 # JobRunner.start_bv_export - real wiring, fake _run
 # ---------------------------------------------------------------------------
@@ -1318,6 +1341,28 @@ def test_start_bv_export_should_continue_reflects_job_cancellation(monkeypatch):
 
     proceed.set()
     _wait_until(lambda: job.snapshot()[0].is_finished)
+
+
+def test_start_bv_export_stores_params_on_the_job(monkeypatch):
+    # Job.params, extended from bv-scribe's own pilot (see that
+    # command's test of the same name) to bv-export - Christer's
+    # explicit "at last for bv-export and bv-generate" minimum ask.
+    monkeypatch.setattr(bv_export_module, "_run", lambda *a, **k: 0)
+
+    runner = JobRunner()
+    raw_params = {"id": "kirby", "stitch": True}
+    job = runner.start_bv_export(**_export_kwargs(params=raw_params))
+
+    assert job.params == raw_params
+
+
+def test_start_bv_export_defaults_params_to_empty_dict_when_not_given(monkeypatch):
+    monkeypatch.setattr(bv_export_module, "_run", lambda *a, **k: 0)
+
+    runner = JobRunner()
+    job = runner.start_bv_export(**_export_kwargs())
+
+    assert job.params == {}
 
 
 # ---------------------------------------------------------------------------
@@ -2212,3 +2257,28 @@ def test_start_bv_search_job_fails_when_run_returns_nonzero(monkeypatch):
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, _, _ = job.snapshot()
     assert status == JobStatus.FAILED
+
+
+def test_start_bv_search_stores_params_on_the_job(monkeypatch):
+    # Job.params, extended from bv-scribe's own pilot (see that
+    # command's test of the same name) to bv-search - the natural next
+    # inclusion per the agreed command-scope ranking, alongside
+    # bv-export/bv-generate.
+    monkeypatch.setattr(bv_search_module, "_run", lambda args, *, say, warn: 0)
+
+    runner = JobRunner()
+    raw_params = {"id": "kirby", "text": "roundabout"}
+    job = runner.start_bv_search(
+        **_search_kwargs(text="roundabout", params=raw_params)
+    )
+
+    assert job.params == raw_params
+
+
+def test_start_bv_search_defaults_params_to_empty_dict_when_not_given(monkeypatch):
+    monkeypatch.setattr(bv_search_module, "_run", lambda args, *, say, warn: 0)
+
+    runner = JobRunner()
+    job = runner.start_bv_search(**_search_kwargs(text="roundabout"))
+
+    assert job.params == {}

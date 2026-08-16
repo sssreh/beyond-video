@@ -17,6 +17,24 @@
 <p class="error">{{ error }}</p>
 {% endif %}
 {% if cameras %}
+{% if recent_runs %}
+<details class="content-panel reuse-panel"{% if active_reuse_number %} open{% endif %}>
+  <summary>Reuse a previous run</summary>
+  <p class="hint">The form below is pre-filled from
+    {% if recent_runs and active_reuse_number == recent_runs[0].number %}your most recent run{% else %}the run you picked below{% endif %}
+    - pick a different one, or just edit the fields directly.</p>
+  <ul class="reuse-list">
+    {% for numbered in recent_runs %}
+    <li{% if numbered.number == active_reuse_number %} class="active"{% endif %}>
+      <a href="/jobs/bv-generate?reuse={{ numbered.number }}">
+        <span class="reuse-date">{{ numbered.entry.started_at }}</span>
+        <code class="reuse-command">{{ numbered.entry.command_line }}</code>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
 <div class="content-panel">
 <form method="post" action="/jobs/bv-generate">
   <div class="option-group">
@@ -27,7 +45,7 @@
     </label>
     <select id="id" name="id" autofocus required>
       {% for camera in cameras %}
-      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      <option value="{{ camera.id }}"{% if camera.id == defaults.get('id') %} selected{% endif %}>{{ camera.label }}</option>
       {% endfor %}
     </select>
 
@@ -37,19 +55,19 @@
     </label>
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="extract_audio" name="extract_audio" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="extract_audio" name="extract_audio" value="true" style="width: auto; margin: 0;"{% if defaults.get('extract_audio') %} checked{% endif %}>
         Extract audio (.aac)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="get_duration" name="get_duration" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="get_duration" name="get_duration" value="true" style="width: auto; margin: 0;"{% if defaults.get('get_duration') %} checked{% endif %}>
         Compute real-world duration (.duration.txt)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="transcribe" name="transcribe" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="transcribe" name="transcribe" value="true" style="width: auto; margin: 0;"{% if defaults.get('transcribe') %} checked{% endif %}>
         Transcribe audio to text (.transcript.txt)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="describe_scene" name="describe_scene" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="describe_scene" name="describe_scene" value="true" style="width: auto; margin: 0;"{% if defaults.get('describe_scene') %} checked{% endif %}>
         Describe scene + read on-screen text (.scene.txt)
       </label>
     </div>
@@ -57,7 +75,7 @@
       Translate to language
       <span class="help-tip" tabindex="0">?<span class="tooltip-text">A language code (e.g. sv, es, fr). Leave blank to skip translation. Implies transcription internally - --transcribe above isn't required alongside it.</span></span>
     </label>
-    <input type="text" id="translate" name="translate" placeholder="e.g. sv (leave blank to skip)">
+    <input type="text" id="translate" name="translate" value="{{ defaults.get('translate', '') }}" placeholder="e.g. sv (leave blank to skip)">
   </div>
 
   <div class="option-group">
@@ -68,21 +86,21 @@
           Timestamp
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
         </label>
-        <input type="text" id="timestamp" name="timestamp" placeholder="e.g. 20260715_120000 or 20260715">
+        <input type="text" id="timestamp" name="timestamp" value="{{ defaults.get('timestamp', '') }}" placeholder="e.g. 20260715_120000 or 20260715">
       </div>
       <div class="field">
         <label class="field-label" for="from_">
           From
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward (e.g. 20260715_120000), or a shorter prefix - 2026 matches the whole year, 20260715 matches just that day. Leave blank for the whole archive.</span></span>
         </label>
-        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+        <input type="text" id="from_" name="from_" value="{{ defaults.get('from_', '') }}" placeholder="whole archive if blank">
       </div>
       <div class="field">
         <label class="field-label" for="until">
           Until
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
         </label>
-        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+        <input type="text" id="until" name="until" value="{{ defaults.get('until', '') }}" placeholder="whole archive if blank">
       </div>
     </div>
   </div>
@@ -96,12 +114,12 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">faster-whisper model size for transcription/translation. Larger models are more accurate but slower. Auto picks 'large' on a GPU server, 'small' otherwise - the same default bv-generate uses from the command line.</span></span>
         </label>
         <select id="model_size" name="model_size">
-          <option value="" selected>Auto (large on GPU, small otherwise)</option>
-          <option value="tiny">tiny</option>
-          <option value="base">base</option>
-          <option value="small">small</option>
-          <option value="medium">medium</option>
-          <option value="large-v3">large-v3</option>
+          <option value=""{% if not defaults.get('model_size') %} selected{% endif %}>Auto (large on GPU, small otherwise)</option>
+          <option value="tiny"{% if defaults.get('model_size') == 'tiny' %} selected{% endif %}>tiny</option>
+          <option value="base"{% if defaults.get('model_size') == 'base' %} selected{% endif %}>base</option>
+          <option value="small"{% if defaults.get('model_size') == 'small' %} selected{% endif %}>small</option>
+          <option value="medium"{% if defaults.get('model_size') == 'medium' %} selected{% endif %}>medium</option>
+          <option value="large-v3"{% if defaults.get('model_size') == 'large-v3' %} selected{% endif %}>large-v3</option>
         </select>
       </div>
       <div class="field">
@@ -109,7 +127,7 @@
           Spoken language hint
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Language actually spoken in the recording (e.g. en). Auto-detected if left blank.</span></span>
         </label>
-        <input type="text" id="language" name="language" placeholder="auto-detected if blank">
+        <input type="text" id="language" name="language" value="{{ defaults.get('language', '') }}" placeholder="auto-detected if blank">
       </div>
     </div>
   </div>
@@ -124,9 +142,9 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which recorded camera(s) to describe. Front (default) describes the front video, or rear if there's no front. Rear describes only the rear video with a full pass. Both adds a cheap plates/signs-only OCR pass on the rear video alongside the normal front pass.</span></span>
         </label>
         <select id="camera" name="camera">
-          <option value="front" selected>Front</option>
-          <option value="rear">Rear</option>
-          <option value="both">Both</option>
+          <option value="front"{% if defaults.get('camera', 'front') == 'front' %} selected{% endif %}>Front</option>
+          <option value="rear"{% if defaults.get('camera', 'front') == 'rear' %} selected{% endif %}>Rear</option>
+          <option value="both"{% if defaults.get('camera', 'front') == 'both' %} selected{% endif %}>Both</option>
         </select>
       </div>
       <div class="field">
@@ -134,7 +152,7 @@
           Vision-language model
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Model used to describe the scene and read on-screen text. Leave blank for the default. First use on a new model downloads it (~16GB), cached on the server afterward.</span></span>
         </label>
-        <input type="text" id="scene_model" name="scene_model" placeholder="leave blank for default">
+        <input type="text" id="scene_model" name="scene_model" value="{{ defaults.get('scene_model', '') }}" placeholder="leave blank for default">
       </div>
     </div>
   </div>
@@ -143,11 +161,11 @@
     <h3>Optional</h3>
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="diarize" name="diarize" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="diarize" name="diarize" value="true" style="width: auto; margin: 0;"{% if defaults.get('diarize') %} checked{% endif %}>
         Label speakers (--diarize)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="srt" name="srt" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="srt" name="srt" value="true" style="width: auto; margin: 0;"{% if defaults.get('srt') %} checked{% endif %}>
         Also write SRT subtitles
       </label>
     </div>
@@ -155,19 +173,19 @@
       HuggingFace token
       <span class="help-tip" tabindex="0">?<span class="tooltip-text">Required for --diarize's speaker diarization model. Create one at huggingface.co/settings/tokens and accept the model license. Falls back to the server's HF_TOKEN environment variable if left blank.</span></span>
     </label>
-    <input type="text" id="hf_token" name="hf_token" placeholder="falls back to HF_TOKEN if blank">
+    <input type="text" id="hf_token" name="hf_token" value="{{ defaults.get('hf_token', '') }}" placeholder="falls back to HF_TOKEN if blank">
 
     <div class="checkbox-row">
       <label class="filter-checkbox">
-        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="overwrite" name="overwrite" value="true" style="width: auto; margin: 0;"{% if defaults.get('overwrite') %} checked{% endif %}>
         Overwrite files that already exist
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="dry_run" name="dry_run" value="true" style="width: auto; margin: 0;"{% if defaults.get('dry_run') %} checked{% endif %}>
         Dry run (show what would be generated, generate nothing)
       </label>
       <label class="filter-checkbox">
-        <input type="checkbox" id="ignore_lock" name="ignore_lock" value="true" style="width: auto; margin: 0;">
+        <input type="checkbox" id="ignore_lock" name="ignore_lock" value="true" style="width: auto; margin: 0;"{% if defaults.get('ignore_lock') %} checked{% endif %}>
         Ignore lock
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">Process this range even if <a href="/jobs/bv-lock">Lock ranges</a> marked it as already generated for the requested asset types. Use for the rare case of redoing an otherwise-locked range.</span></span>
       </label>

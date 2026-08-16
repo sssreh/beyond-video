@@ -880,10 +880,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def new_bv_generate_form(
         request: Request, user: User = Depends(require_owner)
     ):
+        # "Reuse a previous run" (extended from bv-scribe's own pilot,
+        # tasks #692-696, to bv-export/bv-generate/bv-search per
+        # Christer: "why choose, when i can have both" - both the
+        # in-page picklist here *and* bv-history's own Rerun links).
+        # See new_bv_scribe_form()'s own comment for the full mechanism.
+        recent_runs = _recent_web_runs("bv-generate")[:5]
+        defaults, active_reuse_number = _reuse_defaults(
+            recent_runs, request.query_params.get("reuse")
+        )
         return templates.TemplateResponse(
             request,
             "job_new_bv_generate.html",
-            {"user": user, "cameras": _camera_options(), "error": None},
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "error": None,
+                "defaults": defaults,
+                "recent_runs": recent_runs,
+                "active_reuse_number": active_reuse_number,
+            },
         )
 
     @app.post("/jobs/bv-generate")
@@ -915,6 +931,35 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # "not given at all" mean the same thing here, so normalize to
         # None the same way bv_generate.parse_args() itself defaults
         # them, rather than passing an empty string through to argv.
+        # Raw, un-cleaned field values, keyed exactly like this route's
+        # own Form(...) parameters - snapshotted for the "reuse a
+        # previous run" feature (see Job.params's own docstring in
+        # jobs.py, and new_bv_scribe_submit()'s own raw_params for the
+        # same pattern). Captured before the stripping/None-ing below
+        # so the GET form can prefill every field with exactly what was
+        # actually typed/checked.
+        raw_params = {
+            "id": id,
+            "extract_audio": extract_audio,
+            "get_duration": get_duration,
+            "transcribe": transcribe,
+            "translate": translate,
+            "language": language,
+            "model_size": model_size,
+            "diarize": diarize,
+            "hf_token": hf_token,
+            "srt": srt,
+            "describe_scene": describe_scene,
+            "scene_model": scene_model,
+            "camera": camera,
+            "overwrite": overwrite,
+            "dry_run": dry_run,
+            "ignore_lock": ignore_lock,
+            "from_": from_,
+            "until": until,
+            "timestamp": timestamp,
+        }
+
         translate = translate.strip() or None
         language = language.strip() or None
         model_size = model_size.strip() or None
@@ -950,7 +995,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             return templates.TemplateResponse(
                 request,
                 "job_new_bv_generate.html",
-                {"user": user, "cameras": _camera_options(), "error": error},
+                {
+                    "user": user,
+                    "cameras": _camera_options(),
+                    "error": error,
+                    "defaults": {},
+                    "recent_runs": [],
+                    "active_reuse_number": None,
+                },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -959,6 +1011,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         job = app.state.job_runner.start_bv_generate(
             camera_id=id,
             archive_path=archive_path,
+            params=raw_params,
             from_=from_,
             until=until,
             timestamp=timestamp,
@@ -987,10 +1040,23 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def new_bv_export_form(
         request: Request, user: User = Depends(require_owner)
     ):
+        # "Reuse a previous run" - see new_bv_generate_form()'s own
+        # comment above for the full story.
+        recent_runs = _recent_web_runs("bv-export")[:5]
+        defaults, active_reuse_number = _reuse_defaults(
+            recent_runs, request.query_params.get("reuse")
+        )
         return templates.TemplateResponse(
             request,
             "job_new_bv_export.html",
-            {"user": user, "cameras": _camera_options(), "error": None},
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "error": None,
+                "defaults": defaults,
+                "recent_runs": recent_runs,
+                "active_reuse_number": active_reuse_number,
+            },
         )
 
     @app.post("/jobs/bv-export")
@@ -1085,6 +1151,69 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             value = value.strip()
             return value or None
 
+        # Raw, un-cleaned field values, keyed exactly like this route's
+        # own Form(...) parameters - snapshotted for the "reuse a
+        # previous run" feature, same pattern as new_bv_scribe_submit()'s
+        # own raw_params. `target` is deliberately not included - it's
+        # never a form field to begin with (see start_bv_export()'s own
+        # docstring in jobs.py), so there's nothing to snapshot.
+        raw_params = {
+            "id": id,
+            "prefix": prefix,
+            "from_": from_,
+            "until": until,
+            "timestamp": timestamp,
+            "max_gap_minutes": max_gap_minutes,
+            "movement": movement,
+            "no_duration": no_duration,
+            "duration_heal_archive": duration_heal_archive,
+            "gap_tolerance_seconds": gap_tolerance_seconds,
+            "max_parking_duration_minutes": max_parking_duration_minutes,
+            "render_map": render_map,
+            "map_icon": map_icon,
+            "map_zoom_meters": map_zoom_meters,
+            "map_track_up": map_track_up,
+            "render_map_intro": render_map_intro,
+            "map_intro_seconds": map_intro_seconds,
+            "render_gsensor": render_gsensor,
+            "render_gsensor_graph": render_gsensor_graph,
+            "gsensor_graph_x": gsensor_graph_x,
+            "stitch": stitch,
+            "stitch_layout": stitch_layout,
+            "stitch_mirror_size": stitch_mirror_size,
+            "stitch_mirror_radius": stitch_mirror_radius,
+            "stitch_mirror_zoom": stitch_mirror_zoom,
+            "stitch_mirror_pan_x": stitch_mirror_pan_x,
+            "stitch_mirror_pan_y": stitch_mirror_pan_y,
+            "stitch_mirror_icon": stitch_mirror_icon,
+            "stitch_resolution": stitch_resolution,
+            "stitch_bitrate": stitch_bitrate,
+            "stitch_scale": stitch_scale,
+            "stitch_max_width": stitch_max_width,
+            "stitch_max_height": stitch_max_height,
+            "stitch_map": stitch_map,
+            "stitch_map_side": stitch_map_side,
+            "stitch_map_size": stitch_map_size,
+            "stitch_map_circle": stitch_map_circle,
+            "stitch_gsensor": stitch_gsensor,
+            "stitch_gsensor_size": stitch_gsensor_size,
+            "stitch_gsensor_pos": stitch_gsensor_pos,
+            "stitch_gsensor_xy": stitch_gsensor_xy,
+            "stitch_graph": stitch_graph,
+            "stitch_graph_side": stitch_graph_side,
+            "stitch_graph_size": stitch_graph_size,
+            "stitch_subtitles": stitch_subtitles,
+            "no_subtitles_bg": no_subtitles_bg,
+            "include_parking": include_parking,
+            "parking_speed": parking_speed,
+            "trip_summary": trip_summary,
+            "scene_model": scene_model,
+            "scene_cpu": scene_cpu,
+            "overwrite": overwrite,
+            "dry_run": dry_run,
+            "debug": debug,
+        }
+
         job_runner = app.state.job_runner
         archive_path = _find_camera_archive(app.state.camera_config_cache, id)
 
@@ -1092,6 +1221,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             job = job_runner.start_bv_export(
                 camera_id=id,
                 archive_path=archive_path,
+                params=raw_params,
                 target=app.state.target,
                 prefix=_clean(prefix),
                 from_=_clean(from_),
@@ -1152,7 +1282,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             return templates.TemplateResponse(
                 request,
                 "job_new_bv_export.html",
-                {"user": user, "cameras": _camera_options(), "error": str(exc)},
+                {
+                    "user": user,
+                    "cameras": _camera_options(),
+                    "error": str(exc),
+                    "defaults": {},
+                    "recent_runs": [],
+                    "active_reuse_number": None,
+                },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1561,10 +1698,23 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def new_bv_search_form(
         request: Request, user: User = Depends(require_viewer_or_owner)
     ):
+        # "Reuse a previous run" - see new_bv_generate_form()'s own
+        # comment above for the full story.
+        recent_runs = _recent_web_runs("bv-search")[:5]
+        defaults, active_reuse_number = _reuse_defaults(
+            recent_runs, request.query_params.get("reuse")
+        )
         return templates.TemplateResponse(
             request,
             "job_new_bv_search.html",
-            {"user": user, "cameras": _camera_options(), "error": None},
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "error": None,
+                "defaults": defaults,
+                "recent_runs": recent_runs,
+                "active_reuse_number": active_reuse_number,
+            },
         )
 
     @app.post("/jobs/bv-search")
@@ -1584,6 +1734,25 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         trace: bool = Form(False),
         user: User = Depends(require_viewer_or_owner),
     ):
+        # Raw, un-cleaned field values, keyed exactly like this route's
+        # own Form(...) parameters - snapshotted for the "reuse a
+        # previous run" feature, same pattern as new_bv_scribe_submit()'s
+        # own raw_params. Captured before the stripping/None-ing below.
+        raw_params = {
+            "id": id,
+            "from_": from_,
+            "until": until,
+            "timestamp": timestamp,
+            "text": text,
+            "asset": asset,
+            "regex": regex,
+            "case_sensitive": case_sensitive,
+            "near": near,
+            "place": place,
+            "radius": radius,
+            "trace": trace,
+        }
+
         text = text.strip() or None
         near = near.strip() or None
         place = place.strip() or None
@@ -1627,7 +1796,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             return templates.TemplateResponse(
                 request,
                 "job_new_bv_search.html",
-                {"user": user, "cameras": _camera_options(), "error": error},
+                {
+                    "user": user,
+                    "cameras": _camera_options(),
+                    "error": error,
+                    "defaults": {},
+                    "recent_runs": [],
+                    "active_reuse_number": None,
+                },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1636,6 +1812,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         job = app.state.job_runner.start_bv_search(
             camera_id=id,
             archive_path=archive_path,
+            params=raw_params,
             from_=from_.strip() or None,
             until=until.strip() or None,
             timestamp=timestamp.strip() or None,
@@ -1867,6 +2044,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "failed_only": failed_only,
                 "show_all": show_all,
                 "error": error,
+                "reuse_supported_commands": _REUSE_SUPPORTED_COMMANDS,
             },
         )
 
@@ -1886,10 +2064,25 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "history_detail.html",
-            {"user": user, "numbered": match, "lines": lines},
+            {
+                "user": user,
+                "numbered": match,
+                "lines": lines,
+                "reuse_supported_commands": _REUSE_SUPPORTED_COMMANDS,
+            },
         )
 
     return app
+
+
+# Commands the "reuse a previous run" feature supports - both the
+# in-page picklist (see new_bv_scribe_form()'s own comment) and the
+# "Rerun with these options" links on /history and /history/{number}
+# below. Matches _recent_web_runs()'s own callers exactly; bv-download/
+# bv-ls/bv-lock/bv-config/bv-gps are deliberately excluded (either too
+# few reusable fields to be worth it, or - bv-config/bv-gps - not
+# really "reusable" runs at all).
+_REUSE_SUPPORTED_COMMANDS = {"bv-scribe", "bv-export", "bv-generate", "bv-search"}
 
 
 def _recent_web_runs(command: str) -> list[NumberedEntry]:

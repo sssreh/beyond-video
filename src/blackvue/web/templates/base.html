@@ -595,18 +595,38 @@
     .content-panel > *:last-child { margin-bottom: 0; }
     /* job_new_bv_scribe.html's "Reuse a previous run" panel (the
        "i would like to have a button or something like in bv-web to
-       get the latest run parameters filled in" feature) - a plain
-       .content-panel holding a short list of past bv-web runs of this
-       command, each a link that reloads the form with ?reuse=<N>. The
-       currently-active entry (the one the form below is actually
-       prefilled from - see app.py's _reuse_defaults()) gets a subtle
-       highlight so it's clear which history entry produced what's in
-       the form, without a heavier "selected" control. */
+       get the latest run parameters filled in" feature) - a short
+       list of past bv-web runs of this command, each a link that
+       reloads the form with ?reuse=<N>. The currently-active entry
+       (the one the form below is actually prefilled from - see
+       app.py's _reuse_defaults()) gets a subtle highlight so it's
+       clear which history entry produced what's in the form, without
+       a heavier "selected" control.
+
+       Collapsed by default (a native <details>/<summary>, same
+       mechanism .option-group's own collapsible sections already use
+       just below) - extended from bv-scribe's original always-visible
+       pilot to bv-export/bv-generate/bv-search too, per Christer:
+       "I think this panel should be an expandle list at the top, just
+       to not steal to much space from the page." <summary> reuses
+       .option-group > summary's exact visual treatment (see that
+       block's own comment for the reasoning) so every collapsible
+       section in these forms looks and behaves the same way. */
     .reuse-panel { margin-bottom: 1.5rem; }
-    .reuse-panel h3 {
+    .reuse-panel > summary {
       text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.06em;
-      color: var(--muted); font-weight: 600; margin: 0 0 0.5rem;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.6rem;
+      border-bottom: 1px solid var(--panel-border); padding-bottom: 0.3rem;
+      cursor: pointer; list-style: none;
     }
+    .reuse-panel > summary::-webkit-details-marker { display: none; }
+    .reuse-panel > summary::before {
+      content: "\25B8"; display: inline-block; width: 0.9em;
+      transition: transform 0.15s ease;
+    }
+    .reuse-panel[open] > summary::before { transform: rotate(90deg); }
+    .reuse-panel > summary:hover { color: var(--text); }
+    .reuse-panel > summary + * { margin-top: 0; }
     .reuse-list { list-style: none; padding: 0; margin: 0; }
     .reuse-list li { border-top: 1px solid var(--panel-border); }
     .reuse-list li:first-child { border-top: none; }

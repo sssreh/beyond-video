@@ -75,6 +75,7 @@
       <th>Status</th>
       <th>Who</th>
       <th>Command</th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
@@ -86,6 +87,11 @@
       <td>{{ numbered.entry.status }}</td>
       <td>{% if numbered.entry.source == "bv-web" %}{{ numbered.entry.username or "bv-web" }}{% else %}terminal{% endif %}</td>
       <td class="history-command-line"><code>{{ numbered.entry.command_line }}</code></td>
+      <td class="history-rerun">
+        {% if numbered.entry.source == "bv-web" and numbered.entry.params and numbered.entry.command in reuse_supported_commands %}
+        <a href="/jobs/{{ numbered.entry.command }}?reuse={{ numbered.number }}">Rerun</a>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </tbody>
