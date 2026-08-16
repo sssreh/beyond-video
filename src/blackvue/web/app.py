@@ -885,7 +885,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # Christer: "why choose, when i can have both" - both the
         # in-page picklist here *and* bv-history's own Rerun links).
         # See new_bv_scribe_form()'s own comment for the full mechanism.
-        recent_runs = _recent_web_runs("bv-generate")[:5]
+        recent_runs = _recent_web_runs("bv-generate")
         defaults, active_reuse_number = _reuse_defaults(
             recent_runs, request.query_params.get("reuse")
         )
@@ -1042,7 +1042,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     ):
         # "Reuse a previous run" - see new_bv_generate_form()'s own
         # comment above for the full story.
-        recent_runs = _recent_web_runs("bv-export")[:5]
+        recent_runs = _recent_web_runs("bv-export")
         defaults, active_reuse_number = _reuse_defaults(
             recent_runs, request.query_params.get("reuse")
         )
@@ -1529,7 +1529,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # ?reuse=<N> names if it's real, else the most recent run, else
         # {} (falls back to this form's own ordinary hardcoded
         # defaults, unchanged from before this feature existed).
-        recent_runs = _recent_web_runs("bv-scribe")[:5]
+        recent_runs = _recent_web_runs("bv-scribe")
         defaults, active_reuse_number = _reuse_defaults(
             recent_runs, request.query_params.get("reuse")
         )
@@ -1700,7 +1700,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     ):
         # "Reuse a previous run" - see new_bv_generate_form()'s own
         # comment above for the full story.
-        recent_runs = _recent_web_runs("bv-search")[:5]
+        recent_runs = _recent_web_runs("bv-search")
         defaults, active_reuse_number = _reuse_defaults(
             recent_runs, request.query_params.get("reuse")
         )
@@ -2091,11 +2091,11 @@ def _recent_web_runs(command: str) -> list[NumberedEntry]:
     newest first - the "reuse a previous run's parameters" feature's
     data source (Christer: "i would like to have a button or something
     like in bv-web to get the latest run parameters filled in for
-    bv-web or maybe a list of the latest"). Not capped here - the
-    caller slices to however many it wants to show (job_new_bv_scribe
-    .html shows the first 5), but an older, no-longer-visible entry a
-    bookmarked `?reuse=<N>` URL points at can still be found by
-    scanning this same uncapped list.
+    bv-web or maybe a list of the latest"). Not capped here, and every
+    caller now shows the full list uncapped too (Christer: "i dont
+    want to be restricted to 5" - the earlier `[:5]` slice at each
+    call site is gone; the reuse panel's `.reuse-list` CSS scrolls
+    instead of growing the page once there are many entries).
 
     A CLI-sourced entry has no web form to have snapshotted, and a
     bv-web entry recorded before this feature existed has

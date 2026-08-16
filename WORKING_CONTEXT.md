@@ -12706,3 +12706,58 @@ for `tomllib` - same constraint noted in every prior session) - the
 new `test_jobs.py` tests themselves are unrun here, written to mirror
 the exact pattern of the two already-passing bv-scribe tests they're
 modeled on.
+
+## Fix: broken PC editable install + uncap "reuse a previous run" list (2026-08-16)
+
+Christer pushed the reuse-panel commit above, restarted his PC's
+`bv-web serve z:/data/trips` twice, and saw nothing new. Diagnosis
+ruled out, in order: the push itself (`git log`/`git status` on this
+checkout confirmed the commit was really on `origin/main`); the NAS
+Docker deploy docs (`docs/DEPLOY.md`'s `restart` vs `--build`
+distinction) - irrelevant, since the NAS containers weren't running
+at all, he's on a plain PC install. The real cause: `pip show
+blackvue` (wrong name - the distribution is `beyond-video`, only the
+import package is `blackvue`, my own mistake mid-diagnosis) surfaced
+`WARNING: Ignoring invalid distribution ~-yond-video` (and three
+similar `~`-prefixed variants) plus `Package(s) not found`. pip
+renames a dist-info directory with a `~` prefix mid-uninstall as a
+rollback safety measure before deleting it; the delete was
+interrupted (near-certainly Windows file-locking, since `bv-web` was
+still running against the very venv being reinstalled), leaving
+`beyond_video-*.dist-info` in a corrupted, half-renamed state that
+pip could no longer parse - so the venv's `bv-web.exe` was serving
+whatever code the *last successful* install had baked in, and no
+amount of restarting picked up newer source. Fix: `Get-ChildItem
+.venv\Lib\site-packages -Filter "~*" | Remove-Item -Recurse -Force`
+then a clean `pip install -e ".[web]"` - confirmed via `pip show
+beyond-video` showing `Editable project location:
+C:\My_git\beyond-video`.
+
+After that, bv-generate's reuse panel still didn't show - not a bug:
+`_recent_web_runs()` only returns entries with a `params` snapshot,
+and that snapshot only exists for runs made *after* this feature
+shipped, so a brand-new install has nothing to show until at least
+one job runs through it. Confirmed once Christer ran one bv-generate
+job and the panel appeared.
+
+Once working, Christer: "will that list be scrollable when there are
+many matching runs" - it wasn't, because it was hard-capped at 5
+(`_recent_web_runs(...)[:5]` at all four call sites in `app.py`).
+Follow-up: "Yes, i dont want to be restricted to 5" - removed the
+`[:5]` slice at all four call sites (bv-generate, bv-export,
+bv-scribe, bv-search), updated `_recent_web_runs()`'s own docstring
+to match, and added `max-height: 320px; overflow-y: auto` to
+`.reuse-list` in `base.html` so an unbounded list scrolls within the
+panel instead of growing the page indefinitely.
+
+Files: `src/blackvue/web/app.py` (four `[:5]` slices removed,
+docstring update), `src/blackvue/web/templates/base.html`
+(`.reuse-list` scroll CSS), `docs/WEB_ARCHITECTURE.md` (stale "up to
+5" wording fixed).
+
+Verified via `python3 -m py_compile` on `app.py`; the CSS/template
+change is a one-line style addition, confirmed by inspection rather
+than a render pass. No code changes were needed for the install/
+deployment half of this - that was entirely Christer's own venv
+state on his PC, fixed via `pip` commands in his own terminal, not
+this repo.

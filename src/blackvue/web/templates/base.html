@@ -627,7 +627,11 @@
     .reuse-panel[open] > summary::before { transform: rotate(90deg); }
     .reuse-panel > summary:hover { color: var(--text); }
     .reuse-panel > summary + * { margin-top: 0; }
-    .reuse-list { list-style: none; padding: 0; margin: 0; }
+    /* Uncapped as of Christer: "i dont want to be restricted to 5" -
+       the route handlers now pass every matching past run, so this
+       scrolls instead of letting the page grow indefinitely once
+       there's a long history for a command. */
+    .reuse-list { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow-y: auto; }
     .reuse-list li { border-top: 1px solid var(--panel-border); }
     .reuse-list li:first-child { border-top: none; }
     .reuse-list a {
