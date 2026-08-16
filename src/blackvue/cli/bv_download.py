@@ -814,6 +814,36 @@ def _run(
             if recording.id in interval
         ]
 
+    # Recordings already fully present at the destination are dropped
+    # here, before the "Matching recordings" listing/confirmation
+    # prompt even builds - Christer: "ignore files already fully
+    # downloaded". download() already skipped re-copying their bytes
+    # (see SdCardCamera.download()'s own docstring), but that's a
+    # separate concern from the UX one: without this, the same
+    # recording kept showing up in the listing and needing
+    # re-confirming on every re-run even though it needed nothing
+    # further. Only SdCardCamera implements is_fully_downloaded() - a
+    # network listing has no local "already there" concept the way a
+    # filesystem scan does - so this is a no-op (hasattr() is False)
+    # for a --host/ID network download.
+    if hasattr(camera, "is_fully_downloaded"):
+        already_downloaded = {
+            recording.id
+            for recording in recordings
+            if camera.is_fully_downloaded(recording, destination)
+        }
+
+        if already_downloaded:
+            say(
+                f"bv-download: {len(already_downloaded)} recording(s) "
+                "already fully downloaded, skipping"
+            )
+            recordings = [
+                recording
+                for recording in recordings
+                if recording.id not in already_downloaded
+            ]
+
     # Sidecar probing (see the loop below, right before each recording
     # is actually listed/downloaded) is deliberately NOT done here, up
     # front for every matching recording - it used to be, but that ran

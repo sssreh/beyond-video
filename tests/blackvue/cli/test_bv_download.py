@@ -893,6 +893,7 @@ class _FakeSdCardCamera:
         total_files_seen: int | None = None,
         recognized_file_count: int | None = None,
         config_text: str | None = None,
+        fully_downloaded_ids: set[str] | None = None,
     ):
         self._recordings = recordings
         self._summary = _FakeScanSummary(
@@ -905,6 +906,11 @@ class _FakeSdCardCamera:
         )
         self._config_text = config_text
         self.downloaded_ids: list[str] = []
+        # Real SdCardCamera.is_fully_downloaded() compares on-disk file
+        # sizes; this fake just takes the answer directly, since
+        # bv_download.py only cares about the return value, not how
+        # it's computed - see test_run_sdcard_skips_already_fully_downloaded_recordings.
+        self._fully_downloaded_ids = fully_downloaded_ids or set()
 
     def recordings(self) -> list[Recording]:
         return self._recordings
@@ -918,6 +924,9 @@ class _FakeSdCardCamera:
     def download(self, recording, destination, *, select=None, on_bytes=None) -> bool:
         self.downloaded_ids.append(recording.id)
         return True
+
+    def is_fully_downloaded(self, recording: Recording, destination: Path) -> bool:
+        return recording.id in self._fully_downloaded_ids
 
     def read_config_text(self) -> str | None:
         return self._config_text
@@ -974,6 +983,33 @@ def test_run_sdcard_bare_run_downloads_and_skips_record_time(
     assert exit_code == EXIT_OK
     assert camera.downloaded_ids == ["20260802_162130_N"]
     assert list(tmp_path.glob(f"*{RECORD_TIME_SUFFIX}")) == []
+
+
+def test_run_sdcard_skips_already_fully_downloaded_recordings(
+    tmp_path, monkeypatch, capsys
+):
+    # Christer: "And ignore files already fully downloaded." - a
+    # recording is_fully_downloaded() reports true for should drop out
+    # of the "Matching recordings" listing/confirmation entirely, not
+    # just avoid re-copying bytes inside download() (which it already
+    # did before this).
+    already = recording("13532784_1080_1920_60fps")
+    fresh = recording("14624624_2160_3840_30fps")
+    camera = _FakeSdCardCamera(
+        [already, fresh],
+        fully_downloaded_ids={"13532784_1080_1920_60fps"},
+    )
+    monkeypatch.setattr(bv_download, "SdCardCamera", lambda root: camera)
+
+    args = _sdcard_args(tmp_path, Path("/fake/sdcard"))
+    exit_code = _run(args)
+
+    assert exit_code == EXIT_OK
+    assert camera.downloaded_ids == ["14624624_2160_3840_30fps"]
+    out = capsys.readouterr().out
+    assert "1 recording(s) already fully downloaded, skipping" in out
+    assert "13532784_1080_1920_60fps: downloaded" not in out
+    assert "14624624_2160_3840_30fps: downloaded" in out
 
 
 def test_run_sdcard_with_id_uses_the_configured_archive_as_destination(

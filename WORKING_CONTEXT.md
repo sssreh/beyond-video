@@ -13730,3 +13730,55 @@ existed; corrected to describe what `--verbose` actually adds now.
 
 Files: `src/blackvue/cli/bv_download.py`, `tests/blackvue/cli/
 test_bv_download.py`, `docs/man/bv-download.md`.
+
+## bv-download --sdcard: skip already-fully-downloaded recordings entirely (done, this session)
+
+Third piece of Christer's live-testing feedback loop: "And ignore files
+already fully downloaded." `SdCardCamera.download()` already skipped
+re-copying a file's bytes when the destination already had a same-size
+copy (a per-entry check inside its copy loop), but that's a different
+concern from the one Christer hit - the recording still showed up in
+the "Matching recordings (N)" listing and still needed re-confirming
+interactively on every re-run of the same `--sdcard` import, even
+though nothing about it needed downloading.
+
+Added `SdCardCamera.is_fully_downloaded(recording, destination)` -
+reuses the exact same per-entry size comparison `download()` already
+does, just without opening/copying anything: true only if every one of
+the recording's entries is already present at the destination with a
+matching size. Wired into `bv_download.py`'s `_run()` right after the
+`recordings` list is built (before the "Matching recordings"
+listing/confirmation prompt and before the download loop): if
+`hasattr(camera, "is_fully_downloaded")` - true only for `SdCardCamera`,
+so the network `BlackVueCamera` path is completely untouched, no extra
+requests, no behavior change there - every recording it reports true
+for is dropped from `recordings` up front, and a summary line prints
+(`bv-download: N recording(s) already fully downloaded, skipping`),
+unconditional like the per-file "downloaded" line (see the entry right
+above this one), not gated behind `--verbose`, since it's basic
+confirmation of what's happening rather than extra diagnostic detail.
+
+Scope kept deliberately narrow: "fully downloaded" means *every* entry
+of the recording, not just the ones relevant to the current `--mode`
+selection - mode-selection happens later in `_run()`'s flow, and mixing
+the two would need is_fully_downloaded() to know about mode/kind
+filtering it currently has no reason to care about. If a card is
+re-imported after a `--mode` change that would now want a
+previously-skipped asset, the recording is treated as "needs nothing"
+regardless - an accepted edge case, not something Christer's actual
+usage pattern (repeat straight `--sdcard` imports) hits.
+
+Verified: 1 new test in `tests/blackvue/cli/test_bv_download.py`
+(`test_run_sdcard_skips_already_fully_downloaded_recordings`, using a
+`_FakeSdCardCamera` extended with a `fully_downloaded_ids` param and
+its own `is_fully_downloaded()` so the fake matches the real
+duck-typed contract), 4 new tests in `tests/blackvue/core/
+test_sdcard_camera.py` covering `is_fully_downloaded()` directly
+(false before any download, true after a real one, false when an entry
+is missing, false when a size differs). Full suite: 65/65 and 38/38
+passing (103 total across both files), same fake-pytest/fake-tomllib
+harness used throughout this project.
+
+Files: `src/blackvue/core/sdcard_camera.py`, `src/blackvue/cli/
+bv_download.py`, `tests/blackvue/core/test_sdcard_camera.py`,
+`tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.

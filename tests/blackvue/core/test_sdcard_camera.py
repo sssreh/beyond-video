@@ -238,6 +238,56 @@ def test_download_recopies_when_destination_size_differs(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# is_fully_downloaded() - the "would download() have nothing left to do"
+# check bv-download's _run() uses to drop a recording from its
+# "Matching recordings" listing/confirmation prompt entirely (Christer:
+# "ignore files already fully downloaded").
+# ---------------------------------------------------------------------------
+
+
+def test_is_fully_downloaded_false_before_any_download(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+
+    assert camera.is_fully_downloaded(camera.recordings()[0], dest) is False
+
+
+def test_is_fully_downloaded_true_after_a_real_download(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    _touch(tmp_path / "20260802_162130_N.gps", size=5)
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+
+    camera.download(camera.recordings()[0], dest)
+
+    assert camera.is_fully_downloaded(camera.recordings()[0], dest) is True
+
+
+def test_is_fully_downloaded_false_when_one_entry_is_missing(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    _touch(tmp_path / "20260802_162130_N.gps", size=5)
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    # Only the video made it across on some earlier, interrupted run -
+    # the .gps sidecar is still missing.
+    (dest / "20260802_162130_NF.mp4").write_bytes(b"x" * 100)
+
+    assert camera.is_fully_downloaded(camera.recordings()[0], dest) is False
+
+
+def test_is_fully_downloaded_false_when_size_differs(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    camera = SdCardCamera(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "20260802_162130_NF.mp4").write_bytes(b"y" * 10)
+
+    assert camera.is_fully_downloaded(camera.recordings()[0], dest) is False
+
+
+# ---------------------------------------------------------------------------
 # read_config_text() - best-effort local config.ini read.
 # ---------------------------------------------------------------------------
 

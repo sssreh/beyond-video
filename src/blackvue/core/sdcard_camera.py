@@ -324,6 +324,32 @@ class SdCardCamera:
 
         return changed
 
+    def is_fully_downloaded(self, recording: Recording, destination: Path) -> bool:
+        """True if every one of `recording`'s entries is already present
+        at `destination` with a matching size - i.e. download() would
+        have nothing left to copy for it.
+
+        Reuses the exact same same-size check download() itself does
+        per-entry, just without actually opening/copying anything. Lets
+        bv-download's _run() filter such a recording out of the
+        "Matching recordings" listing/confirmation prompt entirely
+        (Christer: "ignore files already fully downloaded") rather than
+        listing it and then silently no-op'ing through it inside
+        download() as before. BlackVueCamera has no equivalent method -
+        a network listing has no local "already there" concept the way
+        a filesystem scan does - so bv_download.py only calls this via
+        hasattr(), leaving the network path untouched.
+        """
+
+        for entry in recording.entries:
+            source = self._scan_result.local_paths[entry.path.name]
+            target = destination / entry.path.name
+
+            if not target.exists() or target.stat().st_size != source.stat().st_size:
+                return False
+
+        return True
+
     def read_config_text(self) -> str | None:
         """Best-effort read of the card's own config.ini, for
         RecordTime capture (see bv_download.py's own
