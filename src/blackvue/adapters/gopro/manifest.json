@@ -56,7 +56,7 @@
     "No 360/dual-lens (GoPro MAX-style) support - single video track per recording only, same as FolderAdapter.",
     "No config.ini equivalent: trip gap threshold always uses default_trip_gap_seconds (300s) instead of a per-camera auto-derived nominal segment length.",
     "No Event/Manual/Parking distinction: no --mode filtering, no --include-parking skip-and-replace, no max_parking_duration cap - every file is just 'a video'.",
-    "No live camera connection: bv-download, bv-config's endpoint setup, bv-gps, and bv-live are not applicable to this adapter and shouldn't be offered for it.",
+    "No live camera connection: bv-config's endpoint setup, bv-gps, and bv-live are not applicable to this adapter and shouldn't be offered for it - a GoPro has no network CGI protocol to speak to. bv-download's --sdcard file-import mode IS applicable, though: it copies files off a mounted card without needing any live connection at all, recognizing this adapter's own video_extensions by extension (not a filename convention - GoPro's own on-camera names carry no timestamp) with each matched file's capture time coming from its mtime rather than its name.",
     "Thumbnails are generated on demand via an ffmpeg frame-grab, not read from GoPro's own same-stem .THM sidecar (present on-camera but not confirmed to survive a plain file copy) - revisit once real footage confirms it's there.",
     "Timestamp comes from ffprobe's embedded creation_time metadata, falling back to file mtime - GoPro's own on-camera filenames (e.g. GH010001.MP4) carry a chapter+file counter, not a timestamp, so unlike BlackVue there's no filename-based source to prefer."
   ]

@@ -42,3 +42,24 @@ def test_is_a_true_for_a_kind():
 
     assert Recording(id="20260715_133255_A", entries=[]).is_a
     assert not Recording(id="20260715_133255_N", entries=[]).is_a
+
+
+def test_kind_is_empty_string_for_an_id_with_no_underscore():
+    # A generic (adapter-driven, e.g. GoPro) SD-card recording's id is
+    # just the file's own stem - GH010123.MP4 -> "GH010123", no
+    # BlackVue-style _K suffix at all. Must not raise (an unguarded
+    # id.rsplit("_", 1)[1] would IndexError here) - see
+    # core/sdcard_camera.py's own manifest-driven scan path.
+    recording = Recording(id="GH010123", entries=[])
+
+    assert recording.kind == ""
+
+
+def test_kind_less_recording_matches_no_known_kind():
+    recording = Recording(id="GH010123", entries=[])
+
+    assert not recording.is_normal
+    assert not recording.is_event
+    assert not recording.is_manual
+    assert not recording.is_parking
+    assert not recording.is_a

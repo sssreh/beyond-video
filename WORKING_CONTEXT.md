@@ -13615,3 +13615,92 @@ Files: `src/blackvue/adapters/_recursive_scan.py` (new),
 `docs/CAMERA_ADAPTERS.md` (new "GoPro adapter: GPMF parser +
 GoProAdapter implementation" section + "tested against real footage,
 TICK fallback fix" follow-up section).
+
+## Adapter-aware SD-card import for bv-download (done, this session, #924)
+
+Christer's next real report after the GoPro adapter landed: `bv-download
+GP --sdcard X:\SD_card` (GP being his real GoPro camera config) found "0
+BlackVue-named recordings" against 19 real on-camera files. Root cause:
+`--sdcard` import (task #900-902) shipped BlackVue-only - `SdCardCamera`'s
+recognizer was the strict `YYYYMMDD_HHMMSS_KD.ext` filename regex, and
+never consulted the adapter/manifest system at all, a known, documented
+gap at the time.
+
+Three separate bugs had to be fixed, found one at a time by actually
+tracing what `bv-download GP --sdcard ...` does end to end rather than
+guessing from the symptom:
+
+1. **Filename recognition.** `core/sdcard_camera.py`'s `_scan()` now takes
+   an optional `AdapterManifest`. Given one, it switches from
+   `_matches_blackvue_filename()`/`parse_timestamp(name)` to a new
+   `_matches_generic_video()` (extension match against the manifest's
+   `video_extensions`) with each match's capture time read from the
+   file's own mtime instead of parsed from its name (GoPro's on-camera
+   names carry no timestamp at all). `cli/bv_download.py`'s `_run()`
+   reads the target camera's `CameraConfig.adapter` and picks the
+   recognizer accordingly - `SdCardCamera(root)` unchanged (same single
+   positional arg) for BlackVue/default, `SdCardCamera(root,
+   manifest=...)` for anything else, so every existing BlackVue-path test
+   and its monkeypatch signature stayed untouched.
+2. **`domain.Recording.kind` crash.** `.kind` did an unguarded
+   `self.id.rsplit("_", 1)[1]`, which raises `IndexError` for an
+   underscore-less id like GoPro's `GH010123` (the id is just the file's
+   own stem - no BlackVue-style `_K` suffix gets appended for a generic
+   recognizer match). Fixed to return `""` for that case, so
+   `is_normal`/`is_event`/`/is_manual`/`is_parking`/`is_a` all correctly
+   read `False` instead of crashing `bv-download`'s own mode-selection.
+3. **Silent zero-download, twice over.** Even with the crash fixed,
+   nothing would ever download, for two independent reasons: (a)
+   `select_by_mode()`/`select_by_context()` are entirely BlackVue-kind-
+   shaped - defaulting `mode` to `ALL_KINDS` (`{"N","E","M","P","A"}`)
+   doesn't help a kind-less id, since `"" not in ALL_KINDS`; and (b)
+   `TimeInterval.__contains__()`'s lexical date-range check
+   (`"00000101_000000" <= id <= "99991231_235959"`) silently excludes
+   *any* GoPro-shaped id, since `"GH010123"` sorts lexically *after* the
+   default upper bound (`'G' > '9'` as characters) - this is exactly the
+   "Range: 00000101_000000 to 99991231_235959 / Matching recordings (0)"
+   Christer originally saw, and it was still happening even after fix #1
+   made filename recognition itself work. Fixed by computing
+   `is_generic_sdcard` once (`sdcard_adapter_id not in (None,
+   "blackvue")`) and bypassing both BlackVue-shaped mechanisms
+   for it: `recordings = list(camera.recordings())` (no interval
+   filtering) and `selection = ((r, True) for r in recordings)` (no
+   mode/kind filtering) - every recognized file just downloads,
+   unconditionally, matching `gopro/manifest.json`'s own "no --mode
+   filtering... every file is just 'a video'" contract. `--from`/
+   `--until`/`--timestamp` aren't meaningful for this id shape and are
+   silently not honored for a generic adapter (not flagged as an error -
+   consistent with this feature's existing "good enough for v1" scope).
+
+Also: `AdapterNotFoundError` (a `KeyError` subclass raised by
+`load_adapter_manifest()` for a typo'd/unregistered adapter id) is caught
+explicitly in `_run()` rather than left to propagate - `cli/errors.py`'s
+`run_cli()` only catches `KeyboardInterrupt`/`OSError`, so an uncaught
+`AdapterNotFoundError` would have produced an ugly traceback instead of a
+clean `bv-download: ...` message. And `adapters/gopro/manifest.json`'s
+`unsupported_notes` had a now-stale claim that bv-download "is not
+applicable" to this adapter (a design assumption from task #904,
+contradicted by this exact real-world request) - reworded to say
+`--sdcard` file-import *is* applicable; only the live-network paths
+(bv-config endpoint setup, bv-gps, bv-live) genuinely aren't.
+
+Verified: 3 new tests in `tests/blackvue/cli/test_bv_download.py`
+(manifest-driven scan + mode-default-all + `downloaded_ids` proving fix
+#3, a regression check that a BlackVue-default config still constructs
+`SdCardCamera(root)` with no `manifest=` kwarg at all, and an
+adapter-agnostic zero-match message check), 9 new tests in
+`tests/blackvue/core/test_sdcard_camera.py`, 2 new tests in
+`tests/blackvue/domain/test_recording.py`. Full suite across all three
+files: 102/102 passing, via the same fake-pytest/fake-tomllib standalone
+harness pattern used throughout this project (no real pytest in this
+sandbox - `tests/blackvue/cli/test_bv_download.py` also needed a
+minimal `pytest.raises()` shim added to that harness, since it wasn't
+needed by earlier test files).
+
+Files: `src/blackvue/core/sdcard_camera.py`, `src/blackvue/domain/
+recording.py`, `src/blackvue/cli/bv_download.py`, `src/blackvue/adapters/
+registry.py` (module docstring), `src/blackvue/adapters/gopro/
+manifest.json` (`unsupported_notes` correction), `tests/blackvue/core/
+test_sdcard_camera.py`, `tests/blackvue/domain/test_recording.py`,
+`tests/blackvue/cli/test_bv_download.py`, `docs/CAMERA_ADAPTERS.md`
+(new step 8 in the "Suggested next steps" roadmap list).

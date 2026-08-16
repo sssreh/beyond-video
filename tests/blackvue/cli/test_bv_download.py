@@ -1013,3 +1013,129 @@ def test_run_sdcard_with_id_does_not_require_configured_endpoints(
     exit_code = _run(args)
 
     assert exit_code == EXIT_OK
+
+
+def test_run_sdcard_with_id_uses_manifest_driven_scan_for_a_gopro_config(
+    tmp_path, monkeypatch
+):
+    # A GH010123-shaped id has no BlackVue kind letter at all - this
+    # exercises the real crash risk this feature fixed:
+    # select_by_context()/domain.Recording.kind must not raise for it,
+    # and with no --mode given, everything should still download (see
+    # gopro/manifest.json's own "no --mode filtering, every file is
+    # just 'a video'" contract).
+    rec = recording("GH010123")
+    camera = _FakeSdCardCamera([rec])
+    calls = []
+
+    def fake_sdcard_camera(root, manifest=None):
+        calls.append((root, manifest))
+        return camera
+
+    monkeypatch.setattr(bv_download, "SdCardCamera", fake_sdcard_camera)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    archive = tmp_path / "archive"
+    save_camera_config(
+        config_path(config_dir, "GP"),
+        CameraConfig(
+            id="GP", name="GoPro test", archive=archive, endpoints=[], adapter="gopro"
+        ),
+    )
+
+    args = parse_args(
+        [
+            "GP",
+            "--sdcard",
+            "/fake/sdcard",
+            "--config-dir",
+            str(config_dir),
+            "--yes",
+        ]
+    )
+    exit_code = _run(args)
+
+    assert exit_code == EXIT_OK
+    assert camera.downloaded_ids == ["GH010123"]
+    assert len(calls) == 1
+    _root, manifest = calls[0]
+    assert manifest is not None
+    assert manifest.adapter_id == "gopro"
+
+
+def test_run_sdcard_blackvue_config_still_uses_the_default_recognizer(
+    tmp_path, monkeypatch
+):
+    # A camera config with no explicit adapter (or adapter="blackvue")
+    # must construct SdCardCamera exactly as before this feature -
+    # single positional arg, no manifest kwarg at all.
+    rec = recording("20260802_162130_N")
+    camera = _FakeSdCardCamera([rec])
+
+    def fake_sdcard_camera(root):
+        return camera
+
+    monkeypatch.setattr(bv_download, "SdCardCamera", fake_sdcard_camera)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    archive = tmp_path / "archive"
+    save_camera_config(
+        config_path(config_dir, "BV"),
+        CameraConfig(id="BV", name="BlackVue test", archive=archive, endpoints=[]),
+    )
+
+    args = parse_args(
+        [
+            "BV",
+            "--sdcard",
+            "/fake/sdcard",
+            "--config-dir",
+            str(config_dir),
+            "--yes",
+            "--mode",
+            "all",
+        ]
+    )
+    exit_code = _run(args)
+
+    assert exit_code == EXIT_OK
+    assert camera.downloaded_ids == ["20260802_162130_N"]
+
+
+def test_run_sdcard_zero_match_message_is_adapter_agnostic_for_gopro(
+    tmp_path, monkeypatch, capsys
+):
+    camera = _FakeSdCardCamera([], total_files_seen=3, recognized_file_count=0)
+    monkeypatch.setattr(
+        bv_download, "SdCardCamera", lambda root, manifest=None: camera
+    )
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    archive = tmp_path / "archive"
+    save_camera_config(
+        config_path(config_dir, "GP"),
+        CameraConfig(
+            id="GP", name="GoPro test", archive=archive, endpoints=[], adapter="gopro"
+        ),
+    )
+
+    args = parse_args(
+        [
+            "GP",
+            "--sdcard",
+            "/fake/sdcard",
+            "--config-dir",
+            str(config_dir),
+            "--yes",
+        ]
+    )
+    exit_code = _run(args)
+
+    assert exit_code == EXIT_OK
+    out = capsys.readouterr().out
+    assert "no recordings found" in out
+    assert "BlackVue-named" not in out
+    assert "3 file(s) scanned" in out

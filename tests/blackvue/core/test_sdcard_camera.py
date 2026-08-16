@@ -2,18 +2,22 @@
 Tests for core/sdcard_camera.py - SdCardCamera, used by bv-download's
 --sdcard import mode.
 
-Unlike FolderAdapter (adapters/folder/adapter.py), which synthesizes
-brand new ids for footage with no naming convention at all, this class
-only recognizes BlackVue's own on-camera filename convention and feeds
-the same domain/Recording model bv-download's network path already
-uses - see SdCardCamera's own module docstring.
+Two recognizers: the default (`manifest=None`), which only recognizes
+BlackVue's own on-camera filename convention; and the manifest-driven
+one used for any other adapter (GoPro today), which matches by video
+extension instead - see SdCardCamera/_scan()'s own docstrings. Both
+feed the same domain/Recording model bv-download's network path
+already uses.
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 
+from blackvue.adapters.registry import load_adapter_manifest
 from blackvue.core.sdcard_camera import SdCardCamera
 from blackvue.core.sdcard_camera import _matches_blackvue_filename
+from blackvue.core.sdcard_camera import _matches_generic_video
 
 
 def _touch(path: Path, *, size: int = 10) -> Path:
@@ -269,3 +273,108 @@ def test_read_config_text_prefers_config_subfolder_over_root(tmp_path):
     text = SdCardCamera(tmp_path).read_config_text()
 
     assert "RecordTime=1" in text
+
+
+# ---------------------------------------------------------------------------
+# _matches_generic_video() - the manifest-driven recognizer.
+# ---------------------------------------------------------------------------
+
+
+def test_matches_generic_video_recognizes_gopro_style_filenames():
+    # Real GoPro on-camera names carry a chapter+file counter, not a
+    # timestamp - GH010123.MP4/GX010123.MP4, no BlackVue-style
+    # convention to match against, extension only.
+    assert _matches_generic_video("GH010123.MP4", frozenset({".mp4"}))
+    assert _matches_generic_video("gx010123.mp4", frozenset({".mp4"}))
+
+
+def test_matches_generic_video_rejects_wrong_extension():
+    assert not _matches_generic_video("GH010123.LRV", frozenset({".mp4"}))
+    assert not _matches_generic_video("notes.txt", frozenset({".mp4"}))
+
+
+def test_matches_generic_video_rejects_hidden_appledouble_files():
+    # macOS leaves "._GH010123.MP4" shadow copies behind after a
+    # Finder-mediated card copy - never written by the camera itself,
+    # must not be mistaken for a real clip even though the extension
+    # matches.
+    assert not _matches_generic_video("._GH010123.MP4", frozenset({".mp4"}))
+
+
+# ---------------------------------------------------------------------------
+# SdCardCamera(manifest=...) - the manifest-driven scan path end to end.
+# ---------------------------------------------------------------------------
+
+
+def _gopro_manifest():
+    return load_adapter_manifest("gopro")
+
+
+def test_manifest_scan_recognizes_gopro_filenames_the_blackvue_scan_rejects(
+    tmp_path,
+):
+    _touch(tmp_path / "GH010123.MP4")
+
+    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+
+    assert len(camera.recordings()) == 1
+    assert camera.recordings()[0].id == "GH010123"
+
+
+def test_manifest_scan_default_stays_blackvue_only(tmp_path):
+    # No manifest given (the default) - unchanged strict behavior, the
+    # exact same scenario task #901's zero-match test already covers.
+    _touch(tmp_path / "GH010123.MP4")
+
+    camera = SdCardCamera(tmp_path)
+
+    assert camera.recordings() == []
+
+
+def test_manifest_scan_each_file_is_its_own_recording(tmp_path):
+    # No BlackVue-style trailing F/R/I letter to strip and no chapter
+    # stitching - each matched file is its own recording (see
+    # gopro/manifest.json's own unsupported_notes on chaptered clips).
+    _touch(tmp_path / "GH010123.MP4")
+    _touch(tmp_path / "GH020123.MP4")
+
+    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    ids = sorted(r.id for r in camera.recordings())
+
+    assert ids == ["GH010123", "GH020123"]
+
+
+def test_manifest_scan_timestamp_comes_from_mtime(tmp_path):
+    path = _touch(tmp_path / "GH010123.MP4")
+    mtime = datetime(2026, 3, 1, 9, 0, 0).timestamp()
+    os.utime(path, (mtime, mtime))
+
+    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    entry = camera.recordings()[0].entries[0]
+
+    assert entry.timestamp == datetime(2026, 3, 1, 9, 0, 0)
+
+
+def test_manifest_scan_ignores_non_video_files(tmp_path):
+    _touch(tmp_path / "GH010123.MP4")
+    _touch(tmp_path / "GOPR0001.JPG")
+    _touch(tmp_path / "notes.txt")
+
+    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    summary = camera.scan_summary()
+
+    assert len(camera.recordings()) == 1
+    assert summary.total_files_seen == 3
+    assert summary.recognized_file_count == 1
+
+
+def test_manifest_scan_downloads_the_same_way_as_the_default_scan(tmp_path):
+    _touch(tmp_path / "GH010123.MP4", size=100)
+
+    camera = SdCardCamera(tmp_path, manifest=_gopro_manifest())
+    dest = tmp_path / "dest"
+
+    changed = camera.download(camera.recordings()[0], dest)
+
+    assert changed is True
+    assert (dest / "GH010123.MP4").stat().st_size == 100

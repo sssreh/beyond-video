@@ -11,9 +11,11 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from pathlib import PurePosixPath
 
+from ..adapters.manifest import AdapterManifest
 from ..domain.recording import Recording
 from ..domain.vod_entry import VodEntry
 from ..parser.vod import parse_timestamp
@@ -67,6 +69,29 @@ def _matches_blackvue_filename(name: str) -> bool:
     return has_direction == needs_direction
 
 
+def _matches_generic_video(name: str, extensions: frozenset[str]) -> bool:
+    """Return True if `name` is a video file this adapter's manifest
+    recognizes - used instead of _matches_blackvue_filename() when a
+    manifest is given (see _scan()'s own docstring): any camera whose
+    own on-camera filenames carry no BlackVue-style timestamp+kind
+    convention at all (GoPro's GH010123.MP4 chapter+file-number scheme
+    being the first real example - see manifest's own unsupported_notes
+    on why there's no filename_pattern to match against instead).
+
+    Extension-only, case-insensitive - `.MP4` and `.mp4` are the same
+    file to a camera's own firmware. Hidden/AppleDouble files (leading
+    `.`, e.g. macOS's own `._GH010123.MP4` shadow copies left behind by
+    a Finder-mediated card copy) are excluded even though their
+    extension would otherwise match - these were never written by the
+    camera itself.
+    """
+
+    if name.startswith("."):
+        return False
+
+    return Path(name).suffix.lower() in extensions
+
+
 @dataclass
 class SdCardScanResult:
     """The result of scanning a mounted SD card / removable media
@@ -82,31 +107,56 @@ class SdCardScanResult:
     recognized_file_count: int
 
 
-def _scan(root: Path) -> SdCardScanResult:
-    """Recursively scan `root` for BlackVue-named files and group them
-    into Recording/VodEntry objects - the same domain model
+def _scan(root: Path, manifest: AdapterManifest | None = None) -> SdCardScanResult:
+    """Recursively scan `root` for recognized files and group them into
+    Recording/VodEntry objects - the same domain model
     BlackVueCamera.recordings() (the network path) already returns, so
     the rest of bv-download's own _run() works unmodified regardless
     of which source it's reading from.
 
     Recursive (not a flat, single-directory scan) since the real
-    on-disk layout of a mounted BlackVue SD card hasn't been confirmed
-    yet (see docs/CAMERA_ADAPTERS.md) - this works whether the camera's
-    own files sit directly at `root` or inside a `Record` subfolder,
-    without hard-coding a guess either way.
+    on-disk layout of a mounted SD card hasn't been confirmed for
+    every camera (see docs/CAMERA_ADAPTERS.md) - this works whether the
+    camera's own files sit directly at `root` or inside a subfolder
+    (BlackVue's `Record`, GoPro's `DCIM/100GOPRO`, ...), without
+    hard-coding a guess either way.
 
-    A file whose name doesn't match BlackVue's convention is silently
-    skipped, not an error - see SdCardCamera's own docstring for why
-    that's an expected outcome, not a bug, for Christer's own emulated
-    test card. A genuine same-name collision across two subfolders
-    (BlackVue filenames are meant to be unique per card) keeps
-    whichever sorts first and drops the rest, rather than failing the
-    whole scan over what would be unexpected input either way.
+    `manifest is None` (the default): BlackVue's own strict filename
+    convention (`_matches_blackvue_filename()`), timestamp parsed
+    straight out of the filename - unchanged from before this
+    parameter existed, so every existing BlackVue-only caller
+    (including SdCardCamera's own default construction) behaves
+    identically.
+
+    `manifest` given: a generic, adapter-driven recognizer instead -
+    `_matches_generic_video()` against `manifest.video_extensions`
+    (any video file this adapter's own recursive-folder scan would
+    also pick up - see adapters/_recursive_scan.py), timestamp from the
+    file's own mtime rather than its name (GoPro's own on-camera
+    filenames, e.g. `GH010001.MP4`, carry a chapter+file counter, not a
+    timestamp - see gopro/manifest.json's own unsupported_notes). Each
+    matched file becomes its own recording (`VodEntry.recording` is
+    just the file's stem when there's no trailing BlackVue-style F/R/I
+    letter to strip) - chaptered multi-file recordings aren't stitched
+    back together here, the same limitation FolderAdapter/GoProAdapter
+    already have for any multi-part video (see gopro/manifest.json).
+
+    A file that doesn't match is silently skipped, not an error - see
+    SdCardCamera's own docstring for why that's an expected outcome,
+    not a bug, for a card whose files don't follow the active
+    recognizer's convention. A genuine same-name collision across two
+    subfolders (on-camera filenames are meant to be unique per card)
+    keeps whichever sorts first and drops the rest, rather than
+    failing the whole scan over what would be unexpected input either
+    way.
     """
 
     total_files_seen = 0
     local_paths: dict[str, Path] = {}
     matched_names: list[str] = []
+    matched_paths: dict[str, Path] = {}
+
+    extensions = frozenset(manifest.video_extensions) if manifest is not None else None
 
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -115,7 +165,12 @@ def _scan(root: Path) -> SdCardScanResult:
         total_files_seen += 1
         name = path.name
 
-        if not _matches_blackvue_filename(name):
+        if extensions is None:
+            matches = _matches_blackvue_filename(name)
+        else:
+            matches = _matches_generic_video(name, extensions)
+
+        if not matches:
             continue
 
         if name in local_paths:
@@ -123,12 +178,18 @@ def _scan(root: Path) -> SdCardScanResult:
 
         local_paths[name] = path
         matched_names.append(name)
+        matched_paths[name] = path
 
     entries_by_recording: dict[str, list[VodEntry]] = {}
 
     for name in matched_names:
+        if extensions is None:
+            timestamp = parse_timestamp(name)
+        else:
+            timestamp = datetime.fromtimestamp(matched_paths[name].stat().st_mtime)
+
         entry = VodEntry(
-            timestamp=parse_timestamp(name),
+            timestamp=timestamp,
             path=PurePosixPath(name),
             fields={},
         )
@@ -165,22 +226,31 @@ class SdCardCamera:
     expected, valid outcome for that data - see scan_summary(), which
     _run() uses to report that clearly instead of just doing nothing.
 
-    Deliberately does NOT share code with FolderAdapter despite the
-    superficial similarity (both walk a folder tree) - the two solve
-    different problems for two different consumers. This class parses
-    an already-known filename format into the domain/Recording model
-    bv-download's own network path (BlackVueCamera) already returns,
-    so the rest of _run() (mode selection, dry-run listing, the
-    download loop, RecordTime capture) works completely unmodified.
-    FolderAdapter instead synthesizes brand new ids for footage with no
-    convention at all, into the unrelated archive/Recording model the
-    read-only adapters (bv-ls/bv-web) use for browsing an archive
-    that's already on disk - not for importing new files into one.
+    Deliberately does NOT share scanning code with FolderAdapter/
+    GoProAdapter despite the superficial similarity (both walk a folder
+    tree) - the two solve different problems for two different
+    consumers. This class parses source files into the domain/Recording
+    model bv-download's own network path (BlackVueCamera) already
+    returns, so the rest of _run() (mode selection, dry-run listing,
+    the download loop, RecordTime capture) works completely unmodified.
+    FolderAdapter/GoProAdapter instead synthesize brand new ids for
+    footage already sitting in an archive, into the unrelated
+    archive/Recording model the read-only adapters (bv-ls/bv-web) use
+    for browsing - not for importing new files off a card.
+
+    `manifest`, when given, switches recognition from BlackVue's own
+    strict filename convention to a generic, extension-based one keyed
+    off `manifest.video_extensions` - see _scan()'s own docstring for
+    the full contract. bv-download's own _run() picks whichever to use
+    from the target camera config's own `adapter` field (BlackVue's own
+    id stays on the strict/default path; anything else loads that
+    adapter's manifest and passes it through here) - see this class's
+    own callers in cli/bv_download.py.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, manifest: AdapterManifest | None = None) -> None:
         self._root = root
-        self._scan_result = _scan(root)
+        self._scan_result = _scan(root, manifest)
 
     def recordings(self) -> list[Recording]:
         """Return the recordings found on the card."""

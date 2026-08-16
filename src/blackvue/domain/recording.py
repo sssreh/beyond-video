@@ -22,7 +22,23 @@ class Recording:
 
     @property
     def kind(self) -> str:
-        """Return the recording kind."""
+        """Return the recording kind - the letter after the id's last
+        underscore in BlackVue's own YYYYMMDD_HHMMSS_K shape.
+
+        A generic (adapter-driven, e.g. GoPro) SD-card recording's id
+        has no such letter at all - see SdCardCamera's own manifest-
+        driven scan path (core/sdcard_camera.py), which keeps a
+        matched file's own stem as the recording id verbatim, with no
+        BlackVue-shaped suffix appended. Returns "" for that case
+        rather than raising, so is_normal/is_event/is_manual/
+        is_parking/is_a all correctly read False for it (never
+        matching any of BlackVue's known kind letters) instead of
+        crashing bv-download's own mode-selection (select_by_mode()/
+        select_by_context()) for a camera whose manifest declares it
+        has no kind distinction at all."""
+
+        if "_" not in self.id:
+            return ""
 
         return self.id.rsplit("_", 1)[1]
 

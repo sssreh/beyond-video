@@ -929,10 +929,44 @@ to generalize from rather than one.
    pipeline rewired through the adapter" above. Surfaced while scoping
    step 8 below; fixed first so the GoPro adapter's own work is purely
    GPMF parsing, not also discovering this gap.
-8. Build further adapter variants (GoPro, drone footage, ...) as real
-   need/footage shows up, informed by whatever steps 4-7 taught about the
+8. ~~Make `bv-download --sdcard` adapter-aware, so a GoPro-configured
+   camera's real on-camera filenames (`GH010123.MP4`) are recognized
+   too~~ - **done** (2026-08-16). Step 6 above shipped `--sdcard`
+   BlackVue-only - `SdCardCamera`'s recognizer was the strict
+   `YYYYMMDD_HHMMSS_KD.ext` filename regex, matching nothing on
+   Christer's real GoPro card (`bv-download GP --sdcard X:\SD_card`
+   found "0 BlackVue-named recordings" despite 19 real files).
+   `core/sdcard_camera.py`'s `_scan()` now takes an optional
+   `AdapterManifest`: given one, it switches to a generic recognizer
+   (`_matches_generic_video()` - extension match against the
+   manifest's `video_extensions`, since GoPro's own filenames carry no
+   timestamp) with each match's capture time read from the file's
+   mtime rather than parsed from its name. `cli/bv_download.py`'s
+   `_run()` reads the target camera's `CameraConfig.adapter` and picks
+   the recognizer accordingly - byte-identical `SdCardCamera(root)`
+   call for BlackVue/default, `SdCardCamera(root, manifest=...)` for
+   anything else. Two more BlackVue-shaped assumptions had to give
+   too: `domain.Recording.kind` unconditionally did
+   `self.id.rsplit("_", 1)[1]`, which raised `IndexError` for an
+   underscore-less id like `GH010123` - now returns `""` instead. And
+   the default download-selection logic (`select_by_mode()`/
+   `select_by_context()`, plus `TimeInterval.__contains__()`'s lexical
+   date-range check) is entirely BlackVue-kind/timestamp-shaped, so a
+   generic/manifest-driven `--sdcard` import now bypasses both:
+   every recognized file is included and downloads unconditionally,
+   matching `gopro/manifest.json`'s own "no --mode filtering... every
+   file is just 'a video'" contract. (The interval bypass mattered in
+   practice - GoPro ids like `GH010123` sort lexically *after* the
+   default range's `99991231_235959` upper bound, since `'G' > '9'`,
+   so without it every recording was silently filtered out even after
+   filename recognition was fixed.) 3 new tests in
+   `tests/blackvue/cli/test_bv_download.py`, 9 new tests in
+   `tests/blackvue/core/test_sdcard_camera.py`, 2 new tests in
+   `tests/blackvue/domain/test_recording.py`.
+9. Build further adapter variants (drone footage, ...) as real
+   need/footage shows up, informed by whatever steps 4-8 taught about the
    interface.
-9. Build `bv-analyze` (sketched below) once at least two real adapters
+10. Build `bv-analyze` (sketched below) once at least two real adapters
    exist to test it against - an inference tool tuned against a single
    example (BlackVue) risks just re-deriving BlackVue's own pattern rather
    than genuinely generalizing.

@@ -19,8 +19,11 @@ from ..archive.configuration import RECORD_TIME_SUFFIX
 from ..archive.configuration import parse_record_time_seconds
 from ..archive.configuration import read_record_time_snapshot
 from ..archive.configuration import write_record_time_snapshot
+from ..adapters.registry import AdapterNotFoundError
+from ..adapters.registry import load_adapter_manifest
 from ..core.blackvue_camera import BlackVueCamera
 from ..core.blackvue_client import BlackVueClient
+from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
@@ -637,11 +640,19 @@ def _run(
     # a little further down).
     endpoints: list[Endpoint] | None = None
     client: BlackVueClient | None = None
+    # Non-None only for an ID-backed --sdcard import whose camera config
+    # picked a non-BlackVue adapter (e.g. "gopro") - drives both
+    # SdCardCamera's recognizer (see the construction below) and the
+    # mode-default decision further down, since a manifest-driven
+    # camera has no event/manual/parking kind vocabulary at all for
+    # select_by_context()'s own BlackVue-specific heuristic to work
+    # with.
+    sdcard_adapter_id: str | None = None
 
     if args.sdcard is not None:
         #
         # --sdcard: import recordings directly from a mounted SD card
-        # / removable media - no CGI wire protocol, just BlackVue's
+        # / removable media - no CGI wire protocol, just the camera's
         # own file layout on disk (see SdCardCamera's own docstring
         # and docs/CAMERA_ADAPTERS.md's "Add SD-card import" step).
         #
@@ -656,11 +667,26 @@ def _run(
 
             destination = config.archive
             display_name = config.name
+            sdcard_adapter_id = config.adapter
         else:
             destination = args.target
             display_name = str(args.sdcard)
 
-        camera = SdCardCamera(args.sdcard)
+        if sdcard_adapter_id is None or sdcard_adapter_id == DEFAULT_ADAPTER_ID:
+            # BlackVue (or a bare --sdcard with no config at all, which
+            # has no adapter to consult) - the original, strict
+            # filename-convention recognizer, byte-for-byte unchanged.
+            camera = SdCardCamera(args.sdcard)
+        else:
+            # A non-BlackVue adapter (GoPro today) - its own manifest
+            # drives recognition instead (extension match, mtime
+            # timestamp - see SdCardCamera/_scan()'s own docstring).
+            try:
+                manifest = load_adapter_manifest(sdcard_adapter_id)
+            except AdapterNotFoundError as exc:
+                warn(f"bv-download: {exc}")
+                return EXIT_CONFIG_ERROR
+            camera = SdCardCamera(args.sdcard, manifest=manifest)
     elif args.host is not None:
         #
         # --host/--target: a one-off connection with no saved config,
@@ -708,22 +734,40 @@ def _run(
 
     #
     # A specific range was asked for explicitly - default to
-    # fetching everything in it, unless --mode said otherwise.
+    # fetching everything in it, unless --mode said otherwise. (A
+    # non-BlackVue adapter's --sdcard import - e.g. GoPro - is handled
+    # separately below, bypassing mode/kind selection entirely: see
+    # is_generic_sdcard.)
     #
     mode = args.mode
     if mode is None and has_range:
         mode = ALL_KINDS
+
+    # A manifest-driven camera (e.g. GoPro) has no BlackVue-style kind
+    # letter at all - domain.Recording.kind is "" for it (see its own
+    # docstring), which never matches ALL_KINDS = {"N","E","M","P","A"}
+    # and would silently download nothing. select_by_context()'s
+    # event/manual-plus-context heuristic is equally meaningless for
+    # it. So bypass both: every matched recording just downloads,
+    # matching gopro/manifest.json's own "no --mode filtering... every
+    # file is just 'a video'" contract.
+    is_generic_sdcard = (
+        sdcard_adapter_id is not None and sdcard_adapter_id != DEFAULT_ADAPTER_ID
+    )
 
     if args.sdcard is not None:
         # `camera` (an SdCardCamera) was already constructed above,
         # eagerly scanning the card - see the source-setup block.
         # Nothing to connect to.
         scan = camera.scan_summary()
+        recognized_label = (
+            "recordings" if is_generic_sdcard else "BlackVue-named recordings"
+        )
 
         if scan.recognized_file_count == 0:
             say(
-                f"bv-download: {args.sdcard}: no BlackVue-named "
-                f"recordings found ({scan.total_files_seen} file(s) "
+                f"bv-download: {args.sdcard}: no {recognized_label} "
+                f"found ({scan.total_files_seen} file(s) "
                 "scanned)"
             )
         elif args.verbose:
@@ -748,11 +792,27 @@ def _run(
 
         camera = BlackVueCamera(client)
 
-    recordings = [
-        recording
-        for recording in camera.recordings()
-        if recording.id in interval
-    ]
+    if is_generic_sdcard:
+        # A manifest-driven camera's recording id is just the source
+        # file's own stem (e.g. GoPro's "GH010123" - see
+        # SdCardCamera/_scan()'s manifest-driven path) with no
+        # timestamp in it at all, unlike BlackVue's YYYYMMDD_HHMMSS
+        # convention. TimeInterval.__contains__() does a lexical
+        # string comparison assuming that convention - id shapes like
+        # "GH010123" sort lexically *after* the default full-range
+        # upper bound ("99991231_235959", since 'G' > '9'), so the
+        # interval filter would silently exclude every recording
+        # instead of erroring. --from/--until/--timestamp aren't
+        # meaningful for this adapter shape (see gopro/manifest.json's
+        # own "no --mode filtering" note) - every recognized file is
+        # included, unfiltered.
+        recordings = list(camera.recordings())
+    else:
+        recordings = [
+            recording
+            for recording in camera.recordings()
+            if recording.id in interval
+        ]
 
     # Sidecar probing (see the loop below, right before each recording
     # is actually listed/downloaded) is deliberately NOT done here, up
@@ -807,7 +867,9 @@ def _run(
                 warn=warn,
             )
 
-    if mode is not None:
+    if is_generic_sdcard:
+        selection = ((recording, True) for recording in recordings)
+    elif mode is not None:
         selection = select_by_mode(recordings, mode)
     else:
         selection = select_by_context(recordings)
