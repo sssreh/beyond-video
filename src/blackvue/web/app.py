@@ -48,6 +48,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from ..adapters.registry import get_adapter
+from ..adapters.telemetry_bridge import recording_has_gps
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
 from .archive_browser import filter_recordings
@@ -593,6 +595,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             camera_id,
             recording_id,
         )
+        adapter_id = _find_camera_adapter_id(app.state.camera_config_cache, camera_id)
+        adapter = get_adapter(adapter_id)
 
         start_coordinates = None
         start_google_maps_url = None
@@ -608,7 +612,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         error = None
 
-        if recording.gps_path is None:
+        if not recording_has_gps(adapter, recording.recording):
             error = "This recording has no GPS log."
         else:
             # Reverse-geocoded and cached under default_config_dir() -
@@ -626,19 +630,20 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             # Christer's NAS - see WORKING_CONTEXT.md.
             geocode_cache_dir = default_config_dir() / ".osm_cache"
 
-            # first_valid_gps_fix()/last_valid_gps_fix() call read_gps(),
-            # which raises MediaToolError on an unreadable .gps file
+            # first_valid_gps_fix()/last_valid_gps_fix() call
+            # adapter.read_gps() (via telemetry_bridge.read_recording_gps()),
+            # which raises MediaToolError on an unreadable GPS source
             # (permissions, a truncated/corrupt file, etc.) - trip_export.py's
-            # own _merge_gps() guards the exact same read_gps() call the
-            # same way (skip and move on) rather than letting it
-            # propagate, and this route needs the same guard: without
-            # it, a single bad .gps file 500s the page instead of
-            # showing a friendly message. Start and stop are looked up
-            # independently since a recording can, in principle, lose
-            # its GPS fix again right before it ends even though it had
-            # one at the start (or vice versa).
+            # own _merge_gps() guards the exact same read via
+            # read_recording_gps() the same way (skip and move on)
+            # rather than letting it propagate, and this route needs
+            # the same guard: without it, a single bad GPS source 500s
+            # the page instead of showing a friendly message. Start and
+            # stop are looked up independently since a recording can,
+            # in principle, lose its GPS fix again right before it ends
+            # even though it had one at the start (or vice versa).
             try:
-                start_fix = first_valid_gps_fix(recording.gps_path)
+                start_fix = first_valid_gps_fix(adapter, recording.recording)
             except MediaToolError as exc:
                 start_fix = None
                 start_error = f"could not read this recording's GPS log: {exc}"
@@ -658,7 +663,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 ) = _describe_gps_fix(start_fix, geocode_cache_dir)
 
             try:
-                stop_fix = last_valid_gps_fix(recording.gps_path)
+                stop_fix = last_valid_gps_fix(adapter, recording.recording)
             except MediaToolError as exc:
                 stop_fix = None
                 stop_error = f"could not read this recording's GPS log: {exc}"

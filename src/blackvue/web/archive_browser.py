@@ -35,6 +35,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ..adapters import registry
+from ..adapters.base import CameraAdapter
+from ..adapters.telemetry_bridge import read_recording_gps
 from ..archive import Asset
 from ..archive import Recording
 from ..archive import RecordingId
@@ -42,7 +44,6 @@ from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..generate.scene import extract_description_section
 from ..lexicaltimeparser import TimeInterval
 from ..telemetry.gps_reader import GpsFix
-from ..telemetry.gps_reader import read_gps
 
 # (display label, video asset, thumbnail asset), in the order the
 # detail page's video tabs and the list page's per-direction badges
@@ -380,15 +381,17 @@ class ArchiveRecording:
         return asset_file.path if asset_file else None
 
 
-def first_valid_gps_fix(gps_path: Path) -> GpsFix | None:
-    """Return the first fix in a .gps sidecar file that has a real
-    position - the location "at the start" of the recording, for the
-    archive detail page's "Show start and stop location" link. None if the
-    file has no valid fix at all (e.g. the camera hadn't acquired a
-    GPS signal yet when the clip started - common for the first
-    recording after the car's been parked somewhere without sky
-    view); the file existing at all (see ArchiveRecording.has_gps) is
-    a separate, weaker guarantee than this actually finding a fix.
+def first_valid_gps_fix(adapter: CameraAdapter, recording: Recording) -> GpsFix | None:
+    """Return the first fix for `recording` (read via `adapter`, per
+    its manifest's gps_source_asset - see adapters/telemetry_bridge.py)
+    that has a real position - the location "at the start" of the
+    recording, for the archive detail page's "Show start and stop
+    location" link. None if there's no valid fix at all (e.g. the
+    camera hadn't acquired a GPS signal yet when the clip started -
+    common for the first recording after the car's been parked
+    somewhere without sky view); a GPS source existing at all (see
+    ArchiveRecording.has_gps or telemetry_bridge.recording_has_gps())
+    is a separate, weaker guarantee than this actually finding a fix.
 
     "Valid" matches GpsFix.valid's own definition (a real position
     per the sentence's mode indicator) plus a defensive check that
@@ -398,26 +401,23 @@ def first_valid_gps_fix(gps_path: Path) -> GpsFix | None:
     so this doesn't assume the two always travel together.
     """
 
-    for fix in read_gps(gps_path):
+    for fix in read_recording_gps(adapter, recording):
         if fix.valid and fix.latitude is not None and fix.longitude is not None:
             return fix
     return None
 
 
-def last_valid_gps_fix(gps_path: Path) -> GpsFix | None:
-    """Return the last fix in a .gps sidecar file that has a real
-    position - the location "at the end" of the recording, for the
-    archive detail page's "Show start and stop location" link.
-    Mirrors first_valid_gps_fix() exactly, just walking the fixes in
-    reverse - see its own docstring for what "valid" means and why the
-    file existing (ArchiveRecording.has_gps) doesn't guarantee a fix
-    here either (e.g. GPS signal lost again right before the clip
-    ended). read_gps() already returns fixes in the file's own
-    chronological order, so reversed() alone is enough - no separate
-    sort needed.
+def last_valid_gps_fix(adapter: CameraAdapter, recording: Recording) -> GpsFix | None:
+    """Return the last fix for `recording` that has a real position -
+    the location "at the end" of the recording, for the archive
+    detail page's "Show start and stop location" link. Mirrors
+    first_valid_gps_fix() exactly, just walking the fixes in reverse -
+    see its own docstring for what "valid" means. read_recording_gps()
+    already returns fixes in chronological order, so reversed() alone
+    is enough - no separate sort needed.
     """
 
-    for fix in reversed(read_gps(gps_path)):
+    for fix in reversed(read_recording_gps(adapter, recording)):
         if fix.valid and fix.latitude is not None and fix.longitude is not None:
             return fix
     return None

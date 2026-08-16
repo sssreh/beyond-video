@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
@@ -1539,7 +1540,7 @@ def test_trim_prebuffers_trims_front_rear_audio_and_gsensor(tmp_path):
 
     warnings: list[str] = []
     media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-        trip, tmp_path / "work", warnings, log=None
+        trip, tmp_path / "work", warnings, log=None, adapter=BlackVueAdapter(),
     )
 
     # Only the M recording gets trimmed - N is the reference, not the
@@ -1586,7 +1587,7 @@ def test_trim_prebuffers_leaves_the_preceding_recording_untouched(tmp_path):
 
     warnings: list[str] = []
     media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-        trip, tmp_path / "work", warnings, log=None
+        trip, tmp_path / "work", warnings, log=None, adapter=BlackVueAdapter(),
     )
 
     assert (n_id, Asset.FRONT) not in media_overrides
@@ -1622,7 +1623,7 @@ def test_trim_prebuffers_skips_an_event_recording_that_starts_the_trip(tmp_path)
 
     warnings: list[str] = []
     media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-        trip, tmp_path / "work", warnings, log=None
+        trip, tmp_path / "work", warnings, log=None, adapter=BlackVueAdapter(),
     )
 
     assert media_overrides == {}
@@ -1666,7 +1667,7 @@ def test_trim_prebuffers_never_touches_a_normal_recording(tmp_path):
 
     warnings: list[str] = []
     media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-        trip, tmp_path / "work", warnings, log=None
+        trip, tmp_path / "work", warnings, log=None, adapter=BlackVueAdapter(),
     )
 
     assert media_overrides == {}
@@ -1701,7 +1702,7 @@ def test_trim_prebuffers_skips_when_gsensor_data_is_missing(tmp_path):
 
     warnings: list[str] = []
     media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-        trip, tmp_path / "work", warnings, log=None
+        trip, tmp_path / "work", warnings, log=None, adapter=BlackVueAdapter(),
     )
 
     assert media_overrides == {}
@@ -1755,7 +1756,7 @@ def test_trim_prebuffers_skips_when_no_confident_overlap_is_detected(tmp_path):
 
     warnings: list[str] = []
     media_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-        trip, tmp_path / "work", warnings, log=None
+        trip, tmp_path / "work", warnings, log=None, adapter=BlackVueAdapter(),
     )
 
     assert media_overrides == {}
@@ -1822,7 +1823,7 @@ def test_merge_gsensor_uses_gsensor_overrides_when_present(tmp_path):
     override_samples = (GSensorSample(offset=timedelta(seconds=0), x=9, y=9, z=9),)
 
     samples = _merge_gsensor(
-        trip, {first_id: 0.0}, {first_id: override_samples},
+        trip, {first_id: 0.0}, {first_id: override_samples}, adapter=BlackVueAdapter(),
     )
 
     assert samples == override_samples
@@ -2038,7 +2039,9 @@ def test_merge_gsensor_positions_by_video_offset_when_available(tmp_path):
     # Real video position (2.5s), deliberately far from the 60s
     # ID-timestamp gap - if this is used, samples[1].offset should
     # reflect it, not the ID gap.
-    samples = _merge_gsensor(trip, {first_id: 0.0, second_id: 2.5})
+    samples = _merge_gsensor(
+        trip, {first_id: 0.0, second_id: 2.5}, adapter=BlackVueAdapter()
+    )
 
     assert samples[0].offset == timedelta(seconds=0)
     assert samples[1].offset == timedelta(seconds=2.5)
@@ -2061,8 +2064,8 @@ def test_merge_gsensor_falls_back_to_id_timestamp_gap_without_video_offsets(tmp_
         Recording(id=second_id, assets={Asset.GSENSOR: AssetFile(Asset.GSENSOR, gsensor_b)}),
     ))
 
-    samples_no_arg = _merge_gsensor(trip)
-    samples_empty_dict = _merge_gsensor(trip, {})
+    samples_no_arg = _merge_gsensor(trip, adapter=BlackVueAdapter())
+    samples_empty_dict = _merge_gsensor(trip, {}, adapter=BlackVueAdapter())
 
     for samples in (samples_no_arg, samples_empty_dict):
         assert samples[0].offset == timedelta(seconds=0)

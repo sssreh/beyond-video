@@ -22,9 +22,14 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
+from ..adapters.base import CameraAdapter
+from ..adapters.registry import get_adapter
+from ..adapters.telemetry_bridge import read_recording_gps
+from ..adapters.telemetry_bridge import read_recording_gsensor
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
 from ..archive.recording_id import RecordingId
+from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import default_config_dir
 from ..generate.media import MediaToolError
 from ..generate.media import extract_audio
@@ -37,9 +42,7 @@ from ..generate.mp4_repair import load_or_repair_parking_video
 from ..generate.scene import DEFAULT_MODEL as SCENE_DEFAULT_MODEL
 from ..generate.scene import extract_description_section
 from ..generate.scene import summarize_trip
-from ..telemetry.gps_reader import read_gps
 from ..telemetry.gsensor_reader import GSensorSample
-from ..telemetry.gsensor_reader import read_gsensor
 from ..telemetry.gsensor_reader import trim_gsensor_head
 from ..telemetry.gsensor_reader import write_gsensor
 from ..trip.trip import Trip
@@ -414,6 +417,8 @@ def _trim_prebuffers(
     work_dir: Path,
     warnings: list[str],
     log: TripLog | None,
+    *,
+    adapter: CameraAdapter,
 ) -> tuple[
     dict[tuple[RecordingId, Asset], Path],
     dict[RecordingId, tuple[GSensorSample, ...]],
@@ -509,15 +514,9 @@ def _trim_prebuffers(
 
         preceding = recordings[index - 1]
 
-        preceding_gsensor = preceding.file(Asset.GSENSOR)
-        current_gsensor = current.file(Asset.GSENSOR)
-        if preceding_gsensor is None or current_gsensor is None:
-            continue
-
-        try:
-            preceding_samples = read_gsensor(preceding_gsensor.path)
-            current_samples = read_gsensor(current_gsensor.path)
-        except MediaToolError:
+        preceding_samples = read_recording_gsensor(adapter, preceding)
+        current_samples = read_recording_gsensor(adapter, current)
+        if not preceding_samples or not current_samples:
             continue
 
         offset_seconds = detect_prebuffer_seconds(preceding_samples, current_samples)
@@ -1431,17 +1430,11 @@ def _concatenate_asset(
     return out
 
 
-def _merge_gps(trip: Trip) -> tuple:
+def _merge_gps(trip: Trip, adapter: CameraAdapter) -> tuple:
     fixes = []
 
     for recording in trip:
-        gps_file = recording.file(Asset.GPS)
-        if gps_file is None:
-            continue
-        try:
-            fixes.extend(read_gps(gps_file.path))
-        except MediaToolError:
-            continue
+        fixes.extend(read_recording_gps(adapter, recording))
 
     return tuple(sorted(fixes, key=lambda fix: fix.timestamp))
 
@@ -1450,6 +1443,8 @@ def _merge_gsensor(
     trip: Trip,
     video_offsets: dict[RecordingId, float] | None = None,
     gsensor_overrides: dict[RecordingId, tuple[GSensorSample, ...]] | None = None,
+    *,
+    adapter: CameraAdapter,
 ) -> tuple[GSensorSample, ...]:
     """Merge every recording's g-sensor samples into one trip-relative
     stream, positioned to match the actual concatenated video wherever
@@ -1489,12 +1484,8 @@ def _merge_gsensor(
         if override_samples is not None:
             recording_samples = override_samples
         else:
-            gsensor_file = recording.file(Asset.GSENSOR)
-            if gsensor_file is None:
-                continue
-            try:
-                recording_samples = read_gsensor(gsensor_file.path)
-            except MediaToolError:
+            recording_samples = read_recording_gsensor(adapter, recording)
+            if not recording_samples:
                 continue
 
         if video_offsets is not None and recording.id in video_offsets:
@@ -1957,6 +1948,7 @@ def export_trip(
     debug: bool = False,
     should_continue: Callable[[], bool] = lambda: True,
     say: Callable[[str], None] | None = None,
+    adapter: CameraAdapter | None = None,
 ) -> ExportResult:
     """Assemble one trip's concatenated video/audio/text, GPX track,
     and g-sensor log into `destination`.
@@ -2432,6 +2424,9 @@ def export_trip(
     direct CLI run, `job.append_output` for a bv-web job.
     """
 
+    if adapter is None:
+        adapter = get_adapter(DEFAULT_ADAPTER_ID)
+
     destination.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
 
@@ -2529,7 +2524,7 @@ def export_trip(
             asset is Asset.REAR for _, asset in parking_speed_overrides
         )
         prebuffer_overrides, gsensor_overrides, prebuffer_offsets = _trim_prebuffers(
-            trip, Path(align_dir), warnings, log,
+            trip, Path(align_dir), warnings, log, adapter=adapter,
         )
         alignment_overrides = _align_front_rear_durations(
             trip, Path(align_dir), warnings, log, include_parking=include_parking,
@@ -2829,7 +2824,7 @@ def export_trip(
         log.step("no transcript data for this trip - trip.srt skipped")
 
     gpx_path = None
-    fixes = _merge_gps(trip)
+    fixes = _merge_gps(trip, adapter)
     if fixes:
         gpx_path = destination / "trip.gpx"
         write_gpx(fixes, gpx_path, name=trip.label)
@@ -3111,7 +3106,7 @@ def export_trip(
         )
 
     gsensor_path = None
-    samples = _merge_gsensor(trip, video_offsets, gsensor_overrides)
+    samples = _merge_gsensor(trip, video_offsets, gsensor_overrides, adapter=adapter)
     if samples:
         gsensor_path = destination / "trip.3gf"
         write_gsensor(samples, gsensor_path)

@@ -64,5 +64,7 @@
     "sidecar_prober"
   ],
   "default_trip_gap_seconds": 300,
+  "gps_source_asset": "GPS",
+  "gsensor_source_asset": "GSENSOR",
   "unsupported_notes": []
 }

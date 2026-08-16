@@ -13262,3 +13262,127 @@ section above - `--sdcard` turned out to live entirely inside
 `bv-download`'s own CLI, not the adapter/manifest system, so there was
 nothing there to wire it into. Further adapter variants (GoPro, drone
 footage) remain the next step once real footage is available.
+
+## Feature: rewire the GPS/g-sensor pipeline through the adapter (2026-08-16)
+
+Surfaced while starting to scope the GoPro adapter: every GPS/g-sensor
+read in the pipeline (bv-export's movement-bridging heuristic and
+prebuffer trim/merge, bv-search's `--near`/`--place`, bv-web's archive-
+detail "Show start and stop location" link) still read BlackVue's
+`.gps`/`.3gf` sidecars directly via `Asset.GPS`/`Asset.GSENSOR` +
+`telemetry.gps_reader.read_gps()`/`telemetry.gsensor_reader.
+read_gsensor()`, bypassing the `CameraAdapter` abstraction entirely -
+including for BlackVue itself, which only had `open_archive()`/
+`find_recording()` wired through the adapter (third pass, earlier
+today). Asked Christer: adapter-only fix, or the full pipeline rewire.
+"Option 2" - confirmed after "are we skipping the plugin thing" (no,
+the adapter architecture stays; this closes a gap in actually using it
+everywhere). Fixing it now, decoupled from the GoPro adapter's own
+work, means that adapter will purely be a GPMF-parsing exercise instead
+of also being the thing that discovers this hole.
+
+New `AdapterManifest.gps_source_asset`/`.gsensor_source_asset` fields
+(`adapters/manifest.py`, `manifest.schema.json`) - the `Asset` enum
+member name (e.g. `"GPS"`) holding that adapter's telemetry, or `null`.
+BlackVue's manifest: `"GPS"`/`"GSENSOR"` (its existing sidecars).
+Folder's: both `null` (no gps/gsensor capability). A future GoPro
+adapter would set both to `"FRONT"` (GPMF lives inside the video
+stream, not a separate file) - the same field covers both shapes.
+
+New `adapters/telemetry_bridge.py`: `read_recording_gps(adapter,
+recording)`/`read_recording_gsensor(adapter, recording)` resolve
+`recording.file(Asset[manifest.gps_source_asset])` and call
+`adapter.read_gps()`/`.read_gsensor()` on it, returning `()` (never
+raising) for any of "adapter lacks the capability" / "manifest field is
+null" / "recording has no file for that asset" / "read raised
+MediaToolError" - the same "missing/bad telemetry is absent, not
+fatal" contract every direct sidecar read already had.
+`recording_has_gps()`/`recording_has_gsensor()` are the cheap
+existence-check counterparts.
+
+Every call site rewired: `export/trip_export.py` (`_merge_gps()`,
+`_merge_gsensor()`, `_trim_prebuffers()` all gained a required keyword-
+only `adapter`; `export_trip()` itself gained an *optional*
+`adapter: CameraAdapter | None = None` defaulting to
+`get_adapter(DEFAULT_ADAPTER_ID)`, so every existing BlackVue call site
+- including the ~100+ in `test_trip_export.py` - kept working
+unmodified), `cli/bv_export.py` (resolves the real adapter from
+`CameraConfig.adapter`, threads it through, including into the
+movement-bridge callable via `functools.partial(movement_bridges_gap,
+adapter=adapter)`), `telemetry/movement.py` (`_recording_shows_
+movement()`/`movement_bridges_gap()` both gained a required keyword-
+only `adapter`), `search.py`/`cli/bv_search.py` (`search_near()` gained
+a required keyword-only `adapter`; `bv_search.py`'s `_run()` picked up
+the same `resolve_archive_path()` -> `get_adapter()` ->
+`adapter.open_archive()` pattern `bv_ls.py`/`bv_download.py` already
+used - it had been discarding the resolved camera_config/adapter id
+entirely), `web/archive_browser.py` (`first_valid_gps_fix()`/`last_
+valid_gps_fix()` changed from a bare `.gps` path to `(adapter,
+recording)`), `web/app.py` (`archive_recording_location()` resolves the
+adapter via the existing `_find_camera_adapter_id()` helper and threads
+it into all three).
+
+Deliberately left alone: `ArchiveRecording.has_gps`/`.gps_path`
+(`web/archive_browser.py`) still read `Asset.GPS` directly. Correct for
+BlackVue; would misreport "no GPS" for a future GoPro adapter
+(`gps_source_asset: "FRONT"`). A real, narrow, documented gap - nothing
+in this pass's callers depends on those two properties being adapter-
+aware, so it wasn't pulled into scope.
+
+Verifying this surfaced two real bugs the "default adapter" design
+didn't cover, since only `export_trip()` itself got a defaulting
+`adapter` param - its private helpers (`_trim_prebuffers()`, `_merge_
+gsensor()`) didn't, and neither did `movement_bridges_gap()`/
+`search_near()`/`first_valid_gps_fix()`/`last_valid_gps_fix()`, all of
+which are called directly (not just via `export_trip()`) by existing
+tests: `test_trip_export.py`'s direct `_trim_prebuffers()`/`_merge_
+gsensor()` unit tests, and `test_movement.py`/`test_search.py`/
+`test_archive_browser.py`'s direct calls to the other four, all needed
+an explicit `adapter=` added - caught by actually running them (via the
+fake-`tomllib`/fake-`pytest` harness), not by assumption. Also caught
+and fixed: `test_bv_search.py`'s `_FakeArchive`/`monkeypatch.setattr(
+bv_search, "Archive", ...)` pattern no longer worked once `_run()`
+resolves the archive via `get_adapter()` instead of constructing
+`Archive()` directly - replaced with a `_FakeAdapter(BlackVueAdapter)`
+subclass wrapping the same fake archive (inherits real `.manifest`/
+`.read_gps()` so the text+near combined-search tests, which monkeypatch
+`adapter.read_gps` per-instance, keep working); its 8 `search_module.
+read_gps` monkeypatches (a name that no longer exists on `search.py`
+now that it imports `read_recording_gps` from `telemetry_bridge`
+instead) were rewritten the same way.
+
+Verified: every changed module `py_compile`s; functional smoke tests
+confirmed `_merge_gps()`/`_merge_gsensor()` produce identical `GpsFix`/
+`GSensorSample` tuples via `BlackVueAdapter()` as the old direct reads,
+`movement_bridges_gap()` still returns its "GPS speed..." reason both
+called directly and via the `functools.partial`-wrapped callable
+`bv_export.py` actually builds, and `search_near()` produces identical
+`GeoMatch` results with the adapter's `read_gps()` monkeypatched in
+place of the old module-level fake. All six rewired test files
+(`test_movement.py`, `test_search.py`, `test_bv_search.py` - 33
+functions, `test_trip_export.py`'s 9 directly-affected functions,
+`test_archive_browser.py`'s 4 GPS-fix functions) confirmed passing
+function-by-function via the fake-`tomllib`/fake-`pytest` harness (no
+real pytest in this sandbox - see this file's standing note).
+`test_bv_export.py` needed zero changes - its `_fake_bv_export(
+**kwargs)`/`_fake_export_trip(*args, **kwargs)` fakes already accept
+arbitrary kwargs, confirming the "zero behavior change for BlackVue by
+default" goal for `export_trip()`'s own public signature.
+
+Files: `src/blackvue/adapters/manifest.py`,
+`src/blackvue/adapters/manifest.schema.json`,
+`src/blackvue/adapters/blackvue/manifest.json`,
+`src/blackvue/adapters/folder/manifest.json`,
+`src/blackvue/adapters/telemetry_bridge.py` (new),
+`src/blackvue/export/trip_export.py`, `src/blackvue/cli/bv_export.py`,
+`src/blackvue/telemetry/movement.py`, `src/blackvue/search.py`,
+`src/blackvue/cli/bv_search.py`, `src/blackvue/web/archive_browser.py`,
+`src/blackvue/web/app.py`, `tests/blackvue/telemetry/test_movement.py`,
+`tests/blackvue/test_search.py`, `tests/blackvue/cli/test_bv_search.py`,
+`tests/blackvue/export/test_trip_export.py`,
+`tests/blackvue/web/test_archive_browser.py`,
+`docs/CAMERA_ADAPTERS.md` (new "GPS/g-sensor pipeline rewired through
+the adapter" section + roadmap step marked done).
+
+GoPro adapter work (manifest, `GoProAdapter`, GPMF parser) is next,
+now unblocked from also having to fix this gap along the way.

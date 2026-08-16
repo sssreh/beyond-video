@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 
+from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
@@ -157,8 +158,12 @@ def test_movement_bridges_gap_returns_a_reason_when_gps_shows_speed_at_previous_
 
     # A truthy, human-readable reason - not a bare bool - so
     # TripBuilder's own trip log can show *what* evidence bridged the
-    # gap, not just that something did.
-    result = movement_bridges_gap(previous, current)
+    # gap, not just that something did. adapter is required (see
+    # movement_bridges_gap's own docstring) - reads are routed through
+    # BlackVueAdapter.read_gps()/read_gsensor() via telemetry_bridge.py
+    # rather than reading previous/current's .gps/.3gf sidecars
+    # directly, same as every other rewired call site.
+    result = movement_bridges_gap(previous, current, adapter=BlackVueAdapter())
     assert result is not None
     assert "GPS speed" in result
     assert str(previous.id) in result
@@ -168,7 +173,9 @@ def test_movement_bridges_gap_returns_none_when_no_telemetry_files():
     previous = _recording("N", "20260720_100000")
     current = _recording("N", "20260720_101500")
 
-    assert movement_bridges_gap(previous, current) is None
+    assert (
+        movement_bridges_gap(previous, current, adapter=BlackVueAdapter()) is None
+    )
 
 
 def test_movement_bridges_gap_returns_none_when_files_show_no_movement(
@@ -192,4 +199,6 @@ def test_movement_bridges_gap_returns_none_when_files_show_no_movement(
     previous = _recording("N", "20260720_100000", gps_path=gps_path)
     current = _recording("N", "20260720_101500", gsensor_path=gsensor_path)
 
-    assert movement_bridges_gap(previous, current) is None
+    assert (
+        movement_bridges_gap(previous, current, adapter=BlackVueAdapter()) is None
+    )

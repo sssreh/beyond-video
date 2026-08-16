@@ -36,13 +36,12 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from ..archive.asset import Asset
+from ..adapters.base import CameraAdapter
+from ..adapters.telemetry_bridge import read_recording_gps
+from ..adapters.telemetry_bridge import read_recording_gsensor
 from ..archive.recording import Recording
-from ..generate.media import MediaToolError
 from .gps_reader import GpsFix
-from .gps_reader import read_gps
 from .gsensor_reader import GSensorSample
-from .gsensor_reader import read_gsensor
 
 DEFAULT_SPEED_THRESHOLD_KMH = 5.0
 DEFAULT_EDGE_WINDOW = timedelta(seconds=15)
@@ -184,6 +183,7 @@ def gsensor_shows_movement_at_start(
 def _recording_shows_movement(
     recording: Recording,
     *,
+    adapter: CameraAdapter,
     at_start: bool,
     speed_threshold_kmh: float,
     window: timedelta,
@@ -200,12 +200,8 @@ def _recording_shows_movement(
 
     edge = "start" if at_start else "end"
 
-    gps_file = recording.file(Asset.GPS)
-    if gps_file is not None:
-        try:
-            fixes = read_gps(gps_file.path)
-        except MediaToolError:
-            fixes = ()
+    fixes = read_recording_gps(adapter, recording)
+    if fixes:
         check = (
             gps_shows_movement_at_start
             if at_start
@@ -220,12 +216,8 @@ def _recording_shows_movement(
                 f"{edge} of {recording.id}"
             )
 
-    gsensor_file = recording.file(Asset.GSENSOR)
-    if gsensor_file is not None:
-        try:
-            samples = read_gsensor(gsensor_file.path)
-        except MediaToolError:
-            samples = ()
+    samples = read_recording_gsensor(adapter, recording)
+    if samples:
         check = (
             gsensor_shows_movement_at_start
             if at_start
@@ -249,6 +241,7 @@ def movement_bridges_gap(
     previous: Recording,
     current: Recording,
     *,
+    adapter: CameraAdapter,
     speed_threshold_kmh: float = DEFAULT_SPEED_THRESHOLD_KMH,
     window: timedelta = DEFAULT_EDGE_WINDOW,
     variance_ratio_threshold: float = DEFAULT_VARIANCE_RATIO_THRESHOLD,
@@ -262,11 +255,16 @@ def movement_bridges_gap(
     only care about the yes/no answer, like TripBuilder.build().
 
     Missing or unreadable GPS/g-sensor files are treated as "no
-    evidence" and never force a split on their own.
+    evidence" and never force a split on their own. `adapter` is
+    required (not optional/defaulted) since this function is always
+    reached via a caller-constructed callable (see bv_export.py's own
+    `bridge = functools.partial(movement_bridges_gap, adapter=adapter)
+    if movement else None`), never called with no adapter context.
     """
 
     reason = _recording_shows_movement(
         previous,
+        adapter=adapter,
         at_start=False,
         speed_threshold_kmh=speed_threshold_kmh,
         window=window,
@@ -277,6 +275,7 @@ def movement_bridges_gap(
 
     return _recording_shows_movement(
         current,
+        adapter=adapter,
         at_start=True,
         speed_threshold_kmh=speed_threshold_kmh,
         window=window,

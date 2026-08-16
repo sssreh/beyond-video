@@ -44,6 +44,8 @@
     "thumbnail_generator"
   ],
   "default_trip_gap_seconds": 300,
+  "gps_source_asset": null,
+  "gsensor_source_asset": null,
   "grouping_hint": "subfolder",
   "unsupported_notes": [
     "No GPS: no map.mp4, no GPX export, no reverse geocoding, no start/stop location pages, no --movement trip bridging. Trip splitting still works on timestamp gaps alone.",

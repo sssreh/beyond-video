@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import argparse
+import functools
 import shlex
 import shutil
 import sys
@@ -20,10 +21,13 @@ from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
 
+from blackvue.adapters.base import CameraAdapter
+from blackvue.adapters.registry import get_adapter
 from blackvue.archive import Archive
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.cli.errors import run_cli
+from blackvue.core.camera_config import DEFAULT_ADAPTER_ID
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import resolve_archive_path
 from blackvue.core.joblog import wrap_say
@@ -522,6 +526,7 @@ def bv_export(
     should_continue: Callable[[], bool] = lambda: True,
     say=print,
     warn=_default_warn,
+    adapter: CameraAdapter | None = None,
 ) -> int:
     """Export every detected trip in `path` to its own folder under
     `target`. Returns 0 on success, 1 if any trip failed.
@@ -696,7 +701,10 @@ def bv_export(
             "against when --no-duration is also given."
         )
 
-    archive = Archive(path)
+    if adapter is None:
+        adapter = get_adapter(DEFAULT_ADAPTER_ID)
+
+    archive = adapter.open_archive(Path(path))
 
     try:
         interval = LexicalTimeParser(
@@ -733,7 +741,11 @@ def bv_export(
         if max_parking_duration_minutes is not None
         else DEFAULT_MAX_PARKING_DURATION
     )
-    bridge = movement_bridges_gap if movement else None
+    bridge = (
+        functools.partial(movement_bridges_gap, adapter=adapter)
+        if movement
+        else None
+    )
 
     # Trip *detection* (below) is bounded to `interval` rather than
     # scanning the whole archive on every run - see TripBuilder.
@@ -907,6 +919,7 @@ def bv_export(
                 debug=debug,
                 should_continue=should_continue,
                 say=say,
+                adapter=adapter,
             )
         except ExportCancelled as exc:
             # A real cancellation (bv-web's Cancel button, via
@@ -1939,6 +1952,8 @@ def _run(
     """
 
     archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
+    adapter_id = camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
+    adapter = get_adapter(adapter_id)
 
     target = args.target
     if target is None and camera_config is not None:
@@ -2035,6 +2050,7 @@ def _run(
             should_continue=should_continue,
             say=say,
             warn=warn,
+            adapter=adapter,
         )
     except SystemExit as exc:
         # Not warn(f"bv-export: {exc}") - one of the two raise sites

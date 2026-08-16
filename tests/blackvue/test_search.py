@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
@@ -140,11 +141,15 @@ def _fix(lat, lon, *, valid=True, minutes=0):
 
 
 def test_search_near_returns_closest_fix_within_radius(tmp_path, monkeypatch):
-    import blackvue.search as search_module
+    # search_near() now reads via CameraAdapter.read_gps() (see
+    # adapters/telemetry_bridge.py), not a module-level read_gps -
+    # fake the adapter's own read_gps method rather than patching
+    # anything in search.py itself.
+    adapter = BlackVueAdapter()
 
     recording = Recording(id=RecordingId("20260715_130000_N"))
     gps_path = tmp_path / "20260715_130000_N.gps"
-    gps_path.write_text("irrelevant - read_gps is faked below")
+    gps_path.write_text("irrelevant - adapter.read_gps is faked below")
     recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
 
     fixes = (
@@ -152,9 +157,9 @@ def test_search_near_returns_closest_fix_within_radius(tmp_path, monkeypatch):
         _fix(59.3293, 18.0686, minutes=1),  # exact target - closest
         _fix(60.0000, 19.0000, minutes=2),  # far away
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: fixes)
+    monkeypatch.setattr(adapter, "read_gps", lambda path: fixes)
 
-    match = search_near(recording, 59.3293, 18.0686, radius_meters=1000)
+    match = search_near(recording, 59.3293, 18.0686, radius_meters=1000, adapter=adapter)
 
     assert isinstance(match, GeoMatch)
     assert match.fix.latitude == 59.3293
@@ -163,24 +168,22 @@ def test_search_near_returns_closest_fix_within_radius(tmp_path, monkeypatch):
 
 
 def test_search_near_returns_none_when_nothing_in_radius(tmp_path, monkeypatch):
-    import blackvue.search as search_module
+    adapter = BlackVueAdapter()
 
     recording = Recording(id=RecordingId("20260715_131000_N"))
     gps_path = tmp_path / "20260715_131000_N.gps"
     gps_path.write_text("irrelevant")
     recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
 
-    monkeypatch.setattr(
-        search_module, "read_gps", lambda path: (_fix(60.0, 19.0),)
-    )
+    monkeypatch.setattr(adapter, "read_gps", lambda path: (_fix(60.0, 19.0),))
 
-    match = search_near(recording, 59.3293, 18.0686, radius_meters=100)
+    match = search_near(recording, 59.3293, 18.0686, radius_meters=100, adapter=adapter)
 
     assert match is None
 
 
 def test_search_near_skips_invalid_fixes(tmp_path, monkeypatch):
-    import blackvue.search as search_module
+    adapter = BlackVueAdapter()
 
     recording = Recording(id=RecordingId("20260715_132000_N"))
     gps_path = tmp_path / "20260715_132000_N.gps"
@@ -191,9 +194,9 @@ def test_search_near_skips_invalid_fixes(tmp_path, monkeypatch):
         _fix(59.3293, 18.0686, valid=False),  # invalid, at target - skipped
         _fix(None, None, valid=True),  # valid but no position - skipped
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: fixes)
+    monkeypatch.setattr(adapter, "read_gps", lambda path: fixes)
 
-    match = search_near(recording, 59.3293, 18.0686, radius_meters=1000)
+    match = search_near(recording, 59.3293, 18.0686, radius_meters=1000, adapter=adapter)
 
     assert match is None
 
@@ -201,7 +204,9 @@ def test_search_near_skips_invalid_fixes(tmp_path, monkeypatch):
 def test_search_near_returns_none_when_recording_has_no_gps(tmp_path):
     recording = Recording(id=RecordingId("20260715_133000_N"))
 
-    match = search_near(recording, 59.3293, 18.0686, radius_meters=1000)
+    match = search_near(
+        recording, 59.3293, 18.0686, radius_meters=1000, adapter=BlackVueAdapter()
+    )
 
     assert match is None
 
@@ -269,11 +274,11 @@ def test_search_near_with_lines_finds_a_fix_far_from_the_representative_point(
     # single point, well outside a normal --radius around it) should
     # still match, since search_near() is told to measure against the
     # road's own line geometry instead.
-    import blackvue.search as search_module
+    adapter = BlackVueAdapter()
 
     recording = Recording(id=RecordingId("20260715_134000_N"))
     gps_path = tmp_path / "20260715_134000_N.gps"
-    gps_path.write_text("irrelevant - read_gps is faked below")
+    gps_path.write_text("irrelevant - adapter.read_gps is faked below")
     recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
 
     # Road runs roughly 5km from one point to another; representative
@@ -282,12 +287,12 @@ def test_search_near_with_lines_finds_a_fix_far_from_the_representative_point(
     road_end = (59.365, 18.050)  # ~5km further north
     fix = _fix(59.364, 18.0501, minutes=0)
 
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(adapter, "read_gps", lambda path: (fix,))
 
     # Plain point-distance search from the road's start point, with a
     # normal radius, would miss this fix entirely.
     no_lines_match = search_near(
-        recording, road_start[0], road_start[1], radius_meters=200
+        recording, road_start[0], road_start[1], radius_meters=200, adapter=adapter
     )
     assert no_lines_match is None
 
@@ -298,6 +303,7 @@ def test_search_near_with_lines_finds_a_fix_far_from_the_representative_point(
         road_start[0],
         road_start[1],
         radius_meters=200,
+        adapter=adapter,
         lines=((road_start, road_end),),
     )
     assert with_lines_match is not None

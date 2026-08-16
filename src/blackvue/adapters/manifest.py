@@ -105,6 +105,8 @@ class AdapterManifest:
     timestamp_source: tuple[str, ...] = ()
     grouping_hint: str = "none"
     unsupported_notes: tuple[str, ...] = ()
+    gps_source_asset: str | None = None
+    gsensor_source_asset: str | None = None
 
     def supports(self, capability: str) -> bool:
         """True only for an explicit `true` in capabilities[capability].
@@ -244,4 +246,6 @@ def load_manifest(path: Path) -> AdapterManifest:
         timestamp_source=tuple(data.get("timestamp_source", ())),
         grouping_hint=data.get("grouping_hint", "none"),
         unsupported_notes=tuple(data.get("unsupported_notes", ())),
+        gps_source_asset=data.get("gps_source_asset"),
+        gsensor_source_asset=data.get("gsensor_source_asset"),
     )

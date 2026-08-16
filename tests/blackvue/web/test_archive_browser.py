@@ -17,6 +17,11 @@ from __future__ import annotations
 from datetime import date
 from datetime import datetime
 
+from blackvue.adapters.blackvue.adapter import BlackVueAdapter
+from blackvue.archive.asset import Asset
+from blackvue.archive.asset_file import AssetFile
+from blackvue.archive.recording import Recording
+from blackvue.archive.recording_id import RecordingId
 from blackvue.web.archive_browser import ArchiveRecordingCache
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
@@ -528,7 +533,21 @@ def test_scene_summary_skips_direction_on_read_error_placeholder(tmp_path, monke
 # archive_recording_location route). Fixture NMEA text mirrors
 # tests/blackvue/telemetry/test_gps_reader.py's own - real read_gps()
 # parsing is exercised end-to-end here, not mocked.
+#
+# Both functions now take (adapter, recording) rather than a bare .gps
+# path (see adapters/telemetry_bridge.py's read_recording_gps() - this
+# rewire threads every GPS/g-sensor read through the CameraAdapter
+# abstraction, task #914) - each fixture below wraps its NMEA file in a
+# real Recording/AssetFile and reads it via a real BlackVueAdapter(),
+# whose read_gps() delegates unchanged to telemetry.gps_reader.read_gps().
 # ---------------------------------------------------------------------------
+
+
+def _gps_recording(path) -> Recording:
+    return Recording(
+        id=RecordingId("20260715_120000_N"),
+        assets={Asset.GPS: AssetFile(Asset.GPS, path)},
+    )
 
 
 def test_first_valid_gps_fix_skips_leading_no_fix_sentences(tmp_path):
@@ -541,7 +560,7 @@ def test_first_valid_gps_fix_skips_leading_no_fix_sentences(tmp_path):
         "10.00,45.00,010124,,,A*6D\n"
     )
 
-    fix = first_valid_gps_fix(path)
+    fix = first_valid_gps_fix(BlackVueAdapter(), _gps_recording(path))
 
     assert fix is not None
     assert fix.valid is True
@@ -558,7 +577,7 @@ def test_first_valid_gps_fix_returns_none_when_no_fix_ever_has_a_position(
         "[1700000001000]$GPRMC,120001.00,V,,,,,,,010124,,,N*7F\n"
     )
 
-    assert first_valid_gps_fix(path) is None
+    assert first_valid_gps_fix(BlackVueAdapter(), _gps_recording(path)) is None
 
 
 def test_last_valid_gps_fix_skips_trailing_no_fix_sentences(tmp_path):
@@ -576,7 +595,7 @@ def test_last_valid_gps_fix_skips_trailing_no_fix_sentences(tmp_path):
         "[1700000003000]$GPRMC,120003.00,V,,,,,,,010124,,,N*7F\n"
     )
 
-    fix = last_valid_gps_fix(path)
+    fix = last_valid_gps_fix(BlackVueAdapter(), _gps_recording(path))
 
     assert fix is not None
     assert fix.valid is True
@@ -593,7 +612,7 @@ def test_last_valid_gps_fix_returns_none_when_no_fix_ever_has_a_position(
         "[1700000001000]$GPRMC,120001.00,V,,,,,,,010124,,,N*7F\n"
     )
 
-    assert last_valid_gps_fix(path) is None
+    assert last_valid_gps_fix(BlackVueAdapter(), _gps_recording(path)) is None
 
 
 def test_known_filenames_matches_what_actually_exists(tmp_path):

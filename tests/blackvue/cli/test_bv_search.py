@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
@@ -107,6 +108,26 @@ class _FakeArchive:
         return self
 
 
+class _FakeAdapter(BlackVueAdapter):
+    """Stands in for the real CameraAdapter _run() now resolves via
+    get_adapter()/adapter.open_archive() (see camera-ID resolution -
+    task #629 - and this file's own adapter rewire, task #913) -
+    wraps a _FakeArchive the same way BlackVueAdapter.open_archive()
+    wraps the real Archive class, so every existing _FakeArchive(...)
+    fixture below still works unchanged. Subclasses BlackVueAdapter
+    (rather than reimplementing CameraAdapter from scratch) so
+    .manifest/.read_gps()/.read_gsensor() - which search_near() now
+    reaches via adapters/telemetry_bridge.py, not a bare open_archive()
+    stub - behave exactly like the real adapter unless a given test
+    monkeypatches .read_gps directly on its own _FakeAdapter instance."""
+
+    def __init__(self, archive):
+        self._archive = archive
+
+    def open_archive(self, path):
+        return self._archive(path)
+
+
 def test_run_requires_at_least_one_criterion(tmp_path):
     args = parse_args([str(tmp_path)])
 
@@ -116,7 +137,7 @@ def test_run_requires_at_least_one_criterion(tmp_path):
 
 
 def test_run_no_recordings_in_range(monkeypatch, tmp_path):
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([])))
 
     args = parse_args([str(tmp_path), "--text", "traffic"])
     messages = []
@@ -132,7 +153,7 @@ def test_run_text_match_reports_recording_and_line(monkeypatch, tmp_path):
         tmp_path,
         {Asset.TRANSCRIPT: "Heavy traffic near the roundabout.\n"},
     )
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([recording])))
 
     args = parse_args([str(tmp_path), "--text", "traffic"])
     messages = []
@@ -149,7 +170,7 @@ def test_run_text_match_is_preceded_by_a_blank_line(monkeypatch, tmp_path):
         tmp_path,
         {Asset.TRANSCRIPT: "Heavy traffic near the roundabout.\n"},
     )
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([recording])))
 
     args = parse_args([str(tmp_path), "--text", "traffic"])
     messages = []
@@ -163,7 +184,7 @@ def test_run_text_no_match_reports_no_matches(monkeypatch, tmp_path):
     recording = _make_recording(
         "20260715_121000_N", tmp_path, {Asset.TRANSCRIPT: "Smooth sailing.\n"}
     )
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([recording])))
 
     args = parse_args([str(tmp_path), "--text", "traffic"])
     messages = []
@@ -182,7 +203,7 @@ def test_run_text_asset_restricts_search(monkeypatch, tmp_path):
             Asset.SCENE_DESCRIPTION: "quiet street",
         },
     )
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([recording])))
 
     args = parse_args(
         [str(tmp_path), "--text", "traffic", "--asset", "scene"]
@@ -195,7 +216,6 @@ def test_run_text_asset_restricts_search(monkeypatch, tmp_path):
 
 
 def test_run_near_reports_geo_match(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -212,8 +232,9 @@ def test_run_near_reports_geo_match(monkeypatch, tmp_path):
         speed_kmh=10.0,
         course=90.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     args = parse_args(
         [str(tmp_path), "--near", "59.3293,18.0686", "--radius", "500"]
@@ -227,7 +248,6 @@ def test_run_near_reports_geo_match(monkeypatch, tmp_path):
 
 
 def test_run_combines_text_and_near_with_and_semantics(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -267,10 +287,9 @@ def test_run_combines_text_and_near_with_and_semantics(monkeypatch, tmp_path):
     def fake_read_gps(path):
         return (far_fix,) if "124000" in str(path) else (near_fix,)
 
-    monkeypatch.setattr(search_module, "read_gps", fake_read_gps)
-    monkeypatch.setattr(
-        bv_search, "Archive", _FakeArchive([far_recording, near_recording])
-    )
+    fake_adapter = _FakeAdapter(_FakeArchive([far_recording, near_recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", fake_read_gps)
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     args = parse_args(
         [
@@ -292,7 +311,6 @@ def test_run_combines_text_and_near_with_and_semantics(monkeypatch, tmp_path):
 
 
 def test_run_place_geocodes_then_searches(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -309,8 +327,9 @@ def test_run_place_geocodes_then_searches(monkeypatch, tmp_path):
         speed_kmh=10.0,
         course=90.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     # Fake the deferred import target directly on the geocoding module,
     # since bv_search imports load_or_forward_geocode locally inside
@@ -348,7 +367,6 @@ def test_run_place_with_road_geometry_matches_along_the_whole_road(
     # non-empty) should find a GPS fix near the far end of the road,
     # not just near Nominatim's single representative point - this is
     # the whole reason line geometry gets threaded through at all.
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
     from blackvue.export import geocoding as geocoding_module
@@ -369,8 +387,9 @@ def test_run_place_with_road_geometry_matches_along_the_whole_road(
         speed_kmh=10.0,
         course=90.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     road_geometry = GeocodeResult(
         point=(59.320, 18.050),
@@ -409,7 +428,6 @@ def _make_test_video(path: Path, duration_seconds: float = 3.0) -> None:
 
 
 def test_run_near_renders_zoom_outputs_when_front_video_exists(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -432,8 +450,9 @@ def test_run_near_renders_zoom_outputs_when_front_video_exists(monkeypatch, tmp_
         speed_kmh=30.0,
         course=0.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     args = parse_args(
         [str(tmp_path), "--near", "59.3295,18.0692", "--radius", "100"]
@@ -451,7 +470,6 @@ def test_run_near_renders_zoom_outputs_when_front_video_exists(monkeypatch, tmp_
 
 
 def test_run_near_reports_zoom_skip_when_target_out_of_frame(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -474,8 +492,9 @@ def test_run_near_reports_zoom_skip_when_target_out_of_frame(monkeypatch, tmp_pa
         speed_kmh=30.0,
         course=0.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     args = parse_args(
         [str(tmp_path), "--near", "59.3290,18.0686", "--radius", "100"]
@@ -489,7 +508,6 @@ def test_run_near_reports_zoom_skip_when_target_out_of_frame(monkeypatch, tmp_pa
 
 
 def test_run_near_reports_zoom_failure_but_keeps_the_match(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -512,8 +530,9 @@ def test_run_near_reports_zoom_failure_but_keeps_the_match(monkeypatch, tmp_path
         speed_kmh=30.0,
         course=0.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     args = parse_args(
         [str(tmp_path), "--near", "59.3295,18.0692", "--radius", "100"]
@@ -528,7 +547,6 @@ def test_run_near_reports_zoom_failure_but_keeps_the_match(monkeypatch, tmp_path
 
 
 def test_run_place_resolution_prints_before_the_started_line(monkeypatch, tmp_path):
-    import blackvue.search as search_module
     from datetime import datetime
     from blackvue.telemetry.gps_reader import GpsFix
 
@@ -545,8 +563,9 @@ def test_run_place_resolution_prints_before_the_started_line(monkeypatch, tmp_pa
         speed_kmh=10.0,
         course=90.0,
     )
-    monkeypatch.setattr(search_module, "read_gps", lambda path: (fix,))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
 
     from blackvue.export import geocoding as geocoding_module
     from blackvue.export.geocoding import GeocodeResult
@@ -572,7 +591,7 @@ def test_run_place_resolution_prints_before_the_started_line(monkeypatch, tmp_pa
 
 def test_run_place_reports_error_when_not_found(monkeypatch, tmp_path):
     recording = Recording(id=RecordingId("20260715_127000_N"))
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([recording]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([recording])))
 
     from blackvue.export import geocoding as geocoding_module
 
@@ -595,7 +614,7 @@ def test_run_place_reports_error_when_not_found(monkeypatch, tmp_path):
 
 
 def test_run_prints_started_and_finished_lines_around_a_search(monkeypatch, tmp_path):
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([])))
 
     args = parse_args([str(tmp_path), "--text", "traffic"])
     messages = []
@@ -619,7 +638,7 @@ def test_run_prints_started_and_finished_lines_around_a_search(monkeypatch, tmp_
 def test_run_prints_finished_line_even_when_the_time_parser_rejects_input(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive([]))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive([])))
 
     args = parse_args([str(tmp_path), "--text", "traffic", "--timestamp", "abc"])
     messages = []
@@ -704,7 +723,7 @@ def test_run_trace_flag_prints_progress_dots(monkeypatch, tmp_path, capsys):
         _make_recording(f"2026071512{i:04d}_N", tmp_path, {Asset.TRANSCRIPT: "traffic"})
         for i in range(5)
     ]
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive(recordings))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive(recordings)))
 
     args = parse_args([str(tmp_path), "--text", "traffic", "--trace"])
     exit_code = bv_search._run(args, say=lambda m: None, warn=lambda m: None)
@@ -722,7 +741,7 @@ def test_run_without_trace_flag_prints_no_dots(monkeypatch, tmp_path, capsys):
         _make_recording(f"2026071512{i:04d}_N", tmp_path, {Asset.TRANSCRIPT: "traffic"})
         for i in range(5)
     ]
-    monkeypatch.setattr(bv_search, "Archive", _FakeArchive(recordings))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: _FakeAdapter(_FakeArchive(recordings)))
 
     args = parse_args([str(tmp_path), "--text", "traffic"])
     bv_search._run(args, say=lambda m: None, warn=lambda m: None)

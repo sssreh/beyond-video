@@ -20,9 +20,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ..archive import Archive
+from ..adapters.registry import get_adapter
 from ..archive.asset import Asset
 from .errors import run_cli
+from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
 from ..core.joblog import wrap_say
@@ -281,8 +282,10 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         warn("bv-search: give at least one of --text, --near, or --place")
         return EXIT_ARGS_ERROR
 
-    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
-    archive = Archive(archive_path)
+    archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
+    adapter_id = camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
+    adapter = get_adapter(adapter_id)
+    archive = adapter.open_archive(archive_path)
 
     target: tuple[float, float] | None = args.near
     target_lines: tuple[tuple[tuple[float, float], ...], ...] = ()
@@ -376,6 +379,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
             if target is not None:
                 geo_match = search_near(
                     recording, target[0], target[1], args.radius,
+                    adapter=adapter,
                     lines=target_lines,
                 )
                 if geo_match is None:

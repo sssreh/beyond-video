@@ -15,11 +15,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .adapters.base import CameraAdapter
+from .adapters.telemetry_bridge import read_recording_gps
 from .archive.asset import Asset
 from .archive.recording import Recording
 from .generate.media import MediaToolError
 from .telemetry.gps_reader import GpsFix
-from .telemetry.gps_reader import read_gps
 
 # Which Asset(s) each --asset category searches. Diarized transcript/
 # translation and the rear scene description are grouped in with
@@ -224,12 +225,15 @@ def search_near(
     lon: float,
     radius_meters: float,
     *,
+    adapter: CameraAdapter,
     lines: tuple[tuple[tuple[float, float], ...], ...] = (),
 ) -> GeoMatch | None:
-    """Return the closest valid GPS fix in `recording`'s .gps file to
-    (lat, lon), if any fall within `radius_meters` - or None if the
-    recording has no GPS data at all, or none of its fixes come that
-    close.
+    """Return the closest valid GPS fix in `recording` (read via
+    `adapter`, per its manifest's gps_source_asset - see
+    adapters/telemetry_bridge.py) to (lat, lon), if any fall within
+    `radius_meters` - or None if the recording has no GPS data at all
+    (missing/unreadable file, or `adapter`'s manifest doesn't declare
+    gps support), or none of its fixes come that close.
 
     `lines` - one or more polylines (each a sequence of (lat, lon)
     vertices) - overrides the plain point/`lat`/`lon` distance check
@@ -240,13 +244,9 @@ def search_near(
     undershoots how much of the road actually counts as "near" it -
     see export/geocoding.py's GeocodeResult docstring."""
 
-    gps_file = recording.file(Asset.GPS)
-    if gps_file is None:
-        return None
-
     best: GeoMatch | None = None
 
-    for fix in read_gps(gps_file.path):
+    for fix in read_recording_gps(adapter, recording):
         if not fix.valid or fix.latitude is None or fix.longitude is None:
             continue
 

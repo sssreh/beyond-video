@@ -190,6 +190,14 @@
       "items": {"type": "string"},
       "description": "Names of adapter-class methods/responsibilities this manifest cannot express declaratively and that must have real code behind them for this adapter to function (e.g. 'gps_sidecar_parser', 'camera_client')."
     },
+    "gps_source_asset": {
+      "description": "Name of the Asset enum member (src/blackvue/archive/asset.py) whose on-disk file is handed to this adapter's read_gps(path) to get a recording's GPS fixes - null if capabilities.gps is false, or if this adapter simply has no GPS data. BlackVue: 'GPS' (a separate .gps sidecar file). A future adapter whose telemetry is embedded in the video itself instead of a sidecar (e.g. GoPro's GPMF stream) points this at that adapter's own video asset (e.g. 'FRONT') instead - read_gps() still just takes a path, it's simply the same file the video itself lives in.",
+      "oneOf": [{"type": "null"}, {"type": "string"}]
+    },
+    "gsensor_source_asset": {
+      "description": "Same as gps_source_asset, for read_gsensor(path). BlackVue: 'GSENSOR' (a separate .3gf sidecar file).",
+      "oneOf": [{"type": "null"}, {"type": "string"}]
+    },
     "default_trip_gap_seconds": {
       "type": "number",
       "exclusiveMinimum": 0,
