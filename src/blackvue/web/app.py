@@ -2025,6 +2025,15 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         shown = matches if show_all else tail(matches)
         truncated = not show_all and len(shown) < len(matches)
+        # bv-history (the CLI) keeps oldest-first, matching bash/pwsh's
+        # own `history` convention (see blackvue/history.py's module
+        # docstring) - but Christer wants the *web* page the other way
+        # round: "i would like to show history in a descending order
+        # so the latest commands are on top." tail() above still picks
+        # the most recent `count` entries first, oldest-first within
+        # that slice; this just flips the final display order, it
+        # doesn't change which entries get shown or their `.number`s.
+        shown = list(reversed(shown))
 
         return templates.TemplateResponse(
             request,

@@ -12761,3 +12761,21 @@ than a render pass. No code changes were needed for the install/
 deployment half of this - that was entirely Christer's own venv
 state on his PC, fixed via `pip` commands in his own terminal, not
 this repo.
+
+## Fix: bv-web's /history page shows newest entries first (2026-08-16)
+
+Christer: "in bv-web i would like to show history in a descending
+order so the latest commands are on top." `blackvue/history.py`'s own
+`all_entries()`/`tail()` stay oldest-first on purpose - matching
+bash/pwsh's own `history` convention the module docstring calls out,
+and `bv-history` (the CLI) keeps that. Changed only the web side:
+`app.py`'s `history_list()` route now reverses `shown` right before
+handing it to the template, after `tail()` has already picked which
+entries to show (still the most recent `count`, oldest-first
+*within* that pre-reversal slice) - so the set of rows and their
+`.number`s are unchanged, only the display order flips. `/history/
+{number}` (single-entry detail page) has no ordering to flip.
+
+Files: `src/blackvue/web/app.py`.
+
+Verified via `python3 -m py_compile`.
