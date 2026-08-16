@@ -4,9 +4,11 @@ import argparse
 from datetime import timedelta
 from pathlib import Path
 
+from blackvue.adapters import registry
 from blackvue.archive import Archive, Asset
 from blackvue.cli.display_group import DisplayGroup
 from blackvue.cli.errors import run_cli
+from blackvue.core.camera_config import DEFAULT_ADAPTER_ID
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import resolve_archive_path
 from blackvue.core.joblog import wrap_say
@@ -183,9 +185,21 @@ def bv_ls(
     movement: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
+    adapter_id: str = DEFAULT_ADAPTER_ID,
     say=print,
 ) -> int:
     """List recordings.
+
+    `adapter_id` selects which CameraAdapter (see adapters/registry.py
+    and docs/CAMERA_ADAPTERS.md) scans `path` - defaults to "blackvue"
+    (DEFAULT_ADAPTER_ID), same as an un-migrated CameraConfig with no
+    `adapter` key. _run() passes the resolved camera's own
+    CameraConfig.adapter when `path` came from a configured camera id
+    (see resolve_archive_path()); a literal directory path with no
+    camera config behind it always uses the default. The adapter
+    returns an Archive-shaped object (see CameraAdapter.open_archive()'s
+    own docstring on duck-type compatibility) - everything below this
+    line is unchanged from when it only ever saw a real Archive.
 
     `say` is injectable (default: real stdout via print) - see
     print_trips()'s own docstring above for why. The grouped-table
@@ -197,7 +211,7 @@ def bv_ls(
     first and handed to `say` once, complete - the printed result is
     byte-for-byte the same as before, just assembled differently."""
 
-    archive = Archive(path)
+    archive = registry.get_adapter(adapter_id).open_archive(Path(path))
 
     try:
         interval = LexicalTimeParser(
@@ -448,7 +462,8 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
     warnings/prompts of its own, so unlike bv_config.py's `_run()`
     there's no `ask`/`warn` to thread through here."""
 
-    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
+    archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
+    adapter_id = camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
 
     return bv_ls(
         path=archive_path,
@@ -461,6 +476,7 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         movement=args.movement,
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
+        adapter_id=adapter_id,
         say=say,
     )
 

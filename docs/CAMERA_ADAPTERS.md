@@ -289,12 +289,12 @@ the re-sequenced order above. Built:
   "prove the interface" step from the roadmap below - built and verified
   precisely because it *isn't* allowed to change behavior.
 
-**Still not built**: no `FolderAdapter`, no wiring of `bv-ls`/the web
-archive browser through any of this (both still use `ArchiveReader`/
-`Archive` directly - unaffected by everything above), no `bv-download`
-SD-card import path, no vocabulary de-duplication (the "cross-cutting
-cleanup" section above - flagged, not fixed). See "Suggested next steps"
-below for the remaining, re-sequenced order.
+**Still not built** (as of the plumbing-only first half of this pass):
+no `FolderAdapter`, no wiring of `bv-ls`/the web archive browser through
+any of this, no `bv-download` SD-card import path, no vocabulary
+de-duplication (the "cross-cutting cleanup" section above - flagged, not
+fixed). See "Suggested next steps" below for the remaining, re-sequenced
+order - #4 and #5 were completed later the same day, see the next section.
 
 Verified: every new module `py_compile`s; a standalone script (no pytest
 available in the sandbox this was built in - see WORKING_CONTEXT.md's
@@ -306,6 +306,109 @@ the boundary unchanged; real pytest test files were also written
 (`tests/blackvue/adapters/`) matching this exact coverage for Christer's
 own machine/CI to run, and were confirmed to at least import/collect
 cleanly here via a minimal fake `pytest` shim.
+
+## What's built so far (2026-08-16, third pass - FolderAdapter + wiring)
+
+Christer's own GoPro test archive (`X:\gopro`, a real "GP" camera config
+with `adapter = "folder"`, hand-set since `bv-config`'s wizard has no
+prompt for `adapter` yet) made this the natural next step instead of a
+synthetic exercise. Built:
+
+- `adapters/folder/adapter.py` - `FolderAdapter`, **not** a delegation
+  wrapper (there's nothing BlackVue-specific to delegate to for a plain
+  folder of videos). Recursively walks `archive_layout: "recursive"`,
+  resolving each video's timestamp via ffprobe's `creation_time` tag
+  first, file mtime second (matching `manifest.timestamp_source`
+  exactly), and synthesizes a `RecordingId` in BlackVue's own
+  `"YYYYMMDD_HHMMSS_K"` shape (kind code `"V"`) from that timestamp -
+  deliberately reusing `RecordingId` as-is rather than inventing a
+  parallel id type, so `bv-ls`'s `--from`/`--until`/`--timestamp`
+  filters, `TripBuilder`'s gap grouping, and bv-web's URL routing all
+  keep working for a folder-adapter camera with no changes of their
+  own. Two videos landing on the same wall-clock second are
+  disambiguated by bumping the later one forward a second at a time.
+  Each video is stored under `Asset.FRONT` - the single-video-per-
+  recording equivalent of BlackVue's front camera, since
+  `direction_vocabulary` here has exactly one (primary) code - which is
+  what lets `recordings_with_front_video()` (trip building) and every
+  existing Front-column/video-serving code path work unmodified.
+  Same-stem sibling files (`clip.mp4` + `clip.transcript.txt` in the
+  same folder) are picked up against `manifest.asset_suffix_table`'s 8
+  generated-asset suffixes - keyed by the video's own filename stem,
+  *not* by the synthesized recording id, since that id doesn't exist as
+  a stable name anyone could target in advance the way BlackVue's
+  filename-embedded one does.
+- `FolderArchive` (same file) - an `Archive`-duck-typed container
+  (`.recordings`, `.configuration()`) built directly from the scan, no
+  `ArchiveReader` involved. `.configuration()` always returns
+  `Configuration.fallback()` (300s, matching
+  `manifest.default_trip_gap_seconds`) silently - no "no configuration
+  snapshot" warning, since a folder adapter camera never has one *by
+  design* (`config_snapshot` capability is `false`), not as a degraded
+  state.
+- **`CameraAdapter.find_recording(path, recording_id)`** - added to the
+  Protocol (`adapters/base.py`) after the fact, not in the original
+  design: bv-web's archive browser needs a *targeted* single-recording
+  lookup (one per thumbnail request, one per HTTP video-range request -
+  see `archive_browser.find_recording()`'s own docstring) separate from
+  `open_archive()`'s full scan, and that need only became concrete once
+  actually wiring the browser through the adapter layer, not at design
+  time. `BlackVueAdapter.find_recording()` delegates to
+  `ArchiveReader.read_recording()` unchanged (same fixed-stat-count
+  lookup, zero perf regression). `FolderAdapter.find_recording()` has no
+  equivalent fast path - a folder adapter's ids are computed at scan
+  time from resolved timestamps, not derivable from a filename the way
+  BlackVue's are - so it does a full rescan filtered by id. Accepted as
+  a real, documented cost for this kind of archive (matching the
+  `recursive_scanner` code hook already declared), not silently glossed
+  over; can be revisited if a large real folder-adapter archive ever
+  makes it a felt problem, the same way BlackVue's own O(archive size)
+  lookup bug got fixed only once it actually bit (see WORKING_CONTEXT.md).
+- **`bv-ls` wired through the adapter abstraction** (`cli/bv_ls.py`) -
+  `bv_ls()` gained an `adapter_id: str = DEFAULT_ADAPTER_ID` parameter
+  and now calls `registry.get_adapter(adapter_id).open_archive(path)`
+  instead of constructing `Archive(path)` directly; `_run()` passes
+  `camera_config.adapter` when `path` resolved to a configured camera
+  (falls back to `DEFAULT_ADAPTER_ID` for a literal directory path).
+  Confirmed byte-for-byte identical output for existing BlackVue
+  archives (same delegation as before, just via the registry).
+- **bv-web's archive browser wired through the adapter abstraction**
+  (`web/archive_browser.py`, `web/app.py`) - `scan_archive()` and
+  `find_recording()` both gained an `adapter_id` parameter (defaulting
+  to `DEFAULT_ADAPTER_ID`); `ArchiveRecordingCache.get()` threads it
+  through too. `web/app.py` gained `_find_camera_adapter_id()` (a
+  sibling to the existing `_find_camera_archive()`, reusing the same
+  cached `CameraConfig` lookup - no extra file read) and wires it into
+  the archive list route and `_find_archive_recording()` (which backs
+  the detail page, thumbnails, and video playback). Every *other*
+  `_find_camera_archive()` call site (the bv-export/bv-generate/etc. job
+  forms) is untouched - only the two archive-browsing functions Christer
+  scoped this step to needed adapter awareness.
+
+**Deliberately not built in this pass**: on-demand thumbnail generation
+for folder-adapter recordings (`capabilities.thumbnails: "generated"` -
+the `thumbnail_generator` code hook is still just a manifest entry, not
+code; a folder-adapter recording with no thumbnail degrades the same way
+an older/incomplete BlackVue archive already does throughout bv-web -
+`ArchiveRecording.thumbnail_direction` returns `None`, the grid shows no
+image, nothing errors). `bv-download` SD-card import (next roadmap step)
+and further adapter variants (GoPro, drone) remain unstarted.
+
+Verified: every new/changed module `py_compile`s; standalone scripts
+exercised `FolderAdapter.open_archive()`/`find_recording()` against real
+temp-directory fixtures (nested subfolders, mixed extensions/case,
+same-second collisions, same-stem generated assets), `bv_ls()` against
+both a real BlackVue-shaped archive (output byte-identical to before)
+and a folder-shaped one, and `scan_archive()`/`find_recording()` at the
+`archive_browser.py` layer for both adapters including the
+`ArchiveRecordingCache` path. Real pytest test files
+(`tests/blackvue/adapters/test_folder_adapter.py`, plus additions to
+`test_registry.py`, `tests/blackvue/cli/test_bv_ls.py`, and
+`tests/blackvue/web/test_archive_browser.py`) were written matching this
+coverage and confirmed to actually pass, function-by-function, via a
+minimal fake `pytest`+`tomllib` harness (no real pytest available in
+this sandbox - see WORKING_CONTEXT.md's standing note) for Christer's
+own machine/CI to run for real.
 
 ## Adapter families: more than one "folder adapter"
 
@@ -352,26 +455,21 @@ to generalize from rather than one.
    registry~~ - **done**, see above.
 3. ~~Implement `BlackVueAdapter` as a thin wrapper delegating to the
    existing `core`/`parser`/`telemetry` code~~ - **done**, see above.
-4. **Wire `bv-ls` and the `bv-web` archive browser through the adapter
-   abstraction** - Christer's stated starting point. Both are read-only
-   and display-heavy (per the investigation, `bv-ls`'s own BlackVue
-   coupling is one filter-policy line plus `display_group.py`'s kind-
-   letter/RecordTime comparisons; the archive browser's is a handful of
-   small fixed tables - `_DIRECTIONS`, `_KIND_LABELS`, `_SIDECARS`) -
-   good first real consumers of `AdapterManifest`, and a place a
-   regression shows up immediately as a wrong table cell, not silent data
-   loss.
-5. Implement `FolderAdapter` for real (the recursive scanner, the
-   ffprobe/mtime timestamp fallback, on-demand thumbnails) so step 4 has
-   a second, genuinely different adapter to prove itself against, not
-   just `BlackVueAdapter` in a trench coat.
+4. ~~Wire `bv-ls` and the `bv-web` archive browser through the adapter
+   abstraction~~ - **done**, see "What's built so far (third pass)"
+   above.
+5. ~~Implement `FolderAdapter` for real (the recursive scanner, the
+   ffprobe/mtime timestamp fallback)~~ - **done**, see above. On-demand
+   thumbnail generation specifically was deferred - see that section's
+   "Deliberately not built" note.
 6. **Add SD-card import to `bv-download`** - Christer's stated second
    step, and rightly called "the easy one": no CGI wire protocol, no
    never-closing multipart streams, no `blackvue_vod.cgi` sidecar-missing
    workaround - just a mounted filesystem with the camera's own file
    layout (BlackVue's SD card mirrors what `bv-download` already produces)
    to filter and copy into the archive. Likely the first real user of the
-   `removable_media` source kind discussed above.
+   `removable_media` source kind discussed above. Christer has an
+   emulated SD card ready to test against (`X:\SD_card`, 2026-08-16).
 7. Build further adapter variants (GoPro, drone footage, ...) as real
    need/footage shows up, informed by whatever steps 4-6 taught about the
    interface.

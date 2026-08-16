@@ -6,16 +6,18 @@ so a long archive is easier to scan visually, without needing
 bv-export to have run first.
 
 Deliberately thin, the same way trips.py is thin relative to what it
-wraps: this reuses blackvue.archive.Archive/ArchiveReader (the exact
-same reader bv-ls/bv-export already use to enumerate recordings)
-rather than adding any new disk-scanning logic - just a
-browsing-friendly wrapper around Recording plus the day-grouping this
-page's UI needs. The one exception is find_recording(), which calls
-ArchiveReader.read_recording() - a targeted single-recording lookup
-added to the reader itself (not duplicated here) specifically because
-the thumbnail grid and the video player's range requests each resolve
-one recording per HTTP request, and a full archive scan on every one
-of those would be far too slow on a large archive.
+wraps: this goes through a camera's own CameraAdapter (see
+adapters/registry.py and docs/CAMERA_ADAPTERS.md) - the same adapter
+bv-ls already resolves via CameraConfig.adapter - rather than adding
+any new disk-scanning logic of its own, just a browsing-friendly
+wrapper around Recording plus the day-grouping this page's UI needs.
+The one exception is find_recording(), which calls
+CameraAdapter.find_recording() - a targeted single-recording lookup
+(BlackVueAdapter delegates to ArchiveReader.read_recording(); see that
+method's own docstring) specifically because the thumbnail grid and
+the video player's range requests each resolve one recording per HTTP
+request, and a full archive scan on every one of those would be far
+too slow on a large archive.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -32,11 +34,11 @@ from datetime import date
 from datetime import datetime
 from pathlib import Path
 
-from ..archive import Archive
-from ..archive import ArchiveReader
+from ..adapters import registry
 from ..archive import Asset
 from ..archive import Recording
 from ..archive import RecordingId
+from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..generate.scene import extract_description_section
 from ..lexicaltimeparser import TimeInterval
 from ..telemetry.gps_reader import GpsFix
@@ -468,9 +470,17 @@ def filter_recordings(
     return [recording for recording in recordings if matches(recording)]
 
 
-def scan_archive(archive_path: Path, camera_id: str) -> list[ArchiveRecording]:
+def scan_archive(
+    archive_path: Path, camera_id: str, adapter_id: str = DEFAULT_ADAPTER_ID
+) -> list[ArchiveRecording]:
     """Return every recording in a camera's raw archive, newest
     first.
+
+    `adapter_id` selects which CameraAdapter scans `archive_path` (see
+    adapters/registry.py) - defaults to "blackvue"
+    (DEFAULT_ADAPTER_ID), same as bv-ls. Callers pass the resolved
+    camera's own CameraConfig.adapter (see app.py's
+    archive_recording_list() route).
 
     A missing archive directory (e.g. bv-download has never run for
     this camera yet) is treated as zero recordings, not an error -
@@ -481,7 +491,7 @@ def scan_archive(archive_path: Path, camera_id: str) -> list[ArchiveRecording]:
     if not archive_path.is_dir():
         return []
 
-    archive = Archive(archive_path)
+    archive = registry.get_adapter(adapter_id).open_archive(archive_path)
 
     return sorted(
         (
@@ -494,12 +504,15 @@ def scan_archive(archive_path: Path, camera_id: str) -> list[ArchiveRecording]:
 
 
 def find_recording(
-    archive_path: Path, camera_id: str, recording_id: str
+    archive_path: Path,
+    camera_id: str,
+    recording_id: str,
+    adapter_id: str = DEFAULT_ADAPTER_ID,
 ) -> ArchiveRecording | None:
     """Resolve a single recording id within a camera's archive, or
     None if it doesn't exist.
 
-    Uses ArchiveReader.read_recording() - a targeted lookup for just
+    Uses CameraAdapter.find_recording() - a targeted lookup for just
     this one recording's own files - rather than scan_archive()'s
     full-archive read. This matters a lot here specifically: the
     thumbnail grid calls this once per recording shown on the page,
@@ -510,8 +523,12 @@ def find_recording(
     N-recording page load O(N^2), and would make video playback feel
     like it hangs - dozens of range requests, each re-scanning a
     potentially large archive from scratch. See
-    ArchiveReader.read_recording()'s own docstring for the same
-    reasoning from the reader's side.
+    CameraAdapter.find_recording()'s own docstring (base.py) for how
+    each adapter meets that bar - or doesn't; FolderAdapter's own
+    find_recording() falls back to a full rescan, which is a real,
+    accepted cost for that kind of archive today, not a regression
+    from before this adapter existed (nothing served folder-adapter
+    cameras through bv-web at all until this wiring).
     """
 
     parsed_id = RecordingId.parse(recording_id)
@@ -521,7 +538,7 @@ def find_recording(
     if not archive_path.is_dir():
         return None
 
-    recording = ArchiveReader(archive_path).read_recording(parsed_id)
+    recording = registry.get_adapter(adapter_id).find_recording(archive_path, parsed_id)
     if recording is None:
         return None
 
@@ -559,7 +576,11 @@ class ArchiveRecordingCache:
         self._entries: dict[tuple[str, str], tuple[ArchiveRecording, float]] = {}
 
     def get(
-        self, archive_path: Path, camera_id: str, recording_id: str
+        self,
+        archive_path: Path,
+        camera_id: str,
+        recording_id: str,
+        adapter_id: str = DEFAULT_ADAPTER_ID,
     ) -> ArchiveRecording | None:
         now = time.monotonic()
         key = (camera_id, recording_id)
@@ -570,7 +591,7 @@ class ArchiveRecordingCache:
             if now < expires_at:
                 return recording
 
-        recording = find_recording(archive_path, camera_id, recording_id)
+        recording = find_recording(archive_path, camera_id, recording_id, adapter_id)
         if recording is not None:
             self._entries[key] = (recording, now + self._ttl_seconds)
         else:

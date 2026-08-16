@@ -38,6 +38,8 @@ from typing import Protocol
 from typing import runtime_checkable
 
 from ..archive.archive import Archive
+from ..archive.recording import Recording
+from ..archive.recording_id import RecordingId
 from ..core.endpoint import Endpoint
 from ..telemetry.gps_reader import GpsFix
 from ..telemetry.gsensor_reader import GSensorSample
@@ -81,6 +83,27 @@ class CameraAdapter(Protocol):
         duck-type-compatible with those same two members, not this
         exact class - see docs/CAMERA_ADAPTERS.md's FolderAdapter
         discussion.
+        """
+        ...
+
+    def find_recording(self, path: Path, recording_id: RecordingId) -> Recording | None:
+        """Resolve a single recording by id within the archive at
+        `path`, or None if it doesn't exist - a targeted lookup for
+        callers that already know the id they want (bv-web's archive
+        browser: one call per thumbnail request and per HTTP range
+        request while a video plays) and would otherwise pay
+        open_archive()'s full-archive scan cost on every single one.
+
+        BlackVueAdapter delegates to ArchiveReader.read_recording(),
+        which resolves a recording via a fixed number of direct
+        stat()s (see that method's own docstring for why that matters
+        at scale) rather than open_archive()'s full directory scan.
+        An adapter without an equally targeted lookup (e.g.
+        FolderAdapter, whose ids aren't derivable from a filename
+        alone) may fall back to open_archive(path) filtered by id -
+        correct, just O(archive size) per call, matching the
+        recursive_scanner code hook already declared for that kind of
+        adapter.
         """
         ...
 

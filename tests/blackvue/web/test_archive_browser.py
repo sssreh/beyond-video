@@ -37,6 +37,82 @@ def test_scan_archive_returns_empty_list_for_missing_directory(tmp_path):
     assert scan_archive(tmp_path / "does_not_exist", "cam") == []
 
 
+# ---------------------------------------------------------------------------
+# adapter_id - scan_archive()/find_recording() routed through a camera's
+# own CameraAdapter (docs/CAMERA_ADAPTERS.md) instead of always assuming
+# BlackVue's flat layout. Confirms the "folder" adapter (a recursive
+# folder of ordinary videos, e.g. a GoPro test archive) works through
+# the exact same browsing functions bv-web's routes call.
+# ---------------------------------------------------------------------------
+
+
+def test_scan_archive_with_folder_adapter_finds_a_recursive_video(tmp_path):
+    import os
+
+    archive = tmp_path / "archive"
+    clips = archive / "clips"
+    clips.mkdir(parents=True)
+    video = clips / "vacation.mp4"
+    video.write_bytes(b"x" * 40)
+    os.utime(video, (1700000000, 1700000000))
+
+    recordings = scan_archive(archive, "gp", adapter_id="folder")
+
+    assert len(recordings) == 1
+    assert recordings[0].id.endswith("_V")
+    assert recordings[0].camera_id == "gp"
+
+
+def test_scan_archive_default_adapter_does_not_see_folder_shaped_files(
+    tmp_path,
+):
+    archive = tmp_path / "archive"
+    clips = archive / "clips"
+    clips.mkdir(parents=True)
+    (clips / "vacation.mp4").write_bytes(b"x")
+
+    # Default "blackvue" adapter's flat scan never descends into
+    # subfolders and requires the BlackVue filename convention, so a
+    # recursive folder of arbitrarily-named videos yields nothing.
+    recordings = scan_archive(archive, "gp")
+
+    assert recordings == []
+
+
+def test_find_recording_with_folder_adapter_resolves_the_scanned_id(
+    tmp_path,
+):
+    import os
+
+    archive = tmp_path / "archive"
+    clips = archive / "clips"
+    clips.mkdir(parents=True)
+    video = clips / "vacation.mp4"
+    video.write_bytes(b"x" * 40)
+    os.utime(video, (1700000000, 1700000000))
+
+    recordings = scan_archive(archive, "gp", adapter_id="folder")
+    target_id = recordings[0].id
+
+    found = find_recording(archive, "gp", target_id, adapter_id="folder")
+
+    assert found is not None
+    assert found.id == target_id
+
+
+def test_find_recording_with_folder_adapter_returns_none_for_unknown_id(
+    tmp_path,
+):
+    archive = tmp_path / "archive"
+    _write(archive, "clip.mp4")
+
+    found = find_recording(
+        archive, "gp", "99991231_235959_V", adapter_id="folder"
+    )
+
+    assert found is None
+
+
 def test_scan_archive_finds_a_normal_recording_with_front_and_rear(tmp_path):
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.mp4")

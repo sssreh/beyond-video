@@ -11,9 +11,10 @@ iterates "every adapter" for a given camera - see docs/CAMERA_ADAPTERS.md's
 "exactly one active adapter at a time" section for why that's a
 deliberate design choice, not an oversight.
 
-STATUS: as of this commit, "blackvue" is the only registered adapter_id,
-and nothing yet calls get_adapter() from a real bv-* command or bv-web
-route - see base.py's own docstring for what's still queued.
+STATUS: "blackvue" and "folder" are both registered. bv-ls and bv-web's
+archive browser call get_adapter() (see cli/bv_ls.py and
+web/archive_browser.py) - see docs/CAMERA_ADAPTERS.md for what's still
+queued (bv-download SD-card import, more adapter variants, bv-analyze).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pathlib import Path
 
 from .base import CameraAdapter
 from .blackvue.adapter import BlackVueAdapter
+from .folder.adapter import FolderAdapter
 from .manifest import AdapterManifest
 from .manifest import load_manifest
 
@@ -103,10 +105,8 @@ def load_adapter_manifest(adapter_id: str) -> AdapterManifest:
 
 
 # ---------------------------------------------------------------------------
-# Real adapters register themselves here, one line each. "folder" joins
-# once FolderAdapter is actually implemented (docs/CAMERA_ADAPTERS.md's
-# "Suggested next steps" #5) - adapters/folder/manifest.json already
-# exists, but a manifest alone isn't a registrable adapter.
+# Real adapters register themselves here, one line each.
 # ---------------------------------------------------------------------------
 
 register("blackvue", BlackVueAdapter)
+register("folder", FolderAdapter)

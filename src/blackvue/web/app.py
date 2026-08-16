@@ -493,7 +493,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         until = until or None
 
         archive_path = _find_camera_archive(app.state.camera_config_cache, camera_id)
-        recordings = scan_archive(archive_path, camera_id)
+        adapter_id = _find_camera_adapter_id(app.state.camera_config_cache, camera_id)
+        recordings = scan_archive(archive_path, camera_id, adapter_id)
 
         # An empty `mode` (nothing checked) means "don't filter by
         # mode at all", not "show nothing" - see
@@ -2283,6 +2284,42 @@ def _find_camera_archive(cache: CameraConfigCache, camera_id: str) -> Path:
     return config.archive
 
 
+def _find_camera_adapter_id(cache: CameraConfigCache, camera_id: str) -> str:
+    """Resolve a camera id to its CameraConfig.adapter (see
+    core/camera_config.py and docs/CAMERA_ADAPTERS.md) - "blackvue"
+    (DEFAULT_ADAPTER_ID) for an un-migrated config with no `adapter`
+    key. A sibling to _find_camera_archive() rather than folded into
+    it: only the archive-browser routes (scan_archive()/
+    find_recording(), both adapter-aware) need this - the other
+    _find_camera_archive() call sites (bv-export/bv-generate/etc. job
+    forms) just want the raw path and stay untouched by the adapter
+    abstraction for now, per docs/CAMERA_ADAPTERS.md's roadmap.
+
+    Goes through the same `cache` as _find_camera_archive() - no
+    extra config-file read, just a second field off the same cached
+    CameraConfig. Reuses _find_camera_archive()'s own camera-id/404
+    guard rather than duplicating it.
+    """
+
+    if (
+        "/" in camera_id
+        or "\\" in camera_id
+        or camera_id in (".", "..")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
+        )
+
+    try:
+        config = cache.get(default_config_dir(), camera_id)
+    except CameraConfigError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="camera not found"
+        )
+
+    return config.adapter
+
+
 def _describe_gps_fix(
     fix: GpsFix, geocode_cache_dir: Path
 ) -> tuple[str, str, str | None, str | None]:
@@ -2341,7 +2378,8 @@ def _find_archive_recording(
         )
 
     archive_path = _find_camera_archive(camera_config_cache, camera_id)
-    recording = recording_cache.get(archive_path, camera_id, recording_id)
+    adapter_id = _find_camera_adapter_id(camera_config_cache, camera_id)
+    recording = recording_cache.get(archive_path, camera_id, recording_id, adapter_id)
     if recording is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"

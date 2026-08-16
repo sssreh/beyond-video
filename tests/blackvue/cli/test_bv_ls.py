@@ -1,3 +1,5 @@
+import os
+
 from blackvue.archive.asset import Asset
 from blackvue.cli.bv_ls import _asset_group_spans
 from blackvue.cli.bv_ls import bv_ls
@@ -365,3 +367,81 @@ def test_trips_defaults_to_a_five_minute_gap(tmp_path, capsys):
     assert exit_code == 0
     # 4 minutes apart - one trip under the default 5-minute gap.
     assert "trip_20260715_100000_20260715_100400" in out
+
+
+# ---------------------------------------------------------------------------
+# adapter_id - bv-ls listing a "folder" adapter archive instead of the
+# default "blackvue" one (docs/CAMERA_ADAPTERS.md). Confirms the
+# adapter abstraction is really wired through bv_ls()/main(), not just
+# present in the registry - a recursive folder of ordinary videos with
+# no BlackVue filename convention should list under the folder
+# adapter and fail (or produce zero recordings) under the default one.
+# ---------------------------------------------------------------------------
+
+
+def test_bv_ls_lists_a_folder_adapter_archive(tmp_path, capsys):
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    video = clips / "vacation.mp4"
+    video.write_bytes(b"x" * 123)
+    os.utime(video, (1700000000, 1700000000))
+
+    exit_code = bv_ls(str(tmp_path), adapter_id="folder", say=print)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    # Synthesized id from the 1700000000 mtime (2023-11-14 22:13:20 UTC,
+    # rendered in local time by datetime.fromtimestamp() - just check
+    # the recording shows up with the folder adapter's "V" kind code,
+    # not the exact clock time, so this isn't timezone-flaky.
+    assert "_V" in out
+    assert "X" in out  # Front column marked for the one video asset
+
+
+def test_bv_ls_default_adapter_ignores_a_folder_shaped_archive(
+    tmp_path, capsys
+):
+    # Same folder-of-videos layout, but without adapter_id="folder" -
+    # the default "blackvue" adapter's flat scan requires BlackVue's
+    # own filename convention, so a recursive folder of arbitrarily-
+    # named videos should show zero recordings rather than raising.
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    (clips / "vacation.mp4").write_bytes(b"x")
+
+    exit_code = bv_ls(str(tmp_path))
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "_V" not in out
+
+
+def test_main_resolves_a_camera_id_to_its_configured_folder_adapter(
+    tmp_path, capsys
+):
+    # End-to-end: a camera config with adapter="folder" (as Christer's
+    # own GoPro test camera now has, see docs/CAMERA_ADAPTERS.md) is
+    # resolved by main()/_run() through resolve_archive_path() and
+    # actually changes which adapter bv-ls uses - not just accepted
+    # and silently ignored.
+    archive = tmp_path / "archive"
+    sub = archive / "clips"
+    sub.mkdir(parents=True)
+    video = sub / "clip.mov"
+    video.write_bytes(b"y" * 55)
+    os.utime(video, (1700000200, 1700000200))
+
+    config_dir = tmp_path / "config"
+    save_camera_config(
+        config_path(config_dir, "GP"),
+        CameraConfig(id="GP", name="GoPro test", archive=archive, adapter="folder"),
+    )
+
+    exit_code = main(["GP", "--config-dir", str(config_dir)])
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "_V" in out

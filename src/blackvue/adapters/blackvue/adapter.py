@@ -20,7 +20,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...archive.archive import Archive
+from ...archive.archive_reader import ArchiveReader
 from ...archive.configuration import parse_record_time_seconds
+from ...archive.recording import Recording
+from ...archive.recording_id import RecordingId
 from ...core.connection import connect as _connect
 from ...core.endpoint import Endpoint
 from ...telemetry.gps_reader import GpsFix
@@ -45,6 +48,14 @@ class BlackVueAdapter:
         lookup (Configuration) every bv-* command already uses."""
 
         return Archive(path)
+
+    def find_recording(self, path: Path, recording_id: RecordingId) -> Recording | None:
+        """Delegates to ArchiveReader.read_recording() unchanged - the
+        same fixed-stat-count targeted lookup bv-web's archive browser
+        already relies on for thumbnail/video-serving performance (see
+        base.py's own docstring)."""
+
+        return ArchiveReader(path).read_recording(recording_id)
 
     def read_gps(self, path: Path) -> tuple[GpsFix, ...]:
         """Delegates to telemetry.gps_reader.read_gps() unchanged."""
