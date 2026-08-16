@@ -979,8 +979,11 @@ def _run(
                 )
                 continue
 
-            if args.verbose and changed:
-                say(f"{recording.id}: downloaded")
+            if changed:
+                kind = "video+metadata" if want_video else "metadata only"
+                say(f"bv-download: {recording.id}: downloaded ({kind})")
+            elif args.verbose:
+                say(f"bv-download: {recording.id}: already up to date")
     finally:
         if progress is not None:
             progress.finish()

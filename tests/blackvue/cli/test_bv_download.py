@@ -839,6 +839,37 @@ def test_run_verbose_prints_short_kind_summary_not_every_filename(
     assert "not listed by the camera's own recording listing" not in out
 
 
+def test_run_prints_a_line_per_downloaded_recording_without_verbose(
+    tmp_path, monkeypatch, capsys
+):
+    # Christer: "It would be nice with some output for every file
+    # downloaded" - before this, a successful download only printed
+    # anything per-recording under --verbose; a plain run showed the
+    # destination line, then silence until the very end.
+    recordings = [
+        recording("20260803_161020_N"),
+        recording("20260803_161120_N"),
+    ]
+    camera = _FakeDownloadCamera(recordings)
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path, verbose=False))
+
+    assert exit_code == EXIT_OK
+    out = capsys.readouterr().out
+    assert "20260803_161020_N: downloaded (video+metadata)" in out
+    assert "20260803_161120_N: downloaded (video+metadata)" in out
+
+
 # ---------------------------------------------------------------------------
 # --sdcard: import from a mounted SD card / removable media.
 # ---------------------------------------------------------------------------

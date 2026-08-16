@@ -28,7 +28,7 @@ By default it downloads video for **event** and **manual** recordings, plus the 
 
 If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the default mode becomes `all` - requesting a specific time range already signals you want everything in it, not just the usual events-plus-context subset.
 
-Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`) - not gated behind `--verbose`, since it's basic context for what's about to happen rather than extra diagnostic detail.
+Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`), and one line per recording as it's actually downloaded (`<id>: downloaded (video+metadata)` or `<id>: downloaded (metadata only)`) - neither gated behind `--verbose`, since both are basic confirmation of what's happening rather than extra diagnostic detail. `--verbose` adds detail on top of this (sidecar-probe results, an "already up to date" line for a recording that needed no download, etc.), it doesn't turn the per-file confirmation on or off.
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
@@ -60,7 +60,7 @@ Each `ID`-based run also reads the camera's current `config.ini` (over the netwo
 | `--dry-run` | List what would be downloaded without downloading it. |
 | `--files` | With `--dry-run`, list every individual file (video, thumbnail, GPS, gsensor, etc.) for each matching recording, and whether it would be downloaded, instead of one summary line per recording id. Requires `--dry-run`. |
 | `--yes` | Skip the interactive range confirmation. |
-| `-v`, `--verbose` | Print each file as it is downloaded. |
+| `-v`, `--verbose` | Extra diagnostic detail: sidecar-probe results, RecordTime-backfill notes, and "already up to date" lines for recordings that needed no download. Per-recording download confirmation itself (`<id>: downloaded (...)`) always prints, with or without this flag - see below. |
 | `--trace` | Print a `.` for every 10MB downloaded - a simple progress indicator across the whole run, independent of `-v`. |
 | `-h`, `--help` | Show help and exit. |
 

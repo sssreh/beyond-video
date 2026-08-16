@@ -13704,3 +13704,29 @@ manifest.json` (`unsupported_notes` correction), `tests/blackvue/core/
 test_sdcard_camera.py`, `tests/blackvue/domain/test_recording.py`,
 `tests/blackvue/cli/test_bv_download.py`, `docs/CAMERA_ADAPTERS.md`
 (new step 8 in the "Suggested next steps" roadmap list).
+
+## bv-download: per-file "downloaded" line no longer needs --verbose (done, this session)
+
+Follow-up straight after task #924: Christer downloaded 10 real GoPro
+files successfully with the adapter-aware `--sdcard` fix, then asked
+for "some output for every file downloaded." Turned out `_run()`'s
+per-recording loop already had this message - `say(f"{recording.id}:
+downloaded")` - but gated behind `if args.verbose and changed:`, so a
+plain run (no `-v`) printed the destination line up front, then
+nothing at all until the final summary/exit. Removed the `--verbose`
+gate and reworded to match the existing dry-run listing's wording
+(`{id}: downloaded (video+metadata)` / `(metadata only)`, prefixed
+`bv-download:` like every other line this command prints - the old
+message was missing that prefix). A recording that needed no download
+(`changed == False`) still only prints under `--verbose` ("already up
+to date"), keeping `--verbose`'s role as *extra* detail rather than
+the on/off switch for basic per-file confirmation. New test
+`test_run_prints_a_line_per_downloaded_recording_without_verbose` in
+`tests/blackvue/cli/test_bv_download.py`; full suite 64/64 passing
+(same fake-pytest/fake-tomllib harness). `docs/man/bv-download.md`
+updated - the `-v`/`--verbose` row was flatly wrong ("Print each file
+as it is downloaded") even before this change, since the gate already
+existed; corrected to describe what `--verbose` actually adds now.
+
+Files: `src/blackvue/cli/bv_download.py`, `tests/blackvue/cli/
+test_bv_download.py`, `docs/man/bv-download.md`.
