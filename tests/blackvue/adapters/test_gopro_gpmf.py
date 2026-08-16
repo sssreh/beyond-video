@@ -47,12 +47,18 @@ def _build_devc(
     gpsf: int = 3,
     include_gps: bool = True,
     include_accl: bool = True,
+    tick_ms: int | None = None,
 ) -> bytes:
     """Build one DEVC container's raw KLV bytes - a single GPMF
     "sample" (roughly one second of telemetry). Every field this
     module's parser reads is included; `include_gps`/`include_accl`
     let a test omit one stream entirely (a real block with GPS lock
-    lost, or with no g-sensor STRM at all)."""
+    lost, or with no g-sensor STRM at all).
+
+    `tick_ms`, when given, builds the ACCL STRM Hero5/6/7-style: a
+    TICK (device-clock millisecond) field instead of STMP - matching
+    real older-firmware clips (see extract_gsensor_samples()'s TICK
+    fallback), which never write STMP at all."""
 
     body = b""
 
@@ -70,10 +76,13 @@ def _build_devc(
 
     if include_accl:
         scal_accl = _klv("SCAL", "l", 4, 1, struct.pack(">i", 418))
-        stmp_klv = _klv("STMP", "L", 4, 1, struct.pack(">I", stmp_us))
+        if tick_ms is None:
+            timing_klv = _klv("STMP", "L", 4, 1, struct.pack(">I", stmp_us))
+        else:
+            timing_klv = _klv("TICK", "L", 4, 1, struct.pack(">I", tick_ms))
         accl_payload = b"".join(struct.pack(">3h", *row) for row in accl_rows)
         accl_klv = _klv("ACCL", "s", 6, len(accl_rows), accl_payload)
-        strm_accl_body = scal_accl + stmp_klv + accl_klv
+        strm_accl_body = scal_accl + timing_klv + accl_klv
         body += _klv("STRM", "\x00", 1, len(strm_accl_body), strm_accl_body)
 
     return _klv("DEVC", "\x00", 1, len(body), body)
@@ -263,6 +272,37 @@ def test_extract_gsensor_samples_offsets_come_from_stmp_and_interpolate():
     assert samples[0].offset.total_seconds() == pytest.approx(0.0)
     assert samples[1].offset.total_seconds() == pytest.approx(0.5)
     assert samples[2].offset.total_seconds() == pytest.approx(1.0)
+
+
+def test_extract_gsensor_samples_falls_back_to_tick_when_stmp_is_missing():
+    # Hero5/6/7-era shape: TICK (free-running device-clock ms) instead
+    # of STMP - confirmed against Christer's own sample clips.
+    sample1 = _build_devc(
+        b"250101120000.000",
+        gps5_rows=[(599170000, 105170000, 50000, 500, 520)],
+        accl_rows=[(10, -5, 1000), (12, -4, 998)],
+        stmp_us=0,
+        tick_ms=119095,
+    )
+    sample2 = _build_devc(
+        b"250101120001.000",
+        gps5_rows=[(599170200, 105170200, 50020, 510, 530)],
+        accl_rows=[(14, -3, 996), (16, -2, 994)],
+        stmp_us=0,
+        tick_ms=120083,
+    )
+    data = sample1 + sample2
+
+    samples = gpmf.extract_gsensor_samples(data)
+
+    assert len(samples) == 4
+    assert (samples[0].x, samples[0].y, samples[0].z) == (10, -5, 1000)
+    # First TICK-bearing block anchors to offset 0, like STMP's own
+    # "time since stream start" contract.
+    assert samples[0].offset.total_seconds() == pytest.approx(0.0)
+    assert samples[1].offset.total_seconds() == pytest.approx(0.5)
+    # Second block's TICK (120083) is 988ms after the first (119095).
+    assert samples[2].offset.total_seconds() == pytest.approx(0.988)
 
 
 def test_extract_gsensor_samples_skips_a_block_with_no_accl_stream():

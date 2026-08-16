@@ -538,11 +538,20 @@ def extract_gsensor_samples(data: bytes) -> tuple[GSensorSample, ...]:
     within a block spread evenly across the following second - see
     module docstring's known-gaps section.
 
-    A block with no ACCL item or no usable STMP is skipped, not fatal -
-    same per-block tolerance extract_gps_fixes() applies.
+    Older firmware (Hero5/6/7-era, confirmed against Christer's own
+    sample clips - see docs/CAMERA_ADAPTERS.md's gopro section) never
+    writes STMP at all - only a millisecond-resolution TICK, which is a
+    free-running device clock reading rather than a stream-relative
+    one. When STMP is missing, this falls back to TICK, anchored to
+    this recording's own first TICK-bearing block so the first ACCL
+    sample still lands at offset≈0 like STMP's would.
+
+    A block with no ACCL item or no usable STMP/TICK is skipped, not
+    fatal - same per-block tolerance extract_gps_fixes() applies.
     """
 
     samples: list[GSensorSample] = []
+    tick_anchor_ms: int | None = None
 
     for devc_children in _iter_devc_blocks(data):
         for strm_children in _iter_strm_blocks(devc_children):
@@ -551,14 +560,19 @@ def extract_gsensor_samples(data: bytes) -> tuple[GSensorSample, ...]:
                 continue
 
             stmp_item = _find_klv(strm_children, "STMP")
-            if stmp_item is None:
-                continue
+            stmp_rows = _unpack_rows(stmp_item) if stmp_item is not None else None
 
-            stmp_rows = _unpack_rows(stmp_item)
-            if not stmp_rows:
-                continue
-
-            block_start = timedelta(microseconds=stmp_rows[0][0])
+            if stmp_rows:
+                block_start = timedelta(microseconds=stmp_rows[0][0])
+            else:
+                tick_item = _find_klv(strm_children, "TICK")
+                tick_rows = _unpack_rows(tick_item) if tick_item is not None else None
+                if not tick_rows:
+                    continue
+                tick_ms = tick_rows[0][0]
+                if tick_anchor_ms is None:
+                    tick_anchor_ms = tick_ms
+                block_start = timedelta(milliseconds=tick_ms - tick_anchor_ms)
 
             rows = _unpack_rows(accl)
             if not rows:

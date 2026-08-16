@@ -247,3 +247,8 @@ docker-compose.override.yml
 # GitHub Support for purging from an old orphaned commit - never meant
 # to be committed (that's the whole point of the request).
 /github_support_request.md
+
+# Real sample footage Christer copies in for testing camera adapters
+# against actual clips (e.g. GoPro GPMF shape validation, #906) - never
+# meant to be committed, just a scratch drop folder.
+/.sample_footage/

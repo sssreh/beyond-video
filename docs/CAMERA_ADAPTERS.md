@@ -764,6 +764,64 @@ GPS9, which fields are actually populated, real `SCAL`/`GPSU` framing)
 and worth confirming against a real file before trusting the synthetic-
 fixture-only test suite above as the last word.
 
+## GoPro adapter: tested against real footage, TICK fallback fix (2026-08-16)
+
+Step #906. This sandbox has no access to `X:\gopro`, so Christer copied
+four real sample clips (Hero5, Hero6, "Karma" - a Karma drone's onboard
+camera, and a Max in HERO mode) into a git-ignored `.sample_footage/`
+scratch folder in the repo root (`/.sample_footage/` added to
+`.gitignore` - never meant to be committed, real personal footage).
+`GoProAdapter`/`gpmf.py` were run directly against these, then through
+the full `open_archive()`/`telemetry_bridge.read_recording_gps()`/
+`read_recording_gsensor()` path end to end.
+
+**Confirmed working as designed:** all four clips' `moov`/`gpmd`-track/
+sample-table shape parses cleanly via the pure-Python box walker; GPS5
+decodes correctly on the three clips that have it (Hero5: 618 fixes,
+Hero6: 417, Max: 191 - lat/lon/speed values sane, e.g. Hero5's opening
+fixes cluster around a fixed point as expected for a stationary start).
+The Karma clip has zero GPS5 fixes - not a bug: its GPMF stream is
+structured as two devices, a `"Camera"` DEVC (image sensor telemetry
+only - `ACCL`/`GYRO`/`ISOG`/`SHUT`, no GPS at all) and a
+`"GoPro Karma v1.0"` DEVC (the drone controller's own telemetry -
+`GPRI`/`ATTD`/`GLPI`/`BPOS`/etc., an entirely different, drone-specific
+FourCC vocabulary this module was never designed to parse). Correctly
+falls through to "no GPS for this recording" via the existing
+per-recording degradation contract rather than erroring - exactly
+right, out of scope to chase further (Christer's own camera is a
+Hero-series action cam, not a Karma drone controller).
+
+**Real bug found and fixed: `extract_gsensor_samples()` required
+`STMP`, but Hero5/Hero6/Karma's firmware never writes it.** All three
+returned 0 g-sensor samples despite having real `ACCL` data present and
+otherwise-parseable - only the Max (newer firmware) has `STMP` and
+worked. Inspecting the older clips' raw KLV directly showed their
+`ACCL` `STRM` blocks carry `TICK` (a millisecond-resolution, free-
+running device-clock reading - confirmed identical whether read from
+the `STRM` level or hoisted to the parent `DEVC`) instead of `STMP`
+(GPMF's stream-relative microsecond timestamp). `extract_gsensor_samples()`
+now falls back to `TICK` when `STMP` is absent: the first `TICK`-bearing
+block in the stream anchors to offset zero (matching `STMP`'s own "time
+since stream start" semantics), every later block's offset is
+`(this block's TICK - anchor TICK)` converted to a `timedelta`. After
+the fix, all three older clips now return real per-recording g-sensor
+sample counts (Hero5: 6870, Hero6: 4667, Karma: 2397 - correctly still
+under the `"Camera"` DEVC, unaffected by the GPS-vs-no-GPS distinction
+above), sequential offsets increasing in step with each `DEVC` block's
+`TICK` delta as expected. `test_gopro_gpmf.py` gained
+`test_extract_gsensor_samples_falls_back_to_tick_when_stmp_is_missing`
+(2 synthetic Hero5/6-style TICK-only blocks, no `STMP` at all),
+confirming zero-anchored first-block offset and correct block-to-block
+delta; full suite now 80/80 (was 79/79).
+
+Verified end to end through `open_archive()` + `telemetry_bridge`'s
+`read_recording_gps()`/`read_recording_gsensor()` (the real call path
+every pipeline consumer uses, not just the raw `gpmf` module): all four
+clips scan into recordings, GPS/g-sensor counts above reproduce through
+that full path, and the Karma clip's GPS-less recording degrades to `()`
+rather than raising - the mixed-content-folder contract holding for
+real files, not just the synthetic fixture that already exercised it.
+
 ## bv-config wizard: real adapter selection (2026-08-16)
 
 Closes the gap the GoPro design section above and the third-pass note

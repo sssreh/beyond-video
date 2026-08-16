@@ -13578,22 +13578,40 @@ was updated. Full regression: 79/79 passing across all six
 via the same fake-pytest/fake-tomllib standalone harness pattern used
 throughout this project (no real pytest in this sandbox).
 
-Not done: testing against Christer's real `X:\gopro` footage (#906) -
-queued next, since GPMF's exact on-disk shape (GPS5 vs. GPS9, which
-fields are actually populated) is camera/firmware-dependent and the
-synthetic fixtures above can only prove the parser is internally
-consistent, not that it matches every real file's exact byte layout.
+Follow-up (#906, same day): tested against four of Christer's real GoPro
+clips (Hero5, Hero6, "Karma" drone camera, Max HERO mode), copied into a
+git-ignored `.sample_footage/` scratch folder (this sandbox has no
+`X:\gopro` access). GPS5 decoded correctly on the 3 clips that have it;
+the Karma clip legitimately has none (its GPMF stream is a `"Camera"`
+DEVC with only ACCL/GYRO/etc. plus a separate `"GoPro Karma v1.0"` DEVC
+carrying drone-controller-specific FourCCs this module was never meant
+to parse - correct "no GPS" degradation, not a bug). Found and fixed a
+real bug: `extract_gsensor_samples()` required `STMP`, but Hero5/Hero6/
+Karma's older firmware never writes it, only `TICK` (a millisecond
+device-clock reading) - all three returned 0 g-sensor samples despite
+having real ACCL data. Added a TICK fallback, anchored to the first
+TICK-bearing block so offsets still start at ~0 like STMP's own
+contract; after the fix all three return real per-recording counts
+(Hero5: 6870 samples, Hero6: 4667, Karma: 2397). New regression test
+`test_extract_gsensor_samples_falls_back_to_tick_when_stmp_is_missing`;
+suite now 80/80. Verified end to end through `open_archive()` +
+`telemetry_bridge.read_recording_gps()`/`read_recording_gsensor()` (the
+real pipeline call path), not just the raw `gpmf` module. Full writeup:
+docs/CAMERA_ADAPTERS.md's "GoPro adapter: tested against real footage,
+TICK fallback fix" section.
 
 Files: `src/blackvue/adapters/_recursive_scan.py` (new),
 `src/blackvue/adapters/folder/adapter.py` (refactored to delegate),
-`src/blackvue/adapters/gopro/gpmf.py` (new),
+`src/blackvue/adapters/gopro/gpmf.py` (new; TICK-fallback fix),
 `src/blackvue/adapters/gopro/adapter.py` (new),
 `src/blackvue/adapters/gopro/__init__.py` (new),
 `src/blackvue/adapters/registry.py` (gopro registration),
-`tests/blackvue/adapters/test_gopro_gpmf.py` (new),
+`tests/blackvue/adapters/test_gopro_gpmf.py` (new; TICK-fallback test),
 `tests/blackvue/adapters/test_gopro_adapter.py` (new),
 `tests/blackvue/adapters/test_manifest.py`,
 `tests/blackvue/adapters/test_registry.py`,
 `tests/blackvue/cli/test_bv_config.py`,
+`.gitignore` (`/.sample_footage/`),
 `docs/CAMERA_ADAPTERS.md` (new "GoPro adapter: GPMF parser +
-GoProAdapter implementation" section).
+GoProAdapter implementation" section + "tested against real footage,
+TICK fallback fix" follow-up section).
