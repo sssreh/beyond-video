@@ -291,6 +291,93 @@ and schema only, reviewed before any of the above gets built.
    mostly display logic per the investigation - and verify byte-identical
    output against today's behavior for existing BlackVue archives before
    touching `bv-download`/`bv-export`/`bv-web`.
+6. Build `bv-analyze` (sketched below) once at least one non-BlackVue
+   adapter exists to test it against - an inference tool is hard to
+   validate with only one real example on hand.
+
+## Future: `bv-analyze <archive>` - an adapter-authoring assistant
+
+Christer's follow-on idea, not built, not started - a sketch for whoever
+picks up step 6 above. The manifest schema makes writing an adapter by
+hand tractable, but most of a manifest's *declarative* fields are exactly
+the kind of thing pattern-matching over a real folder of files can infer
+- so instead of a human starting from a blank `manifest.json`, `bv-analyze`
+would point at an unknown archive and hand back a draft to review and
+finish, the same way `bv-config`'s wizard suggests defaults rather than
+asking for everything blind.
+
+### CLI shape
+
+```
+bv-analyze <path> [--out manifest.json] [--sample N]
+```
+
+Read-only - it never modifies `<path>`, only writes the draft manifest
+(and prints a summary to the terminal either way).
+
+### What it would try to infer
+
+1. **Layout** (`archive_layout`): flat if every video file is a direct
+   child of `<path>`, `recursive` if any live in subfolders.
+2. **Video extensions**: the extensions of files `ffprobe` recognizes as
+   video, sampled rather than probing every file for a large archive.
+3. **Filename pattern**: over a sample of filenames, look for a shared
+   structural prefix - runs of digits that parse as a plausible date/time
+   - and, among files that share that prefix, a trailing single letter
+   that varies (a direction-letter candidate) or one just before the
+   extension that splits the sample into a small number of groups (a
+   kind-letter candidate). This is the part most likely to need a human's
+   eyes - BlackVue's own scheme was reverse-engineered by inspection, not
+   guessed from a pattern-matcher, and a bad candidate pattern would
+   silently mis-group recordings.
+4. **Candidate validation**: for an inferred direction-letter set, check
+   that files sharing a timestamp prefix actually differ *only* in that
+   letter and have broadly consistent sizes/durations within each letter
+   - a sanity check against a false-positive pattern match, not a
+   guarantee.
+5. **Timestamp reliability**: parse the candidate `filename_pattern`
+   against a sample and cross-check the result against each file's mtime
+   and `ffprobe` `creation_time`. Rough agreement -> keep the filename
+   pattern. Disagreement, or no pattern found at all -> draft
+   `filename_pattern: null` with the `timestamp_source` fallback chain
+   instead (the folder adapter's approach), and say so in the printed
+   summary rather than silently picking one.
+6. **Sidecars**: any non-video extension sitting next to video files gets
+   listed with its size and a text-vs-binary guess - but never
+   auto-assigned to `GPS`/`GSENSOR`/a thumbnail. Guessing that wrong is
+   the kind of mistake that corrupts trip data quietly; a "found 3 unknown
+   sidecar types, please classify" list is safer than a confident wrong
+   answer.
+7. **`grouping_hint`**: for a recursive layout, check whether subfolders'
+   timestamp ranges are non-overlapping (each folder is its own time
+   window) - if so, suggest `grouping_hint: "subfolder"`.
+8. **Capabilities**: everything defaults to `false`/unknown except what
+   step 4 actually confirmed (e.g. `multi_direction_video` only if the
+   direction split validated). `thumbnails` is always left as a TODO for
+   a human, same reasoning as sidecars.
+9. **Known-adapter match**: compare the inferred pattern and extensions
+   against already-registered manifests first - if the archive looks like
+   an existing `adapter_id` (say, it's just another BlackVue archive),
+   report that instead of drafting a redundant new manifest.
+
+### Output
+
+A `manifest.json` matching `manifest.schema.json`: confidently-inferred
+fields filled in directly, uncertain ones left at safe defaults (an
+unclassified sidecar list, a single collapsed kind/direction entry as the
+folder adapter does when nothing was confirmed) with the reasoning
+recorded in `unsupported_notes`, plus a terminal summary of exactly which
+`code_hooks_required` entries have zero automatic support and need a
+human to write real code - sidecar binary/text parsing and the camera's
+network protocol can never be inferred from static files alone, no matter
+how good the pattern-matching gets.
+
+### Non-goals
+
+Doesn't write the adapter class or any of the code hooks themselves - only
+drafts the manifest half. Doesn't try to identify the camera make/model
+that produced the files (no vendor database) - a nice-to-have someday, not
+required for the draft manifest to already save real time.
 
 ## See also
 
