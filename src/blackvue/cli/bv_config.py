@@ -13,8 +13,11 @@ import sys
 from pathlib import Path
 
 from .errors import run_cli
+from ..adapters.registry import load_adapter_manifest
+from ..adapters.registry import registered_adapter_ids
 from ..core.camera_config import CameraConfig
 from ..core.camera_config import CameraConfigError
+from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import config_path
 from ..core.camera_config import default_archive_dir
 from ..core.camera_config import default_config_dir
@@ -117,6 +120,25 @@ def run_wizard(
         except CameraConfigError as exc:
             say(f"  {exc}")
 
+    # Which CameraAdapter (docs/CAMERA_ADAPTERS.md) this camera's
+    # archive/endpoints are read through - offered as a real choice now
+    # that more than one adapter is registered (previously every config
+    # silently got "blackvue", the only adapter that existed). Defaults
+    # to the existing config's own adapter when editing, so re-running
+    # this wizard never silently changes it, and to DEFAULT_ADAPTER_ID
+    # ("blackvue") for a brand-new config - same default CameraConfig
+    # itself already falls back to.
+    adapter_ids = registered_adapter_ids()
+    default_adapter = existing.adapter if existing else DEFAULT_ADAPTER_ID
+
+    while True:
+        adapter_id = prompt(
+            f"Adapter ({'/'.join(adapter_ids)})", default=default_adapter, ask=ask
+        )
+        if adapter_id in adapter_ids:
+            break
+        say(f"  Unknown adapter {adapter_id!r} - choose one of: {', '.join(adapter_ids)}")
+
     while True:
         archive = prompt("Archive (download path)", default=default_archive, ask=ask)
         if archive:
@@ -141,7 +163,25 @@ def run_wizard(
         "Target (bv-export destination, optional)", default=default_target, ask=ask
     )
 
-    endpoints = edit_endpoints(existing_endpoints, ask=ask, say=say)
+    # Network endpoints only mean anything for an adapter whose own
+    # manifest declares it talks to a camera over the network
+    # (source.requires_network) - a folder/gopro-style camera has
+    # nothing to connect to, so asking "Endpoint 1 address?" for one of
+    # those would be a pointless, confusing question. Any endpoints an
+    # existing config already has are left untouched rather than
+    # cleared - harmless unused data if this camera stays on a
+    # non-network adapter, and still there unmodified if it's ever
+    # switched back.
+    manifest = load_adapter_manifest(adapter_id)
+
+    if manifest.requires_network:
+        endpoints = edit_endpoints(existing_endpoints, ask=ask, say=say)
+    else:
+        endpoints = existing_endpoints
+        say(
+            f"Adapter {adapter_id!r} doesn't use network endpoints - "
+            "skipping endpoint setup."
+        )
 
     return CameraConfig(
         id=id_,
@@ -149,6 +189,7 @@ def run_wizard(
         archive=Path(archive),
         target=Path(target) if target else None,
         endpoints=endpoints,
+        adapter=adapter_id,
     )
 
 
@@ -158,10 +199,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="bv-config",
         description=(
-            "Create or edit a camera's configuration: name, endpoints "
-            "(tried in order), and where downloads are saved. Re-running "
-            "this on an existing id edits it, defaulting every question "
-            "to the current value."
+            "Create or edit a camera's configuration: name, which camera "
+            "adapter (docs/CAMERA_ADAPTERS.md) it uses, endpoints (tried "
+            "in order, only asked for a network-connected adapter), and "
+            "where downloads are saved. Re-running this on an existing id "
+            "edits it, defaulting every question to the current value."
         ),
         # See bv_export.py's own ArgumentParser for why: argparse's
         # default prefix-abbreviation matching silently breaks the

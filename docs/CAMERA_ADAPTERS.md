@@ -652,6 +652,56 @@ on-disk shape (GPS5 vs. the newer GPS9 stream present on Hero11+, which
 fields are actually populated) is camera/firmware-dependent and worth
 confirming against a real file before committing the parser to one shape.
 
+## bv-config wizard: real adapter selection (2026-08-16)
+
+Closes the gap the GoPro design section above and the third-pass note
+higher up both flagged: every camera config's `adapter` field had to be
+hand-edited into the `.cfg` file after running `bv-config`, since the
+wizard itself never asked. Now a real question, `cli/bv_config.py`'s
+`run_wizard()`:
+
+- New "Adapter (blackvue/folder): " prompt, right after Name and before
+  Archive - listed from `adapters.registry.registered_adapter_ids()`
+  (so it grows automatically once `gopro` registers itself in the
+  implementation pass), validated against that same list with a
+  reprompt-and-explain loop on an unrecognized answer (same shape as
+  the existing Name-validation loop). Defaults to the existing config's
+  own `adapter` when editing (so re-running the wizard never silently
+  changes it - consistent with every other field's own default
+  behavior) and to `DEFAULT_ADAPTER_ID` ("blackvue") for a brand-new
+  config, matching `CameraConfig.adapter`'s own dataclass default.
+- Network endpoints are now conditional on the chosen adapter's own
+  manifest: `load_adapter_manifest(adapter_id).requires_network` gates
+  whether `edit_endpoints()` is even called. A folder/gopro-style
+  camera has nothing to connect to, so the wizard no longer asks
+  "Endpoint 1 address?" for one - it prints a one-line "Adapter
+  '<id>' doesn't use network endpoints - skipping endpoint setup."
+  instead. An existing config's endpoints, if any, are left untouched
+  rather than cleared when switched to a non-network adapter -
+  harmless unused data if it stays that way, still there unmodified if
+  switched back.
+- `CameraConfig(..., adapter=adapter_id)` - the wizard's own answer now
+  actually reaches the saved config, instead of every config silently
+  keeping whatever `CameraConfig.adapter`'s dataclass default was.
+
+Files: `src/blackvue/cli/bv_config.py`, `src/blackvue/core/
+camera_config.py` (refreshed the `adapter` field's own docstring, which
+had gone stale describing a registry that exists now), `tests/blackvue/
+cli/test_bv_config.py` (all 9 existing `run_wizard()`-driving tests
+updated for the new prompt in their scripted-ask scripts; 5 new tests:
+unknown-adapter reprompt, endpoint setup skipped for a non-network
+adapter, existing endpoints preserved-not-cleared when switched to one,
+adapter defaults to the existing config's own value on edit, plus an
+explicit `config.adapter` assertion on the main new-config test).
+
+Verified: all 22 functions in `test_bv_config.py` (17 existing + 5 new)
+confirmed passing via a standalone harness (a fake `pytest` shim
+providing `raises`/`fixture`/`approx`, a fake `monkeypatch` fixture
+object, and `tempfile.mkdtemp()` for `tmp_path` - no real pytest in
+this sandbox, see this file's own "Verified" notes elsewhere and
+WORKING_CONTEXT.md's standing note on why); `py_compile` on both
+changed source modules.
+
 ## Suggested next steps (re-sequenced 2026-08-16; #1-3 done, see above)
 
 Re-sequenced per Christer's steer (2026-08-16): read paths first (lowest

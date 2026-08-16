@@ -13457,3 +13457,54 @@ worth confirming against a real file rather than guessed).
 Files: `src/blackvue/adapters/gopro/manifest.json` (new),
 `docs/CAMERA_ADAPTERS.md` (new "GoPro adapter: manifest + code-hook
 interface design" section).
+
+## Feature: bv-config wizard asks for the adapter (2026-08-16)
+
+Christer, on the open scan-logic question from the GoPro design pass:
+"Share them as long as it is possible, in worst case you make a branch
+later." - recorded against task #905 (`GoProAdapter`/`FolderAdapter`
+should share their recursive-scan logic where practical, forking only
+if that turns out not to work against real footage). Same message:
+"bv-config also need some stuff" - this entry is that stuff.
+
+Every camera config's `adapter` field has been hand-edited into the
+`.cfg` file ever since it existed (see the third-pass note above -
+Christer's own `X:\gopro` "GP" camera got `adapter = "folder"` by hand
+for exactly this reason), because `run_wizard()` never asked. Fixed:
+a new "Adapter (blackvue/folder): " prompt (listed from `adapters.
+registry.registered_adapter_ids()`, so `gopro` shows up automatically
+once it registers itself), validated with the same reprompt-and-explain
+loop the Name field already had, defaulting to the existing config's
+own adapter on edit and to `DEFAULT_ADAPTER_ID` for a new one. The
+wizard's own answer now actually reaches `CameraConfig(...)` - it was
+silently discarded before, every saved config keeping the dataclass
+default no matter what.
+
+Also: network endpoints are now skipped for a non-network adapter
+(`load_adapter_manifest(adapter_id).requires_network` gates
+`edit_endpoints()`) - asking "Endpoint 1 address?" for a folder/gopro
+camera that has nothing to connect to was a real, if minor, gap in the
+same spirit as the missing adapter prompt itself. Existing endpoints on
+a config switched to a non-network adapter are left alone, not cleared,
+since there's no reason to destroy data that's simply unused for now.
+
+Refreshed `CameraConfig.adapter`'s own field docstring while in there -
+it still described "no adapter registry exists yet to look the id up
+against," stale since the registry (and everything reading through it)
+has existed for a while now.
+
+All 9 existing `run_wizard()`-driving tests in `test_bv_config.py`
+needed their scripted-ask dicts updated for the new question (added a
+shared `_ACCEPT_DEFAULT_ADAPTER` fragment rather than repeating the
+same key/value pair 9 times); 5 new tests cover the reprompt loop, the
+endpoint-skip behavior and its message, endpoints surviving a switch to
+folder unmodified, and the adapter defaulting to an existing config's
+own value on edit. All 22 functions confirmed passing via a standalone
+harness (fake `pytest.raises`/`.fixture`/`.approx`, a fake
+`monkeypatch` object, `tempfile.mkdtemp()` standing in for `tmp_path` -
+no real pytest in this sandbox).
+
+Files: `src/blackvue/cli/bv_config.py`, `src/blackvue/core/
+camera_config.py`, `tests/blackvue/cli/test_bv_config.py`, `docs/
+CAMERA_ADAPTERS.md` (new "bv-config wizard: real adapter selection"
+section).

@@ -388,11 +388,9 @@ class CameraConfig:
     #: every config, existing or new: this project has only ever spoken
     #: BlackVue until this field existed, so that's the correct meaning
     #: for a config that predates it, not just a placeholder default.
-    #: STATUS: the field exists and round-trips through save/load as of
-    #: this commit, but nothing yet reads it - no adapter registry
-    #: exists to look the id up against (see docs/CAMERA_ADAPTERS.md's
-    #: "Suggested next steps"), so setting it to anything other than
-    #: "blackvue" today has no effect on any command's behavior.
+    #: Read by adapters/registry.get_adapter() throughout bv-ls, bv-web,
+    #: bv-export, bv-search, and bv-config's own wizard (which prompts
+    #: for it directly - see cli/bv_config.py's run_wizard()).
     adapter: str = DEFAULT_ADAPTER_ID
 
 

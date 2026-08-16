@@ -36,6 +36,17 @@ from blackvue.core.endpoint import Endpoint
 # run_wizard()).
 _MYCAR_ARCHIVE_PROMPT = f"Archive (download path) [{default_archive_dir('mycar')}]: "
 
+# The Adapter prompt's question text and "accept the default" answer -
+# every scripted-ask test below that drives run_wizard() needs this in
+# its dict now that the wizard asks a third question before Archive
+# (see bv_config.py's run_wizard()); every test in this file predates
+# multi-adapter support, so "accept blackvue" (the default for both a
+# brand-new config and every existing CameraConfig built without an
+# explicit `adapter=` in this file) is the right answer everywhere
+# except the tests written specifically to exercise adapter selection.
+_ADAPTER_PROMPT = "Adapter (blackvue/folder) [blackvue]: "
+_ACCEPT_DEFAULT_ADAPTER = {_ADAPTER_PROMPT: ""}
+
 
 def _target_prompt_for(archive: str) -> str:
     """The Target prompt's question text once Archive has been
@@ -148,6 +159,7 @@ def test_run_wizard_builds_a_new_config():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
             _target_prompt_for("/tmp/archive"): "/tmp/exports",
             "  New endpoint address: ": ["1.2.3.4", ""],
@@ -159,6 +171,7 @@ def test_run_wizard_builds_a_new_config():
 
     assert config.id == "mycar"
     assert config.name == "Kirby"
+    assert config.adapter == "blackvue"
     assert config.archive == Path("/tmp/archive")
     assert config.target == Path("/tmp/exports")
     assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
@@ -168,6 +181,7 @@ def test_run_wizard_archive_defaults_to_a_suggested_dir_for_a_new_camera():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: "",
             _target_prompt_for(str(default_archive_dir("mycar"))): "",
             "  New endpoint address: ": "",
@@ -183,6 +197,7 @@ def test_run_wizard_target_defaults_to_a_parallel_trips_dir():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
             _target_prompt_for("/tmp/archive"): "",
             "  New endpoint address: ": "",
@@ -205,6 +220,7 @@ def test_run_wizard_target_can_be_left_unset(monkeypatch):
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
             "Target (bv-export destination, optional): ": "",
             "  New endpoint address: ": "",
@@ -220,6 +236,7 @@ def test_run_wizard_sets_target_when_answered():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
             _target_prompt_for("/tmp/archive"): "/tmp/exports",
             "  New endpoint address: ": "",
@@ -244,6 +261,7 @@ def test_run_wizard_defaults_every_question_to_the_existing_config():
     ask = _scripted_ask(
         {
             "Name [Kirby]: ": "",
+            **_ACCEPT_DEFAULT_ADAPTER,
             "Archive (download path) [/tmp/archive]: ": "",
             _target_prompt_for("/tmp/archive"): "",
             "  Address (or 'remove') [1.2.3.4]: ": "1.2.3.4",
@@ -257,6 +275,7 @@ def test_run_wizard_defaults_every_question_to_the_existing_config():
     )
 
     assert config.name == "Kirby"
+    assert config.adapter == "blackvue"
     assert config.archive == Path("/tmp/archive")
     assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
 
@@ -272,6 +291,7 @@ def test_run_wizard_defaults_target_to_the_existing_configs_target():
     ask = _scripted_ask(
         {
             "Name [Kirby]: ": "",
+            **_ACCEPT_DEFAULT_ADAPTER,
             "Archive (download path) [/tmp/archive]: ": "",
             "Target (bv-export destination, optional) [/tmp/exports]: ": "",
             "  New endpoint address: ": "",
@@ -290,6 +310,7 @@ def test_run_wizard_reprompts_on_an_invalid_name():
     ask = _scripted_ask(
         {
             "Name [mycar]: ": ["x" * 200, "GoodName"],
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
             _target_prompt_for("/tmp/archive"): "",
             "  New endpoint address: ": "",
@@ -317,6 +338,7 @@ def test_run_wizard_reprompts_on_an_empty_archive(monkeypatch):
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             "Archive (download path): ": ["", "/tmp/archive"],
             _target_prompt_for("/tmp/archive"): "",
             "  New endpoint address: ": "",
@@ -329,6 +351,96 @@ def test_run_wizard_reprompts_on_an_empty_archive(monkeypatch):
 
     assert config.archive == Path("/tmp/archive")
     assert any("must not be empty" in line for line in warns)
+
+
+def test_run_wizard_reprompts_on_an_unknown_adapter():
+    warns: list[str] = []
+    ask = _scripted_ask(
+        {
+            "Name [mycar]: ": "Kirby",
+            _ADAPTER_PROMPT: ["nonsense", "folder"],
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            _target_prompt_for("/tmp/archive"): "",
+        }
+    )
+
+    config = bv_config_module.run_wizard(
+        "mycar", None, ask=ask, say=warns.append
+    )
+
+    assert config.adapter == "folder"
+    assert any("Unknown adapter" in line for line in warns)
+
+
+def test_run_wizard_skips_endpoint_setup_for_a_non_network_adapter():
+    say_lines: list[str] = []
+    ask = _scripted_ask(
+        {
+            "Name [mycar]: ": "Kirby",
+            _ADAPTER_PROMPT: "folder",
+            _MYCAR_ARCHIVE_PROMPT: "/tmp/archive",
+            _target_prompt_for("/tmp/archive"): "",
+        }
+    )
+
+    config = bv_config_module.run_wizard(
+        "mycar", None, ask=ask, say=say_lines.append
+    )
+
+    assert config.adapter == "folder"
+    assert config.endpoints == []
+    assert any("doesn't use network endpoints" in line for line in say_lines)
+
+
+def test_run_wizard_preserves_existing_endpoints_when_switched_to_a_non_network_adapter():
+    existing = CameraConfig(
+        id="mycar",
+        name="Kirby",
+        archive=Path("/tmp/archive"),
+        adapter="blackvue",
+        endpoints=[Endpoint(name="home", address="1.2.3.4")],
+    )
+    ask = _scripted_ask(
+        {
+            "Name [Kirby]: ": "",
+            "Adapter (blackvue/folder) [blackvue]: ": "folder",
+            "Archive (download path) [/tmp/archive]: ": "",
+            _target_prompt_for("/tmp/archive"): "",
+        }
+    )
+
+    config = bv_config_module.run_wizard(
+        "mycar", existing, ask=ask, say=lambda t: None
+    )
+
+    # Not re-asked (no "  Address (or 'remove')..."/"  New endpoint
+    # address: " entries in the script above - a KeyError from
+    # _scripted_ask would fail this test if edit_endpoints() were
+    # called), and the old endpoint is left untouched rather than
+    # cleared - see run_wizard()'s own comment on why.
+    assert config.endpoints == [Endpoint(name="home", address="1.2.3.4")]
+
+
+def test_run_wizard_defaults_adapter_to_the_existing_configs_adapter():
+    existing = CameraConfig(
+        id="gp",
+        name="GP",
+        archive=Path("/tmp/gopro"),
+        adapter="folder",
+        endpoints=[],
+    )
+    ask = _scripted_ask(
+        {
+            "Name [GP]: ": "",
+            "Adapter (blackvue/folder) [folder]: ": "",
+            "Archive (download path) [/tmp/gopro]: ": "",
+            _target_prompt_for("/tmp/gopro"): "",
+        }
+    )
+
+    config = bv_config_module.run_wizard("gp", existing, ask=ask, say=lambda t: None)
+
+    assert config.adapter == "folder"
 
 
 class _FakeArgs:
@@ -359,6 +471,7 @@ def test_run_saves_a_new_config_end_to_end(monkeypatch, tmp_path):
     ask = _scripted_ask(
         {
             "Name [mycar]: ": "Kirby",
+            **_ACCEPT_DEFAULT_ADAPTER,
             _MYCAR_ARCHIVE_PROMPT: archive,
             _target_prompt_for(archive): "",
             "  New endpoint address: ": ["1.2.3.4", ""],
