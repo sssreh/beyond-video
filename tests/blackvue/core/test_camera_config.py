@@ -10,6 +10,7 @@ from blackvue.core.camera_config import default_archive_dir
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import default_logs_dir
 from blackvue.core.camera_config import default_target_dir
+from blackvue.core.camera_config import DEFAULT_ADAPTER_ID
 from blackvue.core.camera_config import list_camera_ids
 from blackvue.core.camera_config import load_camera_config
 from blackvue.core.camera_config import resolve_archive_path
@@ -295,6 +296,70 @@ def test_save_omits_target_line_when_not_set(tmp_path):
     save_camera_config(path, config)
 
     assert "target" not in path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# CameraConfig.adapter - see docs/CAMERA_ADAPTERS.md. Defaults to "blackvue"
+# for every config, existing or new, since that's what an unset field always
+# implicitly meant before this existed - not just a placeholder default.
+# Nothing reads this field yet (no adapter registry exists as of this
+# commit); these tests only cover that it defaults and round-trips
+# correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_new_camera_config_defaults_adapter_to_blackvue():
+    config = CameraConfig(id="Kirby", name="Kirby", archive=Path("/x"))
+
+    assert config.adapter == DEFAULT_ADAPTER_ID == "blackvue"
+
+
+def test_load_defaults_adapter_to_blackvue_when_key_is_missing(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+    path.write_text('archive = "/volume1/dashcam/Kirby"\n')
+
+    loaded = load_camera_config(path)
+
+    assert loaded.adapter == "blackvue"
+
+
+def test_load_accepts_pre_rename_config_with_no_adapter_key(tmp_path):
+    # A config written before the archive/target rename predates the
+    # adapter field by even longer - same default applies.
+    path = tmp_path / "Kirby.cfg"
+    path.write_text('target = "/volume1/dashcam/Kirby"\n')
+
+    loaded = load_camera_config(path)
+
+    assert loaded.adapter == "blackvue"
+
+
+def test_save_and_load_round_trip_preserves_explicit_adapter(tmp_path):
+    path = tmp_path / "Kirby.cfg"
+
+    config = CameraConfig(
+        id="Kirby",
+        name="Kirby",
+        archive=Path("/volume1/dashcam/Kirby"),
+        adapter="folder",
+    )
+
+    save_camera_config(path, config)
+    loaded = load_camera_config(path)
+
+    assert loaded == config
+    assert loaded.adapter == "folder"
+
+
+def test_save_always_writes_the_adapter_line(tmp_path):
+    # Unlike target (omitted when None), adapter is never optional - a
+    # config always means some adapter, defaulted or explicit.
+    path = tmp_path / "Kirby.cfg"
+
+    config = CameraConfig(id="Kirby", name="Kirby", archive=Path("/x"))
+    save_camera_config(path, config)
+
+    assert 'adapter = "blackvue"' in path.read_text()
 
 
 def test_load_missing_archive_is_an_error(tmp_path):

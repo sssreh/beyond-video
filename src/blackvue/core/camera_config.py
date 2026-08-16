@@ -364,6 +364,14 @@ def validate_name(name: str) -> None:
         )
 
 
+#: Default/legacy CameraConfig.adapter value - see the field's own
+#: docstring. Every config written before the camera-adapter design
+#: (docs/CAMERA_ADAPTERS.md) implicitly meant this; load_camera_config()
+#: defaults a missing `adapter` key to it rather than raising, so no
+#: existing config needs a manual migration step to keep loading.
+DEFAULT_ADAPTER_ID = "blackvue"
+
+
 @dataclass
 class CameraConfig:
     """One camera system: identity, endpoints, the archive directory
@@ -374,6 +382,18 @@ class CameraConfig:
     archive: Path
     target: Path | None = None
     endpoints: list[Endpoint] = field(default_factory=list)
+    #: Which camera adapter (docs/CAMERA_ADAPTERS.md) this config's
+    #: archive/endpoints should be read through - an adapter_id matching
+    #: one of adapters/<id>/manifest.json. Defaults to "blackvue" for
+    #: every config, existing or new: this project has only ever spoken
+    #: BlackVue until this field existed, so that's the correct meaning
+    #: for a config that predates it, not just a placeholder default.
+    #: STATUS: the field exists and round-trips through save/load as of
+    #: this commit, but nothing yet reads it - no adapter registry
+    #: exists to look the id up against (see docs/CAMERA_ADAPTERS.md's
+    #: "Suggested next steps"), so setting it to anything other than
+    #: "blackvue" today has no effect on any command's behavior.
+    adapter: str = DEFAULT_ADAPTER_ID
 
 
 def load_camera_config(path: Path) -> CameraConfig:
@@ -402,6 +422,7 @@ def load_camera_config(path: Path) -> CameraConfig:
 
     id_ = data.get("id", path.stem)
     name = data.get("name", id_)
+    adapter = data.get("adapter", DEFAULT_ADAPTER_ID)
 
     if "archive" in data:
         archive_value = data["archive"]
@@ -435,6 +456,7 @@ def load_camera_config(path: Path) -> CameraConfig:
         archive=Path(archive_value),
         target=Path(target_value) if target_value else None,
         endpoints=endpoints,
+        adapter=adapter,
     )
 
 
@@ -502,6 +524,7 @@ def save_camera_config(path: Path, config: CameraConfig) -> None:
         f"id = {_toml_string(config.id)}",
         f"name = {_toml_string(config.name)}",
         f"archive = {_toml_string(str(config.archive))}",
+        f"adapter = {_toml_string(config.adapter)}",
     ]
 
     if config.target is not None:

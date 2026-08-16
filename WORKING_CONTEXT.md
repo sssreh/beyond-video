@@ -12964,3 +12964,78 @@ copy from) -> further adapter variants as real need shows up ->
 `bv-analyze` once 2+ real adapters exist to generalize from.
 
 Still design-only - no code changed. File: `docs/CAMERA_ADAPTERS.md`.
+
+## Feature: adapter registry + BlackVueAdapter delegation wrapper (2026-08-16)
+
+Christer: "yes start, i guess we will be using exif soon" - moved from
+design to real implementation, following the build order agreed in the
+prior entry (bv-ls/browse-archive wiring first, then bv-download SD-card
+import). This entry covers the prerequisite plumbing steps (1-3) ahead
+of actually wiring anything up.
+
+Added `CameraConfig.adapter: str = "blackvue"` (`core/camera_config.py`,
+`DEFAULT_ADAPTER_ID` constant) - round-trips through save/load, and
+`load_camera_config()` defaults a missing `adapter` key to `"blackvue"`
+for every existing config (including pre-archive/target-rename ones),
+same reasoning as the archive/target rename's own migration: an unset
+field always implicitly meant this, so no separate migration flag is
+needed. Nothing reads the field yet.
+
+Built `src/blackvue/adapters/base.py`: the `CameraAdapter` Protocol
+(`open_archive()`, `read_gps()`, `read_gsensor()`, `connect()`,
+`config_snapshot_seconds()`) and `AdapterCapabilityError`, raised when a
+method is called for a capability its own manifest declares unsupported.
+Not a strict 1:1 mapping of every manifest `code_hooks_required` entry to
+its own method - `camera_client`/`config_snapshot_parser`/
+`sidecar_prober` are bv-download's concern (a later, not-yet-started
+step), so `connect()`/`config_snapshot_seconds()` exist now as their
+eventual home rather than forcing a second interface change later.
+
+Built `src/blackvue/adapters/registry.py`: a plain, explicit
+`adapter_id -> class` dict (deliberately not import-time self-registration
+magic - real adapters register themselves with one `register(...)` call
+at the bottom of this module). `get_adapter()`/`load_adapter_manifest()`
+raise `AdapterNotFoundError` (lists what *is* registered) rather than a
+bare `KeyError`/`FileNotFoundError`.
+
+Built `src/blackvue/adapters/blackvue/adapter.py`: `BlackVueAdapter`, a
+**pure delegation wrapper** - `open_archive()` returns a real
+`Archive(path)` unchanged; `read_gps()`/`read_gsensor()`/`connect()`/
+`config_snapshot_seconds()` each forward straight to the exact existing
+functions (`telemetry.gps_reader.read_gps()`,
+`telemetry.gsensor_reader.read_gsensor()`, `core.connection.connect()`,
+`archive.configuration.parse_record_time_seconds()`). This is
+deliberately the "prove the interface" step docs/CAMERA_ADAPTERS.md's
+roadmap called for: built and verified precisely because it isn't
+allowed to change any existing behavior.
+
+Files: `src/blackvue/core/camera_config.py`,
+`src/blackvue/adapters/{base,registry}.py`,
+`src/blackvue/adapters/blackvue/adapter.py`,
+`tests/blackvue/core/test_camera_config.py` (5 new tests),
+`tests/blackvue/adapters/{test_manifest,test_registry,test_blackvue_adapter}.py`
+(new - `test_manifest.py` also retroactively covers the manifest.py
+loader/validator shipped in the design-only pass, which had no pytest
+tests until now), `docs/CAMERA_ADAPTERS.md` (marked steps 1-3 done,
+added a "What's built so far" section).
+
+Verified: `py_compile` on every new/changed module; a standalone script
+(no pytest in this sandbox - see this file's standing note on that)
+exercised the registry lookup, read a synthetic BlackVue-shaped archive
+through `BlackVueAdapter.open_archive()` and confirmed it's identical to
+calling `Archive(path)` directly, and confirmed every delegation method
+forwards args/return values unchanged via monkeypatching the real
+function each one calls; the manifest-driven `AdapterCapabilityError`
+guard was also exercised with a fake manifest. The real pytest test
+files were confirmed to import/collect cleanly via a minimal fake
+`pytest` shim (this sandbox has no pytest and no network access to
+install it - a `.pyc` cache already in the repo's `tests/blackvue/core/`
+confirms pytest 9.1.1 has run this suite for real on Christer's own
+machine before).
+
+Not done yet: no `FolderAdapter`, no wiring of `bv-ls`/the archive
+browser through any of this (both still use `ArchiveReader`/`Archive`
+directly, completely unaffected by everything above), no bv-download
+SD-card import path. Next per docs/CAMERA_ADAPTERS.md's re-sequenced
+roadmap: wire `bv-ls` and the web archive browser through the adapter
+abstraction.

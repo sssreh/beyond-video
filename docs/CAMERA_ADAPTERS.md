@@ -256,21 +256,56 @@ gap is that `CameraConfig.endpoints` assumes "a camera is reached over
 HTTP," which would need to become optional for a source with no network
 component.
 
-## Not done in this pass
+## What's built so far (2026-08-16, second pass)
 
-- No `CameraConfig.adapter` field, no migration for it.
-- No adapter registry / `get_adapter(config)` lookup.
-- No `BlackVueAdapter` or `FolderAdapter` class implementing the code
-  hooks named in each manifest's `code_hooks_required`.
-- No change to `ArchiveReader`, `RecordingId`, `Recording`, `VodEntry`,
-  `bv_ls.py`, `bv_download.py`, or `web/archive_browser.py` - all of the
-  real BlackVue-specific code cataloged above is untouched and still
-  exactly as BlackVue-only as it was before this document.
-- No vocabulary de-duplication (the "cross-cutting cleanup" section above)
-  - flagged, not fixed.
+Christer: "yes start" - real implementation, not just design, following
+the re-sequenced order above. Built:
 
-This was deliberate, per Christer's "we start with number 1" - design doc
-and schema only, reviewed before any of the above gets built.
+- `CameraConfig.adapter: str = "blackvue"` (`core/camera_config.py`) -
+  round-trips through save/load, defaults to `"blackvue"` for every
+  existing config (no migration step needed, since that's what an unset
+  field always implicitly meant). Nothing reads it yet.
+- `adapters/base.py` - the `CameraAdapter` Protocol every adapter class
+  implements: `open_archive()`, `read_gps()`, `read_gsensor()`,
+  `connect()`, `config_snapshot_seconds()`. Not a full 1:1 mapping of
+  every `code_hooks_required` entry to its own method - `camera_client`/
+  `config_snapshot_parser`/`sidecar_prober` are bv-download's concern
+  (a later step below), so `connect()`/`config_snapshot_seconds()` exist
+  as their eventual home without every hook needing separate methods yet.
+  `AdapterCapabilityError` is the named exception a method raises when
+  its own manifest declares the capability unsupported.
+- `adapters/registry.py` - a plain, explicit `adapter_id -> class` dict
+  (deliberately not import-time self-registration magic).
+  `get_adapter(id)`/`load_adapter_manifest(id)` both raise
+  `AdapterNotFoundError` with the list of what *is* registered, rather
+  than a bare `KeyError`.
+- `adapters/blackvue/adapter.py` - `BlackVueAdapter`, a **pure delegation
+  wrapper**: `open_archive()` returns a real `Archive(path)` unchanged,
+  `read_gps()`/`read_gsensor()`/`connect()`/`config_snapshot_seconds()`
+  each forward straight to the exact existing functions
+  (`telemetry.gps_reader.read_gps()`, `telemetry.gsensor_reader.
+  read_gsensor()`, `core.connection.connect()`, `archive.configuration.
+  parse_record_time_seconds()`) with zero reimplementation. This is the
+  "prove the interface" step from the roadmap below - built and verified
+  precisely because it *isn't* allowed to change behavior.
+
+**Still not built**: no `FolderAdapter`, no wiring of `bv-ls`/the web
+archive browser through any of this (both still use `ArchiveReader`/
+`Archive` directly - unaffected by everything above), no `bv-download`
+SD-card import path, no vocabulary de-duplication (the "cross-cutting
+cleanup" section above - flagged, not fixed). See "Suggested next steps"
+below for the remaining, re-sequenced order.
+
+Verified: every new module `py_compile`s; a standalone script (no pytest
+available in the sandbox this was built in - see WORKING_CONTEXT.md's
+standing note) exercised the registry lookup, a synthetic archive read
+through `BlackVueAdapter.open_archive()` compared against calling
+`Archive(path)` directly, and every delegation method via monkeypatching
+the real function each one calls, confirming args/return values cross
+the boundary unchanged; real pytest test files were also written
+(`tests/blackvue/adapters/`) matching this exact coverage for Christer's
+own machine/CI to run, and were confirmed to at least import/collect
+cleanly here via a minimal fake `pytest` shim.
 
 ## Adapter families: more than one "folder adapter"
 
@@ -303,7 +338,7 @@ nothing to import - the files are already the archive. Not added to the
 schema yet since it's speculative until bv-download's SD-card path is
 actually being built (next section) and the real shape is known.
 
-## Suggested next steps (future passes, not started)
+## Suggested next steps (re-sequenced 2026-08-16; #1-3 done, see above)
 
 Re-sequenced per Christer's steer (2026-08-16): read paths first (lowest
 risk, no existing behavior to regress), then the "easy" half of writing
@@ -311,17 +346,12 @@ risk, no existing behavior to regress), then the "easy" half of writing
 variants, `bv-analyze` - fall out of having two real, exercised adapters
 to generalize from rather than one.
 
-1. Add `CameraConfig.adapter: str = "blackvue"` plus a load-time migration
-   default, so every existing config keeps working unmodified. Prerequisite
-   plumbing, zero behavior change.
-2. Write `src/blackvue/adapters/base.py`: a `CameraAdapter` Protocol/ABC
-   whose methods correspond 1:1 to each manifest's `code_hooks_required`
-   entries, plus the registry (`adapter_id -> (manifest, adapter class)`).
-3. Implement `BlackVueAdapter` as a thin wrapper delegating to the
-   existing `core`/`parser`/`telemetry` code - no behavior change. This
-   alone is a good regression-safe validation of the interface: if
-   `BlackVueAdapter` can be built as a pure delegation layer with zero
-   behavior change, the interface is right.
+1. ~~Add `CameraConfig.adapter: str = "blackvue"` plus a load-time
+   migration default~~ - **done**, see "What's built so far" above.
+2. ~~Write `adapters/base.py`: a `CameraAdapter` Protocol, plus the
+   registry~~ - **done**, see above.
+3. ~~Implement `BlackVueAdapter` as a thin wrapper delegating to the
+   existing `core`/`parser`/`telemetry` code~~ - **done**, see above.
 4. **Wire `bv-ls` and the `bv-web` archive browser through the adapter
    abstraction** - Christer's stated starting point. Both are read-only
    and display-heavy (per the investigation, `bv-ls`'s own BlackVue
