@@ -397,6 +397,7 @@ class JobRunner:
         trips: bool,
         max_gap_minutes: int | None,
         movement: bool,
+        gps_split: bool,
         duration: bool,
         gap_tolerance_seconds: int | None,
         username: str,
@@ -439,6 +440,8 @@ class JobRunner:
             argv += ["--max-gap", str(max_gap_minutes)]
         if movement:
             argv.append("--movement")
+        if gps_split:
+            argv.append("--gps-split")
         if not duration:
             argv.append("--no-duration")
         if gap_tolerance_seconds is not None:
@@ -647,6 +650,7 @@ class JobRunner:
         timestamp: str | None,
         max_gap_minutes: int | None,
         movement: bool,
+        gps_split: bool,
         no_duration: bool,
         duration_heal_archive: bool,
         gap_tolerance_seconds: int | None,
@@ -757,6 +761,8 @@ class JobRunner:
             argv += ["--max-gap", str(max_gap_minutes)]
         if movement:
             argv.append("--movement")
+        if gps_split:
+            argv.append("--gps-split")
         if no_duration:
             argv.append("--no-duration")
         if duration_heal_archive:

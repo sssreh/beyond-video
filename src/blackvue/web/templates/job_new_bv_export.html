@@ -232,6 +232,10 @@
         Use GPS/g-sensor movement to bridge gaps over the max gap (--movement)
       </label>
       <label class="filter-checkbox">
+        <input type="checkbox" id="gps_split" name="gps_split" value="true" style="width: auto; margin: 0;"{% if defaults.get('gps_split') %} checked{% endif %}>
+        Force a split on an implausible GPS jump, even within the max gap (--gps-split)
+      </label>
+      <label class="filter-checkbox">
         <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;"{% if defaults.get('no_duration') %} checked{% endif %}>
         Ignore recording duration, measure gaps from start timestamps only (--no-duration)
       </label>

@@ -14799,3 +14799,48 @@ Files changed: `src/blackvue/adapters/telemetry_bridge.py`,
 `tests/blackvue/trip/test_trip_builder.py`,
 `tests/blackvue/cli/test_bv_export.py`, `tests/blackvue/cli/test_bv_ls.py`,
 `docs/man/bv-export.md`, `docs/man/bv-ls.md`.
+
+## --gps-split wired into bv-web (2026-08-17)
+
+The `--gps-split` feature above landed CLI/library-only; Christer asked
+"Is all this wired into bv-web" and it wasn't - `JobRunner.start_bv_export()`/
+`start_bv_ls()`, the `/jobs/bv-export`/`/jobs/bv-ls` routes, and the two
+job-creation templates all supported `--movement` but had no `--gps-split`
+counterpart. Fixed by mirroring `--movement`'s own wiring verbatim across
+all three layers, same shape as tasks #745-749/#750-754's precedent.
+
+**`web/jobs.py`:** both `start_bv_export()` and `start_bv_ls()` gained a
+`gps_split: bool` param, each with an `if gps_split: argv.append("--gps-split")`
+line placed immediately after the existing `movement`/`--movement` check.
+
+**`web/app.py`:** both `/jobs/bv-export` and `/jobs/bv-ls` POST routes
+gained a `gps_split: bool = Form(False)` field, read immediately after
+`movement` and passed straight through to the corresponding `JobRunner`
+call. `/jobs/bv-export`'s `raw_params` reuse-snapshot dict also gained a
+`"gps_split": gps_split` entry alongside `"movement"`.
+
+**Templates:** both `job_new_bv_export.html` and `job_new_bv_ls.html`
+gained a "GPS split" checkbox (`name="gps_split"`) immediately after the
+existing "Movement" checkbox, each labelled with the `--gps-split` flag
+name per the project's flag-name-in-label convention (task #818) and,
+for bv-ls, a help tooltip mirroring the man-page wording.
+
+**Tests.** `_export_kwargs()`/`_ls_kwargs()` in `test_jobs.py` both
+gained `gps_split=False`; the existing `test_start_bv_export_flags_reach_parsed_args`
+and `test_start_bv_ls_trips_flags_reach_parsed_args` tests were extended
+with `gps_split=True` inputs and `args.gps_split is True` assertions -
+same "extend the existing flags-reach-parsed-args test" pattern already
+used for `movement` itself, rather than adding a whole new test per flag.
+
+**Verify.** `test_jobs.py`: 100 passed, 3 failed - the exact same 3
+pre-existing sandbox-harness failures (2 `bv-generate` `_generate_kwargs()`
+missing-action argparse quirks, 1 `stitch_map_circle` default-assertion
+quirk) reproduced identically on a clean `git stash` baseline, confirmed
+unrelated to this change. `ast.parse()` clean on both `app.py`/`jobs.py`;
+both templates parse cleanly under Jinja2 and contain the new
+`name="gps_split"` markup.
+
+Files changed: `src/blackvue/web/jobs.py`, `src/blackvue/web/app.py`,
+`src/blackvue/web/templates/job_new_bv_export.html`,
+`src/blackvue/web/templates/job_new_bv_ls.html`,
+`tests/blackvue/web/test_jobs.py`.

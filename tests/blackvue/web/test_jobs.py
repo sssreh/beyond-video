@@ -961,6 +961,7 @@ def _export_kwargs(**overrides):
         timestamp=None,
         max_gap_minutes=None,
         movement=False,
+        gps_split=False,
         no_duration=False,
         duration_heal_archive=False,
         gap_tolerance_seconds=None,
@@ -1082,6 +1083,7 @@ def test_start_bv_export_flags_reach_parsed_args(monkeypatch):
             prefix="Holiday",
             max_gap_minutes=10,
             movement=True,
+            gps_split=True,
             render_map=True,
             map_zoom_meters=150,
             map_track_up=True,
@@ -1100,6 +1102,7 @@ def test_start_bv_export_flags_reach_parsed_args(monkeypatch):
     assert args.prefix == "Holiday"
     assert args.max_gap_minutes == 10
     assert args.movement is True
+    assert args.gps_split is True
     assert args.render_map is True
     assert args.map_zoom_meters == 150.0
     assert args.map_track_up is True
@@ -1563,6 +1566,7 @@ def _ls_kwargs(**overrides):
         trips=False,
         max_gap_minutes=None,
         movement=False,
+        gps_split=False,
         duration=True,
         gap_tolerance_seconds=None,
         username="christer",
@@ -1648,6 +1652,7 @@ def test_start_bv_ls_trips_flags_reach_parsed_args(monkeypatch):
             trips=True,
             max_gap_minutes=10,
             movement=True,
+            gps_split=True,
             duration=False,
             gap_tolerance_seconds=5,
             from_="20260101_000000",
@@ -1660,6 +1665,7 @@ def test_start_bv_ls_trips_flags_reach_parsed_args(monkeypatch):
     assert args.trips is True
     assert args.max_gap_minutes == 10
     assert args.movement is True
+    assert args.gps_split is True
     assert args.duration is False
     assert args.gap_tolerance_seconds == 5
     assert args.from_ == "20260101_000000"

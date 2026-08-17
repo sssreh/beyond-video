@@ -107,6 +107,11 @@
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: bridge a gap over Max gap into one trip anyway if the vehicle looks like it was still moving at the edge of the gap. Off by default - this heuristic has no ceiling on how large a gap it'll bridge.</span></span>
       </label>
       <label class="filter-checkbox">
+        <input type="checkbox" id="gps_split" name="gps_split" value="true" style="width: auto; margin: 0;">
+        Force split on implausible GPS jump (--gps-split)
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: force a split between two recordings whose GPS position implies an impossible jump, even for a gap well within Max gap. Off by default - a real per-pair GPS probe on every consecutive pair of recordings.</span></span>
+      </label>
+      <label class="filter-checkbox">
         <input type="checkbox" id="no_duration" name="no_duration" value="true" style="width: auto; margin: 0;">
         Ignore recorded durations
         <span class="help-tip" tabindex="0">?<span class="tooltip-text">With Trips: measure gaps from each recording's start timestamp only, ignoring any recorded .duration.txt span. By default a recording's real span (if bv-generate's Get duration has been run) is added before comparing the gap, so a long recording isn't mistaken for a gap.</span></span>
