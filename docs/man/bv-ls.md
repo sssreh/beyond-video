@@ -8,7 +8,7 @@
 
 ```
 bv-ls [--all] [--full] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-      [--trips] [--max-gap MINUTES] [--movement] [--no-duration]
+      [--source PATTERN] [--trips] [--max-gap MINUTES] [--movement] [--no-duration]
       [--gap-tolerance SECONDS] [--config-dir DIR]
       [PATH]
 ```
@@ -37,6 +37,7 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 | `--from TIMESTAMP` | Show recordings from this timestamp. |
 | `--until TIMESTAMP` | Show recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Show recordings matching this timestamp or prefix. |
+| `--source PATTERN` | Show only recordings whose real on-disk filename contains PATTERN - the reverse of `--timestamp`: given a fragment of a GoPro/folder-adapter file's actual name (e.g. `GH010023.MP4`), find which recording id it resolved to. Combines with `--timestamp`/`--from`/`--until` rather than replacing them. No effect for adapters whose filenames are already id-derived (e.g. BlackVue). |
 | `--trips` | List detected trips (start, end, duration, recording count) instead of individual recordings. |
 | `--max-gap MINUTES` | With `--trips`, the largest gap between two recordings that still counts as the same trip. Default: 5. |
 | `--movement` | With `--trips`, use GPS/g-sensor data to bridge a gap over `--max-gap` into one trip anyway, if the vehicle looks like it was still moving at the edge of the gap. **Off by default** - this heuristic has no ceiling on how large a gap it'll bridge (confirmed on a real archive to bridge a genuine 6-day gap off a single stray GPS speed reading). |

@@ -14115,3 +14115,49 @@ threaded consistently with every other boolean flag in
 same `if full: argv.append("--full")` pattern, same
 `_ls_kwargs()`/new-test placement as the existing `all`/`trips`
 tests).
+
+## Add --source PATTERN to bv-ls: reverse lookup from real filename to recording id (done, this session, #936-939)
+
+Christer's own follow-up to the Source column (task #931): bv-ls can
+already filter by timestamp to find a recording, but for GoPro/folder
+archives whose real on-disk filenames carry no timestamp at all (e.g.
+`GH010023.MP4`), there was no way to go the other direction - given a
+fragment of the real filename, find which recording id it resolved
+to. `--source PATTERN` fills that gap: substring-matches PATTERN
+against the same real filename the Source column already shows,
+combining with (not replacing) any `--timestamp`/`--from`/`--until`
+filter already in play. No effect for BlackVue, whose filenames are
+already id-derived.
+
+Renamed `display_group._source_name()` to `source_name()` (public) so
+`bv_ls.py` could import and reuse it directly for the reverse-lookup
+filter instead of duplicating the relative-to-archive-root filename
+logic Source column rendering already has. `bv_ls()`'s `archive_root
+= Path(path)` line moved up to right after `open_archive()` so it's
+available for the recordings filter, not just header/row rendering
+further down - `_source_column_needed()`/`source_label()` below still
+read from the same variable, unchanged.
+
+Threaded through the same places as every other bv-ls filter:
+`bv_ls(source=...)` param, `--source PATTERN` argparse flag, `_run()`
+call site, and - full flag parity with the CLI - the web layer:
+`JobRunner.start_bv_ls(source: str | None)`, `/jobs/bv-ls` POST
+route's `source: str = Form("")`, and a new "Source filename
+contains" field in `job_new_bv_ls.html` right after the Time range
+group.
+
+Files changed: `src/blackvue/cli/bv_ls.py`,
+`src/blackvue/cli/display_group.py`, `src/blackvue/web/jobs.py`,
+`src/blackvue/web/app.py`,
+`src/blackvue/web/templates/job_new_bv_ls.html`,
+`tests/blackvue/cli/test_bv_ls.py`, `tests/blackvue/web/test_jobs.py`,
+`docs/man/bv-ls.md`.
+
+Verified: `test_bv_ls.py` 27/29 (3 new tests pass; same 2
+pre-existing unrelated `trip_builder.py` failures as every prior
+entry above). Web-layer changes verified the same way as the `--full`
+feature above - `python3 -m py_compile` clean plus a manual
+read-through confirming `source` follows the exact same
+`Form("")`/`if source: argv += [...]`/`_ls_kwargs()` pattern as
+`timestamp` right next to it (`fastapi` still unavailable in this
+sandbox for a real `test_jobs.py` run).

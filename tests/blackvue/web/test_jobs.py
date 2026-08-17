@@ -1559,6 +1559,7 @@ def _ls_kwargs(**overrides):
         from_=None,
         until=None,
         timestamp=None,
+        source=None,
         trips=False,
         max_gap_minutes=None,
         movement=False,
@@ -1613,6 +1614,20 @@ def test_start_bv_ls_full_flag_reaches_parsed_args(monkeypatch):
 
     runner = JobRunner()
     job = runner.start_bv_ls(**_ls_kwargs(full=True))
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_ls_source_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say):
+        assert args.source == "GH010023"
+        return 0
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_ls(**_ls_kwargs(source="GH010023"))
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     assert job.snapshot()[0] == JobStatus.SUCCEEDED

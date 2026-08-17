@@ -59,6 +59,12 @@
   <div class="option-group">
     <h3>Optional</h3>
 
+    <label class="field-label" for="source">
+      Source filename contains
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">The reverse of Timestamp/From/Until: search by a fragment of the real on-disk filename instead (e.g. a GoPro file like GH010023.MP4) to find which recording it maps to. Combines with any timestamp filter above rather than replacing it. No effect for cameras whose filenames are already timestamp-derived (e.g. BlackVue).</span></span>
+    </label>
+    <input type="text" id="source" name="source" placeholder="e.g. GH010023">
+
     <label class="field-label">
       <input type="checkbox" id="all" name="all" value="true" style="width: auto; margin: 0;">
       Show every recording individually

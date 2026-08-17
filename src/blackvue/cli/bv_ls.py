@@ -7,6 +7,7 @@ from pathlib import Path
 from blackvue.adapters import registry
 from blackvue.archive import Archive, Asset
 from blackvue.cli.display_group import DisplayGroup
+from blackvue.cli.display_group import source_name
 from blackvue.cli.errors import run_cli
 from blackvue.core.camera_config import DEFAULT_ADAPTER_ID
 from blackvue.core.camera_config import default_config_dir
@@ -227,6 +228,7 @@ def bv_ls(
     from_: str | None = None,
     until: str | None = None,
     timestamp: str | None = None,
+    source: str | None = None,
     trips: bool = False,
     max_gap_minutes: int | None = None,
     movement: bool = False,
@@ -254,6 +256,16 @@ def bv_ls(
     matches across every displayed row are dropped, see
     _assets_with_any_match()'s own docstring for why).
 
+    `source` is the reverse of `timestamp`: `timestamp`/`from_`/`until`
+    filter by the (possibly synthesized) recording id, but for a
+    GoPro/folder-adapter archive that id carries no relationship to
+    the real on-disk filename (see the Source column, shown when
+    `_source_column_needed()` says it's worth it). `source` matches a
+    substring against that real filename instead - e.g. `--source
+    GH010023` to find which recording id a specific GoPro file
+    resolved to - and combines with any timestamp filter rather than
+    replacing it.
+
     `say` is injectable (default: real stdout via print) - see
     print_trips()'s own docstring above for why. The grouped-table
     path below used to build each row across several print(...,
@@ -265,6 +277,7 @@ def bv_ls(
     byte-for-byte the same as before, just assembled differently."""
 
     archive = registry.get_adapter(adapter_id).open_archive(Path(path))
+    archive_root = Path(path)
 
     try:
         interval = LexicalTimeParser(
@@ -282,7 +295,10 @@ def bv_ls(
         recording
         for recording in archive.recordings
         if recording.id.value in interval
-
+        and (
+            source is None
+            or source in source_name(recording, archive_root)
+        )
     ]
 
     if trips:
@@ -315,7 +331,6 @@ def bv_ls(
     assets = Asset.display_order()
     if not full:
         assets = _assets_with_any_match(groups, assets)
-    archive_root = Path(path)
 
     recording_width = max(
         [len("Recording")]
@@ -467,6 +482,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--source",
+        metavar="PATTERN",
+        help=(
+            "Show only recordings whose real on-disk filename contains "
+            "PATTERN - the reverse of --timestamp: given a fragment of "
+            "a GoPro/folder-adapter file's actual name (e.g. "
+            "GH010023.MP4), find which recording id it resolved to. "
+            "Combines with --timestamp/--from/--until rather than "
+            "replacing them. No effect for adapters whose filenames "
+            "are already id-derived (e.g. BlackVue)."
+        ),
+    )
+
+    parser.add_argument(
         "--trips",
         action="store_true",
         help=(
@@ -559,6 +588,7 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         from_=args.from_,
         until=args.until,
         timestamp=args.timestamp,
+        source=args.source,
         trips=args.trips,
         max_gap_minutes=args.max_gap_minutes,
         movement=args.movement,

@@ -486,6 +486,82 @@ def test_bv_ls_full_flag_shows_every_asset_column_even_when_empty(tmp_path):
     assert "SRT" in asset_header
 
 
+def test_bv_ls_source_filter_matches_real_filename(tmp_path):
+    # Reverse of --timestamp: given a fragment of the real on-disk
+    # filename, find which recording id it resolved to. Two
+    # folder-adapter recordings with different real filenames but
+    # both scanned into the same archive - --source should show only
+    # the one whose filename contains the pattern.
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    wanted = clips / "GH010023.MP4"
+    wanted.write_bytes(b"x")
+    os.utime(wanted, (1700000000, 1700000000))
+    other = clips / "GH010099.MP4"
+    other.write_bytes(b"y")
+    os.utime(other, (1700003600, 1700003600))
+
+    lines = []
+    exit_code = bv_ls(
+        str(tmp_path),
+        adapter_id="folder",
+        source="GH010023",
+        say=lines.append,
+    )
+
+    assert exit_code == 0
+    out = "\n".join(lines)
+    assert "GH010023.MP4" in out
+    assert "GH010099.MP4" not in out
+
+
+def test_bv_ls_source_filter_matches_nothing(tmp_path):
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    video = clips / "GH010023.MP4"
+    video.write_bytes(b"x")
+    os.utime(video, (1700000000, 1700000000))
+
+    lines = []
+    exit_code = bv_ls(
+        str(tmp_path),
+        adapter_id="folder",
+        source="nonexistent",
+        say=lines.append,
+    )
+
+    assert exit_code == 0
+    # Header rows still print, just no data row for the non-matching
+    # recording.
+    assert not any("GH010023.MP4" in line for line in lines)
+
+
+def test_bv_ls_source_filter_combines_with_timestamp_filter(tmp_path):
+    # --source narrows within whatever --timestamp/--from/--until
+    # already selected, rather than replacing that filter.
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    early = clips / "GH010023.MP4"
+    early.write_bytes(b"x")
+    os.utime(early, (1700000000, 1700000000))
+    late = clips / "GH010023_v2.MP4"
+    late.write_bytes(b"y")
+    os.utime(late, (1700090000, 1700090000))
+
+    lines = []
+    exit_code = bv_ls(
+        str(tmp_path),
+        adapter_id="folder",
+        source="GH010023",
+        timestamp="2023",
+        say=lines.append,
+    )
+
+    assert exit_code == 0
+    out = "\n".join(lines)
+    assert "GH010023.MP4" in out
+
+
 def test_bv_ls_default_adapter_ignores_a_folder_shaped_archive(
     tmp_path, capsys
 ):

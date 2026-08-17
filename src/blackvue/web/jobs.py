@@ -393,6 +393,7 @@ class JobRunner:
         from_: str | None,
         until: str | None,
         timestamp: str | None,
+        source: str | None,
         trips: bool,
         max_gap_minutes: int | None,
         movement: bool,
@@ -430,6 +431,8 @@ class JobRunner:
             argv += ["--until", until]
         if timestamp:
             argv += ["--timestamp", timestamp]
+        if source:
+            argv += ["--source", source]
         if trips:
             argv.append("--trips")
         if max_gap_minutes is not None:

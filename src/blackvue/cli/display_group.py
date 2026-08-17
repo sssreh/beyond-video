@@ -7,7 +7,7 @@ from pathlib import Path
 from blackvue.archive import Archive, Asset, Recording
 
 
-def _source_name(recording: Recording, root: Path) -> str:
+def source_name(recording: Recording, root: Path) -> str:
     """Return the recording's real, on-disk FRONT filename - as a path
     relative to `root` when possible (so two same-named files in
     different subfolders, e.g. a GoPro archive's 100GOPRO/GH010001.MP4
@@ -73,13 +73,16 @@ class DisplayGroup:
         both come up empty and it falls back to file mtime (mtime
         reflecting when a file was copied/downloaded, not recorded) -
         seeing the real filename is how you'd actually notice and
-        untangle that."""
+        untangle that. Public (not `_source_name`) since bv-ls's own
+        `--source PATTERN` filter reuses it directly to go the other
+        way - given a fragment of the real filename, find which
+        recording id(s) it maps to."""
 
-        first = _source_name(self.first, root)
+        first = source_name(self.first, root)
         if len(self.recordings) == 1:
             return first
 
-        last = _source_name(self.last, root)
+        last = source_name(self.last, root)
         if first == last:
             return first
 
