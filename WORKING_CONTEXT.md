@@ -14406,3 +14406,102 @@ Files changed: `src/blackvue/archive/photo.py`,
 `tests/blackvue/export/test_export_media.py`,
 `tests/blackvue/export/test_trip_export.py`,
 `tests/blackvue/adapters/test_folder_adapter.py`.
+
+## Timestamp reliability tracking + TripBuilder isolation (2026-08-17)
+
+Christer's own report, verbatim: "The problem is the following from
+bv-ls\n20260816_144130_V\n20260816_144131_V\n20260816_144150_V\n20260816_144151_V\nWe
+need to get correct created timstamp instead of downloaded timestamp.
+Otherwise the will go on a trip together." He wasn't sure which
+camera/source produced these recordings ("Not sure / mixed"), so
+diagnosis started from a real `bv-ls GP --all --full` listing showing
+the 4 colliding recordings and their real underlying stock-video source
+filenames, then a real `ffprobe -v error -show_format -show_streams`
+dump he ran himself on one of them
+(`x:\gopro\archive\13532784_1080_1920_60fps.mp4`). That dump confirmed
+there was no bug in `_resolve_timestamp()` itself - the file has no
+`creation_time` tag anywhere, at either FORMAT or STREAM level, only a
+GPS `location` tag and `encoder=Lavc60.31.102 libx264` /
+`Lavf60.16.100` tags showing it had been re-encoded at some point (a
+stock/sample test-fixture clip, not real GoPro footage) - so the mtime
+fallback was already firing correctly. The real defect was downstream:
+`TripBuilder` treated a meaningless mtime-derived timestamp identically
+to a trustworthy device-clock one. mtime reflects when a file was last
+*written* to disk, not when it was recorded - for a batch-downloaded
+folder of unrelated stock clips, that's purely a function of when the
+copy happened, so unrelated recordings can land a second apart and get
+silently merged into one fake "trip."
+
+Presented Christer with three fix approaches: (1) try harder to resolve
+a real timestamp for these files (not possible - confirmed no metadata
+exists anywhere to extract), (2) drop timestamp-less recordings from
+trip-grouping entirely, or (3) track per-recording timestamp confidence
+and only exclude the unreliable ones from auto-grouping, leaving them as
+their own singleton trips but still fully usable. He picked option 3,
+"Track confidence, exclude from auto-trip-grouping (recommended)."
+
+**Implementation.** `_resolve_timestamp()` in
+`adapters/_recursive_scan.py` now returns a new
+`ResolvedTimestamp(value: datetime, reliable: bool)` `NamedTuple`
+instead of a bare `datetime` - `reliable` is `True` for EXIF, container
+`creation_time`, or adapter telemetry (GoPro's GPMF `GPSU` anchor from
+task #930), and `False` only for the final mtime-fallback branch.
+`_scan()` threads `reliable` into a new `Recording.timestamp_reliable:
+bool = True` field (`archive/recording.py`) - always `True` for a
+BlackVue archive, since its timestamp is encoded in the camera's own
+device-clock filename, never derived from mtime at all.
+`TripBuilder.build()` (`trip/trip_builder.py`) gained an always-on check
+(unlike the opt-in `max_parking_duration` cap from task #138) that
+force-splits a trip whenever either the previous or current recording
+has `timestamp_reliable=False`, checked before the ordinary gap/bridge
+logic and never offered to the `bridge` callback - a gap measurement
+built from a meaningless mtime value gives movement-bridging evidence
+nothing real to weigh in on, the same reasoning as the parking cap's
+forced split. Each isolated recording still stands as its own
+single-recording trip and remains fully usable via `bv-export
+--target`; it's just never silently merged with an unrelated neighbor
+anymore. Checked via `getattr(recording, "timestamp_reliable", True)`
+throughout `TripBuilder.build()`, specifically because
+`test_trip_builder.py`'s long-established `FakeRecording` test double
+(used by ~40 pre-existing tests) has no `timestamp_reliable` attribute
+at all - direct attribute access would have broken all of them; the
+`getattr` default means any recording without the attribute is treated
+as reliable, unaffected, exactly as if the check didn't exist.
+
+**Tests.** `test_trip_builder.py` gained a 7-test "timestamp_reliable
+isolation" section: two unreliable recordings a second apart never
+group even within the gap threshold; an unreliable recording alone
+still forces a split on both sides; reliable clusters on either side of
+a single unreliable recording still group normally among themselves;
+the split is never offered to `bridge` even when `bridge` returns
+`True`; the split reason names the culprit recording; and the
+pre-existing minimal `FakeRecording` test double still groups normally,
+confirming the `getattr(..., True)` default keeps it unaffected.
+`test_folder_adapter.py` gained 2 tests: a plain data file with no
+metadata falls back to mtime and is flagged `timestamp_reliable=False`;
+a real ffmpeg-encoded fixture with a real embedded `creation_time` tag
+(this codebase's own established real-fixture-over-mocking test style)
+is flagged `timestamp_reliable=True`. No `pytest` and no network access
+to install it in this sandbox (`pip install pytest --break-system-packages`
+failed with a proxy 403), so a fresh ad-hoc `/tmp/run_tests.py` runner
+was rebuilt to execute the real, unmodified test files, gaining two new
+capabilities beyond what a prior session's runner needed: a `tomllib`
+stub for this sandbox's Python 3.10 (the stdlib module is 3.11+, needed
+transitively by `core/camera_config.py`), and a real `capsys` fixture
+emulation via `contextlib.redirect_stdout`/`redirect_stderr`. Full
+regression sweep: `test_trip_builder.py` 48/48, `test_folder_adapter.py`
+29/29, `test_recording.py` 5/5, `test_gopro_gpmf.py` 17/17,
+`test_gopro_adapter.py` 10/11, `test_trip_export.py` 173/175,
+`test_trip.py` 12/12 - 342 passed, 3 pre-existing/unrelated failures (a
+stale test-comment assumption in `test_gopro_adapter.py` predating
+photo support, and two unrelated trip-summary export tests in
+`test_trip_export.py`, both confirmed present before this session's
+changes too), zero new regressions. `ast.parse()` confirmed syntactically
+valid for all 5 touched source/test files.
+
+Files changed: `src/blackvue/archive/recording.py`,
+`src/blackvue/adapters/_recursive_scan.py`,
+`src/blackvue/trip/trip_builder.py`,
+`tests/blackvue/trip/test_trip_builder.py`,
+`tests/blackvue/adapters/test_folder_adapter.py`,
+`docs/CAMERA_ADAPTERS.md`.

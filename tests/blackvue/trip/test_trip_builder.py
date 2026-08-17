@@ -591,6 +591,147 @@ def test_max_parking_duration_split_is_never_offered_to_bridge():
     assert calls == []
 
 
+# --- timestamp_reliable isolation ---
+#
+# Christer's real report: `bv-ls GP --full` showed pairs of unrelated
+# stock/sample test-fixture clips (no embedded timestamp of any kind -
+# confirmed via a real `ffprobe -show_format -show_streams` dump) whose
+# only "timestamp" was file mtime, landing a second apart purely by
+# download-batch coincidence, and about to be silently grouped into
+# one trip. Recording.timestamp_reliable (set False by
+# adapters/_recursive_scan.py's _resolve_timestamp() on the mtime
+# fallback) is TripBuilder's guard against exactly that - see build()'s
+# own docstring for the full reasoning.
+
+
+def test_two_recordings_with_unreliable_timestamps_never_group_even_within_gap():
+    # Both fall back to mtime and happen to land 1 second apart - well
+    # within any realistic max_gap - but must still split into two
+    # singleton trips.
+    first = Recording(
+        id=RecordingId("20260816_144130_V"), timestamp_reliable=False
+    )
+    second = Recording(
+        id=RecordingId("20260816_144131_V"), timestamp_reliable=False
+    )
+
+    trips = TripBuilder(max_gap=timedelta(minutes=5)).build([first, second])
+
+    assert len(trips) == 2
+    assert trips[0].recordings == (first,)
+    assert trips[1].recordings == (second,)
+
+
+def test_unreliable_timestamp_on_either_side_alone_still_forces_a_split():
+    # Only `second` is unreliable - `first` and `third` are both real,
+    # reliable timestamps - but second must still be isolated on both
+    # sides.
+    first = Recording(id=RecordingId("20260816_144000_V"))
+    second = Recording(
+        id=RecordingId("20260816_144005_V"), timestamp_reliable=False
+    )
+    third = Recording(id=RecordingId("20260816_144010_V"))
+
+    trips = TripBuilder(max_gap=timedelta(minutes=5)).build(
+        [first, second, third]
+    )
+
+    assert len(trips) == 3
+    assert trips[0].recordings == (first,)
+    assert trips[1].recordings == (second,)
+    assert trips[2].recordings == (third,)
+
+
+def test_reliable_recordings_around_an_unreliable_one_still_group_normally():
+    # Two reliable clusters, each internally within gap, separated by
+    # one unreliable singleton - the reliable clusters themselves
+    # should still group normally, only the unreliable one is isolated.
+    a1 = Recording(id=RecordingId("20260816_144000_V"))
+    a2 = Recording(id=RecordingId("20260816_144200_V"))
+    unreliable = Recording(
+        id=RecordingId("20260816_144300_V"), timestamp_reliable=False
+    )
+    b1 = Recording(id=RecordingId("20260816_144400_V"))
+    b2 = Recording(id=RecordingId("20260816_144600_V"))
+
+    trips = TripBuilder(max_gap=timedelta(minutes=5)).build(
+        [a1, a2, unreliable, b1, b2]
+    )
+
+    assert len(trips) == 3
+    assert trips[0].recordings == (a1, a2)
+    assert trips[1].recordings == (unreliable,)
+    assert trips[2].recordings == (b1, b2)
+
+
+def test_unreliable_timestamp_split_is_never_offered_to_bridge():
+    first = Recording(id=RecordingId("20260816_144000_V"))
+    second = Recording(
+        id=RecordingId("20260816_144005_V"), timestamp_reliable=False
+    )
+
+    calls = []
+
+    def bridge(prev, cur):
+        calls.append((prev.id, cur.id))
+        return True
+
+    trips = TripBuilder(max_gap=timedelta(minutes=5), bridge=bridge).build(
+        [first, second]
+    )
+
+    assert len(trips) == 2
+    assert calls == []
+
+
+def test_unreliable_timestamp_split_reason_names_the_culprit():
+    first = Recording(id=RecordingId("20260816_144000_V"))
+    second = Recording(
+        id=RecordingId("20260816_144005_V"), timestamp_reliable=False
+    )
+
+    reasons = {}
+    TripBuilder(max_gap=timedelta(minutes=5)).build(
+        [first, second], reasons=reasons
+    )
+
+    reason = reasons[second.id]
+    assert "starts a new trip" in reason
+    assert "this recording's own" in reason
+    assert "fell back to file mtime" in reason
+
+
+def test_unreliable_timestamp_split_reason_names_the_previous_recording():
+    first = Recording(
+        id=RecordingId("20260816_144000_V"), timestamp_reliable=False
+    )
+    second = Recording(id=RecordingId("20260816_144005_V"))
+
+    reasons = {}
+    TripBuilder(max_gap=timedelta(minutes=5)).build(
+        [first, second], reasons=reasons
+    )
+
+    reason = reasons[second.id]
+    assert "starts a new trip" in reason
+    assert str(first.id) in reason
+
+
+def test_fake_recordings_without_timestamp_reliable_attribute_are_unaffected():
+    # FakeRecording (used throughout this file) never sets
+    # timestamp_reliable at all - getattr(..., True) must treat that
+    # exactly like a real, reliable Recording, not raise or silently
+    # force splits everywhere.
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_100500")),
+    ]
+
+    trips = TripBuilder(max_gap=timedelta(minutes=10)).build(recordings)
+
+    assert len(trips) == 1
+
+
 # --- build_for_interval() ---
 #
 # Christer: bv-export's own archive-wide trip detection felt slow even

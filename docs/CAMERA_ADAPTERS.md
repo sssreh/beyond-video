@@ -1417,6 +1417,79 @@ without EXIF). `test_trip_export.py` gained 2 `_photo_clip_overrides()`
 tests - a static GIF rendering end-to-end via frame extraction, and an
 EXIF-oriented photo rendering without error.
 
+## Timestamp reliability tracking + TripBuilder isolation (2026-08-17)
+
+Christer's own report, verbatim: "The problem is the following from
+bv-ls\n20260816_144130_V\n20260816_144131_V\n20260816_144150_V\n20260816_144151_V\nWe
+need to get correct created timstamp instead of downloaded timestamp.
+Otherwise the will go on a trip together." A real `ffprobe -v error
+-show_format -show_streams` dump on the underlying source files
+(`13532784_1080_1920_60fps.mp4` and siblings, in the `GP` archive)
+confirmed there was no bug in `_resolve_timestamp()` itself - these files
+have no `creation_time` tag anywhere (FORMAT or STREAM level), only a
+GPS `location` tag and `encoder=Lavc60.31.102 libx264` /
+`Lavf60.16.100` tags showing they'd been re-encoded at some point - so
+the mtime fallback was already firing correctly. The real defect was
+downstream: `TripBuilder` treated a meaningless mtime-derived timestamp
+identically to a trustworthy device-clock one. mtime reflects when a
+file was last *written* to disk, not when it was recorded - for a
+batch-downloaded folder of unrelated stock/sample clips, that's purely a
+function of when the copy happened, so unrelated recordings can land a
+second apart and get silently merged into one fake "trip."
+
+Presented Christer with three fix approaches (fix mtime resolution
+somehow, drop these files from grouping entirely, or track per-recording
+confidence and only exclude unreliable ones from auto-grouping); he
+picked the third, recommended option.
+
+**Implementation.** `_resolve_timestamp()` in `adapters/_recursive_scan.py`
+now returns a new `ResolvedTimestamp(value: datetime, reliable: bool)`
+`NamedTuple` instead of a bare `datetime` - `reliable` is `True` for EXIF,
+container `creation_time`, or adapter telemetry (GoPro's GPMF `GPSU`
+anchor), and `False` only for the final mtime-fallback branch. `_scan()`
+threads `reliable` into a new `Recording.timestamp_reliable: bool = True`
+field (`archive/recording.py`) - always `True` for a BlackVue archive,
+since its timestamp is encoded in the camera's own device-clock filename.
+`TripBuilder.build()` (`trip/trip_builder.py`) gained an always-on check
+(unlike the opt-in `max_parking_duration` cap) that force-splits a trip
+whenever either the previous or current recording has
+`timestamp_reliable=False`, checked before the ordinary gap/bridge logic
+and never offered to the `bridge` callback - a gap measurement built from
+a meaningless mtime value gives movement-bridging evidence nothing real
+to weigh in on, same reasoning as the parking cap's forced split. Each
+isolated recording still stands as its own single-recording trip and
+remains fully usable via `bv-export --target`; it's just never silently
+merged with a neighbor. Checked via `getattr(recording, "timestamp_reliable",
+True)` throughout, so any recording (real or a minimal test double) that
+doesn't define the attribute at all is treated as reliable - unaffected,
+exactly as if the check didn't exist.
+
+**Tests.** `test_trip_builder.py` gained a 7-test "timestamp_reliable
+isolation" section: two unreliable recordings a second apart never group
+even within the gap threshold; an unreliable recording alone still forces
+a split on both sides; reliable clusters on either side of a single
+unreliable recording still group normally among themselves; the split is
+never offered to `bridge` even when `bridge` returns `True`; the split
+reason names the culprit recording; and the pre-existing minimal
+`FakeRecording` test double (no `timestamp_reliable` attribute at all)
+still groups normally, confirming the `getattr(..., True)` default.
+`test_folder_adapter.py` gained 2 tests: a plain data file with no
+metadata falls back to mtime and is flagged `timestamp_reliable=False`;
+a real ffmpeg-encoded fixture with a real embedded `creation_time` tag is
+flagged `timestamp_reliable=True`. Full regression sweep: `test_trip_builder.py`
+48/48, `test_folder_adapter.py` 29/29, `test_recording.py` 5/5,
+`test_gopro_gpmf.py` 17/17, `test_gopro_adapter.py` 10/11,
+`test_trip_export.py` 173/175, `test_trip.py` 12/12 - 342 passed, 3
+pre-existing/unrelated failures (a stale test-comment assumption in
+`test_gopro_adapter.py` predating photo support, and two unrelated
+trip-summary export tests in `test_trip_export.py`), zero new
+regressions.
+
+Files changed: `src/blackvue/archive/recording.py`,
+`src/blackvue/adapters/_recursive_scan.py`, `src/blackvue/trip/trip_builder.py`,
+`tests/blackvue/trip/test_trip_builder.py`,
+`tests/blackvue/adapters/test_folder_adapter.py`.
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,

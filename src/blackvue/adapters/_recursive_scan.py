@@ -39,6 +39,7 @@ from collections.abc import Callable
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 from ..archive.archive import Archive
 from ..archive.asset import Asset
@@ -95,11 +96,30 @@ def _probe_creation_time(path: Path) -> datetime | None:
         return None
 
 
+class ResolvedTimestamp(NamedTuple):
+    """The result of `_resolve_timestamp()`: the timestamp itself, and
+    whether it came from a source that reflects the recording's own
+    real capture/creation moment - EXIF, a video's own muxed-in
+    creation_time, or adapter-supplied telemetry - versus the mtime
+    fallback, which reflects whenever the file was last *written* to
+    disk (copied, downloaded, re-encoded), not when it was recorded.
+
+    `reliable` is threaded straight into `Recording.timestamp_reliable`
+    by `_scan()` - see that field's own docstring in archive/
+    recording.py for the real case (a folder of stock/sample test
+    clips with no embedded timestamp at all, landing within a second
+    of each other by mtime alone) that made this worth tracking rather
+    than just quietly returning mtime like any other resolved value."""
+
+    value: datetime
+    reliable: bool
+
+
 def _resolve_timestamp(
     path: Path,
     *,
     telemetry_timestamp: Callable[[Path], datetime | None] | None = None,
-) -> datetime:
+) -> ResolvedTimestamp:
     """Resolve a recording's timestamp: for a still photo (see
     archive/photo.py's `is_photo_path()`), its own EXIF
     DateTimeOriginal tag first; for everything else - and as a photo's
@@ -109,6 +129,11 @@ def _resolve_timestamp(
     the file's mtime as the last resort. See _probe_creation_time()'s
     own docstring for why that middle step so often falls through on
     a real, mixed-source folder of videos.
+
+    Returns a `ResolvedTimestamp(value, reliable)` - `reliable` is
+    True for every source above except the final mtime fallback (see
+    ResolvedTimestamp's own docstring for why that distinction is
+    tracked at all, not just the timestamp's value).
 
     EXIF goes first for a photo, ahead of even ffprobe's own
     creation_time, because ffprobe's format-level creation_time tag is
@@ -138,18 +163,18 @@ def _resolve_timestamp(
     if is_photo_path(path):
         photo_time = exif_datetime_original(path)
         if photo_time is not None:
-            return photo_time
+            return ResolvedTimestamp(photo_time, True)
 
     creation_time = _probe_creation_time(path)
     if creation_time is not None:
-        return creation_time
+        return ResolvedTimestamp(creation_time, True)
 
     if telemetry_timestamp is not None:
         telemetry_time = telemetry_timestamp(path)
         if telemetry_time is not None:
-            return telemetry_time
+            return ResolvedTimestamp(telemetry_time, True)
 
-    return datetime.fromtimestamp(path.stat().st_mtime)
+    return ResolvedTimestamp(datetime.fromtimestamp(path.stat().st_mtime), False)
 
 
 def scan_video_files(root: Path, extensions: frozenset[str]) -> list[Path]:
@@ -325,10 +350,11 @@ def _scan(
     # recording_is_photo() (see its own docstring) - not at scan time.
     extensions = frozenset(manifest.video_extensions) | PHOTO_EXTENSIONS | GIF_EXTENSIONS
     video_paths = scan_video_files(path, extensions)
-    videos_with_timestamps = [
-        (p, _resolve_timestamp(p, telemetry_timestamp=telemetry_timestamp))
+    resolved = {
+        p: _resolve_timestamp(p, telemetry_timestamp=telemetry_timestamp)
         for p in video_paths
-    ]
+    }
+    videos_with_timestamps = [(p, r.value) for p, r in resolved.items()]
 
     recordings = []
     for video_path, recording_id in assign_recording_ids(
@@ -350,7 +376,14 @@ def _scan(
             except OSError:
                 pass
 
-        recordings.append(Recording(id=recording_id, assets=assets, size=size))
+        recordings.append(
+            Recording(
+                id=recording_id,
+                assets=assets,
+                size=size,
+                timestamp_reliable=resolved[video_path].reliable,
+            )
+        )
 
     return sorted(recordings, key=lambda r: r.id)
 

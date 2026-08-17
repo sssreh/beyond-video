@@ -185,6 +185,26 @@ class TripBuilder:
     duration lookup returning None, that recording contributes nothing
     towards the cap, so `max_parking_duration` is a safe no-op rather
     than an error in either case.
+
+    A recording whose `timestamp_reliable` is False (see
+    archive/recording.py's own docstring on that field - set by a
+    recursive-folder scan when it had to fall all the way back to file
+    mtime, with no telemetry/EXIF/container metadata to resolve a real
+    capture time from) always forces a split on both sides, checked
+    before the ordinary gap rule and never offered to `bridge` - same
+    reasoning as the parking cap: there's no real time evidence for
+    movement bridging to weigh in on when the gap measurement itself
+    might be meaningless. A real case that motivated this: several
+    stock/sample test-fixture clips with no embedded timestamp of any
+    kind landed within a second of each other purely by mtime
+    coincidence (a batch copy/download), and were about to be grouped
+    into one trip despite having nothing to do with each other. This
+    check is always on, unlike `max_parking_duration` - it's a
+    correctness guard against a meaningless gap measurement, not an
+    opt-in tuning knob. Checked via `getattr(recording,
+    "timestamp_reliable", True)`, so any recording (real or a test
+    double) that doesn't define the attribute at all is treated as
+    reliable - unaffected, exactly as if this check didn't exist.
     """
 
     def __init__(
@@ -287,6 +307,15 @@ class TripBuilder:
             gap_desc = self._describe_gap(gap)
             threshold_desc = f"{threshold.total_seconds():.1f}s"
 
+            # See build()'s own docstring on timestamp_reliable - a
+            # gap measurement is only meaningful when both endpoints'
+            # timestamps are real capture-time data, so this is
+            # checked (and, if True, acted on) before parking_cap/gap/
+            # bridge get anywhere near the gap value above.
+            unreliable_timestamp = not getattr(
+                previous, "timestamp_reliable", True
+            ) or not getattr(recording, "timestamp_reliable", True)
+
             # Prospective, not retrospective: this asks whether
             # *including* `recording` would push the trailing run's
             # total over the cap - not whether it already is. That's
@@ -304,11 +333,18 @@ class TripBuilder:
                 > self.max_parking_duration.total_seconds()
             )
 
-            # A cap-forced split is never offered to bridge - see
-            # build()'s own docstring for why (it's a deliberate policy
-            # decision, not ambiguous gap evidence).
+            # A cap-forced split (or an unreliable-timestamp forced
+            # split, below) is never offered to bridge - see build()'s
+            # own docstring for why (both are deliberate policy
+            # decisions / correctness guards, not ambiguous gap
+            # evidence for movement bridging to weigh in on).
             bridge_reason = None
-            if not parking_cap_exceeded and gap > threshold and self.bridge:
+            if (
+                not parking_cap_exceeded
+                and not unreliable_timestamp
+                and gap > threshold
+                and self.bridge
+            ):
                 bridge_reason = self.bridge(previous, recording)
 
             if parking_cap_exceeded:
@@ -323,6 +359,28 @@ class TripBuilder:
                         f"{prospective_desc}, over the {cap_desc} "
                         "max_parking_duration limit, so it starts the next "
                         "trip instead of ending this one"
+                    )
+                trips.append(
+                    Trip(
+                        tuple(current_trip),
+                        recording_duration=self.recording_duration,
+                    )
+                )
+                current_trip = [recording]
+                trailing_parking_seconds = parking_increment
+            elif unreliable_timestamp:
+                if reasons is not None:
+                    culprit = (
+                        f"{previous.id}'s"
+                        if not getattr(previous, "timestamp_reliable", True)
+                        else "this recording's own"
+                    )
+                    reasons[recording.id] = (
+                        f"starts a new trip - {culprit} timestamp could not "
+                        "be reliably resolved (no telemetry/EXIF/container "
+                        "metadata, fell back to file mtime), so it's never "
+                        "auto-grouped with a neighboring recording "
+                        "regardless of the measured gap"
                     )
                 trips.append(
                     Trip(

@@ -87,6 +87,49 @@ def test_recording_id_uses_mtime_fallback_and_v_kind_code(adapter, tmp_path):
     assert recording_id.value.startswith("20231114") or len(recording_id.value) == 17
 
 
+def test_recording_timestamp_reliable_false_on_mtime_fallback(adapter, tmp_path):
+    # A real, confirmed case from Christer: a plain data file with no
+    # embedded metadata of any kind - falling all the way back to
+    # mtime - must be flagged unreliable so TripBuilder never silently
+    # groups it with an unrelated recording that happens to land close
+    # by in mtime (see archive/recording.py's Recording.
+    # timestamp_reliable docstring for the full story).
+    _touch(tmp_path / "clip.mp4", mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert archive.recordings[0].timestamp_reliable is False
+
+
+def test_recording_timestamp_reliable_true_with_real_embedded_creation_time(
+    adapter, tmp_path
+):
+    # Real ffmpeg-encoded fixture with a real embedded creation_time
+    # tag (this codebase's own established real-fixture-over-mocking
+    # test style) - confirms the "reliable" source path, not just the
+    # "unreliable" mtime-fallback one covered above.
+    import subprocess
+
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", "1",
+            "-c:v", "libx264",
+            "-metadata", "creation_time=2020-06-15T10:30:00.000000Z",
+            str(clip),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert archive.recordings[0].timestamp_reliable is True
+
+
 def test_video_is_stored_under_front_asset(adapter, tmp_path):
     # See module docstring: FolderAdapter's single video slot reuses
     # Asset.FRONT so recordings_with_front_video() (trip building) and
