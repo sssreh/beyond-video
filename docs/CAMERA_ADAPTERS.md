@@ -1316,6 +1316,107 @@ fallback (falls back to the photo, a real `*_THUMBNAIL` sidecar still
 wins if one exists, "rear" never falls back since the mechanism is
 front-only).
 
+## GIF classification and EXIF metadata
+
+Christer, following up on photo support: "Exactly, how do you define a
+gif file, a picture or a silent video? Maybe we need exif now." Two
+independent additions on top of the "Photo support" section above,
+both scoped to `FolderAdapter`/`GoProAdapter` the same way photo
+support is.
+
+**GIF: animated vs. static.** A `.gif` can genuinely be either - an
+animated GIF already has its own real per-frame timing baked in, so
+it's treated as an ordinary silent video; a static, single-frame GIF
+is a photo, held for `--photo-duration` like any other still. Extension
+alone can't tell the two apart, so `.gif` is deliberately kept out of
+`PHOTO_EXTENSIONS` and given its own `GIF_EXTENSIONS = {".gif"}` in
+`archive/photo.py`, scanned in alongside `PHOTO_EXTENSIONS` in
+`_recursive_scan.py`'s extension set. The actual classification is a
+real ffprobe call: `count_gif_frames(path)` (`archive/photo.py`) runs
+`ffprobe -select_streams v:0 -count_frames -show_entries
+stream=nb_read_frames` and returns the frame count (or `None` if
+ffprobe fails/is missing). `recording_is_photo(recording)` now checks
+`is_photo_path()` first (unchanged, for jpg/png/heic/gpr), then falls
+through to `is_gif_path()` + `count_gif_frames(...) == 1` for a `.gif`
+FRONT - a GIF whose frame count can't be determined at all is treated
+as `False` (an ordinary video), the same conservative default the rest
+of the export pipeline's corrupted-source handling already relies on,
+rather than risk mis-classifying an unreadable file as a photo it was
+never confirmed to be.
+
+Rendering a static GIF can't reuse `render_image_as_video()`'s `-loop 1`
+approach directly: a `.gif` suffix makes ffmpeg pick its native "gif"
+demuxer instead of "image2", and that demuxer doesn't support `-loop`
+(`ffmpeg -loop 1 -i x.gif` fails outright with "Option loop not
+found."). `export/media.py`'s new `extract_first_frame(source_gif,
+destination)` sidesteps this: `ffmpeg -i source.gif -frames:v 1
+dest.png` pulls frame 0 out to a plain PNG first, which
+`render_image_as_video()` then renders exactly like any other photo,
+with no gif-specific branch of its own. `trip_export.py`'s
+`_photo_clip_overrides()` calls `extract_first_frame()` when the FRONT
+path is a `.gif`, before the (also new) EXIF-orientation step below.
+
+**EXIF: timestamp, orientation, GPS.** All three read via Pillow
+(`archive/exif.py`, new module) - already a base, non-optional
+dependency, so no new install requirement. Every function degrades to
+"nothing found" (`None`/`False`) rather than raising on a file with no
+EXIF block, a format Pillow can't open at all (HEIC/GPR need the
+optional `pillow-heif`/`rawpy` plugins, neither a project dependency),
+or a corrupt file - the same "missing telemetry is absent, not fatal"
+policy already applied to GPS/g-sensor reads.
+
+- `exif_datetime_original(path)` reads tag 36867 (EXIF's own
+  `"YYYY:MM:DD HH:MM:SS"` format). Wired into
+  `_recursive_scan.py`'s `_resolve_timestamp()` as the *first* source
+  tried for a photo path (ahead of even ffprobe's own `creation_time`,
+  which is an unreliable, inconsistent source for a still image) -
+  falling through to the existing ffprobe/telemetry/mtime chain
+  unchanged if the photo has no usable EXIF.
+- `normalize_photo_orientation(source, destination)` bakes a photo's
+  EXIF Orientation tag into its actual pixel data via
+  `PIL.ImageOps.exif_transpose()`, since ffmpeg does not auto-rotate
+  EXIF-oriented image input on its own (confirmed directly: the exact
+  `-loop 1`/`scale,pad` command `render_image_as_video()` uses decodes
+  a portrait, Orientation=6 JPEG as a raw, unrotated landscape frame -
+  a portrait phone photo would otherwise render sideways in the
+  exported clip with no warning). Returns `True` only when a real,
+  non-identity correction was written to `destination`; `trip_export.py`'s
+  `_photo_clip_overrides()` calls this on every photo (including a
+  gif-extracted PNG frame) right before `render_image_as_video()`,
+  using the corrected file when one was written and the original
+  otherwise.
+- `exif_gps_fix(path, *, timestamp)` reads the GPS sub-IFD (tag 34853 -
+  note `exif.get_ifd(34853)` is required, not `exif.get(34853)`, which
+  only returns a raw IFD pointer in Pillow's API) and converts the
+  degrees/minutes/seconds tuples to signed decimal degrees, returning a
+  `telemetry.gps_reader.GpsFix` (`valid=True`, `speed_kmh`/`course`
+  always `None` - a still photo is a single instant, nothing to compute
+  motion from). `timestamp` is the caller's own already-resolved
+  recording timestamp, reused as-is rather than re-derived from the GPS
+  sub-IFD's own date/time tags. Wired into `web/app.py`'s
+  `/archive/{camera_id}/{recording_id}/location` route: when
+  `recording_has_gps()` is `False` and `recording_is_photo()` is
+  `True`, the route tries `exif_gps_fix()` on the photo's FRONT path and,
+  if found, uses the single fix for both the start and stop location
+  display (a photo has no separate start/stop - it's one instant).
+
+**Tests.** `test_photo.py` gained a GIF-classification section (8
+tests) - `is_gif_path()`, `GIF_EXTENSIONS`, `count_gif_frames()` on
+real static/animated/corrupt GIF fixtures, and `recording_is_photo()`
+across all three. `test_exif.py` (new file, 15 tests) covers
+`read_exif()`, `exif_datetime_original()`, `exif_gps_fix()` (DMS
+conversion, south/west sign, missing-IFD/missing-EXIF), and
+`normalize_photo_orientation()` (real rotation, already-normal
+orientation, no tag, unreadable file) - all against real EXIF written
+via Pillow's own `Image.Exif`/`save(exif=...)` round trip, not
+hand-rolled bytes. `test_export_media.py` gained 4 tests for
+`extract_first_frame()`. `test_folder_adapter.py` gained 2 tests for
+EXIF-preferred photo timestamps (prefers a real DateTimeOriginal tag
+over a deliberately different mtime; falls back to mtime unchanged
+without EXIF). `test_trip_export.py` gained 2 `_photo_clip_overrides()`
+tests - a static GIF rendering end-to-end via frame extraction, and an
+EXIF-oriented photo rendering without error.
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,

@@ -14306,3 +14306,103 @@ Files changed: `src/blackvue/archive/photo.py` (new),
 `tests/blackvue/web/test_archive_browser.py`,
 `docs/CAMERA_ADAPTERS.md`, `docs/man/bv-export.md`,
 `docs/man/bv-generate.md`.
+
+## GIF classification and EXIF metadata (photo pipeline follow-up)
+
+Christer's own words: "Exactly, how do you define a gif file, a picture
+or a silent video? Maybe we need exif now." Follow-up scope confirmed
+as "all of them" - GIF animated/static detection plus all three EXIF
+capabilities (timestamp, orientation, GPS).
+
+**GIF classification.** A `.gif` can be a static image or an animated
+silent video, so it's deliberately kept out of `PHOTO_EXTENSIONS` and
+handled by its own `GIF_EXTENSIONS = frozenset({".gif"})` in
+`archive/photo.py`, with `is_gif_path()` and a new
+`count_gif_frames(path)` (`ffprobe -select_streams v:0 -count_frames
+-show_entries stream=nb_read_frames`, returns `None` on any
+ffprobe/parse failure - missing telemetry is absent, not fatal, same
+policy as GPS/g-sensor reads elsewhere in this codebase).
+`recording_is_photo()` now treats a GIF as a photo only when its frame
+count is exactly 1; an unreadable GIF conservatively falls back to
+`False` (ordinary video) rather than risk misclassifying it.
+`count_gif_frames()` lives in `archive/photo.py` itself rather than
+`generate/media.py` - `generate/media.py` already imports from
+`archive/photo.py`, so putting it there would create a circular
+import.
+
+**Rendering a GIF photo.** `export/media.py` gained
+`extract_first_frame(source_gif, destination)` (`ffmpeg -i in.gif
+-frames:v 1 out.png`, raising `MediaToolError` on failure) because
+ffmpeg's native "gif" demuxer - triggered by the `.gif` extension -
+doesn't support `-loop 1`, which `render_image_as_video()` needs.
+`trip_export.py`'s `_photo_clip_overrides()` now extracts a static
+GIF's first frame to a PNG before handing it to the existing
+image-to-video renderer; a GIF that fails extraction is warned about
+and skipped, same failure contract as any other unrenderable photo.
+
+**EXIF: timestamp, orientation, GPS.** New `archive/exif.py` -
+deliberately NOT re-exported from `archive/__init__.py`, because that
+package eagerly imports every submodule and `exif.py` needs
+`telemetry/gps_reader.py`, which imports `generate/media.py`, which
+imports back into `archive.*` - re-exporting would create a real
+partial-initialization circular import the moment anything did
+`from ..archive import X` mid-chain. Every call site imports it
+directly instead (`from ..archive.exif import ...`), matching how
+most of this codebase already imports `archive.photo` symbols.
+Three functions, all `None`/`False`-on-failure rather than raising:
+`exif_datetime_original()` reads tag 36867; `_recursive_scan.py`'s
+`_resolve_timestamp()` now tries this first for photo paths, ahead of
+the existing ffprobe-creation-time/telemetry/mtime chain, since
+ffprobe's format-level `creation_time` is not a reliable source for a
+still image the way it is for a real camera-muxed video.
+`normalize_photo_orientation(source, destination)` uses
+`PIL.ImageOps.exif_transpose()` to bake the Orientation tag (274) into
+the actual pixels and clear it - confirmed directly in this sandbox
+that ffmpeg does NOT apply EXIF rotation on its own, so
+`_photo_clip_overrides()` now runs every photo through this before
+`render_image_as_video()`, a real bug fix for the prior session's
+photo pipeline, not just new functionality. `exif_gps_fix(path,
+timestamp=...)` reads GPS IFD tag 34853 (via `exif.get_ifd()`, not
+`exif.get()`, which only returns a raw pointer) and converts
+DMS-with-hemisphere-ref to signed decimal degrees, returning a
+`telemetry.gps_reader.GpsFix` with `valid=True` and
+`speed_kmh`/`course=None` (a photo is one instant, not a track) - the
+caller's own already-resolved timestamp is passed in rather than
+re-derived from the GPS sub-IFD's date/time tags, to avoid two
+disagreeing timestamps. `web/app.py`'s `archive_recording_location()`
+route falls back to `exif_gps_fix()` for a photo recording with no
+`.gps` sidecar, populating the same start/stop display fields from
+the single fix.
+
+**Tests, all new this session, run against real ffmpeg/PIL** (this
+sandbox has neither `pytest` nor a `fake_pytest.py` harness this time,
+so a small ad-hoc test-file runner was used instead to execute the
+real, unmodified test functions - not a mock-based substitute):
+`test_photo.py` gained 8 tests (static/animated/unreadable GIF frame
+counts, `is_gif_path`, `GIF_EXTENSIONS`, `recording_is_photo()` for
+all three GIF cases) - 18/18 green. `test_exif.py` (new file) - 15
+tests across all three functions, including a real Orientation=6 JPEG
+confirmed rotating 100x60 to 60x100 with the tag cleared - 15/15
+green. `test_export_media.py` gained 4 tests for
+`extract_first_frame()` - 59/59 green. `test_trip_export.py` gained 2
+tests (static-GIF render via frame extraction, EXIF-oriented photo
+renders clean) - 166/173, both new tests green, 2 pre-existing/
+unrelated trip-summary failures untouched this session, 9 skipped.
+`test_folder_adapter.py` gained 2 tests (EXIF timestamp preferred over
+mtime, falls back to mtime without EXIF) - 26/26 green (1 pre-existing
+skip). A `test_gopro_adapter.py` spot-check surfaced one unrelated
+pre-existing failure (a stale test comment predating this session -
+`.jpg` has counted as a recording since the prior photo-support
+commit) - confirmed via `git diff --stat` as untouched this session,
+flagged but not fixed, out of scope.
+
+Files changed: `src/blackvue/archive/photo.py`,
+`src/blackvue/archive/__init__.py`, `src/blackvue/archive/exif.py`
+(new), `src/blackvue/adapters/_recursive_scan.py`,
+`src/blackvue/export/media.py`, `src/blackvue/export/trip_export.py`,
+`src/blackvue/web/app.py`, `docs/CAMERA_ADAPTERS.md`,
+`docs/man/bv-export.md`, `tests/blackvue/archive/test_photo.py`,
+`tests/blackvue/archive/test_exif.py` (new),
+`tests/blackvue/export/test_export_media.py`,
+`tests/blackvue/export/test_trip_export.py`,
+`tests/blackvue/adapters/test_folder_adapter.py`.

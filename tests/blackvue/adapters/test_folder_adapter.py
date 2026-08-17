@@ -11,9 +11,11 @@ manifest-declared-unsupported capability raises AdapterCapabilityError.
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from blackvue.adapters import registry
 from blackvue.adapters.base import AdapterCapabilityError
@@ -241,6 +243,40 @@ def test_photo_gets_v_kind_code_same_as_video(adapter, tmp_path):
     archive = adapter.open_archive(tmp_path)
 
     assert archive.recordings[0].id.kind == "V"
+
+
+def test_photo_timestamp_prefers_exif_datetime_original_over_mtime(
+    adapter, tmp_path
+):
+    # A photo's own EXIF DateTimeOriginal (task #950-959: Christer,
+    # "Maybe we need exif now.") is the camera's real capture time -
+    # more trustworthy than file mtime, which for a copied-off-the-card
+    # or downloaded photo only reflects when that copy happened. mtime
+    # is set to a deliberately different date here, so this only
+    # passes if EXIF is actually being preferred.
+    path = tmp_path / "IMG_0001.jpg"
+    image = Image.new("RGB", (100, 60), (200, 100, 50))
+    exif = image.getexif()
+    exif[36867] = "2026:07:15 13:32:55"  # DateTimeOriginal
+    image.save(path, exif=exif)
+    os.utime(path, (1577836800, 1577836800))  # 2020-01-01 mtime
+
+    archive = adapter.open_archive(tmp_path)
+    recording_id = archive.recordings[0].id
+
+    assert recording_id.timestamp == datetime(2026, 7, 15, 13, 32, 55)
+
+
+def test_photo_timestamp_falls_back_to_mtime_without_exif(adapter, tmp_path):
+    # A photo with no EXIF at all (or one PIL can't read, e.g. an
+    # unsupported format) should fall back to the existing mtime
+    # behavior unchanged, same as before EXIF support existed.
+    _touch(tmp_path / "IMG_0001.jpg", mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+    recording_id = archive.recordings[0].id
+
+    assert recording_id.timestamp == datetime.fromtimestamp(1700000000)
 
 
 def test_recordings_are_sorted_by_id(adapter, tmp_path):

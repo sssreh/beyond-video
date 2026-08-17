@@ -12,6 +12,7 @@ from blackvue.export.media import check_readable
 from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
+from blackvue.export.media import extract_first_frame
 from blackvue.export.media import generate_silence
 from blackvue.export.media import mux_audio_track
 from blackvue.export.media import probe_video_dimensions
@@ -1108,6 +1109,66 @@ def test_render_missing_camera_placeholder_raises_when_ffmpeg_itself_is_missing(
         render_missing_camera_placeholder(
             tmp_path / "placeholder.mp4", 1.0, width=64, height=64
         )
+
+
+# ---------------------------------------------------------------------------
+# extract_first_frame() - pulls a static GIF's one real frame out to a
+# plain PNG, so render_image_as_video() (which needs the image2 demuxer's
+# -loop 1 support that ffmpeg's native gif demuxer doesn't have) never has
+# to see the original .gif path at all. See archive/photo.py's own
+# recording_is_photo() docstring for the animated-vs-static GIF split this
+# exists to serve (task #950-959: Christer, "how do you define a gif file,
+# a picture or a silent video?").
+# ---------------------------------------------------------------------------
+
+
+def _make_static_gif(path, size=(64, 48)) -> None:
+    Image.new("RGB", size, (10, 20, 30)).save(path)
+
+
+def test_extract_first_frame_produces_a_readable_png(tmp_path):
+    source_gif = tmp_path / "static.gif"
+    _make_static_gif(source_gif, size=(64, 48))
+    destination = tmp_path / "frame0.png"
+
+    extract_first_frame(source_gif, destination)
+
+    assert destination.exists()
+    with Image.open(destination) as frame:
+        assert frame.size == (64, 48)
+
+
+def test_extract_first_frame_creates_parent_directories(tmp_path):
+    source_gif = tmp_path / "static.gif"
+    _make_static_gif(source_gif)
+    destination = tmp_path / "nested" / "frame0.png"
+
+    extract_first_frame(source_gif, destination)
+
+    assert destination.exists()
+
+
+def test_extract_first_frame_raises_when_ffmpeg_itself_is_missing(
+    tmp_path, monkeypatch
+):
+    source_gif = tmp_path / "static.gif"
+    _make_static_gif(source_gif)
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("no ffmpeg")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        extract_first_frame(source_gif, tmp_path / "frame0.png")
+
+
+def test_extract_first_frame_raises_for_an_unreadable_source(tmp_path):
+    source_gif = tmp_path / "corrupt.gif"
+    source_gif.write_bytes(b"not a real gif")
+
+    with pytest.raises(MediaToolError):
+        extract_first_frame(source_gif, tmp_path / "frame0.png")
 
 
 # ---------------------------------------------------------------------------

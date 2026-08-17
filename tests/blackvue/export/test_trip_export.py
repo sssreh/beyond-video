@@ -1586,6 +1586,84 @@ def test_photo_clip_overrides_sizes_against_the_photo_itself_when_trip_is_all_ph
     assert warnings == []
 
 
+def test_photo_clip_overrides_renders_a_static_gif_via_frame_extraction(tmp_path):
+    # A static, single-frame GIF can't go through render_image_as_video()'s
+    # own -loop 1 approach directly (ffmpeg's native gif demuxer doesn't
+    # support -loop) - _photo_clip_overrides() has to pull its one real
+    # frame out to a PNG first (export/media.py's extract_first_frame())
+    # before handing it off. See archive/photo.py's recording_is_photo()
+    # for the animated-vs-static GIF split (task #950-959).
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    video = source_dir / "clip.mp4"
+    photo = source_dir / "IMG_0001.gif"
+    _make_video(video, 2.0)
+    Image.new("RGB", (200, 100), color=(200, 100, 50)).save(photo)
+
+    photo_id = RecordingId("20260720_100100_V")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video)},
+        ),
+        Recording(
+            id=photo_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(trip, tmp_path / "work", warnings, log=None)
+
+    assert list(overrides.keys()) == [(photo_id, Asset.FRONT)]
+    clip_path = overrides[(photo_id, Asset.FRONT)]
+    assert clip_path.exists()
+    assert _video_size(clip_path) == _video_size(video)
+    assert warnings == []
+
+
+def test_photo_clip_overrides_renders_an_exif_oriented_photo_without_error(
+    tmp_path,
+):
+    # A portrait phone photo carrying EXIF Orientation should still
+    # render cleanly once normalize_photo_orientation() (archive/exif.py)
+    # is wired into the render step - ffmpeg itself doesn't auto-rotate,
+    # so this is exercising that the wiring doesn't crash and still
+    # produces a normally-sized, letterboxed clip. The rotation logic
+    # itself has its own dedicated tests in test_exif.py.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    video = source_dir / "clip.mp4"
+    photo = source_dir / "IMG_0001.jpg"
+    _make_video(video, 2.0)
+
+    image = Image.new("RGB", (100, 60), color=(200, 100, 50))
+    exif = image.getexif()
+    exif[274] = 6  # Orientation: rotate 90 CW to display correctly
+    image.save(photo, exif=exif)
+
+    photo_id = RecordingId("20260720_100100_V")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video)},
+        ),
+        Recording(
+            id=photo_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(trip, tmp_path / "work", warnings, log=None)
+
+    assert list(overrides.keys()) == [(photo_id, Asset.FRONT)]
+    clip_path = overrides[(photo_id, Asset.FRONT)]
+    assert clip_path.exists()
+    assert _video_size(clip_path) == _video_size(video)
+    assert warnings == []
+
+
 def test_photo_clip_overrides_warns_and_skips_a_photo_that_fails_to_render(
     tmp_path, monkeypatch
 ):

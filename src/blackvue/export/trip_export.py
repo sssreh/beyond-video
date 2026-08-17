@@ -28,7 +28,9 @@ from ..adapters.telemetry_bridge import read_recording_gps
 from ..adapters.telemetry_bridge import read_recording_gsensor
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
+from ..archive.exif import normalize_photo_orientation
 from ..archive.photo import DEFAULT_PHOTO_DURATION_SECONDS
+from ..archive.photo import is_gif_path
 from ..archive.photo import recording_is_photo
 from ..archive.recording_id import RecordingId
 from ..core.camera_config import DEFAULT_ADAPTER_ID
@@ -61,6 +63,7 @@ from .media import ExportCancelled
 from .media import change_playback_speed
 from .media import check_readable
 from .media import concatenate_media
+from .media import extract_first_frame
 from .media import generate_silence
 from .media import mux_audio_track
 from .media import probe_video_dimensions
@@ -924,6 +927,25 @@ def _photo_clip_overrides(
     data degrades to leave-it-out, never aborts the whole export"
     policy every other per-file failure in this module already
     follows.
+
+    Two extra per-photo steps happen here before `render_image_as_
+    video()` is ever called, both silently no-ops for the ordinary
+    jpg/png case:
+
+      - A static, single-frame GIF (see archive/photo.py's
+        `recording_is_photo()` for the animated-vs-static split - only
+        a confirmed-static GIF ever reaches this function at all) gets
+        its one real frame pulled out to a plain PNG first
+        (`extract_first_frame()`) - `render_image_as_video()`'s own
+        `-loop 1` approach doesn't work directly against a `.gif` path
+        (ffmpeg's native gif demuxer doesn't support `-loop` - see that
+        function's own docstring).
+      - Every photo (including a gif-extracted frame) is run through
+        `normalize_photo_orientation()` (archive/exif.py), which bakes
+        in the photo's own EXIF Orientation tag if it has one - ffmpeg
+        does not auto-rotate on its own, so without this step a
+        portrait phone photo would render sideways in the exported
+        clip.
     """
 
     photo_recordings = [
@@ -970,9 +992,31 @@ def _photo_clip_overrides(
     for recording in photo_recordings:
         photo_path = recording.file(Asset.FRONT).path
         clip_path = work_dir / f"{recording.id}_photo.mp4"
+
+        render_source = photo_path
+        try:
+            if is_gif_path(photo_path):
+                frame_path = work_dir / f"{recording.id}_frame0.png"
+                extract_first_frame(photo_path, frame_path)
+                render_source = frame_path
+        except MediaToolError as exc:
+            message = (
+                f"{recording.id}: photo ({photo_path.name}) - could not "
+                f"extract its first frame: {exc} - left out of front.mp4 "
+                f"entirely"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        oriented_path = work_dir / f"{recording.id}_oriented.png"
+        if normalize_photo_orientation(render_source, oriented_path):
+            render_source = oriented_path
+
         try:
             render_image_as_video(
-                photo_path, clip_path, photo_duration_seconds,
+                render_source, clip_path, photo_duration_seconds,
                 width=width, height=height, fps=fps,
             )
         except MediaToolError as exc:

@@ -50,6 +50,9 @@ from fastapi.templating import Jinja2Templates
 
 from ..adapters.registry import get_adapter
 from ..adapters.telemetry_bridge import recording_has_gps
+from ..archive.asset import Asset
+from ..archive.exif import exif_gps_fix
+from ..archive.photo import recording_is_photo
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
 from .archive_browser import filter_recordings
@@ -613,7 +616,43 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         error = None
 
         if not recording_has_gps(adapter, recording.recording):
-            error = "This recording has no GPS log."
+            # No `.gps` sidecar (or the adapter has no GPS capability
+            # at all) - the ordinary case for a photo recording, which
+            # never has one (see archive/photo.py's own module
+            # docstring). A photo can still carry its own GPS fix
+            # right in its EXIF data though (most phone/GPS-equipped
+            # cameras write one), so it gets one more real chance here
+            # before this page gives up and shows "no GPS log" - a
+            # real photo, dropped into a trip, otherwise had no way at
+            # all to show a location on this page even when it
+            # actually has one.
+            exif_fix = None
+            if recording_is_photo(recording.recording):
+                front = recording.recording.file(Asset.FRONT)
+                if front is not None:
+                    exif_fix = exif_gps_fix(
+                        front.path, timestamp=recording.recording.id.timestamp
+                    )
+
+            if exif_fix is None:
+                error = "This recording has no GPS log."
+            else:
+                geocode_cache_dir = default_config_dir() / ".osm_cache"
+                (
+                    start_coordinates,
+                    start_google_maps_url,
+                    start_address,
+                    start_address_error,
+                ) = _describe_gps_fix(exif_fix, geocode_cache_dir)
+                # A photo is a single instant, not a span - the same
+                # one EXIF fix serves as both "start" and "stop" so
+                # the template's existing start/stop layout works
+                # unchanged rather than needing its own photo-specific
+                # branch.
+                stop_coordinates = start_coordinates
+                stop_google_maps_url = start_google_maps_url
+                stop_address = start_address
+                stop_address_error = start_address_error
         else:
             # Reverse-geocoded and cached under default_config_dir() -
             # bv-web's own writable scratch space (the same directory

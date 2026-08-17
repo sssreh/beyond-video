@@ -44,7 +44,10 @@ from ..archive.archive import Archive
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
 from ..archive.configuration import Configuration
+from ..archive.exif import exif_datetime_original
+from ..archive.photo import GIF_EXTENSIONS
 from ..archive.photo import PHOTO_EXTENSIONS
+from ..archive.photo import is_photo_path
 from ..archive.recording import Recording
 from ..archive.recording_id import RecordingId
 from .manifest import AdapterManifest
@@ -97,12 +100,23 @@ def _resolve_timestamp(
     *,
     telemetry_timestamp: Callable[[Path], datetime | None] | None = None,
 ) -> datetime:
-    """Resolve a video's recording timestamp: ffprobe's own
-    creation_time metadata first, then `telemetry_timestamp(path)` (if
-    the caller passed one) as a second, still-real-capture-time
-    fallback, then the file's mtime as the last resort - see
-    _probe_creation_time()'s docstring for why the first step so
-    often falls through on a real, mixed-source folder of videos.
+    """Resolve a recording's timestamp: for a still photo (see
+    archive/photo.py's `is_photo_path()`), its own EXIF
+    DateTimeOriginal tag first; for everything else - and as a photo's
+    own first fallback if it has no usable EXIF - ffprobe's
+    creation_time metadata; then `telemetry_timestamp(path)` (if the
+    caller passed one) as a further real-capture-time fallback; then
+    the file's mtime as the last resort. See _probe_creation_time()'s
+    own docstring for why that middle step so often falls through on
+    a real, mixed-source folder of videos.
+
+    EXIF goes first for a photo, ahead of even ffprobe's own
+    creation_time, because ffprobe's format-level creation_time tag is
+    an unreliable, inconsistent source for a still image (unlike a
+    real video file, where it's the camera's own muxed-in capture
+    time) - EXIF DateTimeOriginal is the camera's own authoritative
+    capture timestamp for a photo, the direct photo equivalent of a
+    video's muxed-in creation_time.
 
     `telemetry_timestamp` is an adapter-supplied hook (GoProAdapter
     passes gpmf.first_creation_time; FolderAdapter has no embedded
@@ -120,6 +134,11 @@ def _resolve_timestamp(
     (e.g. after a re-encode). A telemetry-derived timestamp is real
     device-clock data recorded at the moment of capture, so it's tried
     before falling all the way back to mtime."""
+
+    if is_photo_path(path):
+        photo_time = exif_datetime_original(path)
+        if photo_time is not None:
+            return photo_time
 
     creation_time = _probe_creation_time(path)
     if creation_time is not None:
@@ -300,8 +319,11 @@ def _scan(
     # the exact same code path below - the only place that later cares
     # whether a given FRONT is a photo or a real video is duration
     # calculation and export-time rendering, both well downstream of
-    # scanning.
-    extensions = frozenset(manifest.video_extensions) | PHOTO_EXTENSIONS
+    # scanning. GIF_EXTENSIONS rides along the same way: both animated
+    # and static GIFs need to be scanned in here, since which one a
+    # given file turns out to be is decided per-file, downstream, by
+    # recording_is_photo() (see its own docstring) - not at scan time.
+    extensions = frozenset(manifest.video_extensions) | PHOTO_EXTENSIONS | GIF_EXTENSIONS
     video_paths = scan_video_files(path, extensions)
     videos_with_timestamps = [
         (p, _resolve_timestamp(p, telemetry_timestamp=telemetry_timestamp))

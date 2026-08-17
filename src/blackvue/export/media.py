@@ -1057,6 +1057,52 @@ def render_missing_camera_placeholder(
         )
 
 
+def extract_first_frame(source_gif: Path, destination: Path) -> None:
+    """Extract `source_gif`'s own first frame to `destination` (a
+    PNG), for a static single-frame GIF on its way into
+    `render_image_as_video()` (see trip_export.py's
+    `_photo_clip_overrides()`, which is the only real caller).
+
+    Needed because `render_image_as_video()`'s own `-loop 1` +
+    image2-demuxer approach doesn't work on a raw `.gif` path at all:
+    a `.gif` suffix makes ffmpeg pick its native "gif" demuxer instead
+    of "image2", and that demuxer doesn't support `-loop` - `ffmpeg
+    -loop 1 -i x.gif` fails outright with "Option loop not found."
+    Pre-extracting frame 0 to an ordinary PNG here sidesteps the gif
+    demuxer entirely, so `render_image_as_video()` itself needs no
+    gif-specific branch of its own - it never even finds out the
+    original source was a `.gif`.
+
+    Only ever called for a GIF `recording_is_photo()` (archive/
+    photo.py) has already confirmed is a static, single-frame one -
+    an animated GIF is treated as an ordinary silent video instead and
+    never reaches this function at all (see that module's own
+    docstring on the animated-vs-static split).
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(source_gif),
+                "-frames:v", "1",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"could not extract first frame of {source_gif.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc
+
+
 def render_image_as_video(
     source_image: Path,
     destination: Path,
