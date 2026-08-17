@@ -10,7 +10,7 @@
   "archive_layout": "recursive",
   "video_extensions": [".mp4"],
   "filename_pattern": null,
-  "timestamp_source": ["ffprobe_creation_time", "file_mtime"],
+  "timestamp_source": ["ffprobe_creation_time", "gpmf_gpsu_anchor", "file_mtime"],
   "kind_vocabulary": [
     {"code": "V", "label": "Video", "low_signal": false, "default_included": true}
   ],
@@ -58,6 +58,6 @@
     "No Event/Manual/Parking distinction: no --mode filtering, no --include-parking skip-and-replace, no max_parking_duration cap - every file is just 'a video'.",
     "No live camera connection: bv-config's endpoint setup, bv-gps, and bv-live are not applicable to this adapter and shouldn't be offered for it - a GoPro has no network CGI protocol to speak to. bv-download's --media file-import mode IS applicable, though: it copies files off a mounted card without needing any live connection at all, recognizing this adapter's own video_extensions by extension (not a filename convention - GoPro's own on-camera names carry no timestamp) with each matched file's capture time coming from its mtime rather than its name.",
     "Thumbnails are generated on demand via an ffmpeg frame-grab, not read from GoPro's own same-stem .THM sidecar (present on-camera but not confirmed to survive a plain file copy) - revisit once real footage confirms it's there.",
-    "Timestamp comes from ffprobe's embedded creation_time metadata, falling back to file mtime - GoPro's own on-camera filenames (e.g. GH010001.MP4) carry a chapter+file counter, not a timestamp, so unlike BlackVue there's no filename-based source to prefer."
+    "Timestamp comes from ffprobe's embedded creation_time metadata first, then the GPMF stream's own GPSU device-clock anchor (real capture-time data, written whether or not GPS had a lock that second), falling back to file mtime only if neither is available - GoPro's own on-camera filenames (e.g. GH010001.MP4) carry a chapter+file counter, not a timestamp, so unlike BlackVue there's no filename-based source to prefer."
   ]
 }

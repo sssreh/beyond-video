@@ -1121,6 +1121,98 @@ found and processed (not "no recordings found"). Full suite: 103/103 in
 ("builtins.input", ...)` failures are a pre-existing fake-pytest harness
 limitation, confirmed present before this change too via `git stash`).
 
+## Three GoPro follow-up fixes: generated-asset visibility, id stability, source filenames (2026-08-17)
+
+Christer reported three related problems in one message after actually
+running `bv-generate`/`bv-ls` against his real GoPro archive: bv-generate's
+own output files (audio/duration/transcript/scene description) weren't
+showing up in `bv-ls`'s asset columns even though they existed on disk;
+some synthesized recording ids reflect when a GoPro clip was downloaded
+onto his machine rather than when it was actually recorded, risking two
+different physical clips colliding into the same id; and there was no way
+to see a recording's real on-disk filename from `bv-ls` to notice or
+untangle such a collision if it happened.
+
+**Fix 1 - `generated_assets_for()` root-fallback
+(`adapters/_recursive_scan.py`).** Root-caused as a path-convention
+mismatch, not a wiring gap: every write site in `cli/bv_generate.py`
+builds its destination as `archive_path / f"{recording.id}.<suffix>"` - a
+flat path at the archive *root*, keyed by the synthetic recording id - but
+`generated_assets_for()` only ever checked same-stem-next-to-the-original-
+video, which for a GoPro archive is nested arbitrarily deep
+(`archive_layout: "recursive"`). `FolderAdapter`'s own same-stem tests
+never caught this because its existing tests only exercise the same-stem
+path. Fixed by having the read side check both locations - same-stem
+first (unchanged, still wins on the rare theoretical collision), then
+`root / f"{recording_id}{suffix}"` - with `root`/`recording_id` threaded
+through `_scan()`'s existing call site, no changes needed to
+`bv_generate.py` itself. New regression tests in `test_folder_adapter.py`
+(`test_root_id_named_generated_assets_are_discovered`,
+`test_same_stem_generated_asset_wins_over_root_id_named_one`) cover both
+adapters at once since they share this code path.
+
+**Fix 2 - GPMF GPSU timestamp fallback (`adapters/gopro/gpmf.py`,
+`_recursive_scan.py`, `gopro/adapter.py`, `gopro/manifest.json`).** Before
+this fix, a GoPro recording's timestamp chain was `ffprobe creation_time`
+-> file mtime, with no telemetry-aware middle tier - so a clip whose
+`creation_time` tag was missing or stripped (a re-encode, a copy tool that
+drops metadata) fell straight to mtime, which reflects when the file was
+copied/downloaded onto Christer's machine, not when it was recorded.
+GPMF's own `GPSU` field is a real device-clock UTC anchor written by the
+camera every DEVC block *whether or not GPS actually had a lock that
+second* - meaningfully truer than mtime even on footage with no real GPS
+fix at all. Added `gpmf.first_creation_time(path) -> datetime | None`
+(stops at the first block with a usable `GPSU`, unlike the full
+`extract_gps_fixes()` walk) and threaded it through
+`_resolve_timestamp()`/`_scan()`/`scan_recursive_archive()`/
+`find_recording_in_recursive_archive()` as a new keyword-only
+`telemetry_timestamp` hook, wired into `GoProAdapter.open_archive()`/
+`find_recording()`. `FolderAdapter` passes nothing (`None`), so its
+two-tier chain is unchanged - confirmed via its own 19/19 green run.
+`manifest.json`'s `timestamp_source` gained the new
+`"gpmf_gpsu_anchor"` middle entry (also added to
+`manifest.schema.json`'s enum, doc-only since the schema isn't
+runtime-validated). New tests: `test_gopro_gpmf.py` gained a
+`first_creation_time()` section (first-DEVC-wins, no-GPMF-track ->
+`None`, non-MP4 -> `None`, skips a GPS-less block to the next one);
+`test_gopro_adapter.py` gained
+`test_open_archive_prefers_gpmf_gpsu_anchor_over_file_mtime`. This fix
+also exposed and fixed a stale assumption in the pre-existing
+`test_mixed_content_folder_scans_fully_with_per_recording_telemetry_degradation`
+test: it identified "the clip with telemetry" vs. "the clip without" by
+sorted-id order, which implicitly assumed mtime order - now that the
+telemetry clip's id can legitimately sort anywhere (its GPSU anchor no
+longer has to agree with its mtime), the test identifies each recording
+by its actual GPS-read result instead of by id order.
+
+**Fix 3 - Source column in `bv-ls` (`cli/display_group.py`,
+`cli/bv_ls.py`).** Added `DisplayGroup.source_label(root)` (real on-disk
+`FRONT` filename, relative to the archive root when possible so two
+same-named files in different subfolders - e.g. a GoPro card's
+`100GOPRO/GH010001.MP4` and `101GOPRO/GH010001.MP4` - stay
+distinguishable) and a new `_source_column_needed()` helper in
+`bv_ls.py` that decides once per table whether the column is worth
+showing at all: a BlackVue archive's filenames are themselves id-derived
+(`20260715_133255_NF.mp4` for id `20260715_133255_N`), so showing this
+column there would just repeat the Recording column on every row -
+checked via "does the real filename start with the recording id string"
+across every recording behind every row, without `bv_ls.py` needing to
+import adapter-type metadata directly. Column is conditionally inserted
+into both header rows and every data row, with its own width computed
+alongside the existing Recording/asset/Size columns. New tests:
+`test_bv_ls_shows_source_column_for_a_folder_adapter_archive`,
+`test_bv_ls_hides_source_column_for_a_blackvue_archive` in
+`test_bv_ls.py`.
+
+**Verification.** `test_folder_adapter.py`: 19/19. `test_gopro_adapter.py`:
+11/11. `test_gopro_gpmf.py`: 17/17. `test_bv_ls.py`: 22/24 (the 2
+failures - `test_main_movement_flag_enables_gps_bridging`,
+`test_trips_bridges_a_gap_when_gps_shows_movement_and_movement_flag_given`
+- are a pre-existing, unrelated `movement_bridges_gap() missing 1
+required keyword-only argument: 'adapter'` bug in `trip_builder.py`,
+confirmed present before any of these changes too via `git stash`/`git
+stash pop`, left untouched as out of scope).
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,

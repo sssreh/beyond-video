@@ -2,8 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 from blackvue.archive import Archive, Asset, Recording
+
+
+def _source_name(recording: Recording, root: Path) -> str:
+    """Return the recording's real, on-disk FRONT filename - as a path
+    relative to `root` when possible (so two same-named files in
+    different subfolders, e.g. a GoPro archive's 100GOPRO/GH010001.MP4
+    and 101GOPRO/GH010001.MP4, stay distinguishable), else just the
+    bare filename. Empty string if the recording has no FRONT asset at
+    all."""
+
+    asset_file = recording.file(Asset.FRONT)
+    if asset_file is None:
+        return ""
+
+    try:
+        return str(asset_file.path.relative_to(root))
+    except ValueError:
+        return asset_file.path.name
 
 
 @dataclass(frozen=True)
@@ -37,6 +56,34 @@ class DisplayGroup:
 
     def has(self, asset: Asset) -> bool:
         return all(recording.has(asset) for recording in self.recordings)
+
+    def source_label(self, root: Path) -> str:
+        """The real on-disk filename(s) behind this row - see
+        _source_name()'s own docstring. For a BlackVue archive this is
+        always id-derived (e.g. "20260715_133255_NF.mp4"), so bv-ls
+        skips showing this column entirely rather than clutter every
+        row with a near-duplicate of the Recording column (see
+        _source_column_needed() in bv_ls.py, which decides that once
+        for the whole table). For a recursive-
+        scan adapter (folder/gopro) the on-camera filename carries no
+        timestamp at all (e.g. "GH010001.MP4"), which is exactly the
+        real report this column exists for: Christer's GoPro archive
+        can synthesize the same recording id for two genuinely
+        different physical files if the ffprobe/GPMF timestamp sources
+        both come up empty and it falls back to file mtime (mtime
+        reflecting when a file was copied/downloaded, not recorded) -
+        seeing the real filename is how you'd actually notice and
+        untangle that."""
+
+        first = _source_name(self.first, root)
+        if len(self.recordings) == 1:
+            return first
+
+        last = _source_name(self.last, root)
+        if first == last:
+            return first
+
+        return f"{first} .. {last}"
 
     @classmethod
     def group(

@@ -114,6 +114,54 @@ def test_same_stem_generated_assets_are_discovered(adapter, tmp_path):
     assert recording.size > video.stat().st_size  # includes sidecar bytes too
 
 
+def test_root_id_named_generated_assets_are_discovered(adapter, tmp_path):
+    # bv_generate.py writes every generated asset flat at the archive
+    # root as f"{recording.id}.<suffix>" (see generated_assets_for()'s
+    # own docstring for the real bug report) - not same-stem next to
+    # the original video, which may be nested deep in a subfolder (a
+    # GoPro card's 100GOPRO/ directory, or here, a "trip1" subfolder).
+    # test_same_stem_generated_assets_are_discovered above already
+    # covers the same-stem half; this covers the other half.
+    sub = tmp_path / "trip1"
+    sub.mkdir()
+    _touch(sub / "clip.mp4", mtime=1700000000)
+
+    recording_id = adapter.open_archive(tmp_path).recordings[0].id
+
+    (tmp_path / f"{recording_id}.transcript.txt").write_text("hello")
+    (tmp_path / f"{recording_id}.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nhi\n"
+    )
+    # A root-level file whose name doesn't match this recording's id at
+    # all should not be picked up.
+    (tmp_path / "not_this_recording.transcript.txt").write_text("nope")
+
+    archive = adapter.open_archive(tmp_path)
+    recording = archive.recordings[0]
+
+    assert recording.has(Asset.TRANSCRIPT)
+    assert recording.has(Asset.SUBTITLES)
+
+
+def test_same_stem_generated_asset_wins_over_root_id_named_one(adapter, tmp_path):
+    # Both discovery paths can never actually collide for one real
+    # bv-generate run in practice, but the read side has an explicit
+    # first-match-wins order (same-stem before root) - pin it down
+    # directly rather than leaving it implicit.
+    _touch(tmp_path / "clip.mp4", mtime=1700000000)
+    recording_id = adapter.open_archive(tmp_path).recordings[0].id
+
+    (tmp_path / "clip.transcript.txt").write_text("same-stem version")
+    (tmp_path / f"{recording_id}.transcript.txt").write_text("root version")
+
+    archive = adapter.open_archive(tmp_path)
+    recording = archive.recordings[0]
+    transcript_file = recording.file(Asset.TRANSCRIPT)
+
+    assert transcript_file is not None
+    assert transcript_file.path.read_text() == "same-stem version"
+
+
 def test_collision_disambiguation_bumps_the_later_id_by_a_second(
     adapter, tmp_path
 ):

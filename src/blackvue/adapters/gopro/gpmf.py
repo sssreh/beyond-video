@@ -587,6 +587,46 @@ def extract_gsensor_samples(data: bytes) -> tuple[GSensorSample, ...]:
     return tuple(samples)
 
 
+def first_creation_time(path: Path) -> datetime | None:
+    """Return the earliest GPSU UTC anchor found in this video's GPMF
+    stream, or None if it has no GPMF track, no parseable GPSU field
+    anywhere, or locating/reading it fails for any reason.
+
+    A lightweight alternative to extract_gps_fixes() for a caller that
+    only wants *a* real device-clock timestamp, not a full GPS track:
+    stops at the first DEVC block with a usable GPSU anchor instead of
+    decoding every block's GPS5 rows. Meant as a timestamp-resolution
+    fallback for adapters/_recursive_scan.py's _resolve_timestamp() -
+    GPSU is the camera's own wall-clock stamp for that second of
+    recording, written whether or not GPS actually had a lock that
+    second, so it's a meaningfully truer source than a copied/
+    downloaded file's mtime even on a clip with no real GPS lock at
+    all. Confirmed as a real, not just theoretical, gap: Christer
+    reported synthetic recording ids sometimes reflecting when a clip
+    was downloaded onto his machine rather than when it was actually
+    recorded - exactly the case ffprobe's own creation_time tag
+    (_resolve_timestamp()'s first-choice source) can be missing for,
+    e.g. after a re-encode or a copy tool that drops metadata.
+
+    Never raises - every failure mode collapses to None, the same
+    "just fall through to the next source in the chain" contract
+    _probe_creation_time() (ffprobe's own creation_time reader) has.
+    """
+
+    try:
+        data = locate_gpmf_stream(path)
+    except MediaToolError:
+        return None
+
+    for devc_children in _iter_devc_blocks(data):
+        for strm_children in _iter_strm_blocks(devc_children):
+            anchor = _parse_gpsu(_find_klv(strm_children, "GPSU"))
+            if anchor is not None:
+                return anchor
+
+    return None
+
+
 def read_gps(path: Path) -> tuple[GpsFix, ...]:
     """Read every GPS5 fix embedded in a GoPro video's GPMF stream -
     GoProAdapter.read_gps()'s implementation (see adapter.py). Raises

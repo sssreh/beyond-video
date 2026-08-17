@@ -94,7 +94,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": ["filename", "ffprobe_creation_time", "file_mtime"]
+        "enum": ["filename", "ffprobe_creation_time", "gpmf_gpsu_anchor", "file_mtime"]
       },
       "description": "Ordered fallback chain for determining a recording's timestamp when filename_pattern is null or doesn't match a given file."
     },

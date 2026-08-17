@@ -13984,3 +13984,80 @@ pre-existing unrelated failures as before.
 
 Files: `src/blackvue/generate/media.py`, `src/blackvue/generate/speech.py`,
 `tests/blackvue/generate/test_media.py`, `tests/blackvue/generate/test_speech.py`.
+
+## Fix: three GoPro follow-up bugs - generated-asset visibility, id stability, source filenames (done, this session, #929-931)
+
+Christer's report, verbatim: "a minor problem, some of the virtual
+timestamps are when the object was downloaded, not when it was created,
+that might get duplicate names. bv-ls must somehow show the original
+name too. right now generated assets for gopro not showing in bv-ls,
+even when they exists." Three related bugs, all in the GoPro adapter
+path (`src/blackvue/adapters/gopro/` and the shared
+`_recursive_scan.py` it uses alongside `FolderAdapter`).
+
+**Bug 1 - generated assets invisible in bv-ls.** Root cause: a path-
+convention mismatch, not a wiring gap. Every write site in
+`cli/bv_generate.py` builds its destination as `archive_path /
+f"{recording.id}.<suffix>"` - a flat path at the archive *root* - but
+`generated_assets_for()` in `_recursive_scan.py` only ever checked
+same-stem-next-to-the-original-video, which for a recursive-layout
+archive (GoPro/folder) can be nested arbitrarily deep. Fixed by having
+the read side check both locations - same-stem first (unchanged), then
+`root / f"{recording_id}{suffix}"` - threading `root`/`recording_id`
+through the existing `_scan()` call site. No `bv_generate.py` changes
+needed.
+
+**Bug 2 - synthetic ids can reflect download time, not capture time.**
+Before this fix the timestamp chain was `ffprobe creation_time` -> file
+mtime, with no telemetry-aware middle tier. A clip whose
+`creation_time` tag is missing (re-encode, a copy tool that drops
+metadata) fell straight to mtime, which is when Christer's copy tool
+touched the file on his machine, not when the camera recorded it -
+risking two different physical clips colliding into the same
+synthesized id. Added `gpmf.first_creation_time(path) -> datetime |
+None` (reads the first DEVC block's `GPSU` field - the camera's own
+UTC wall-clock anchor, written every second whether or not GPS actually
+had a lock) and threaded it through `_resolve_timestamp()` as a new
+`telemetry_timestamp` hook, wired into `GoProAdapter.open_archive()`/
+`find_recording()`. `FolderAdapter` passes nothing, so it's unaffected
+(confirmed via its own still-green test suite).
+`gopro/manifest.json`'s `timestamp_source` gained the new
+`"gpmf_gpsu_anchor"` middle entry (schema updated too, doc-only).
+
+**Bug 3 - no way to see the real filename from bv-ls.** Added
+`DisplayGroup.source_label(root)` (the recording's real on-disk
+`FRONT` filename, relative to the archive root) and a new
+`_source_column_needed()` helper in `bv_ls.py` that shows a Source
+column only when it carries real information - i.e. not for BlackVue,
+whose filenames are already id-derived and would just repeat the
+Recording column.
+
+**Fixing this also fixed a stale test.** Bug 2's fix exposed a bad
+assumption in the pre-existing
+`test_mixed_content_folder_scans_fully_with_per_recording_telemetry_degradation`
+test: it identified "the clip with telemetry" vs. "without" by sorted-
+id order, implicitly assuming mtime order. Now that a clip's id can
+legitimately sort by its GPSU anchor instead, that assumption breaks -
+fixed the test to identify each recording by its actual GPS-read
+result instead of by id order (not a regression - the fix working
+exactly as designed against test data whose GPSU/mtime values were
+never meant to agree).
+
+Files changed: `src/blackvue/adapters/_recursive_scan.py`,
+`src/blackvue/adapters/gopro/gpmf.py`,
+`src/blackvue/adapters/gopro/adapter.py`,
+`src/blackvue/adapters/gopro/manifest.json`,
+`src/blackvue/adapters/manifest.schema.json`,
+`src/blackvue/cli/display_group.py`, `src/blackvue/cli/bv_ls.py`,
+`tests/blackvue/adapters/test_folder_adapter.py`,
+`tests/blackvue/adapters/test_gopro_adapter.py`,
+`tests/blackvue/adapters/test_gopro_gpmf.py`,
+`tests/blackvue/cli/test_bv_ls.py`, `docs/CAMERA_ADAPTERS.md`,
+`docs/man/bv-ls.md`.
+
+Verified: `test_folder_adapter.py` 19/19, `test_gopro_adapter.py`
+11/11, `test_gopro_gpmf.py` 17/17, `test_bv_ls.py` 22/24 (the 2
+failures are the pre-existing, unrelated `movement_bridges_gap()
+missing 1 required keyword-only argument: 'adapter'` bug in
+`trip_builder.py`, confirmed present before this change too via `git
+stash`/`git stash pop`, left untouched as out of scope).

@@ -339,3 +339,67 @@ def test_read_gps_raises_media_tool_error_for_a_video_with_no_gpmf(tmp_path):
 
     with pytest.raises(MediaToolError):
         gpmf.read_gsensor(path)
+
+
+# ---------------------------------------------------------------------------
+# first_creation_time() - task #930's timestamp-resolution fallback: a
+# real device-clock anchor for adapters/_recursive_scan.py's
+# _resolve_timestamp() to prefer over a copied/downloaded file's mtime.
+# ---------------------------------------------------------------------------
+
+
+def test_first_creation_time_returns_the_first_devc_blocks_gpsu_anchor(tmp_path):
+    path = tmp_path / "clip.mp4"
+    _write_synthetic_gopro_mp4(path, _default_samples())
+
+    anchor = gpmf.first_creation_time(path)
+
+    # _default_samples()'s first DEVC block anchors to 2025-01-01 12:00:00
+    # UTC - the second block's (one second later) is never reached.
+    assert anchor is not None
+    assert anchor.year == 2025
+    assert anchor.month == 1
+    assert anchor.day == 1
+    assert anchor.hour == 12
+    assert anchor.minute == 0
+    assert anchor.second == 0
+
+
+def test_first_creation_time_returns_none_for_a_video_with_no_gpmf(tmp_path):
+    path = tmp_path / "plain.mp4"
+    _write_synthetic_gopro_mp4(path, _default_samples(), include_gpmd_track=False)
+
+    assert gpmf.first_creation_time(path) is None
+
+
+def test_first_creation_time_returns_none_for_a_non_mp4_file(tmp_path):
+    path = tmp_path / "not_a_video.mp4"
+    path.write_bytes(b"this is not an mp4 file at all")
+
+    assert gpmf.first_creation_time(path) is None
+
+
+def test_first_creation_time_skips_a_block_with_no_gps_stream_at_all(tmp_path):
+    # A DEVC block with no GPS STRM (include_gps=False) has no GPSU
+    # field to read - first_creation_time() must fall through to the
+    # next block rather than raising or returning a bogus value.
+    no_gps_sample = _build_devc(
+        b"250101120000.000",
+        gps5_rows=[],
+        accl_rows=[(10, -5, 1000)],
+        stmp_us=0,
+        include_gps=False,
+    )
+    with_gps_sample = _build_devc(
+        b"250101120005.000",
+        gps5_rows=[(599170000, 105170000, 50000, 500, 520)],
+        accl_rows=[(10, -5, 1000)],
+        stmp_us=0,
+    )
+    path = tmp_path / "clip.mp4"
+    _write_synthetic_gopro_mp4(path, [no_gps_sample, with_gps_sample])
+
+    anchor = gpmf.first_creation_time(path)
+
+    assert anchor is not None
+    assert anchor.second == 5

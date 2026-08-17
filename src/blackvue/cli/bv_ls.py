@@ -64,6 +64,32 @@ def _asset_group_spans(
     return spans
 
 
+def _source_column_needed(groups: list[DisplayGroup], root: Path) -> bool:
+    """Only worth a whole extra column when it carries real
+    information beyond the Recording column - see
+    DisplayGroup.source_label()'s own docstring for the real report
+    (GoPro recording ids risking a collision) this column exists for.
+    A BlackVue archive's on-disk filenames are themselves derived from
+    the recording id (e.g. "20260715_133255_NF.mp4" for id
+    "20260715_133255_N"), so showing this column there would just
+    repeat the Recording column on every single row; skip it rather
+    than clutter output that's looked the same since before adapters
+    existed. Checked across every recording behind every row (not just
+    each row's first) since a --trips-style flag isn't in play here,
+    but a mixed archive with some FolderAdapter-scanned rows and some
+    not is at least theoretically possible."""
+
+    for group in groups:
+        for recording in group.recordings:
+            asset_file = recording.file(Asset.FRONT)
+            if asset_file is not None and not asset_file.path.name.startswith(
+                str(recording.id)
+            ):
+                return True
+
+    return False
+
+
 def display_groups(
     archive: Archive,
     recordings,
@@ -260,12 +286,25 @@ def bv_ls(
     )
 
     assets = Asset.display_order()
+    archive_root = Path(path)
 
     recording_width = max(
         [len("Recording")]
         + [len(group.label) for group in groups],
         default=len("Recording"),
     )
+
+    show_source = _source_column_needed(groups, archive_root)
+    source_width = (
+        max(
+            [len("Source")]
+            + [len(group.source_label(archive_root)) for group in groups],
+            default=len("Source"),
+        )
+        if show_source
+        else 0
+    )
+    source_prefix = f'{"":<{source_width}}' + "  " if show_source else ""
 
     widths = {
         asset: max(len(asset.label), 3)
@@ -278,13 +317,15 @@ def bv_ls(
         default=len("Size"),
     )
 
-    group_header = f'{"":<{recording_width}}' + "  "
+    group_header = f'{"":<{recording_width}}' + "  " + source_prefix
     for group_label, span in _asset_group_spans(assets):
         width = sum(widths[asset] for asset in span) + (len(span) - 1)
         group_header += f"{group_label or '':^{width}}" + " "
     say(group_header)
 
     asset_header = f'{"Recording":<{recording_width}}' + "  "
+    if show_source:
+        asset_header += f'{"Source":<{source_width}}' + "  "
     for asset in assets:
         asset_header += f"{asset.label:^{widths[asset]}}" + " "
     asset_header += f'{"Size":>{size_width}}'
@@ -295,6 +336,7 @@ def bv_ls(
         * (
             recording_width
             + 2
+            + (source_width + 2 if show_source else 0)
             + sum(widths.values())
             + len(widths)
             + size_width
@@ -304,6 +346,9 @@ def bv_ls(
 
     for group in groups:
         row = f"{group.label:<{recording_width}}" + "  "
+
+        if show_source:
+            row += f"{group.source_label(archive_root):<{source_width}}" + "  "
 
         for asset in assets:
             mark = "X" if group.has(asset) else ""

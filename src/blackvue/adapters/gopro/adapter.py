@@ -66,7 +66,12 @@ class GoProAdapter:
     manifest = _MANIFEST
 
     def open_archive(self, path: Path) -> Archive:
-        return scan_recursive_archive(path, self.manifest, _KIND_CODE)  # type: ignore[return-value]
+        return scan_recursive_archive(  # type: ignore[return-value]
+            path,
+            self.manifest,
+            _KIND_CODE,
+            telemetry_timestamp=gpmf.first_creation_time,
+        )
 
     def find_recording(self, path: Path, recording_id: RecordingId) -> Recording | None:
         """Resolve a single recording by id - see
@@ -75,7 +80,11 @@ class GoProAdapter:
         than a targeted lookup."""
 
         return find_recording_in_recursive_archive(
-            path, recording_id, self.manifest, _KIND_CODE
+            path,
+            recording_id,
+            self.manifest,
+            _KIND_CODE,
+            telemetry_timestamp=gpmf.first_creation_time,
         )
 
     def read_gps(self, path: Path) -> tuple[GpsFix, ...]:

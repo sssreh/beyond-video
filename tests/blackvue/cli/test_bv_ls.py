@@ -399,6 +399,44 @@ def test_bv_ls_lists_a_folder_adapter_archive(tmp_path, capsys):
     assert "X" in out  # Front column marked for the one video asset
 
 
+def test_bv_ls_shows_source_column_for_a_folder_adapter_archive(tmp_path, capsys):
+    # Real report: a folder/gopro-adapter recording's on-camera
+    # filename carries no timestamp, so if the synthesized id ever
+    # collides (see GoProAdapter's GPMF-vs-mtime fallback), the real
+    # filename is how you'd notice - bv-ls must show it for adapters
+    # whose filenames aren't already id-derived (see
+    # _source_column_needed()'s own docstring).
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    video = clips / "vacation.mp4"
+    video.write_bytes(b"x" * 123)
+    os.utime(video, (1700000000, 1700000000))
+
+    exit_code = bv_ls(str(tmp_path), adapter_id="folder", say=print)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Source" in out
+    assert "vacation.mp4" in out
+
+
+def test_bv_ls_hides_source_column_for_a_blackvue_archive(tmp_path):
+    # BlackVue's own on-disk filenames are themselves derived from the
+    # recording id (e.g. "20260715_133255_NF.mp4" for id
+    # "20260715_133255_N"), so the Source column would just repeat the
+    # Recording column on every row - it must stay hidden here, unlike
+    # the folder-adapter case above.
+    recording_id = "20260715_133255_N"
+    (tmp_path / f"{recording_id}F.mp4").write_bytes(b"x")
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), say=lines.append)
+
+    assert exit_code == 0
+    assert not any("Source" in line for line in lines)
+
+
 def test_bv_ls_default_adapter_ignores_a_folder_shaped_archive(
     tmp_path, capsys
 ):

@@ -178,6 +178,24 @@ def test_open_archive_finds_a_video_and_stores_it_under_front(adapter, tmp_path)
     assert archive.recordings[0].has(Asset.FRONT)
 
 
+def test_open_archive_prefers_gpmf_gpsu_anchor_over_file_mtime(adapter, tmp_path):
+    # Real report: a synthetic recording id based on file mtime can
+    # reflect when a clip was copied/downloaded onto Christer's
+    # machine rather than when it was actually recorded - risking two
+    # different physical clips colliding into the same id. The GPMF
+    # stream's own GPSU anchor (task #930) is real device-clock capture
+    # time, so it must win over mtime whenever it's available. Proven
+    # here by setting mtime to a date far from the synthetic GPSU value
+    # baked into _build_devc() (2025-01-01 12:00:00) and checking the
+    # resolved id reflects the GPSU date, not the mtime one.
+    _write_gopro_style_mp4(tmp_path / "GH010001.MP4", with_gpmf=True, mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+    recording_id = archive.recordings[0].id
+
+    assert recording_id.value.startswith("20250101")
+
+
 # ---------------------------------------------------------------------------
 # read_gps() / read_gsensor() - real embedded-GPMF telemetry.
 # ---------------------------------------------------------------------------
@@ -257,9 +275,22 @@ def test_mixed_content_folder_scans_fully_with_per_recording_telemetry_degradati
     archive = adapter.open_archive(tmp_path)
     assert len(archive.recordings) == 2
 
-    with_telemetry, without_telemetry = sorted(
-        archive.recordings, key=lambda r: r.id
-    )
+    # Identify the two recordings by their actual telemetry content rather
+    # than by sorted-id order: the GPMF clip's GPSU device-clock anchor
+    # (task #930's timestamp-resolution fix) takes priority over its file
+    # mtime, so its synthetic id no longer necessarily sorts adjacent to
+    # the no-GPMF clip's mtime-derived one - the two synthetic GPSU/mtime
+    # values in this test aren't chosen to agree, and don't need to.
+    recordings_with_gps = [
+        r for r in archive.recordings if len(read_recording_gps(adapter, r)) == 1
+    ]
+    recordings_without_gps = [
+        r for r in archive.recordings if r not in recordings_with_gps
+    ]
+    assert len(recordings_with_gps) == 1
+    assert len(recordings_without_gps) == 1
+    with_telemetry = recordings_with_gps[0]
+    without_telemetry = recordings_without_gps[0]
 
     # The clean clip: real telemetry, via the adapter-aware bridge every
     # pipeline caller actually uses (trip_export.py, search.py, ...).

@@ -8,9 +8,11 @@ same way: resolve each video's timestamp via ffprobe's embedded
 `creation_time` tag first, file mtime second; synthesize a
 `RecordingId` in BlackVue's own "YYYYMMDD_HHMMSS_K" shape from that
 timestamp (see `assign_recording_ids()`'s own docstring for why);
-store the single video under `Asset.FRONT`; pick up same-stem
-generated-asset siblings (transcript, subtitles, ...) per the calling
-adapter's own `manifest.asset_suffix_table`. The two adapters differ
+store the single video under `Asset.FRONT`; pick up generated-asset
+files (transcript, subtitles, ...) per the calling adapter's own
+`manifest.asset_suffix_table`, checked both same-stem next to the
+video and id-named at the archive root (see `generated_assets_for()`'s
+own docstring for why both). The two adapters differ
 only in their manifest (video extensions, kind code, generated-asset
 suffix table - both currently identical, but not guaranteed to stay
 that way) and in whether `read_gps()`/`read_gsensor()` return real
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -88,16 +91,43 @@ def _probe_creation_time(path: Path) -> datetime | None:
         return None
 
 
-def _resolve_timestamp(path: Path) -> datetime:
+def _resolve_timestamp(
+    path: Path,
+    *,
+    telemetry_timestamp: Callable[[Path], datetime | None] | None = None,
+) -> datetime:
     """Resolve a video's recording timestamp: ffprobe's own
-    creation_time metadata first, then the file's mtime - see
+    creation_time metadata first, then `telemetry_timestamp(path)` (if
+    the caller passed one) as a second, still-real-capture-time
+    fallback, then the file's mtime as the last resort - see
     _probe_creation_time()'s docstring for why the first step so
-    often falls through to the second on a real, mixed-source folder
-    of videos."""
+    often falls through on a real, mixed-source folder of videos.
+
+    `telemetry_timestamp` is an adapter-supplied hook (GoProAdapter
+    passes gpmf.first_creation_time; FolderAdapter has no embedded
+    telemetry to offer, so passes None and this always falls straight
+    through to mtime) rather than something this shared module knows
+    how to compute itself - see module docstring on why the scanning
+    logic is shared but each adapter's own telemetry format isn't.
+    mtime reflects when a file was last written, which for a copied-
+    off-the-card or downloaded clip is when that copy happened, not
+    when the video was actually recorded - a real report from
+    Christer: some of his GoPro archive's synthetic recording ids
+    landed on download time instead of capture time, which risks two
+    genuinely different clips colliding into the same id if the
+    ffprobe metadata a file would otherwise resolve from is missing
+    (e.g. after a re-encode). A telemetry-derived timestamp is real
+    device-clock data recorded at the moment of capture, so it's tried
+    before falling all the way back to mtime."""
 
     creation_time = _probe_creation_time(path)
     if creation_time is not None:
         return creation_time
+
+    if telemetry_timestamp is not None:
+        telemetry_time = telemetry_timestamp(path)
+        if telemetry_time is not None:
+            return telemetry_time
 
     return datetime.fromtimestamp(path.stat().st_mtime)
 
@@ -156,21 +186,50 @@ def assign_recording_ids(
 
 
 def generated_assets_for(
-    video_path: Path, manifest: AdapterManifest
+    video_path: Path,
+    manifest: AdapterManifest,
+    *,
+    root: Path,
+    recording_id: RecordingId,
 ) -> dict[Asset, AssetFile]:
     """Return every generated-asset sibling file that actually exists
-    next to `video_path` - same-stem, per `manifest.asset_suffix_table`
-    (see module docstring for why same-stem rather than recording-id
-    -keyed)."""
+    for this recording - checked in two places, same-stem next to
+    `video_path` first, then `root/<recording_id>.<suffix>`, per
+    `manifest.asset_suffix_table`.
+
+    Same-stem was this function's only check for a long time (see
+    module docstring's own "same-stem rather than recording-id-keyed"
+    framing), which quietly assumed bv-generate would write its output
+    that way too. It doesn't: every bv-generate write site builds its
+    destination as `archive_path / f"{recording.id}.<suffix>"` - a
+    flat path at the *archive root*, keyed by the synthetic recording
+    id, matching how BlackVue's own already-flat, already-id-named
+    archives work. For a recursive-scan adapter (folder/gopro), the
+    video itself usually lives several directories deep (e.g.
+    `DCIM/100GOPRO/GH010123.MP4`), so a real bv-generate output landed
+    at the archive root was invisible here - confirmed by a real
+    report from Christer: `bv-generate` assets existed on disk for his
+    GoPro archive, but `bv-ls` showed none of them. Checking the root
+    location too (without removing the same-stem check some future
+    non-bv-generate tool might still rely on) fixes that without
+    needing any change on bv-generate's side."""
 
     assets: dict[Asset, AssetFile] = {}
     stem_path = video_path.with_suffix("")
 
     for entry in manifest.asset_suffix_table:
-        candidate = Path(str(stem_path) + entry.suffix)
-        if candidate.is_file():
-            asset = Asset[entry.asset]
-            assets[asset] = AssetFile(asset=asset, path=candidate)
+        same_stem_candidate = Path(str(stem_path) + entry.suffix)
+        root_candidate = root / f"{recording_id}{entry.suffix}"
+
+        if same_stem_candidate.is_file():
+            candidate = same_stem_candidate
+        elif root_candidate.is_file():
+            candidate = root_candidate
+        else:
+            continue
+
+        asset = Asset[entry.asset]
+        assets[asset] = AssetFile(asset=asset, path=candidate)
 
     return assets
 
@@ -217,17 +276,27 @@ class RecursiveFolderArchive:
         return self._recordings[index]
 
 
-def _scan(path: Path, manifest: AdapterManifest, kind_code: str) -> list[Recording]:
+def _scan(
+    path: Path,
+    manifest: AdapterManifest,
+    kind_code: str,
+    *,
+    telemetry_timestamp: Callable[[Path], datetime | None] | None = None,
+) -> list[Recording]:
     """Full recursive scan of `path`, returning Recording objects
     sorted by id - shared by scan_recursive_archive() and
     find_recording_in_recursive_archive() (which just filters this
     down to the one id it wants; see base.py's own docstring on why
     that's an accepted O(archive size) cost for this kind of
-    adapter)."""
+    adapter). `telemetry_timestamp` is passed straight through to
+    _resolve_timestamp() - see its own docstring."""
 
     extensions = frozenset(manifest.video_extensions)
     video_paths = scan_video_files(path, extensions)
-    videos_with_timestamps = [(p, _resolve_timestamp(p)) for p in video_paths]
+    videos_with_timestamps = [
+        (p, _resolve_timestamp(p, telemetry_timestamp=telemetry_timestamp))
+        for p in video_paths
+    ]
 
     recordings = []
     for video_path, recording_id in assign_recording_ids(
@@ -236,7 +305,11 @@ def _scan(path: Path, manifest: AdapterManifest, kind_code: str) -> list[Recordi
         assets: dict[Asset, AssetFile] = {
             Asset.FRONT: AssetFile(asset=Asset.FRONT, path=video_path),
         }
-        assets.update(generated_assets_for(video_path, manifest))
+        assets.update(
+            generated_assets_for(
+                video_path, manifest, root=path, recording_id=recording_id
+            )
+        )
 
         size = 0
         for asset_file in assets.values():
@@ -251,25 +324,42 @@ def _scan(path: Path, manifest: AdapterManifest, kind_code: str) -> list[Recordi
 
 
 def scan_recursive_archive(
-    path: Path, manifest: AdapterManifest, kind_code: str
+    path: Path,
+    manifest: AdapterManifest,
+    kind_code: str,
+    *,
+    telemetry_timestamp: Callable[[Path], datetime | None] | None = None,
 ) -> RecursiveFolderArchive:
     """Full scan of `path` per `manifest` - the shared body of
-    FolderAdapter.open_archive()/GoProAdapter.open_archive()."""
+    FolderAdapter.open_archive()/GoProAdapter.open_archive().
+    `telemetry_timestamp` is passed straight through to _scan() - see
+    _resolve_timestamp()'s own docstring."""
 
-    return RecursiveFolderArchive(_scan(path, manifest, kind_code))
+    return RecursiveFolderArchive(
+        _scan(path, manifest, kind_code, telemetry_timestamp=telemetry_timestamp)
+    )
 
 
 def find_recording_in_recursive_archive(
-    path: Path, recording_id: RecordingId, manifest: AdapterManifest, kind_code: str
+    path: Path,
+    recording_id: RecordingId,
+    manifest: AdapterManifest,
+    kind_code: str,
+    *,
+    telemetry_timestamp: Callable[[Path], datetime | None] | None = None,
 ) -> Recording | None:
     """Full rescan filtered by id - the shared body of
     FolderAdapter.find_recording()/GoProAdapter.find_recording(). No
     equivalent to ArchiveReader's targeted, fixed-stat-count lookup: a
     recursive-scan adapter's ids are computed at scan time from
     resolved timestamps, not derivable from a filename alone the way
-    BlackVue's own id-embedding filename convention is."""
+    BlackVue's own id-embedding filename convention is.
+    `telemetry_timestamp` is passed straight through to _scan() - see
+    _resolve_timestamp()'s own docstring."""
 
-    for recording in _scan(path, manifest, kind_code):
+    for recording in _scan(
+        path, manifest, kind_code, telemetry_timestamp=telemetry_timestamp
+    ):
         if recording.id == recording_id:
             return recording
     return None

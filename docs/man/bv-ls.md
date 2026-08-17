@@ -45,7 +45,7 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 
 ## OUTPUT
 
-**Grouped/`--all` view:** one row per recording (or group), one column per known asset type (video, GPS, g-sensor, thumbnail, transcript, translation, etc.) - `X` if that asset exists on disk, blank otherwise - plus a total size column.
+**Grouped/`--all` view:** one row per recording (or group), one column per known asset type (video, GPS, g-sensor, thumbnail, transcript, translation, etc.) - `X` if that asset exists on disk, blank otherwise - plus a total size column. A **Source** column (the real on-disk filename) is added automatically for adapters whose filenames aren't already id-derived (e.g. a GoPro's `GH010001.MP4`) - useful for spotting a same-id collision if two different files ever resolve to the same synthesized recording id. It's hidden for BlackVue archives, where the filename is always id-derived and would just repeat the Recording column.
 
 **`--trips` view:** columns are Trip (label), Start, End, Duration, Recs (recording count), Size.
 
