@@ -14161,3 +14161,148 @@ read-through confirming `source` follows the exact same
 `Form("")`/`if source: argv += [...]`/`_ls_kwargs()` pattern as
 `timestamp` right next to it (`fastapi` still unavailable in this
 sandbox for a real `test_jobs.py` run).
+
+## Photo support: "a picture is also a video, but 1 frame only" (done, this session, #940-949)
+
+Christer's own request, verbatim: "yes i have photos, my thought is
+that in a trip they should be shown for a specified time that
+defaults to 5 second. If i want to play with words i would say a
+picture is also a video, but 1 frame only. ;*" - taken literally as
+the design. No new `Asset` enum member, no new `RecordingId` kind
+code: a photo is stored under `Asset.FRONT` exactly like a real
+video, and the rest of the pipeline treats it as an ordinary
+FRONT-only recording with no REAR/no AUDIO - a case every layer
+already handles for a front-only camera setup. The only new
+primitive is "is this file a photo," answered purely by extension via
+a new `archive/photo.py` module. Answered when asked: extensions
+"all of them" (`.jpg`/`.jpeg`/`.png`/`.heic`/`.gpr`), adapters
+"GoPro + folder" (not BlackVue).
+
+**`archive/photo.py`** (new module) - `PHOTO_EXTENSIONS`,
+`DEFAULT_PHOTO_DURATION_SECONDS = 5`, `is_photo_path(path)`,
+`recording_is_photo(recording)`. Every other layer imports one of
+the last two rather than re-implementing extension matching.
+Re-exported from `archive/__init__.py` for `web/archive_browser.py`'s
+convenience.
+
+**Scanning.** `_recursive_scan.py` - shared by `FolderAdapter` and
+`GoProAdapter` only, never `BlackVueAdapter` - now scans
+`manifest.video_extensions | PHOTO_EXTENSIONS`, so a photo rides
+through the exact same timestamp-resolution/id-assignment/same-stem-
+asset-discovery path a video does and lands in `Asset.FRONT` the same
+way. This one-line change is what scopes photo support to GoPro +
+folder archives only, matching the answer above without a
+manifest-level opt-in flag - `CAMERA_ADAPTERS.md`'s own "Photo
+support" section has the full writeup, including a small doc fix to
+an earlier, now-stale line claiming "non-video files are excluded."
+
+**Duration.** `generate/media.py`'s new `photo_aware_duration(inner,
+*, photo_duration_seconds=5)` wraps any `RecordingDuration` callable
+and intercepts photo recordings before they ever reach ffprobe/the
+box-reader fallback, returning the fixed duration directly. Wired
+into `bv-ls --duration`/`--full` and both of `bv-export`'s
+duration-driven trip-detection variants.
+
+**Rendering.** `export/media.py`'s new `render_image_as_video(
+source_image, destination, duration_seconds, *, width, height, fps)`
+shells out to ffmpeg (`-loop 1 -framerate fps -i photo -t duration -vf
+scale+pad`) rather than using PIL - PIL doesn't universally read
+HEIC, and ffmpeg is already a hard dependency everywhere else in this
+pipeline. Scale+pad (letterbox), not crop, so nothing the user chose
+to keep in frame gets cut off.
+
+**Splicing.** `trip_export.py`'s new `_photo_clip_overrides(trip,
+work_dir, warnings, log, *, photo_duration_seconds)` renders every
+photo recording's clip, sized against the trip's own real video
+dimensions/frame rate when one exists (falling back to the photo's
+own pixel dimensions for an all-photo trip), and returns a
+`dict[(RecordingId, Asset), Path]` - the exact same shape
+`_repair_parking_sources()`/`_apply_parking_speed()`/
+`_align_front_rear_durations()` already produce, merged last into
+`export_trip()`'s combined `duration_overrides` map. No new splicing
+mechanism was needed - a photo clip is just another override the
+existing concat pipeline substitutes in transparently. A photo that
+fails to render is warned about and left out of `front.mp4` entirely,
+same failure contract as a corrupted video source.
+
+**CLI.** `bv-export --photo-duration SECONDS` (default 5, must be >
+0) threads through to both the duration callback and
+`_photo_clip_overrides()`.
+
+**bv-generate.** `_do_extract_audio()`/`_do_transcribe_and_translate()`
+both gained a `recording_is_photo()` guard right alongside the
+existing Parking-mode guard - "photo has no audio, skipping."
+`--describe-scene` was deliberately left untouched: it calls
+`describe_scene(video_path, ...)` directly with no Parking-style
+video-repair detour, so it already runs on a photo's own FRONT file
+unmodified.
+
+**Archive-browser thumbnail.** `ArchiveRecording.thumbnail_path(
+"front")` falls back to the photo's own FRONT file when no
+`*_THUMBNAIL` sidecar exists for it - true for every photo today - so
+the browser shows a real preview without any ffmpeg frame-extraction.
+
+**Tests, all new this session, all confirmed passing individually**
+(the sandbox's `fake_pytest.py` scratch harness only supports
+`tmp_path`/`monkeypatch`/`capsys` fixtures and lacks `pytest.fixture`/
+`pytest.mark`/`monkeypatch.setattr("dotted.string", ...)`/dotted-string
+`monkeypatch` support and can't load files with relative imports
+standalone - every gap hit below is a pre-existing harness limitation,
+confirmed present before this session's changes, not something these
+changes introduced):
+`test_photo.py` (9 tests, new file, batch run - 9/9 green) - extension
+matching, case-insensitivity, `recording_is_photo()` true/false/no-
+FRONT edge case.
+`test_folder_adapter.py` gained 6 tests (photo scanning, `Asset.FRONT`
+storage, all five extensions, `recording_is_photo()`, `"V"` kind code)
+- this file's pre-existing `@pytest.fixture()` `adapter` fixture
+can't load under `fake_pytest.py` at all (true before these changes
+too), so verified instead via a standalone script exercising
+`FolderAdapter.open_archive()` directly against real temp files,
+confirming the exact counts/behavior the new tests assert.
+`test_media.py` gained 3 tests for `photo_aware_duration()` - the
+file's pre-existing `from .test_mp4_box_reader import ...` relative
+import and a pre-existing `@pytest.mark.skipif` both block a plain
+`fake_pytest.py` run, so verified via a small script importing the
+module as a real package (`tests.blackvue.generate.test_media`, with
+minimal `pytest.mark` stubbing) - all 3 new tests, and 47/48 of the
+file's other tests, passed; the one failure is a pre-existing
+`monkeypatch.setattr("dotted.string", value)` 2-arg-form gap, also
+present before this session, in an unrelated test.
+`test_export_media.py` gained 3 tests for `render_image_as_video()`
+(exact duration/size, letterbox on a mismatched aspect ratio, raises
+`MediaToolError` when ffmpeg is missing) - no relative imports, ran
+directly: 55/55 green.
+`test_trip_export.py` gained 5 tests for `_photo_clip_overrides()`
+(empty trip, sized against real video, configured duration, all-photo
+fallback sizing, warns-and-skips a render failure) - ran directly:
+167/173 (all 5 new tests green; the 6 failures are pre-existing
+harness gaps - `pytest.raises(..., match=...)` and
+`monkeypatch.setenv()`, both unsupported by `fake_pytest.py` - plus 2
+unrelated pre-existing assertion failures in trip-summary tests,
+none touched by this session).
+`test_bv_generate.py` gained 2 tests mirroring the existing
+Parking-mode skip tests - ran directly: 105/111 (both new tests
+green; the 6 failures are the same pre-existing
+`monkeypatch.setattr("builtins.input", ...)` 2-arg-form gap).
+`test_archive_browser.py` gained 3 tests for the thumbnail fallback
+(falls back to the photo, a real sidecar still wins, "rear" never
+falls back) - ran directly: 58/58 green, no harness gaps in this
+file at all.
+
+Files changed: `src/blackvue/archive/photo.py` (new),
+`src/blackvue/archive/__init__.py`,
+`src/blackvue/adapters/_recursive_scan.py`,
+`src/blackvue/generate/media.py`, `src/blackvue/cli/bv_ls.py`,
+`src/blackvue/cli/bv_export.py`, `src/blackvue/export/media.py`,
+`src/blackvue/export/trip_export.py`, `src/blackvue/cli/bv_generate.py`,
+`src/blackvue/web/archive_browser.py`,
+`tests/blackvue/archive/test_photo.py` (new),
+`tests/blackvue/adapters/test_folder_adapter.py`,
+`tests/blackvue/generate/test_media.py`,
+`tests/blackvue/export/test_export_media.py`,
+`tests/blackvue/export/test_trip_export.py`,
+`tests/blackvue/cli/test_bv_generate.py`,
+`tests/blackvue/web/test_archive_browser.py`,
+`docs/CAMERA_ADAPTERS.md`, `docs/man/bv-export.md`,
+`docs/man/bv-generate.md`.

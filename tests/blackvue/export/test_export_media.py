@@ -15,6 +15,7 @@ from blackvue.export.media import encode_with_nvenc_fallback
 from blackvue.export.media import generate_silence
 from blackvue.export.media import mux_audio_track
 from blackvue.export.media import probe_video_dimensions
+from blackvue.export.media import render_image_as_video
 from blackvue.export.media import render_missing_camera_placeholder
 from blackvue.export.media import trim_media
 from blackvue.export.media import trim_media_head
@@ -1106,4 +1107,85 @@ def test_render_missing_camera_placeholder_raises_when_ffmpeg_itself_is_missing(
     with pytest.raises(MediaToolError):
         render_missing_camera_placeholder(
             tmp_path / "placeholder.mp4", 1.0, width=64, height=64
+        )
+
+
+# ---------------------------------------------------------------------------
+# render_image_as_video() - "a picture is also a video, but 1 frame
+# only" (Christer's own framing, archive/photo.py's module docstring).
+# ---------------------------------------------------------------------------
+
+
+def test_render_image_as_video_produces_the_exact_requested_duration_and_size(
+    tmp_path,
+):
+    source_image = tmp_path / "photo.jpg"
+    Image.new("RGB", (80, 60), (0, 128, 255)).save(source_image)
+    destination = tmp_path / "photo_clip.mp4"
+
+    render_image_as_video(
+        source_image, destination, 2.0, width=64, height=64, fps=10.0
+    )
+
+    assert destination.exists()
+    assert probe_video_dimensions(destination) == (64, 64)
+    duration = float(
+        json.loads(
+            subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "json",
+                    str(destination),
+                ],
+                capture_output=True, text=True, check=True,
+            ).stdout
+        )["format"]["duration"]
+    )
+    assert 1.9 < duration < 2.3
+
+
+def test_render_image_as_video_letterboxes_a_mismatched_aspect_ratio(tmp_path):
+    # A wide photo (160x60) rendered into a square 64x64 frame must be
+    # letterboxed (scaled to fit, padded with black), not stretched -
+    # see render_image_as_video()'s own docstring on why cropping was
+    # rejected too. Confirm the top row (guaranteed to be padding for
+    # a wide-into-square fit) is black.
+    source_image = tmp_path / "wide_photo.jpg"
+    Image.new("RGB", (160, 60), (255, 0, 0)).save(source_image)
+    destination = tmp_path / "photo_clip.mp4"
+
+    render_image_as_video(
+        source_image, destination, 0.5, width=64, height=64, fps=10.0
+    )
+
+    frame_path = tmp_path / "frame.png"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(destination),
+            "-frames:v", "1", str(frame_path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    frame = Image.open(frame_path).convert("RGB")
+    top_row = [frame.getpixel((x, 0)) for x in range(64)]
+
+    assert all(r < 20 and g < 20 and b < 20 for r, g, b in top_row)
+
+
+def test_render_image_as_video_raises_when_ffmpeg_itself_is_missing(
+    tmp_path, monkeypatch
+):
+    source_image = tmp_path / "photo.jpg"
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(source_image)
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("no ffmpeg")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        render_image_as_video(
+            source_image, tmp_path / "photo_clip.mp4", 1.0, width=64, height=64
         )

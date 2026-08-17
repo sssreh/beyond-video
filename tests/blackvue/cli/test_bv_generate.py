@@ -544,6 +544,54 @@ def test_transcribe_and_translate_skip_parking_recordings(
     assert "no audio" in capsys.readouterr().err
 
 
+def test_extract_audio_skips_photo_recordings(tmp_path, monkeypatch, capsys):
+    # A photo scanned into Asset.FRONT (see archive/photo.py's
+    # recording_is_photo() - task #940-949: Christer's "a picture is
+    # also a video, but 1 frame only") has no audio track to extract,
+    # same reasoning as the parking-mode skip above.
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(bv_generate, "select_source", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_134010_V"))
+    photo_path = tmp_path / "IMG_0001.jpg"
+    photo_path.write_bytes(b"jpeg bytes")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=photo_path
+    )
+    args = _base_args(extract_audio=True)
+
+    had_error = bv_generate._do_extract_audio(recording, tmp_path, args)
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_V.aac").exists()
+    assert "no audio" in capsys.readouterr().err
+
+
+def test_transcribe_and_translate_skip_photo_recordings(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "detect_language", _refuse)
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+    monkeypatch.setattr(bv_generate, "select_source", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_134010_V"))
+    photo_path = tmp_path / "IMG_0001.jpg"
+    photo_path.write_bytes(b"jpeg bytes")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=photo_path
+    )
+    args = _base_args(transcribe=True, translate="sv")
+
+    had_error = bv_generate._do_transcribe_and_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_V.transcript.txt").exists()
+    assert "no audio" in capsys.readouterr().err
+
+
 def test_get_duration_still_runs_for_parking_recordings(
     tmp_path, monkeypatch
 ):

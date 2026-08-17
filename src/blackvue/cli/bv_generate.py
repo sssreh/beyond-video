@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ..adapters import registry
 from ..archive import Asset
+from ..archive.photo import recording_is_photo
 from ..archive.recording import Recording
 from .errors import run_cli
 from ..core.camera_config import DEFAULT_ADAPTER_ID
@@ -658,6 +659,10 @@ def _do_extract_audio(
             "recording has no audio, skipping")
         return False
 
+    if recording_is_photo(recording):
+        warn(f"bv-generate: {recording.id}: photo has no audio, skipping")
+        return False
+
     destination = archive_path / f"{recording.id}.aac"
 
     if not _should_write_for(destination, args, warn=warn):
@@ -942,6 +947,10 @@ def _do_transcribe_and_translate(
     if recording.id.is_parking:
         warn(f"bv-generate: {recording.id}: parking-mode (timelapse) "
             "recording has no audio, skipping")
+        return False
+
+    if recording_is_photo(recording):
+        warn(f"bv-generate: {recording.id}: photo has no audio, skipping")
         return False
 
     if args.transcribe:

@@ -28,6 +28,8 @@ from ..adapters.telemetry_bridge import read_recording_gps
 from ..adapters.telemetry_bridge import read_recording_gsensor
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
+from ..archive.photo import DEFAULT_PHOTO_DURATION_SECONDS
+from ..archive.photo import recording_is_photo
 from ..archive.recording_id import RecordingId
 from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import default_config_dir
@@ -62,6 +64,7 @@ from .media import concatenate_media
 from .media import generate_silence
 from .media import mux_audio_track
 from .media import probe_video_dimensions
+from .media import render_image_as_video
 from .media import render_missing_camera_placeholder
 from .media import trim_media
 from .media import trim_media_head
@@ -862,6 +865,130 @@ def _missing_rear_placeholders(
             log.warning(message)
 
     return placeholders
+
+
+def _photo_clip_overrides(
+    trip: Trip,
+    work_dir: Path,
+    warnings: list[str],
+    log: TripLog | None,
+    *,
+    photo_duration_seconds: float = DEFAULT_PHOTO_DURATION_SECONDS,
+) -> dict[tuple[RecordingId, Asset], Path]:
+    """Render every photo recording in `trip` (see archive/photo.py -
+    a recording whose FRONT is a still image rather than a real video,
+    scanned that way by the GoPro/folder adapters) as a real
+    `photo_duration_seconds`-long video via `render_image_as_video()`,
+    and return `{(recording id, Asset.FRONT): rendered clip path}` -
+    meant to be merged straight into `export_trip()`'s own
+    `duration_overrides` dict alongside `_repair_parking_sources()`'s/
+    `_apply_parking_speed()`'s/`_trim_prebuffers()`'s/
+    `_align_front_rear_durations()`'s own contributions.
+
+    This is deliberately the *only* photo-specific function in this
+    module. `duration_overrides` is the seam every downstream
+    consumer here already resolves a recording's FRONT path through -
+    `_recording_video_offsets()`, `_concatenate_asset()`,
+    `_missing_rear_placeholders()`, `_pad_missing_audio_with_silence()`,
+    `_align_front_rear_durations()`, `_trim_prebuffers()` - so once a
+    photo's synthetic clip is in there, every one of those functions
+    treats it exactly like it would any other FRONT-only recording
+    with no REAR and no AUDIO (already a normal, well-handled case for
+    an ordinary video too), with zero further changes needed anywhere
+    else in the export pipeline. See `photo_aware_duration()`
+    (generate/media.py) for this same recording's *duration* side of
+    the same design - that wrapper makes TripBuilder's own gap math see
+    `photo_duration_seconds` for this recording; this function is what
+    makes that number a real, splice-able video file.
+
+    Sized against the first real (non-photo) FRONT video this trip
+    actually has, the same "find one reference file, probe its
+    resolution/fps, size everything else to match" approach
+    `_missing_rear_placeholders()` uses for rear.mp4's own placeholder -
+    a spliced-in clip has to match its neighbors' resolution/fps
+    exactly for `_concat_filter_reencode()`'s concat filter to work at
+    all (see that function's own docstring). Falls back to the first
+    photo's own resolution (at a fixed 30fps) only if the trip has no
+    real FRONT video to size against at all, or that video's own
+    dimensions can't be probed - a photos-only trip is a real, if
+    unusual, case (Christer: "if I want to play with words I would say
+    a picture is also a video, but 1 frame only" - a trip built
+    entirely from stills is the logical extreme of that framing, not
+    an error).
+
+    Returns `{}` (rendering nothing) if `trip` has no photo recordings
+    at all - the overwhelmingly common case, and a harmless no-op merge
+    into `duration_overrides` either way. A photo whose own clip fails
+    to render (corrupt/unreadable image, unsupported format) is left
+    out of `front.mp4` entirely with a warning, same "genuinely broken
+    data degrades to leave-it-out, never aborts the whole export"
+    policy every other per-file failure in this module already
+    follows.
+    """
+
+    photo_recordings = [
+        recording for recording in trip.recordings if recording_is_photo(recording)
+    ]
+    if not photo_recordings:
+        return {}
+
+    reference_path: Path | None = None
+    for recording in trip.recordings:
+        if recording_is_photo(recording) or not recording.has(Asset.FRONT):
+            continue
+        reference_path = recording.file(Asset.FRONT).path
+        break
+
+    width: int | None = None
+    height: int | None = None
+    fps = 30.0
+
+    if reference_path is not None:
+        try:
+            width, height = probe_video_dimensions(reference_path)
+            fps = probe(reference_path).frame_rate or 30.0
+        except MediaToolError:
+            width = height = None
+
+    if width is None or height is None:
+        first_photo_path = photo_recordings[0].file(Asset.FRONT).path
+        try:
+            width, height = probe_video_dimensions(first_photo_path)
+        except MediaToolError as exc:
+            message = (
+                f"could not size photo clip(s) against "
+                f"{first_photo_path.name} or any real video in this trip: "
+                f"{exc} - every photo left out of front.mp4 entirely"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            return {}
+
+    overrides: dict[tuple[RecordingId, Asset], Path] = {}
+
+    for recording in photo_recordings:
+        photo_path = recording.file(Asset.FRONT).path
+        clip_path = work_dir / f"{recording.id}_photo.mp4"
+        try:
+            render_image_as_video(
+                photo_path, clip_path, photo_duration_seconds,
+                width=width, height=height, fps=fps,
+            )
+        except MediaToolError as exc:
+            message = (
+                f"{recording.id}: photo ({photo_path.name}) could not be "
+                f"rendered as a video clip: {exc} - left out of front.mp4 "
+                f"entirely"
+            )
+            warnings.append(message)
+            if log is not None:
+                log.warning(message)
+            continue
+
+        overrides[(recording.id, Asset.FRONT)] = clip_path
+
+    return overrides
 
 
 def _ensure_recording_audio(
@@ -1940,6 +2067,7 @@ def export_trip(
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
     parking_speed: float = 1.0,
+    photo_duration_seconds: float = DEFAULT_PHOTO_DURATION_SECONDS,
     trip_summary: bool = False,
     scene_model: str = SCENE_DEFAULT_MODEL,
     scene_cpu: bool = False,
@@ -2328,6 +2456,15 @@ def export_trip(
     Parking recording is now simply left out, matching the treatment
     leading/trailing Parking recordings already had.
 
+    `photo_duration_seconds` (default DEFAULT_PHOTO_DURATION_SECONDS =
+    5) is how long a still photo plays for in front.mp4 once it's part
+    of this trip - see `_photo_clip_overrides()`'s own docstring for
+    the full mechanism (it renders each photo recording as a real
+    video clip via `render_image_as_video()` and merges the result
+    into `duration_overrides`, the same seam every other per-recording
+    substitution in this function already uses). Has no effect on a
+    trip with no photo recordings in it - the overwhelming majority.
+
     `trip_summary=True` writes trip_summary.txt: one text-only
     synthesis pass (`generate.scene.summarize_trip()`) turning this
     trip's own recordings' already-generated '## Description' scene
@@ -2543,11 +2680,26 @@ def export_trip(
         # touch further - e.g. AUDIO, which alignment never looks at
         # at all, or a FRONT/REAR pair that already matched post
         # -repair/post-speed-change/post-prebuffer-trim.
+        #
+        # photo_clip_overrides runs independently of all of the above -
+        # a photo recording is never Parking-kind, never has a REAR
+        # video to align against, and is never Event/Manual-kind (so
+        # prebuffer trim never looks at it either), so none of the
+        # other override maps ever populate an entry for one. Placed
+        # last in the merge purely so a photo's own rendered clip would
+        # win outright if that ever changed - see
+        # _photo_clip_overrides()'s own docstring for the full "photo
+        # -as-video" mechanism this plugs into.
+        photo_clip_overrides = _photo_clip_overrides(
+            trip, Path(align_dir), warnings, log,
+            photo_duration_seconds=photo_duration_seconds,
+        )
         duration_overrides = {
             **parking_repair_overrides,
             **parking_speed_overrides,
             **prebuffer_overrides,
             **alignment_overrides,
+            **photo_clip_overrides,
         }
 
         # Computed here, still inside this tempdir's own lifetime -

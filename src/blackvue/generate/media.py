@@ -11,11 +11,14 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
+from ..archive.photo import DEFAULT_PHOTO_DURATION_SECONDS
+from ..archive.photo import recording_is_photo
 from ..archive.recording import Recording
 from ..archive.recording_id import RecordingId
 
@@ -229,6 +232,46 @@ def load_or_compute_duration(recording: Recording) -> int | None:
         pass
 
     return span
+
+
+def photo_aware_duration(
+    inner: Callable[[Recording], "int | None"],
+    *,
+    photo_duration_seconds: float = DEFAULT_PHOTO_DURATION_SECONDS,
+) -> Callable[[Recording], "int | None"]:
+    """Wrap a `RecordingDuration` callable (trip_builder.py's own
+    `Callable[[Recording], int | None]` shape - read_duration_seconds
+    or load_or_compute_duration, typically) so a photo recording
+    reports `photo_duration_seconds` instead of falling through to
+    `inner`.
+
+    A still image has no real "duration" to probe or cache - there's
+    no .duration.txt for it, and running it through get_span()'s
+    ffprobe/ffmpeg call would either fail outright or report a bogus
+    span depending on the image format. Rather than teaching
+    read_duration_seconds()/load_or_compute_duration() themselves
+    about photos (they're pure video-duration functions, used well
+    beyond just this trip-gap-math use case), every caller that
+    constructs a `recording_duration` callback for TripBuilder or
+    Trip.end_timestamp (bv-ls's --trips view, bv-export's real trip
+    build) wraps it in this first. This is the "a picture is also a
+    video, but 1 frame [held for `photo_duration_seconds`]" framing
+    Christer asked for, applied at exactly the one seam
+    (RecordingDuration) that both bv-ls's non-exporting preview and
+    bv-export's real trip build already share - see trip_builder.py's
+    own module docstring on why TripBuilder itself stays
+    asset-agnostic and never learns about photos directly.
+
+    `inner` is still called for every non-photo recording, unchanged -
+    this only intercepts the photo case.
+    """
+
+    def wrapped(recording: Recording) -> int | None:
+        if recording_is_photo(recording):
+            return int(photo_duration_seconds)
+        return inner(recording)
+
+    return wrapped
 
 
 def probe_audio_codec(path: Path) -> str | None:

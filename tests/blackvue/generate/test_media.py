@@ -16,6 +16,7 @@ from blackvue.generate.media import extract_audio
 from blackvue.generate.media import get_span
 from blackvue.generate.media import is_audio_silent
 from blackvue.generate.media import load_or_compute_duration
+from blackvue.generate.media import photo_aware_duration
 from blackvue.generate.media import probe_audio_codec
 from blackvue.generate.media import probe_audio_format
 from blackvue.generate.media import probe_video_codec
@@ -127,6 +128,42 @@ def test_read_duration_seconds_returns_none_for_malformed_content(tmp_path):
     )
 
     assert read_duration_seconds(recording) is None
+
+
+def test_photo_aware_duration_returns_default_for_a_photo_recording():
+    recording = Recording(id=RecordingId("20260715_133255_V"))
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=Path("/archive/GH010023.JPG")
+    )
+
+    def inner(_recording):
+        raise AssertionError("inner() should never be called for a photo")
+
+    wrapped = photo_aware_duration(inner)
+
+    assert wrapped(recording) == 5
+
+
+def test_photo_aware_duration_honors_custom_photo_duration_seconds():
+    recording = Recording(id=RecordingId("20260715_133255_V"))
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=Path("/archive/GH010023.JPG")
+    )
+
+    wrapped = photo_aware_duration(lambda r: None, photo_duration_seconds=12.0)
+
+    assert wrapped(recording) == 12
+
+
+def test_photo_aware_duration_delegates_to_inner_for_a_real_video():
+    recording = Recording(id=RecordingId("20260715_133255_N"))
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=Path("/archive/clip.mp4")
+    )
+
+    wrapped = photo_aware_duration(lambda r: 42)
+
+    assert wrapped(recording) == 42
 
 
 def test_load_or_compute_duration_returns_the_cached_value_without_probing(

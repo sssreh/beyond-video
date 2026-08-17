@@ -13,6 +13,7 @@ from blackvue.core.camera_config import DEFAULT_ADAPTER_ID
 from blackvue.core.camera_config import default_config_dir
 from blackvue.core.camera_config import resolve_archive_path
 from blackvue.core.joblog import wrap_say
+from blackvue.generate.media import photo_aware_duration
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
@@ -180,7 +181,9 @@ def print_trips(
     """
 
     bridge = movement_bridges_gap if use_movement else None
-    recording_duration = read_duration_seconds if use_duration else None
+    recording_duration = (
+        photo_aware_duration(read_duration_seconds) if use_duration else None
+    )
     trips = TripBuilder(
         max_gap=max_gap,
         bridge=bridge,

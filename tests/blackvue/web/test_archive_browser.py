@@ -22,6 +22,7 @@ from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
+from blackvue.web.archive_browser import ArchiveRecording
 from blackvue.web.archive_browser import ArchiveRecordingCache
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
@@ -242,6 +243,74 @@ def test_thumbnail_path_resolves_the_right_file(tmp_path):
     assert recording.thumbnail_path("rear") == archive / "20260715_140212_NR.thm"
     assert recording.thumbnail_path("interior") is None
     assert recording.thumbnail_path("bogus") is None
+
+
+def test_thumbnail_path_falls_back_to_the_photo_itself_for_a_photo_recording(
+    tmp_path,
+):
+    # No *_THUMBNAIL sidecar exists for a photo recording (task
+    # #940-949: "a picture is also a video, but 1 frame only") -
+    # nothing generates one - so the photo's own FRONT file (already a
+    # small real preview image) is served directly instead.
+    photo_path = tmp_path / "IMG_0001.jpg"
+    photo_path.write_bytes(b"jpeg bytes")
+
+    recording = ArchiveRecording(
+        camera_id="kirby",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo_path)},
+        ),
+    )
+
+    assert recording.thumbnail_path("front") == photo_path
+    assert recording.thumbnail_path("rear") is None
+
+
+def test_thumbnail_path_prefers_a_real_thumbnail_sidecar_over_the_photo_itself(
+    tmp_path,
+):
+    # Belt-and-suspenders: if a real *_THUMBNAIL sidecar somehow does
+    # exist for a photo recording (e.g. a future adapter that
+    # generates one), it wins over the raw-photo fallback.
+    photo_path = tmp_path / "IMG_0001.jpg"
+    thumbnail_path = tmp_path / "IMG_0001.thm"
+    photo_path.write_bytes(b"jpeg bytes")
+    thumbnail_path.write_bytes(b"thumbnail bytes")
+
+    recording = ArchiveRecording(
+        camera_id="kirby",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, photo_path),
+                Asset.FRONT_THUMBNAIL: AssetFile(
+                    Asset.FRONT_THUMBNAIL, thumbnail_path
+                ),
+            },
+        ),
+    )
+
+    assert recording.thumbnail_path("front") == thumbnail_path
+
+
+def test_thumbnail_path_returns_none_for_rear_even_on_a_photo_recording(
+    tmp_path,
+):
+    # The raw-photo fallback is front-only - a photo recording never
+    # has a rear counterpart to fall back to.
+    photo_path = tmp_path / "IMG_0001.jpg"
+    photo_path.write_bytes(b"jpeg bytes")
+
+    recording = ArchiveRecording(
+        camera_id="kirby",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo_path)},
+        ),
+    )
+
+    assert recording.thumbnail_path("rear") is None
 
 
 def test_sidecars_lists_gps_and_gsensor_when_present(tmp_path):

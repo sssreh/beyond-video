@@ -63,9 +63,12 @@ from blackvue.export.stitch import MIN_MIRROR_SIZE_PERCENT
 from blackvue.export.stitch import MIN_MIRROR_ZOOM_PERCENT
 from blackvue.export.stitch import MIN_STITCH_SCALE_PERCENT
 from blackvue.export.stitch import parse_gsensor_position
+from blackvue.archive.photo import DEFAULT_PHOTO_DURATION_SECONDS
+from blackvue.archive.photo import recording_is_photo
 from blackvue.generate import SCENE_DEFAULT_MODEL
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.media import load_or_compute_duration
+from blackvue.generate.media import photo_aware_duration
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import movement_bridges_gap
@@ -231,6 +234,22 @@ def _parse_parking_speed(value: str) -> float:
         )
 
     return speed
+
+
+def _parse_photo_duration(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid duration {value!r} (expected a number)"
+        )
+
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"duration {value!r} must be greater than 0"
+        )
+
+    return seconds
 
 
 def _parse_positive_pixels(value: str) -> int:
@@ -516,6 +535,7 @@ def bv_export(
     stitch_subtitles_background: bool = True,
     include_parking: bool = False,
     parking_speed: float = 1.0,
+    photo_duration_seconds: float = DEFAULT_PHOTO_DURATION_SECONDS,
     trip_summary: bool = False,
     scene_model: str = SCENE_DEFAULT_MODEL,
     scene_cpu: bool = False,
@@ -669,6 +689,20 @@ def bv_export(
     no-op, zero extra ffmpeg work), this behaves exactly as before
     `--parking-speed` existed.
 
+    `photo_duration_seconds` (bv-export's own `--photo-duration`,
+    default DEFAULT_PHOTO_DURATION_SECONDS = 5) is how long a still
+    photo plays for once it's part of an exported trip - Christer's own
+    framing: "a picture is also a video, but 1 frame only." A photo
+    scanned by the GoPro/folder adapters (see archive/photo.py) sits
+    under Asset.FRONT exactly like a real video, so it flows through
+    trip detection, gap math, and the concat pipeline unchanged; this
+    is the one number that has to come from somewhere else, since
+    there's no real playback span to probe. Affects both this run's own
+    trip-gap calculation (via the `recording_duration` wrapping below)
+    and, inside `export_trip()`, how long the rendered clip actually
+    plays for in front.mp4 - see `photo_aware_duration()`'s and
+    `export.trip_export._photo_clip_overrides()`'s own docstrings.
+
     `trip_summary=True` (bv-export's own `--trip-summary`) additionally
     writes trip_summary.txt per trip - a text-only model synthesis pass
     over each trip's already-generated scene descriptions. See
@@ -768,9 +802,15 @@ def bv_export(
     if not duration:
         recording_duration = None
     elif duration_heal_archive:
-        recording_duration = load_or_compute_duration
+        recording_duration = photo_aware_duration(
+            load_or_compute_duration,
+            photo_duration_seconds=photo_duration_seconds,
+        )
     else:
-        recording_duration = read_duration_seconds
+        recording_duration = photo_aware_duration(
+            read_duration_seconds,
+            photo_duration_seconds=photo_duration_seconds,
+        )
     # Populated in place by build()/build_for_interval() with one
     # membership-reasoning entry per recording (see TripBuilder.build()
     # 's own docstring) - forwarded to every trip's own trip.log below
@@ -840,8 +880,14 @@ def bv_export(
             # waits on any other trip's recordings. A harmless no-op
             # cache-hit loop when duration_heal_archive already healed
             # everything above. dry_run skips this entirely, same as
-            # everything else it doesn't touch.
+            # everything else it doesn't touch. Photos are skipped
+            # outright - there's no real video span to probe/cache for
+            # a still image (see photo_aware_duration()'s own
+            # docstring), so calling load_or_compute_duration() on one
+            # would just be a wasted, failing ffprobe call.
             for recording in trip:
+                if recording_is_photo(recording):
+                    continue
                 load_or_compute_duration(recording)
 
         folder = target_path / folder_name_for_trip(
@@ -911,6 +957,7 @@ def bv_export(
                 stitch_subtitles_background=stitch_subtitles_background,
                 include_parking=include_parking,
                 parking_speed=parking_speed,
+                photo_duration_seconds=photo_duration_seconds,
                 trip_summary=trip_summary,
                 scene_model=scene_model,
                 scene_cpu=scene_cpu,
@@ -1814,6 +1861,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--photo-duration",
+        dest="photo_duration_seconds",
+        type=_parse_photo_duration,
+        default=DEFAULT_PHOTO_DURATION_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "How long a still photo (see docs/CAMERA_ADAPTERS.md - "
+            "GoPro/folder archives only) plays for once it's part of an "
+            "exported trip - 'a picture is also a video, but 1 frame "
+            f"only.' Default: {DEFAULT_PHOTO_DURATION_SECONDS:g} seconds."
+        ),
+    )
+
+    parser.add_argument(
         "--trip-summary",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -2040,6 +2101,7 @@ def _run(
             stitch_subtitles_background=args.subtitles_bg,
             include_parking=args.include_parking,
             parking_speed=args.parking_speed,
+            photo_duration_seconds=args.photo_duration_seconds,
             trip_summary=args.trip_summary,
             scene_model=args.scene_model,
             scene_cpu=args.scene_cpu,

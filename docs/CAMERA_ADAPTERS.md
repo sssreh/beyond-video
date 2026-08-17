@@ -724,9 +724,11 @@ sit in a GoPro folder) or an unparseable sample table, and
 already catch `MediaToolError` and return `()` rather than propagating
 it (the same "missing/bad telemetry is absent, not fatal" contract every
 other adapter's telemetry already gets) - so `GoProAdapter` needed no
-special-casing here at all. Non-video files (photos, screenshots) are
-already excluded by `video_extensions` matching, same as `FolderAdapter`
-today. `test_gopro_adapter.py`'s
+special-casing here at all. At the time this was written, non-video
+files (photos, screenshots) were excluded by `video_extensions`
+matching, same as `FolderAdapter`; photos are now scanned in deliberately
+(see "Photo support" below) - a genuine screenshot/junk-file exclusion
+still holds, just no longer for every still image. `test_gopro_adapter.py`'s
 `test_mixed_content_folder_scans_fully_with_per_recording_telemetry_degradation`
 exercises this directly: a real GPMF-shaped clip, a video with no GPMF
 track, a photo, and a text file in one folder - the scan returns both
@@ -1212,6 +1214,107 @@ failures - `test_main_movement_flag_enables_gps_bridging`,
 required keyword-only argument: 'adapter'` bug in `trip_builder.py`,
 confirmed present before any of these changes too via `git stash`/`git
 stash pop`, left untouched as out of scope).
+
+## Photo support
+
+Christer's own framing, verbatim: "yes i have photos, my thought is that
+in a trip they should be shown for a specified time that defaults to 5
+second. If i want to play with words i would say a picture is also a
+video, but 1 frame only. ;*" - taken literally as the design: a photo
+gets no new `Asset` enum member, no new `RecordingId` kind code. It is
+stored under `Asset.FRONT` exactly like a real video, and the rest of the
+pipeline treats it as an ordinary FRONT-only recording with no REAR/no
+AUDIO - a case every layer already handles for a front-only camera
+setup. The only new primitive is "is this file a photo," answered purely
+by file extension.
+
+**`archive/photo.py`** (new module) - `PHOTO_EXTENSIONS` (`.jpg`,
+`.jpeg`, `.png`, `.heic`, `.gpr` - Christer's own answer when asked which
+extensions should count was "all of them"), `DEFAULT_PHOTO_DURATION_SECONDS
+= 5`, `is_photo_path(path)` (suffix match, case-insensitive), and
+`recording_is_photo(recording)` (true iff the recording's FRONT asset
+file's path is a photo path). Every other layer imports one of these two
+functions rather than re-implementing extension matching.
+
+**Scanning.** `_recursive_scan.py` - shared by `FolderAdapter` and
+`GoProAdapter` only, never `BlackVueAdapter` - now scans
+`manifest.video_extensions | PHOTO_EXTENSIONS`, so a photo rides through
+the exact same timestamp-resolution/id-assignment/same-stem-asset-
+discovery path a video does and lands in `Asset.FRONT` the same way. This
+one-line change is what scopes photo support to GoPro + folder archives
+only, matching Christer's answer ("GoPro + folder") without a
+manifest-level opt-in flag.
+
+**Duration.** `generate/media.py`'s new `photo_aware_duration(inner,
+*, photo_duration_seconds=5)` wraps any `RecordingDuration` callable
+(`read_duration_seconds`, `load_or_compute_duration`) and intercepts
+photo recordings before they ever reach ffprobe/the box-reader fallback,
+returning the fixed duration directly. Wired into `bv-ls`'s
+`--duration`/`--full` and `bv-export`'s duration-driven trip detection
+(both the plain and `--duration-heal-archive` variants).
+
+**Rendering.** `export/media.py`'s new `render_image_as_video(source_image,
+destination, duration_seconds, *, width, height, fps)` shells out to
+ffmpeg (`-loop 1 -framerate fps -i photo -t duration -vf scale+pad`) -
+not PIL, since PIL doesn't universally read HEIC, and ffmpeg is already a
+hard dependency everywhere else in the pipeline. Scale+pad (letterbox),
+not crop, so nothing the user chose to keep in frame gets cut off; sized
+against the trip's own real video dimensions/frame rate when one exists
+in the trip (so the encoded clip splices into `front.mp4` without a
+scale step at concat time), falling back to the photo's own pixel
+dimensions when the trip is all-photo.
+
+**Splicing into the concat pipeline.** `trip_export.py`'s new
+`_photo_clip_overrides(trip, work_dir, warnings, log, *,
+photo_duration_seconds)` renders every photo recording's clip and returns
+a `dict[(RecordingId, Asset), Path]` - the exact same shape
+`_repair_parking_sources()`, `_apply_parking_speed()`, and
+`_align_front_rear_durations()` already produce, merged last into
+`export_trip()`'s combined `duration_overrides` map. No new splicing
+mechanism was needed - a photo clip is just another override the
+existing concat pipeline substitutes in transparently. A photo that fails
+to render (a corrupt/unreadable image) is warned about and left out of
+`front.mp4` entirely, same failure contract as a corrupted video source.
+
+**CLI.** `bv-export --photo-duration SECONDS` (default 5, must be > 0)
+threads `photo_duration_seconds` through `bv_export()` down to both the
+duration callback and `_photo_clip_overrides()`.
+
+**bv-generate.** `_do_extract_audio()`/`_do_transcribe_and_translate()`
+both gained a `recording_is_photo()` guard, right alongside the existing
+Parking-mode guard, printing "photo has no audio, skipping" and doing
+nothing rather than trying to extract/transcribe silence from a still
+image. `--describe-scene` was deliberately left untouched - it calls
+`describe_scene(video_path, ...)` directly with no Parking-style
+video-repair detour, so it runs on a photo's own FRONT file unmodified;
+a vision-language model has no trouble describing a still photo.
+
+**Archive-browser thumbnail.** `web/archive_browser.py`'s
+`ArchiveRecording.thumbnail_path("front")` falls back to the photo's own
+FRONT file when no `*_THUMBNAIL` sidecar exists for it - true for every
+photo today, since nothing generates one - rather than trying to
+ffmpeg-extract a frame from what's already a still image.
+
+**Tests.** `test_photo.py` (9 tests, new file) - `is_photo_path()`/
+`recording_is_photo()` covering all five extensions, case-insensitivity,
+non-photo extensions, and the no-FRONT-asset edge case.
+`test_folder_adapter.py` gained a photo-scanning section (6 tests) -
+photos alongside videos, `Asset.FRONT` storage, all five extensions,
+`recording_is_photo()` true/false, and the `"V"` kind code (unchanged -
+no new `RecordingId` kind). `test_media.py` gained 3 tests for
+`photo_aware_duration()` (default, custom seconds, delegates to inner for
+a real video). `test_export_media.py` gained 3 tests for
+`render_image_as_video()` (exact duration/size, letterbox on a mismatched
+aspect ratio, raises `MediaToolError` when ffmpeg itself is missing).
+`test_trip_export.py` gained 5 tests for `_photo_clip_overrides()` (empty
+trip, sized against a real video, configured duration, falls back to the
+photo's own size when the trip is all-photo, warns-and-skips a render
+failure). `test_bv_generate.py` gained 2 tests mirroring the existing
+Parking-mode skip tests, for the extract-audio and transcribe/translate
+guards. `test_archive_browser.py` gained 3 tests for the thumbnail
+fallback (falls back to the photo, a real `*_THUMBNAIL` sidecar still
+wins if one exists, "rear" never falls back since the mechanism is
+front-only).
 
 ## See also
 

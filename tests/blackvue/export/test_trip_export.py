@@ -8,10 +8,12 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
+from blackvue.archive.photo import DEFAULT_PHOTO_DURATION_SECONDS
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.export import trip_export as trip_export_module
@@ -24,6 +26,7 @@ from blackvue.export.trip_export import _ensure_recording_audio
 from blackvue.export.trip_export import _load_trip_roads
 from blackvue.export.trip_export import _merge_gsensor
 from blackvue.export.trip_export import _missing_rear_placeholders
+from blackvue.export.trip_export import _photo_clip_overrides
 from blackvue.export.trip_export import _recording_video_offsets
 from blackvue.export.trip_export import _repair_parking_sources
 from blackvue.export.trip_export import _replace_with_retry
@@ -1451,6 +1454,171 @@ def test_concatenate_asset_splices_a_missing_rear_placeholder_into_the_right_slo
     # in at the gap recording's own position, not dropped or appended
     # at the end.
     assert abs(_video_duration(result) - 4.0) < 0.3
+
+
+def _make_photo(path: Path, size: tuple[int, int] = (80, 60)) -> None:
+    """A real, ffmpeg-readable still image - the "photo" half of
+    _make_video() for the photo-support feature (task #940-949:
+    Christer's "a picture is also a video, but 1 frame only")."""
+    Image.new("RGB", size, color=(200, 100, 50)).save(path)
+
+
+# ---------------------------------------------------------------------------
+# _photo_clip_overrides() - renders each photo recording's FRONT image into
+# a short video clip (see export/media.py's render_image_as_video()) and
+# returns it as a duration_overrides entry, so the concat pipeline below
+# splices it into front.mp4 exactly like any other override (parking
+# repair, parking speed, prebuffer trim, front/rear alignment).
+# ---------------------------------------------------------------------------
+
+
+def test_photo_clip_overrides_returns_empty_when_trip_has_no_photos(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    front = source_dir / "front.mp4"
+    _make_video(front, 2.0)
+
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, front)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(trip, tmp_path / "work", warnings, log=None)
+
+    assert overrides == {}
+    assert warnings == []
+
+
+def test_photo_clip_overrides_renders_a_clip_sized_to_match_real_video_in_trip(
+    tmp_path,
+):
+    # The photo's own pixel dimensions are deliberately mismatched from
+    # the trip's real video - the rendered clip should be sized/
+    # framerated to match the real video instead, so it can splice
+    # straight into front.mp4 without a further scale step downstream
+    # (same reasoning as _missing_rear_placeholders()).
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    video = source_dir / "clip.mp4"
+    photo = source_dir / "IMG_0001.jpg"
+    _make_video(video, 2.0)
+    _make_photo(photo, size=(200, 100))
+
+    photo_id = RecordingId("20260720_100100_V")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video)},
+        ),
+        Recording(
+            id=photo_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(trip, tmp_path / "work", warnings, log=None)
+
+    assert list(overrides.keys()) == [(photo_id, Asset.FRONT)]
+    clip_path = overrides[(photo_id, Asset.FRONT)]
+    assert clip_path.exists()
+    assert _video_size(clip_path) == _video_size(video)
+    assert abs(_video_duration(clip_path) - DEFAULT_PHOTO_DURATION_SECONDS) < 0.3
+    assert warnings == []
+
+
+def test_photo_clip_overrides_uses_the_configured_duration(tmp_path):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    video = source_dir / "clip.mp4"
+    photo = source_dir / "IMG_0001.jpg"
+    _make_video(video, 2.0)
+    _make_photo(photo)
+
+    photo_id = RecordingId("20260720_100100_V")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video)},
+        ),
+        Recording(
+            id=photo_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(
+        trip, tmp_path / "work", warnings, log=None, photo_duration_seconds=1.5
+    )
+
+    clip_path = overrides[(photo_id, Asset.FRONT)]
+    assert abs(_video_duration(clip_path) - 1.5) < 0.3
+
+
+def test_photo_clip_overrides_sizes_against_the_photo_itself_when_trip_is_all_photos(
+    tmp_path,
+):
+    # No real video anywhere in the trip to size against - falls back
+    # to the first photo's own pixel dimensions instead of failing.
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    photo = source_dir / "IMG_0001.jpg"
+    _make_photo(photo, size=(100, 80))
+
+    photo_id = RecordingId("20260720_100000_V")
+    trip = Trip((
+        Recording(
+            id=photo_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(trip, tmp_path / "work", warnings, log=None)
+
+    clip_path = overrides[(photo_id, Asset.FRONT)]
+    assert clip_path.exists()
+    assert _video_size(clip_path) == (100, 80)
+    assert warnings == []
+
+
+def test_photo_clip_overrides_warns_and_skips_a_photo_that_fails_to_render(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "archive"
+    source_dir.mkdir()
+    video = source_dir / "clip.mp4"
+    photo = source_dir / "IMG_0001.jpg"
+    _make_video(video, 2.0)
+    _make_photo(photo)
+
+    def _boom(*args, **kwargs):
+        raise MediaToolError("ffmpeg blew up")
+
+    monkeypatch.setattr(trip_export_module, "render_image_as_video", _boom)
+
+    photo_id = RecordingId("20260720_100100_V")
+    trip = Trip((
+        Recording(
+            id=RecordingId("20260720_100000_N"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video)},
+        ),
+        Recording(
+            id=photo_id,
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo)},
+        ),
+    ))
+
+    warnings: list[str] = []
+    overrides = _photo_clip_overrides(trip, tmp_path / "work", warnings, log=None)
+
+    assert overrides == {}
+    assert len(warnings) == 1
+    assert "IMG_0001.jpg" in warnings[0]
 
 
 def _make_video_with_frequent_keyframes(path, duration_seconds: float) -> None:

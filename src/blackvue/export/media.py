@@ -1055,3 +1055,70 @@ def render_missing_camera_placeholder(
             ],
             destination,
         )
+
+
+def render_image_as_video(
+    source_image: Path,
+    destination: Path,
+    duration_seconds: float,
+    *,
+    width: int,
+    height: int,
+    fps: float = 30.0,
+) -> None:
+    """Render a still photo as a `duration_seconds`-long video at
+    `width`x`height`/`fps`, held on the one real frame for the whole
+    span - the concrete mechanics behind Christer's own framing of
+    photo support: "a picture is also a video, but 1 frame only." See
+    archive/photo.py's module docstring for the full "why store a
+    photo under Asset.FRONT at all" design; this function is where
+    that framing actually becomes a real video file, right before
+    it's spliced into a trip's concatenated front.mp4 (see
+    trip_export.py's `_photo_clip_overrides()`).
+
+    Sibling to `render_missing_camera_placeholder()` just above,
+    same `-loop 1` + `encode_with_nvenc_fallback()` shape, but reusing
+    that function directly wasn't a fit: it always draws its own
+    placeholder frame from scratch (nothing to scale/pad, since PIL
+    controls the canvas size exactly), where this one has to start
+    from an arbitrary real photo - almost never already `width`x
+    `height`, or even the same aspect ratio (a portrait phone photo
+    dropped into a landscape dashcam trip, for instance). ffmpeg does
+    that scale/pad step itself (`scale=...:force_original_aspect_ratio
+    =decrease,pad=...`) rather than PIL: PIL's own format support
+    doesn't reliably cover every extension `archive/photo.py`'s
+    PHOTO_EXTENSIONS recognizes (HEIC in particular needs a plugin PIL
+    doesn't ship with; ffmpeg's own decoders are the more dependable
+    common denominator across jpg/png/heic/gpr). Letterboxed onto a
+    black background (the `pad` filter's own default) rather than
+    cropped to fill - cropping a photo the person actually chose to
+    keep risks cutting off the part of it they cared about; a photo
+    momentarily in front of a real video, framed by black bars, reads
+    as intentional rather than a bug the way a stretched or oddly
+    cropped frame would.
+
+    `width`/`height` must match the caller's other front.mp4 sources'
+    own resolution exactly, same reasoning and same
+    `force_reencode=True` requirement as
+    `render_missing_camera_placeholder()`'s own docstring - a photo
+    clip rendered here never shares the surrounding recordings' own
+    encoder session either.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    scale_pad_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+    )
+
+    encode_with_nvenc_fallback(
+        [
+            "-loop", "1",
+            "-framerate", str(fps),
+            "-i", str(source_image),
+            "-t", str(duration_seconds),
+            "-vf", scale_pad_filter,
+        ],
+        destination,
+    )

@@ -179,6 +179,70 @@ def test_collision_disambiguation_bumps_the_later_id_by_a_second(
     assert ids[0] != ids[1]
 
 
+# ---------------------------------------------------------------------------
+# Photo scanning (archive/photo.py) - GoPro + folder adapters both scan
+# through _recursive_scan.py's shared _scan(), so this covers both.
+# ---------------------------------------------------------------------------
+
+
+def test_open_archive_finds_a_photo_alongside_videos(adapter, tmp_path):
+    _touch(tmp_path / "clip.mp4", mtime=1700000000)
+    _touch(tmp_path / "IMG_0001.JPG", mtime=1700000100)
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert len(archive.recordings) == 2
+
+
+def test_photo_is_stored_under_front_asset_like_a_video(adapter, tmp_path):
+    _touch(tmp_path / "IMG_0001.jpg", mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+    recording = archive.recordings[0]
+
+    assert recording.has(Asset.FRONT)
+    assert recording.file(Asset.FRONT).path.name == "IMG_0001.jpg"
+
+
+def test_every_answered_photo_extension_is_scanned(adapter, tmp_path):
+    # Christer's own answer when asked which extensions should count:
+    # "All of them" - jpg/jpeg, png, heic, gpr.
+    for i, suffix in enumerate((".jpg", ".jpeg", ".png", ".heic", ".gpr")):
+        _touch(tmp_path / f"photo{i}{suffix}", mtime=1700000000 + i)
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert len(archive.recordings) == 5
+
+
+def test_recording_is_photo_true_for_a_scanned_photo(adapter, tmp_path):
+    from blackvue.archive.photo import recording_is_photo
+
+    _touch(tmp_path / "IMG_0001.jpg", mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert recording_is_photo(archive.recordings[0]) is True
+
+
+def test_recording_is_photo_false_for_a_scanned_video(adapter, tmp_path):
+    from blackvue.archive.photo import recording_is_photo
+
+    _touch(tmp_path / "clip.mp4", mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert recording_is_photo(archive.recordings[0]) is False
+
+
+def test_photo_gets_v_kind_code_same_as_video(adapter, tmp_path):
+    _touch(tmp_path / "IMG_0001.jpg", mtime=1700000000)
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert archive.recordings[0].id.kind == "V"
+
+
 def test_recordings_are_sorted_by_id(adapter, tmp_path):
     _touch(tmp_path / "later.mp4", mtime=1700000200)
     _touch(tmp_path / "earlier.mp4", mtime=1700000000)

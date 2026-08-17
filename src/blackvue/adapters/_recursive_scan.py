@@ -44,6 +44,7 @@ from ..archive.archive import Archive
 from ..archive.asset import Asset
 from ..archive.asset_file import AssetFile
 from ..archive.configuration import Configuration
+from ..archive.photo import PHOTO_EXTENSIONS
 from ..archive.recording import Recording
 from ..archive.recording_id import RecordingId
 from .manifest import AdapterManifest
@@ -291,7 +292,16 @@ def _scan(
     adapter). `telemetry_timestamp` is passed straight through to
     _resolve_timestamp() - see its own docstring."""
 
-    extensions = frozenset(manifest.video_extensions)
+    # Photos ride along with real videos here rather than getting a
+    # separate scan pass: a still image is stored under Asset.FRONT
+    # exactly like a video (see archive/photo.py's module docstring for
+    # the full "picture is also a video, but 1 frame only" rationale),
+    # so the two need to be discovered, timestamped, and id-assigned by
+    # the exact same code path below - the only place that later cares
+    # whether a given FRONT is a photo or a real video is duration
+    # calculation and export-time rendering, both well downstream of
+    # scanning.
+    extensions = frozenset(manifest.video_extensions) | PHOTO_EXTENSIONS
     video_paths = scan_video_files(path, extensions)
     videos_with_timestamps = [
         (p, _resolve_timestamp(p, telemetry_timestamp=telemetry_timestamp))

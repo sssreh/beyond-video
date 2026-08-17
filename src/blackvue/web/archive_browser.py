@@ -40,6 +40,7 @@ from ..adapters.telemetry_bridge import read_recording_gps
 from ..archive import Asset
 from ..archive import Recording
 from ..archive import RecordingId
+from ..archive import recording_is_photo
 from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..generate.scene import extract_description_section
 from ..lexicaltimeparser import TimeInterval
@@ -372,13 +373,28 @@ class ArchiveRecording:
     def thumbnail_path(self, direction: str) -> Path | None:
         """Resolve a direction name ("front"/"rear"/"interior") to
         its thumbnail file's path, or None if this recording has no
-        thumbnail for that direction."""
+        thumbnail for that direction.
+
+        For "front", falls back to the recording's own FRONT file when
+        it's a photo (see archive/photo.py) and no *_THUMBNAIL sidecar
+        exists for it - true for every photo recording today, since
+        nothing generates thumbnail sidecars for stills (folder/gopro's
+        own manifests document `thumbnails: "generated"` as an unbuilt
+        hook). The photo itself already *is* a small, real preview
+        image, so serving it directly is a real thumbnail, not a
+        placeholder - no ffmpeg frame-extraction needed the way a real
+        video would require."""
 
         asset = _THUMBNAIL_ASSET_BY_DIRECTION.get(direction)
         if asset is None:
             return None
         asset_file = self.recording.file(asset)
-        return asset_file.path if asset_file else None
+        if asset_file is not None:
+            return asset_file.path
+        if direction == "front" and recording_is_photo(self.recording):
+            front = self.recording.file(Asset.FRONT)
+            return front.path if front is not None else None
+        return None
 
 
 def first_valid_gps_fix(adapter: CameraAdapter, recording: Recording) -> GpsFix | None:

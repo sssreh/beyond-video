@@ -13,6 +13,7 @@ bv-export [--target DIR] [--config-dir DIR] [--prefix PREFIX]
           [--gap-tolerance SECONDS]
           [--max-parking-duration MINUTES]
           [--include-parking] [--parking-speed SPEED]
+          [--photo-duration SECONDS]
           [--trip-summary] [--scene-model MODEL] [--scene-cpu]
           [--map] [--map-icon PATH] [--map-zoom [METERS]] [--map-track-up]
           [--map-intro] [--map-intro-seconds SECONDS]
@@ -97,6 +98,16 @@ Every trip also gets a `trip_info.txt` summary - start/end time, duration, total
 A Parking recording's own raw video also gets an automatic, transparent repair before being probed or concatenated: BlackVue's own Parking-mode container has a known quirk (an empty, unused audio track that still trips ffmpeg's strict validation) that otherwise makes `ffprobe` fail outright on every Parking recording - `--include-parking` would then leave every single one of them out again, unrepaired, defeating the flag. The repair only ever drops that one confirmed-broken, empty audio track from a copy of the file's `moov` box; the real video content is never touched. See `generate/mp4_repair.py`'s own docstring for the full technical detail - this is the same fix already used to make Parking recordings playable in bv-web's archive browser.
 
 An earlier version of this feature replaced a mid-trip Parking recording with a short synthetic "PARKING FOOTAGE SKIPPED" transition clip (optionally one of several bundled or custom clips/images), leaving a leading/trailing Parking recording untouched either way. This was removed after a real export from a 4K HEVC dashcam showed the splice corrupting `front.mp4`/`rear.mp4` from that point onward: MP4's `hvc1`/`avc1` sample-entry tagging declares a track's SPS/PPS/VPS parameter sets once, at the container level, and two files from separate encoder sessions (the dashcam's own hardware encoder vs. anything `bv-export` rendered itself) generally don't share compatible parameter sets - so `ffmpeg`'s concat demuxer (a stream copy, not a re-encode) muxed them together with no error at export time, but no real decoder could parse the result past the splice point. A full decode-and-re-encode would avoid this, but at real trip-length/4K cost for one skipped recording's worth of benefit, so a Parking recording is now simply left out - matching the treatment leading/trailing Parking recordings already had.
+
+### Photo support
+
+A still photo (`.jpg`, `.jpeg`, `.png`, `.heic`, `.gpr` - GoPro and folder archives only, see `CAMERA_ADAPTERS.md`) scanned into the archive is treated as a recording with only Front video and no Rear/Audio - Christer's own framing: "a picture is also a video, but 1 frame only." No flag is needed to include it; it's already part of whatever trip it falls into, same as any other recording.
+
+| Option | Description |
+|---|---|
+| `--photo-duration SECONDS` | How long each photo plays for once it's part of an exported trip. Must be greater than 0. Default: 5. |
+
+A photo's own image is scaled and letterboxed (not cropped, so nothing the photo's own framing chose to keep is cut off) to match the trip's real video dimensions and frame rate before being spliced into `front.mp4` - or, if the trip has no real video at all, sized against the photo's own pixel dimensions instead. A photo that fails to render (a corrupt or unreadable image file) is left out of `front.mp4` entirely, with a warning, rather than failing the whole trip. Photos never contribute to `audio.aac`, `map.mp4`, or `--stitch-gsensor`/`--gsensor-video` overlays, since a still photo carries no audio or g-sensor data of its own (GPS/EXIF metadata on a photo file isn't read by this pipeline).
 
 ### Trip summary
 
