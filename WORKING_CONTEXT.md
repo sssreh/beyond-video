@@ -14632,3 +14632,35 @@ now loads at all (previously blocked by the circular import); its
 Files changed: `src/blackvue/cli/bv_generate.py`,
 `src/blackvue/generate/__init__.py`, `src/blackvue/archive/__init__.py`,
 `tests/blackvue/cli/test_bv_generate.py`, `docs/CAMERA_ADAPTERS.md`.
+
+## Scene-description prompt no longer refuses non-driving images (2026-08-17)
+
+Real `bv-generate --describe-scene` output for a GoPro stock/demo
+photo mixed into Christer's archive:
+
+    There is no dashcam footage provided — this image depicts an
+    underwater scene featuring a person snorkeling next to a sea
+    turtle near a submerged structure. The request cannot be
+    fulfilled...
+    ## Description
+    Not applicable — this is not dashcam video footage...
+
+"Reporting what it is not, only report what it is." The model clearly
+saw the real scene (names the snorkeler, turtle, structure right in
+its own refusal) but answered with what the image wasn't. Root cause:
+`DESCRIBE_PROMPT` (`generate/scene.py`) opens with "This is a clip
+from a car dashcam", priming the model to treat anything that isn't a
+road scene as unanswerable - a real problem now that photo support
+(task #940-949) makes any image a legitimate input, including a
+manufacturer's own unrelated stock photos.
+
+Fix: reworded `DESCRIBE_PROMPT` to say the input usually shows driving
+footage but may be something else entirely, to describe the real
+subject/setting either way, and to never answer with what the frame
+is *not* or refuse for lack of a road. `OCR_PROMPT` got a lighter
+"this video" -> "this frame" pass plus an explicit "say so directly
+rather than treating it as unanswerable" for the no-text case (its own
+prior "Not Applicable" answer was already fine in spirit). No test
+asserts exact prompt text; `test_scene.py` (29/29) unaffected.
+
+Files changed: `src/blackvue/generate/scene.py`.

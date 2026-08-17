@@ -82,22 +82,35 @@ DISCLAIMER = (
 )
 
 DESCRIBE_PROMPT = (
-    "This is a clip from a car dashcam. Describe what's happening in "
-    "plain language: what kind of road this is, the weather/lighting "
-    "conditions, the traffic situation, and anything notable. If "
-    "nothing notable happens, say so in a single plain sentence (for "
+    "This is a clip or still frame from a car dashcam or action "
+    "camera. It usually shows driving footage, but it may occasionally "
+    "be something else entirely - a stock photo, a test image, a "
+    "photo someone took with the same camera. Describe what is "
+    "actually visible in plain language, whatever that turns out to "
+    "be: for ordinary driving footage, cover the road type, the "
+    "weather/lighting conditions, the traffic situation, and anything "
+    "notable; for anything else, just describe the real subject and "
+    "setting the same way you would for any photo. Always describe "
+    "what IS in the frame - never answer by saying what it is not "
+    "(for example 'this is not dashcam footage' or 'the request "
+    "cannot be fulfilled'), and never refuse to describe an image just "
+    "because it doesn't show a road. If nothing notable happens in "
+    "ordinary driving footage, say so in a single plain sentence (for "
     "example: 'Routine driving, nothing notable happened.') - don't "
     "invent drama, and don't list off categories of incident that "
     "didn't occur."
 )
 
 OCR_PROMPT = (
-    "Read every piece of text visible anywhere in this video - "
+    "Read every piece of text visible anywhere in this frame - "
     "dashboard/overlay text (timestamp, speed, GPS coordinates), "
     "street signs, shop signs, license plates if legible, anything on "
-    "other vehicles, and any text on the road itself. List each piece "
-    "of text you find, one per line. If you can't make something out "
-    "clearly, say so rather than guessing."
+    "other vehicles, and any text on the road itself, or any other "
+    "text if this isn't a driving scene. List each piece of text you "
+    "find, one per line. If there's genuinely no text anywhere in the "
+    "frame, say so directly (for example: 'No text visible.') rather "
+    "than treating it as an unanswerable request. If you can see text "
+    "but can't make it out clearly, say so rather than guessing."
     # A stricter "don't infer a name from general knowledge of the
     # area" version of this prompt was tried and reverted - on real
     # footage it fixed one hallucinated tunnel name but caused a much

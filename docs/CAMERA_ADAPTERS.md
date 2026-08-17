@@ -1692,6 +1692,58 @@ Files changed: `src/blackvue/cli/bv_generate.py`,
 `src/blackvue/generate/__init__.py`, `src/blackvue/archive/__init__.py`,
 `tests/blackvue/cli/test_bv_generate.py`.
 
+## Scene-description prompt no longer refuses non-driving images (2026-08-17)
+
+Real `bv-generate --describe-scene` output Christer shared, for one of
+GoPro's own bundled stock/demo photos
+(`GoPro_News_underwater_selfie_day_nicole.aloha.jpg`, used as a
+photo-support test fixture in his `gp` archive):
+
+    There is no dashcam footage provided — this image depicts an
+    underwater scene featuring a person snorkeling next to a sea
+    turtle near a submerged structure. The request cannot be
+    fulfilled because there are no roads, traffic, or textual
+    elements present in the image.
+
+    ## Description
+    Not applicable — this is not dashcam video footage; it's an
+    underwater photograph.
+
+His instruction: "Reporting what it is not, only report what it is."
+The model clearly *saw* the actual scene (it names the snorkeler, the
+turtle, the structure, right there in its own refusal text) but
+answered by explaining what the image *wasn't* instead of just
+describing what it was. Root cause: `DESCRIBE_PROMPT`
+(`generate/scene.py`) opens with the literal framing "This is a clip
+from a car dashcam" - harmless for real driving footage, but it primes
+the model to treat anything that doesn't look like a road scene as an
+unanswerable request. This became a real, hittable problem once photo
+support (task #940-949) made "whatever image happens to be in
+`Asset.FRONT`" a legitimate input - a photo can be anything, including
+a camera manufacturer's own unrelated stock/marketing images mixed
+into an archive, not just a driving frame.
+
+Fix: reworded `DESCRIBE_PROMPT` to explicitly say the input usually
+shows driving footage but may occasionally be something else entirely
+(a stock photo, a test image), instructs describing "the real subject
+and setting the same way you would for any photo" when it isn't a
+driving scene, and explicitly forbids answering with what the frame
+is *not* ("this is not dashcam footage", "the request cannot be
+fulfilled") or refusing just because there's no road. `OCR_PROMPT` got
+a lighter matching pass: "this video" -> "this frame" (photos aren't
+video), and an explicit "if there's genuinely no text, say so directly
+... rather than treating it as an unanswerable request" - its own
+"Not Applicable — no text appears in the frame" answer was already
+fine in spirit (a real, correctly-formatted negative-result answer,
+per the prompt's existing "if you can't make something out clearly,
+say so" guidance), so this is a smaller wording tweak, not a
+behavior fix.
+
+No test asserts the exact prompt string, so no test changes were
+needed; `test_scene.py` (29/29) confirmed unaffected.
+
+Files changed: `src/blackvue/generate/scene.py`.
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,
