@@ -118,6 +118,7 @@ def test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration(
 
     import blackvue.generate.speech as speech_module
 
+    monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(
         speech_module,
         "_get_whisper_model",
@@ -151,6 +152,7 @@ def test_whisper_transcribe_defaults_to_vad_filter_and_no_condition_on_previous_
 
     import blackvue.generate.speech as speech_module
 
+    monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(
         speech_module,
         "_get_whisper_model",
@@ -175,6 +177,7 @@ def test_whisper_transcribe_lets_an_explicit_kwarg_override_the_defaults(
 
     import blackvue.generate.speech as speech_module
 
+    monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(
         speech_module,
         "_get_whisper_model",
@@ -190,6 +193,70 @@ def test_whisper_transcribe_lets_an_explicit_kwarg_override_the_defaults(
 
     assert fake_model.received_kwargs["vad_filter"] is False
     assert fake_model.received_kwargs["condition_on_previous_text"] is True
+
+
+def test_whisper_transcribe_raises_a_clean_error_for_a_source_with_no_audio_stream(
+    monkeypatch,
+):
+    # Real report from Christer: several action-cam clips in his
+    # archive have no embedded audio track at all (not just a silent
+    # one). Before this check existed, these fell through to
+    # faster-whisper's own audio decode and failed deep inside it with
+    # "tuple index out of range" - a real error, but a meaningless one
+    # to see in bv-generate's output. _get_whisper_model is
+    # deliberately not stubbed here: if the "no audio stream" check
+    # didn't short-circuit first, this test would fail trying to load
+    # a real (nonexistent) Whisper model instead of raising cleanly.
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path: None)
+
+    try:
+        speech_module._whisper_transcribe("small", Path("/tmp/no_audio.mp4"))
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised
+    assert message == "no audio stream"
+
+
+def test_detect_language_wraps_no_audio_stream_cleanly(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path: None)
+
+    try:
+        speech_module.detect_language(Path("/tmp/no_audio.mp4"))
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised
+    assert "no_audio.mp4" in message
+    assert "no audio stream" in message
+
+
+def test_transcribe_wraps_no_audio_stream_cleanly(monkeypatch):
+    import blackvue.generate.speech as speech_module
+
+    monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path: None)
+
+    try:
+        speech_module.transcribe(Path("/tmp/no_audio.mp4"))
+        raised = False
+        message = ""
+    except MediaToolError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised
+    assert "no_audio.mp4" in message
+    assert "no audio stream" in message
 
 
 class _FakeCudaAwareWhisperModel:

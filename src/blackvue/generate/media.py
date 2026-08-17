@@ -384,6 +384,17 @@ def extract_audio(source: Path, destination: Path) -> None:
     later run) - failing loudly here and cleaning up after ourselves
     is what makes a retry actually retry instead of quietly reusing
     the broken leftover.
+
+    `-v error` matches every ffprobe call in this module (and the
+    other real ffmpeg decode call in generate/speech.py) - without it,
+    a failure's MediaToolError message is ffmpeg's *entire* stderr:
+    version banner, full build configuration (a couple dozen
+    --enable-* flags), and the input's stream dump, with the one or
+    two lines that actually explain the failure buried at the very
+    end. Confirmed against a real archive of Christer's with several
+    video-only clips (no embedded audio stream at all, not just a
+    silent one): each one produced a "ffmpeg failed for ..." warning
+    that was almost entirely banner noise before this.
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -397,6 +408,7 @@ def extract_audio(source: Path, destination: Path) -> None:
         subprocess.run(
             [
                 "ffmpeg",
+                "-v", "error",
                 "-y",
                 "-i", str(source),
                 "-vn",

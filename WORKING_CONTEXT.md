@@ -13903,3 +13903,84 @@ depending on GPMF/ffprobe internals.
 
 Files: `src/blackvue/cli/bv_generate.py`,
 `tests/blackvue/cli/test_bv_generate.py`, `docs/CAMERA_ADAPTERS.md`.
+
+## Fix bv-generate: noisy/confusing errors on videos with no audio stream at all (done, this session, #928)
+
+Follow-on from #927's real-archive run: with the adapter-registry fix
+confirmed working (all 10 recordings found and processed), Christer's
+pasted transcript surfaced two new real bugs, both against DJI/GoPro
+clips with zero embedded audio streams (not just silent audio, which
+was already handled gracefully via `is_audio_silent()`):
+
+1. `extract_audio()`'s ffmpeg call was the one outlier in this
+   codebase missing `-v error` - every other ffmpeg/ffprobe call here
+   already has it. Without it, a failure's `MediaToolError` message is
+   ffmpeg's entire stderr: version banner, full build configuration (a
+   couple dozen `--enable-*` flags), and the input's stream dump, with
+   the one or two lines that actually explain the failure buried at
+   the very end. Confirmed against Christer's real archive: each
+   video-only clip produced a "ffmpeg failed for ..." warning that was
+   almost entirely banner noise.
+2. `_whisper_transcribe()` (the shared helper both `detect_language()`
+   and `transcribe()` call into) had no upfront check for an audio
+   stream - it let faster-whisper/ffmpeg try to decode one that wasn't
+   there, which failed deep inside faster-whisper's own audio decode
+   with `tuple index out of range`. Real, but meaningless to a person
+   reading bv-generate's output. Neither bug was actually crashing the
+   run - both were already caught by `bv_generate.py`'s existing
+   `except MediaToolError` handling in `_do_extract_audio()`/
+   `_do_transcribe_with_optional_translate()` and turned into a
+   per-recording warning line - this was purely about message quality.
+
+Fix: added `-v error` to `extract_audio()`'s ffmpeg invocation
+(`generate/media.py`), matching the rest of the codebase - the
+deliberate existing design (letting ffmpeg itself report "no audio
+stream" rather than pre-checking, per that function's own docstring/
+test) is unchanged, only its noise level. Added an upfront
+`probe_audio_codec(source) is None` check to `_whisper_transcribe()`
+(`generate/speech.py`, reusing the same helper `extract_audio()`
+already calls) that raises `MediaToolError("no audio stream")`
+directly - `detect_language()`/`transcribe()`'s existing
+`except Exception as exc: raise MediaToolError(f"...: {exc}")`
+wrapping turns this into a clean `"language detection failed for
+X.mp4: no audio stream"` / `"transcription failed for X.mp4: no audio
+stream"` line for free, no changes needed to either of those two
+functions themselves.
+
+This upfront check broke three existing tests
+(`test_transcribe_clamps_segment_timestamps_to_the_real_audio_duration`,
+`test_whisper_transcribe_defaults_to_vad_filter_and_no_condition_on_previous_text`,
+`test_whisper_transcribe_lets_an_explicit_kwarg_override_the_defaults`)
+that call `transcribe()`/`_whisper_transcribe()` against a nonexistent
+`Path("/tmp/audio.aac")` without mocking `probe_audio_codec` - the new
+check now ran a real `ffprobe` against a file that doesn't exist and
+failed before reaching the tests' fake Whisper model. Fixed by adding
+`monkeypatch.setattr(speech_module, "probe_audio_codec", lambda _path:
+"aac")` to all three, matching `test_media.py`'s own established
+convention for stubbing this exact function.
+
+Added new regression tests proving both fixes directly:
+`test_extract_audio_passes_v_error_to_ffmpeg` (asserts `-v error` is
+actually in the ffmpeg command list), and
+`test_whisper_transcribe_raises_a_clean_error_for_a_source_with_no_audio_stream`
+/ `test_detect_language_wraps_no_audio_stream_cleanly` /
+`test_transcribe_wraps_no_audio_stream_cleanly` (assert the clean "no
+audio stream" message at all three layers: the shared helper itself,
+and both its callers' wrapping).
+
+Verified: full `tests/blackvue/generate/test_media.py` +
+`test_speech.py` suite (90 passed, 1 failed - the 1 failure is the
+same pre-existing `monkeypatch.setattr("string.target", ...)` harness
+limitation as #927's fix, unrelated to this change, confirmed by
+reading the failing test itself). Also fixed that harness's
+`_MonkeyPatch` to support `.setitem()`/`.delitem()` (it only had
+`.setattr()` before), which cleared 9 previously-failing
+`test_speech.py` tests that use `monkeypatch.setitem(sys.modules,
+...)` to fake optional dependencies (`pyannote`, `nvidia`,
+`faster_whisper`, `torch`) - a harness improvement, not a source
+change. Full `tests/blackvue/cli/test_bv_generate.py` suite also
+re-run after these changes: still 103/103 passing plus the same 6
+pre-existing unrelated failures as before.
+
+Files: `src/blackvue/generate/media.py`, `src/blackvue/generate/speech.py`,
+`tests/blackvue/generate/test_media.py`, `tests/blackvue/generate/test_speech.py`.

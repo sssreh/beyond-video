@@ -18,6 +18,7 @@ from dataclasses import field
 from pathlib import Path
 
 from .media import MediaToolError
+from .media import probe_audio_codec
 
 # pyannote.audio's own audio loading (source given as a path/string)
 # resamples to this rate internally too, so decoding straight to it
@@ -359,7 +360,22 @@ def _whisper_transcribe(
     genuine non-speech stretches instead of transcribing them, and
     condition_on_previous_text=False stops one bad segment from
     cascading into a repeat loop across the rest of the file.
+
+    Checks for an audio stream up front (via probe_audio_codec(),
+    already used elsewhere in this module for exactly this) rather
+    than letting faster-whisper/ffmpeg try to decode one that isn't
+    there. Confirmed against a real report from Christer: several
+    action-cam clips in his archive (screen-recording-style exports
+    with no embedded audio track at all, not just a silent one) made
+    it here and failed deep inside faster-whisper's own audio decode
+    with "tuple index out of range" - a real error, but not one that
+    means anything to someone reading bv-generate's output. "no audio
+    stream" is both correct and something a person can actually act on
+    (or ignore, since it's expected for these files).
     """
+
+    if probe_audio_codec(source) is None:
+        raise MediaToolError("no audio stream")
 
     kwargs.setdefault("vad_filter", True)
     kwargs.setdefault("condition_on_previous_text", False)

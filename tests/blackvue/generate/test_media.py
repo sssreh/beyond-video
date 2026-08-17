@@ -492,6 +492,32 @@ def test_extract_audio_transcodes_when_source_has_no_recognized_codec(
     assert "copy" not in calls[0]
 
 
+def test_extract_audio_passes_v_error_to_ffmpeg(monkeypatch, tmp_path):
+    """Every other ffmpeg/ffprobe call in this codebase already passes
+    -v error to suppress the banner/build-config/stream-dump noise
+    ffmpeg otherwise writes to stderr - this was the one outlier.
+    Confirmed against a real archive of Christer's: several video-only
+    clips (no embedded audio stream at all) each produced a "ffmpeg
+    failed for ..." warning that was almost entirely banner noise
+    before this flag was added."""
+
+    monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: "aac")
+
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    extract_audio(tmp_path / "source.mp4", tmp_path / "out.aac")
+
+    cmd = calls[0]
+    v_index = cmd.index("-v")
+    assert cmd[v_index + 1] == "error"
+
+
 def test_extract_audio_wraps_ffmpeg_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(media_module, "probe_audio_codec", lambda _path: "aac")
 
