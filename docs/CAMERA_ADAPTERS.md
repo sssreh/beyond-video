@@ -1073,6 +1073,54 @@ drafts the manifest half. Doesn't try to identify the camera make/model
 that produced the files (no vendor database) - a nice-to-have someday, not
 required for the draft manifest to already save real time.
 
+## bv-generate wired through the adapter registry (2026-08-17)
+
+Christer ran `bv-generate gp --describe-scene --get-duration
+--extract-audio --srt --transcribe` against his real GoPro archive
+(`X:\gopro\archive`, camera config `gp` with `adapter="gopro"`) and got
+`no recordings found in range, nothing to do` for every single
+recording - not a GPS-specific gap, a total failure. Root cause:
+`cli/bv_generate.py`'s `_run()` constructed the raw, BlackVue-only
+`archive.Archive` class directly instead of going through
+`registry.get_adapter(adapter_id).open_archive()` the way `bv-ls` was
+already fixed to do (see "`bv-ls` wired through the adapter
+abstraction" above, back when `bv-ls` was the only command with this
+gap). `archive.Archive`'s underlying `ArchiveReader.read()` requires
+BlackVue's literal `YYYYMMDD_HHMMSS_K` filename shape -
+`RecordingId.parse()` returns `None`, and the file is silently
+skipped, for anything else - so a GoPro's own on-camera names like
+`GH010123.MP4` never matched, and every recording in a non-BlackVue
+archive was invisible before the "no recordings" range check even ran.
+
+This gap existed only in `bv_generate.py`; `bv-search` and `bv-export`
+(step 7 above) had already been rewired for GPS/g-sensor reads via
+`telemetry_bridge.py`, but nobody had gone back and checked whether
+every *other* command that scans an archive - `bv-generate` chief
+among them, since it's the command that actually calls
+`--describe-scene`/`--get-duration`/etc. - was wired through the
+registry at all. It wasn't.
+
+Fix: `_run()` now calls `registry.get_adapter(adapter_id).open_archive
+(archive_path)`, with `adapter_id` taken from `camera_config.adapter`
+when `args.path` resolved through a configured camera, falling back to
+`DEFAULT_ADAPTER_ID` ("blackvue") for a literal path - same pattern as
+`bv-ls`. This gives `GoProAdapter.open_archive()` (and `FolderAdapter`'s,
+for a plain `adapter="folder"` config) a chance to assign each file a
+synthetic BlackVue-shaped id from its own resolved timestamp
+(`adapters/_recursive_scan.py`'s `assign_recording_ids()`) - already
+sortable by the interval filter and safe for `recording.id.is_parking`,
+with no further changes needed anywhere else in `bv_generate.py`.
+
+Regression test (`test_main_resolves_a_camera_id_to_its_configured_folder_adapter`
+in `tests/blackvue/cli/test_bv_generate.py`) mirrors `bv-ls`'s own
+equivalent test: a camera config with `adapter="folder"` pointed at a
+recursively-nested, arbitrarily-named video file, run end-to-end through
+`main()` with `--get-duration`, asserting the recording is actually
+found and processed (not "no recordings found"). Full suite: 103/103 in
+`test_bv_generate.py` (up from 102; the 6 unrelated `monkeypatch.setattr
+("builtins.input", ...)` failures are a pre-existing fake-pytest harness
+limitation, confirmed present before this change too via `git stash`).
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,

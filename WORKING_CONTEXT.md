@@ -13834,3 +13834,72 @@ recording.py`, `tests/blackvue/core/test_media_camera.py` (new,
 replaces `test_sdcard_camera.py`), `tests/blackvue/cli/
 test_bv_download.py`, `tests/blackvue/domain/test_recording.py`,
 `docs/man/bv-download.md`, `docs/CAMERA_ADAPTERS.md`.
+
+## Fix bv-generate: wire through adapter registry (GoPro archives invisible) (done, this session, #927)
+
+Christer's bug report: running `bv-generate gp --describe-scene
+--get-duration --extract-audio --srt --transcribe` against his real
+GoPro archive (`X:\gopro\archive`) printed `no recordings found in
+range, nothing to do` for the whole run - not a GPS-specific gap, a
+total failure. He'd asked earlier for bv-generate to pick up "hidden
+assets like gps, duration, scene description and more"; my first
+answer ("duration and scene description are already generated") was
+about code that existed, not about whether it actually worked against
+his footage, and he was right to call that out - I hadn't run it. This
+entry is the follow-through: diagnose and fix the real bug, verify it
+against a real regression test, not just claim it's done.
+
+Root cause: `cli/bv_generate.py`'s `_run()` constructed the raw,
+BlackVue-only `archive.Archive` class directly (`Archive(archive_path)`)
+instead of going through the camera-adapter registry
+(`registry.get_adapter(adapter_id).open_archive(archive_path)`) the way
+`bv-ls` was already fixed to do back in task #894. `archive.Archive`'s
+underlying `ArchiveReader.read()` calls `RecordingId.parse()` per file,
+which requires BlackVue's literal `YYYYMMDD_HHMMSS_K` filename shape and
+returns `None` (silently skipping the file) for anything else - so a
+GoPro's own on-camera names (`GH010123.MP4`) never matched, and every
+recording in a non-BlackVue archive was invisible before the "no
+recordings" range check even ran. This is a different class of id from
+`domain.recording.RecordingId` (used by the newer adapter/download
+pipeline) - `archive.recording_id.RecordingId` is the one the raw
+`Archive`/`ArchiveReader` path uses, and it's the one `bv_generate.py`
+was stuck on.
+
+Initially suspected this might be the same lexical-sort/interval bug
+`bv_download.py`'s `is_generic_media` fixed for raw SD-card-scan ids -
+ruled that out: `adapters/_recursive_scan.py`'s
+`assign_recording_ids()` (used by both `FolderAdapter` and
+`GoProAdapter`) already assigns each scanned file a synthetic,
+sortable, BlackVue-shaped id derived from the file's own resolved
+timestamp, so adapter-scanned recordings are already interval-safe.
+The actual bug was one level earlier: `bv_generate.py` never called
+the adapter at all.
+
+Fix: `_run()` now resolves `adapter_id` from `camera_config.adapter`
+(falling back to `DEFAULT_ADAPTER_ID`, "blackvue", for a literal path
+with no camera config behind it) and calls
+`registry.get_adapter(adapter_id).open_archive(archive_path)` -
+mirroring `bv-ls`'s own `_run()` exactly. No other change needed
+anywhere else in the file: `archive.recordings` was already the only
+member this file touches on the returned object.
+
+Verified, not just claimed: full `test_bv_generate.py` suite run
+before and after the fix (`git stash`/`git stash pop`) - both runs are
+102/102 passing plus the same 6 pre-existing failures, confirmed
+unrelated (a fake-pytest harness limitation:
+`monkeypatch.setattr("builtins.input", ...)`'s string-target form
+isn't supported by this sandbox's `_MonkeyPatch.setattr()`, nothing to
+do with archive scanning). Added a new regression test,
+`test_main_resolves_a_camera_id_to_its_configured_folder_adapter`
+(mirroring `bv-ls`'s own equivalent test), that runs `main()`
+end-to-end against a camera config with `adapter="folder"` and a
+recursively-nested, arbitrarily-named video file, monkeypatching
+`_do_get_duration` to prove the recording was actually found and
+processed rather than silently skipped. With the test added: 103/103
+passing, same 6 pre-existing unrelated failures. Used `adapter="folder"`
+rather than `"gopro"` for the regression test so it exercises the
+bug/fix (finding the recording via the registry) without also
+depending on GPMF/ffprobe internals.
+
+Files: `src/blackvue/cli/bv_generate.py`,
+`tests/blackvue/cli/test_bv_generate.py`, `docs/CAMERA_ADAPTERS.md`.

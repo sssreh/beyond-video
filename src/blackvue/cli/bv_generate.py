@@ -16,10 +16,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ..archive import Archive
+from ..adapters import registry
 from ..archive import Asset
 from ..archive.recording import Recording
 from .errors import run_cli
+from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
 from ..core.joblog import wrap_say
@@ -1462,8 +1463,31 @@ def _run(
     note - the same gap existed here).
     """
 
-    archive_path, _camera_config = resolve_archive_path(args.path, args.config_dir)
-    archive = Archive(archive_path)
+    archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
+    # Which CameraAdapter (see adapters/registry.py) scans archive_path -
+    # defaults to "blackvue" for a literal path with no camera config
+    # behind it, same as an un-migrated CameraConfig with no `adapter`
+    # key. Christer: running bv-generate against his GoPro archive
+    # ("bv-generate gp --describe-scene ...") reported "no recordings
+    # found in range" - this used to construct the raw archive.Archive
+    # directly, whose ArchiveReader.read() requires BlackVue's literal
+    # YYYYMMDD_HHMMSS_K filename convention (RecordingId.parse() returns
+    # None, and the file is skipped, for anything else - a GoPro's own
+    # on-camera names like GH010123.MP4 never matched), so every
+    # recording in a non-BlackVue archive was silently invisible before
+    # the "no recordings" range check even ran. bv-ls was already wired
+    # through the adapter registry for exactly this reason (see its own
+    # _run() docstring); bv-generate just never got the same fix. Going
+    # through the adapter here instead gives GoProAdapter.open_archive()
+    # a chance to assign each file a synthetic BlackVue-shaped id from
+    # its own timestamp (adapters/_recursive_scan.py's
+    # assign_recording_ids()) - sortable by the interval filter below
+    # and safe for recording.id.is_parking, with no further changes
+    # needed anywhere in this file.
+    adapter_id = (
+        camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
+    )
+    archive = registry.get_adapter(adapter_id).open_archive(archive_path)
 
     started_at = datetime.now()
     started_monotonic = time.monotonic()

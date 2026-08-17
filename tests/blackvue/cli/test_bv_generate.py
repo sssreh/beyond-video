@@ -1,4 +1,5 @@
 import argparse
+import os
 import threading
 from pathlib import Path
 
@@ -50,6 +51,56 @@ def test_main_resolves_a_camera_id_to_its_configured_target(tmp_path, capsys):
     assert exit_code == 0
     assert str(archive) in out
     assert "no recordings found" in out
+
+
+def test_main_resolves_a_camera_id_to_its_configured_folder_adapter(
+    tmp_path, capsys, monkeypatch
+):
+    # Regression test for the bug Christer hit running bv-generate
+    # against his real GoPro archive ("bv-generate gp --describe-scene
+    # --get-duration --extract-audio --srt --transcribe" ->
+    # "no recordings found in range, nothing to do" for every single
+    # recording). Root cause: _run() used to construct the raw,
+    # BlackVue-only archive.Archive class directly, whose
+    # ArchiveReader.read() requires BlackVue's literal
+    # "YYYYMMDD_HHMMSS_K" filename convention - a GoPro's own on-camera
+    # names (or any other adapter's filenames) never matched, so every
+    # recording was silently invisible before the "no recordings"
+    # range check even ran. bv-ls already had this fix (see its own
+    # equivalent test, test_main_resolves_a_camera_id_to_its_configured_folder_adapter
+    # in test_bv_ls.py) - bv_generate.py just never got it. Using
+    # adapter="folder" here (rather than "gopro") keeps this test from
+    # depending on GPMF/ffprobe internals - the bug and the fix are
+    # both entirely about *finding* the recording via the adapter
+    # registry, not about telemetry.
+    archive = tmp_path / "archive"
+    sub = archive / "clips"
+    sub.mkdir(parents=True)
+    video = sub / "clip.mov"
+    video.write_bytes(b"y" * 55)
+    os.utime(video, (1700000200, 1700000200))
+
+    config_dir = tmp_path / "config"
+    save_camera_config(
+        config_path(config_dir, "GP"),
+        CameraConfig(id="GP", name="GoPro test", archive=archive, adapter="folder"),
+    )
+
+    called = []
+    monkeypatch.setattr(
+        bv_generate,
+        "_do_get_duration",
+        lambda recording, archive_path, args, **kw: called.append(recording)
+        or False,
+    )
+
+    exit_code = main(["GP", "--config-dir", str(config_dir), "--get-duration"])
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert len(called) == 1
+    assert "no recordings found" not in out
 
 
 def _base_args(**overrides):
