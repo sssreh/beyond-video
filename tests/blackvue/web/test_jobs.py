@@ -1555,6 +1555,7 @@ def _ls_kwargs(**overrides):
         camera_id="kirby",
         archive_path=Path("/archive/kirby"),
         all=False,
+        full=False,
         from_=None,
         until=None,
         timestamp=None,
@@ -1598,6 +1599,20 @@ def test_start_bv_ls_all_flag_reaches_parsed_args(monkeypatch):
 
     runner = JobRunner()
     job = runner.start_bv_ls(**_ls_kwargs(all=True))
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_ls_full_flag_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say):
+        assert args.full is True
+        return 0
+
+    monkeypatch.setattr(bv_ls_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_ls(**_ls_kwargs(full=True))
 
     _wait_until(lambda: job.snapshot()[0].is_finished)
     assert job.snapshot()[0] == JobStatus.SUCCEEDED

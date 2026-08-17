@@ -389,6 +389,7 @@ class JobRunner:
         camera_id: str,
         archive_path: Path,
         all: bool,
+        full: bool,
         from_: str | None,
         until: str | None,
         timestamp: str | None,
@@ -421,6 +422,8 @@ class JobRunner:
 
         if all:
             argv.append("--all")
+        if full:
+            argv.append("--full")
         if from_:
             argv += ["--from", from_]
         if until:

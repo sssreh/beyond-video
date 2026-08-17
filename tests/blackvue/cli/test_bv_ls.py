@@ -437,6 +437,55 @@ def test_bv_ls_hides_source_column_for_a_blackvue_archive(tmp_path):
     assert not any("Source" in line for line in lines)
 
 
+def test_bv_ls_hides_asset_columns_with_no_matches_by_default(tmp_path):
+    # A folder-adapter archive with just a bare video (no generated
+    # assets, no separate Rear/Int/GPS/G-sensor columns - GoPro/folder
+    # never populates those) should only show a Front column, not
+    # every possible asset type padded out with blank cells.
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    video = clips / "clip.mp4"
+    video.write_bytes(b"x")
+    os.utime(video, (1700000000, 1700000000))
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), adapter_id="folder", say=lines.append)
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    # "Front" is FRONT's own column label - it's also
+    # SCENE_DESCRIPTION's label (under a different group), so a count
+    # of 1 here confirms only the real Front column survived the
+    # filter.
+    assert asset_header.count("Front") == 1
+    assert "Aud" not in asset_header
+    assert "Dur" not in asset_header
+    assert "SRT" not in asset_header
+
+
+def test_bv_ls_full_flag_shows_every_asset_column_even_when_empty(tmp_path):
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    video = clips / "clip.mp4"
+    video.write_bytes(b"x")
+    os.utime(video, (1700000000, 1700000000))
+
+    lines = []
+    exit_code = bv_ls(
+        str(tmp_path), adapter_id="folder", full=True, say=lines.append
+    )
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    # --full keeps every column regardless of matches - "Front" now
+    # appears twice (the real Front video column, plus the Scene
+    # -description-front column sharing the same label).
+    assert asset_header.count("Front") == 2
+    assert "Aud" in asset_header
+    assert "Dur" in asset_header
+    assert "SRT" in asset_header
+
+
 def test_bv_ls_default_adapter_ignores_a_folder_shaped_archive(
     tmp_path, capsys
 ):

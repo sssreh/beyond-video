@@ -90,6 +90,27 @@ def _source_column_needed(groups: list[DisplayGroup], root: Path) -> bool:
     return False
 
 
+def _assets_with_any_match(
+    groups: list[DisplayGroup], assets: list[Asset]
+) -> list[Asset]:
+    """Filter `assets` down to only those with at least one X somewhere
+    in `groups` - an asset column nobody has is dead width on every
+    single row, most noticeably for GoPro/folder archives (no REAR,
+    INT, GPS, or GSENSOR columns ever match - that telemetry lives
+    inside FRONT itself, not a separate asset) but just as real for a
+    BlackVue archive that's never had --describe-scene or --diarize
+    run, whose Scene/diarized-Transcript columns are permanently
+    blank. `--full` (see parse_args()) skips this filter entirely for
+    someone who wants to see every possible column regardless of
+    whether this particular archive happens to use it."""
+
+    return [
+        asset
+        for asset in assets
+        if any(group.has(asset) for group in groups)
+    ]
+
+
 def display_groups(
     archive: Archive,
     recordings,
@@ -212,6 +233,7 @@ def bv_ls(
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     adapter_id: str = DEFAULT_ADAPTER_ID,
+    full: bool = False,
     say=print,
 ) -> int:
     """List recordings.
@@ -226,6 +248,11 @@ def bv_ls(
     returns an Archive-shaped object (see CameraAdapter.open_archive()'s
     own docstring on duck-type compatibility) - everything below this
     line is unchanged from when it only ever saw a real Archive.
+
+    `full` shows every possible asset column even if nothing in this
+    archive/filter ever matches it (default: off - columns with zero
+    matches across every displayed row are dropped, see
+    _assets_with_any_match()'s own docstring for why).
 
     `say` is injectable (default: real stdout via print) - see
     print_trips()'s own docstring above for why. The grouped-table
@@ -286,6 +313,8 @@ def bv_ls(
     )
 
     assets = Asset.display_order()
+    if not full:
+        assets = _assets_with_any_match(groups, assets)
     archive_root = Path(path)
 
     recording_width = max(
@@ -402,6 +431,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--all",
         action="store_true",
         help="Show every recording instead of grouped output.",
+    )
+
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Show every possible asset column, even ones nothing in "
+            "this listing ever matches. By default, a column with no "
+            "X anywhere in the current output is dropped - most "
+            "archives only ever populate a subset of columns (e.g. a "
+            "GoPro/folder-adapter archive never has Rear/Int/GPS/"
+            "G-sensor columns, and a BlackVue archive that's never had "
+            "--describe-scene or --diarize run never has those either)."
+        ),
     )
 
     parser.add_argument(
@@ -522,6 +565,7 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         adapter_id=adapter_id,
+        full=args.full,
         say=say,
     )
 

@@ -14061,3 +14061,57 @@ failures are the pre-existing, unrelated `movement_bridges_gap()
 missing 1 required keyword-only argument: 'adapter'` bug in
 `trip_builder.py`, confirmed present before this change too via `git
 stash`/`git stash pop`, left untouched as out of scope).
+
+## Drop empty asset columns from bv-ls by default, add --full to opt back in (done, this session, #934-935)
+
+Christer's own suggestion: bv-ls output is wide, and an asset column
+nobody ever matches is dead width on every row - most noticeable for
+GoPro/folder archives (never Rear/Int/GPS/G-sensor - that telemetry
+lives inside FRONT itself, not a separate asset), but just as real
+for a BlackVue archive that's never had `--describe-scene` or
+`--diarize` run (permanently blank Scene/diarized-Transcript
+columns). New default: an asset column with no `X` anywhere in the
+current output is dropped entirely, both in grouped and `--all`
+views. `--full` opts back into showing every possible column
+regardless of matches, for anyone who wants the old behavior.
+
+Added `_assets_with_any_match(groups, assets)` to `bv_ls.py` -
+filters `Asset.display_order()` down to only assets where
+`any(group.has(asset) for group in groups)`. Applied right after
+`assets = Asset.display_order()`, before the existing
+`_asset_group_spans()` header-grouping logic runs - needed no changes
+there since it just operates on whatever list it's handed, so
+Transcript/Translate's two-row group header naturally shrinks with
+the rest of the row instead of needing special-case handling.
+
+`--full` threaded through the same way every other bv-ls flag is:
+`bv_ls(full=...)` param, `parse_args()` flag, `_run()` call site, and
+- per `start_bv_ls()`'s own "full flag parity with the CLI" docstring
+convention - through the web layer too: `JobRunner.start_bv_ls(full:
+bool)`, `/jobs/bv-ls` POST route's `full: bool = Form(False)`, and a
+new checkbox in `job_new_bv_ls.html`.
+
+Test discriminator: `Asset.FRONT`'s label is `"Front"` with no group;
+`Asset.SCENE_DESCRIPTION`'s label is also `"Front"` but under a
+`"Scene"` group. So a bare folder-adapter archive (just one video,
+nothing generated) shows `"Front"` once by default (only the real
+Front column survives) and twice under `--full` (Scene description's
+matching-labeled column comes back too) - a clean, unambiguous
+assertion for both directions of the behavior.
+
+Files changed: `src/blackvue/cli/bv_ls.py`,
+`src/blackvue/web/jobs.py`, `src/blackvue/web/app.py`,
+`src/blackvue/web/templates/job_new_bv_ls.html`,
+`tests/blackvue/cli/test_bv_ls.py`, `tests/blackvue/web/test_jobs.py`,
+`docs/man/bv-ls.md`.
+
+Verified: `test_bv_ls.py` 24/26 (2 new tests pass; same 2 pre-existing
+unrelated `trip_builder.py` failures as above). Web-layer changes
+(`jobs.py`, `app.py`, `test_jobs.py`) could not be run - `fastapi` is
+not installed in this sandbox - so verified instead via `python3 -m
+py_compile` (clean) plus a manual read-through confirming `full` is
+threaded consistently with every other boolean flag in
+`start_bv_ls()`/the `/jobs/bv-ls` route (same `Form(False)` pattern,
+same `if full: argv.append("--full")` pattern, same
+`_ls_kwargs()`/new-test placement as the existing `all`/`trips`
+tests).

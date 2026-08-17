@@ -7,7 +7,7 @@
 ## SYNOPSIS
 
 ```
-bv-ls [--all] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
+bv-ls [--all] [--full] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
       [--trips] [--max-gap MINUTES] [--movement] [--no-duration]
       [--gap-tolerance SECONDS] [--config-dir DIR]
       [PATH]
@@ -33,6 +33,7 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 |---|---|
 | `--config-dir DIR` | Directory camera configs live in, for resolving `PATH` as a camera id. Default: the platform's standard config directory (same default as `bv-config(1)`). |
 | `--all` | Show every recording instead of grouped output. |
+| `--full` | Show every possible asset column, even ones nothing in the current output ever matches. By default those columns are dropped (see OUTPUT below). |
 | `--from TIMESTAMP` | Show recordings from this timestamp. |
 | `--until TIMESTAMP` | Show recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Show recordings matching this timestamp or prefix. |
@@ -46,6 +47,8 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 ## OUTPUT
 
 **Grouped/`--all` view:** one row per recording (or group), one column per known asset type (video, GPS, g-sensor, thumbnail, transcript, translation, etc.) - `X` if that asset exists on disk, blank otherwise - plus a total size column. A **Source** column (the real on-disk filename) is added automatically for adapters whose filenames aren't already id-derived (e.g. a GoPro's `GH010001.MP4`) - useful for spotting a same-id collision if two different files ever resolve to the same synthesized recording id. It's hidden for BlackVue archives, where the filename is always id-derived and would just repeat the Recording column.
+
+By default, an asset column with no `X` anywhere in the current output is dropped entirely rather than shown blank on every row - most archives only ever populate a subset of columns (a GoPro/folder-adapter archive never has Rear/Int/GPS/G-sensor columns; a BlackVue archive that's never had `--describe-scene` or `--diarize` run never has those columns either). Pass `--full` to always show every column.
 
 **`--trips` view:** columns are Trip (label), Start, End, Duration, Recs (recording count), Size.
 

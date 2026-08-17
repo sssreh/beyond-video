@@ -66,6 +66,12 @@
     </label>
 
     <label class="field-label">
+      <input type="checkbox" id="full" name="full" value="true" style="width: auto; margin: 0;">
+      Show every asset column (--full)
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">By default, an asset column with no match anywhere in this listing is dropped entirely (e.g. a GoPro archive never has Rear/Int/GPS/G-sensor columns). Check this to always show every possible column.</span></span>
+    </label>
+
+    <label class="field-label">
       <input type="checkbox" id="trips" name="trips" value="true" style="width: auto; margin: 0;">
       List detected trips instead of recordings
       <span class="help-tip" tabindex="0">?<span class="tooltip-text">One row per detected trip (start, end, duration, recording count) instead of one row per recording/group. A trip is a run of recordings with no gap longer than Max gap between them - the same detection the Trips page's own grouping uses.</span></span>
