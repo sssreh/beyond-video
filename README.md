@@ -56,6 +56,16 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 
 Should print `True`. An 8B-parameter vision-language model on CPU is extremely slow (can look "stuck" on the very first recording for many minutes) - if `bv-scribe`/`bv-generate --describe-scene` seems hung with no output, this is the first thing to check.
 
+**First-run model downloads.** `pip install` only installs the Python packages - the actual AI models are pulled the first time you *use* the feature that needs them, straight from Hugging Face, with no separate download step and no prompt:
+
+| Feature | Model | Size | Cached under |
+|---|---|---|---|
+| `bv-generate --transcribe` | faster-whisper (`small` on CPU, `large` on GPU by default) | ~500MB (`small`) to ~3GB (`large`) | `~/.cache/huggingface` |
+| `bv-generate --describe-scene`, `bv-scribe` | `Qwen/Qwen3-VL-8B-Instruct` | ~16GB | `~/.cache/huggingface` |
+| `bv-generate --diarize` | pyannote speaker-diarization | a few hundred MB | `~/.cache/huggingface` |
+
+The first two download automatically and silently - the process just sits there pulling data before doing any real work, which can look identical to a hang on a slow connection. `--diarize` is the one exception: it needs a one-time manual step first (accept the model license at <https://huggingface.co/pyannote/speaker-diarization-community-1> and pass a Hugging Face token via `--hf-token`/`HF_TOKEN`) - see `docs/man/bv-generate.md` for details. All three are one-time downloads; later runs reuse the same cache.
+
 ## Quick start
 
 ```
