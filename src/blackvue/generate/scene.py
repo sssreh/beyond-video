@@ -38,12 +38,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+from ..archive.photo import is_photo_path
 from .media import MediaToolError
 
 # Was Qwen/Qwen2.5-VL-7B-Instruct (the standalone scene-scribe
@@ -508,10 +510,67 @@ def _run_single_image_prompt(
     )[0]
 
 
+def _photo_as_pil_image(path: Path):
+    """Decode a still photo (any of archive/photo.py's PHOTO_EXTENSIONS
+    - jpg/jpeg/png/heic/gpr) into a PIL Image via an ffmpeg subprocess,
+    piped through memory rather than handed to PIL's own format
+    support directly. PIL doesn't reliably cover every one of those
+    extensions on its own - HEIC needs a plugin it doesn't ship with,
+    GPR is GoPro's own RAW format - the exact same reason
+    export/media.py's render_image_as_video() already decodes photos
+    via ffmpeg rather than PIL (see that function's own docstring).
+    ffmpeg picks its decoder from the source extension, so this covers
+    every PHOTO_EXTENSIONS member unmodified, no per-format branching
+    needed here.
+
+    Real bug this exists to fix: describe_scene() unconditionally
+    built a `{"type": "video", ...}` message for every input, so
+    bv-generate --describe-scene / bv-scribe on a photo recording fed
+    a still image straight into qwen_vl_utils' video-decoding path
+    (decord), which can't open a JPEG/PNG/etc at all - "pictures dont
+    get scene asset" (Christer). describe_scene() below now branches
+    on is_photo_path() and uses this helper to build a real `"image"`
+    content element instead."""
+
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-v", "error",
+                "-i", str(path),
+                "-frames:v", "1",
+                "-f", "image2pipe",
+                "-vcodec", "png",
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"could not decode photo {path.name}: "
+            f"{exc.stderr.decode('utf-8', errors='replace')}"
+        ) from exc
+
+    return PILImage.open(BytesIO(result.stdout)).convert("RGB")
+
+
 def _extract_full_res_frames(video_path: Path, count: int):
     """Grab `count` evenly-spaced frames from the source video at full
     native resolution, for the zoom pipeline's grounding step. Returns
-    a list of (timestamp_seconds, PIL.Image) tuples."""
+    a list of (timestamp_seconds, PIL.Image) tuples. For a still photo
+    (is_photo_path()), there's only ever one "frame" - the photo
+    itself, decoded via _photo_as_pil_image() rather than decord (which
+    can't open a still image at all) - so this returns a single
+    t=0.0 entry instead of sampling anything."""
+
+    if is_photo_path(video_path):
+        return [(0.0, _photo_as_pil_image(video_path))]
 
     import decord
     from PIL import Image as PILImage
@@ -812,6 +871,23 @@ def describe_scene(
     model is cached per (model name, cpu) pair, so repeated calls
     within one process (e.g. bv-scribe's batch mode) only pay the load
     cost once.
+
+    video_path may be a still photo (is_photo_path() - jpg/jpeg/png/
+    heic/gpr) as well as a real video: a `Recording`'s FRONT/REAR asset
+    is exactly the same either way (see archive/photo.py's own module
+    docstring, "a picture is also a video, but 1 frame only"), and
+    neither bv-generate's --describe-scene pass nor bv-scribe knows or
+    checks which one a given recording is before calling this function.
+    A photo builds a single `{"type": "image", ...}` content element
+    (via _photo_as_pil_image()) instead of a `{"type": "video", ...}`
+    one - the fix for a real gap Christer hit: every call here used to
+    build a "video" element unconditionally, so a photo got handed to
+    qwen_vl_utils' video-decoding path (decord), which can't open a
+    still image at all - "pictures dont get scene asset" (Christer).
+    fps/max_frames don't apply to a single image and are omitted for
+    that branch; everything else (prompt, resized_width/height, the
+    zoom-signs sub-pipeline, the disclaimer footer) works identically
+    either way.
     """
 
     if opts is None:
@@ -824,19 +900,28 @@ def describe_scene(
     loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu)
 
     prompt = build_prompt(opts.task)
-    video_ele = {
-        "type": "video",
-        "video": str(video_path.resolve()),
-        "fps": opts.fps,
-        "max_frames": opts.max_frames,
-    }
-    if opts.resized_width and opts.resized_height:
-        video_ele["resized_width"] = opts.resized_width
-        video_ele["resized_height"] = opts.resized_height
-    else:
-        video_ele["max_pixels"] = opts.max_pixels
 
-    messages = [{"role": "user", "content": [video_ele, {"type": "text", "text": prompt}]}]
+    if is_photo_path(video_path):
+        photo_image = _photo_as_pil_image(video_path)
+        photo_image = _crop_overlay_from_image(photo_image, opts.crop_top, opts.crop_bottom)
+        content_ele = {"type": "image", "image": photo_image}
+        if opts.resized_width and opts.resized_height:
+            content_ele["resized_width"] = opts.resized_width
+            content_ele["resized_height"] = opts.resized_height
+    else:
+        content_ele = {
+            "type": "video",
+            "video": str(video_path.resolve()),
+            "fps": opts.fps,
+            "max_frames": opts.max_frames,
+        }
+        if opts.resized_width and opts.resized_height:
+            content_ele["resized_width"] = opts.resized_width
+            content_ele["resized_height"] = opts.resized_height
+        else:
+            content_ele["max_pixels"] = opts.max_pixels
+
+    messages = [{"role": "user", "content": [content_ele, {"type": "text", "text": prompt}]}]
     text = loaded.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )

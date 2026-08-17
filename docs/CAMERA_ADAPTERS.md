@@ -1490,6 +1490,100 @@ Files changed: `src/blackvue/archive/recording.py`,
 `tests/blackvue/trip/test_trip_builder.py`,
 `tests/blackvue/adapters/test_folder_adapter.py`.
 
+## Container-tag GPS fallback + photo scene description (2026-08-17)
+
+Two follow-up reports from Christer on the same real ffprobe dump
+(the stock/downloaded clips mixed into his GoPro `GP` archive that
+motivated the timestamp-reliability feature above). Verbatim:
+
+    This looks like gps coordinates
+    TAG:location-{=+05.0448-073.7965/
+    TAG:location=+05.0448-073.7965/
+    not found by bv-generate.
+    pictures dont get scene asset
+
+**Fix 1 - container-tag GPS fallback
+(`archive/container_gps.py`, new; `web/app.py`).** He's right - that's
+a real single-point GPS fix in ISO 6709's "typical" representation (a
+signed latitude, a signed longitude, an optional signed altitude, no
+separators, a trailing `/`), muxed into the container by whatever
+tool originally produced or re-encoded the file. Nothing read it.
+Added `container_gps.py`, mirroring `archive/exif.py`'s `exif_gps_fix()`
+closely: `_probe_container_location()` reads the ffprobe
+`format_tags=location` entry and parses it via a digit-width-agnostic
+signed-number regex (`[+-]\d+(?:\.\d+)?`) rather than a strict
+fixed-width pattern, since ISO 6709 doesn't mandate one precision;
+`container_location_fix(path, timestamp=...)` wraps the result as a
+`telemetry.gps_reader.GpsFix` (`valid=True`, `speed_kmh`/`course`
+always `None` - a container tag is one static point, not a track).
+Wired into `web/app.py`'s `/archive/{camera_id}/{recording_id}/location`
+route as a second fallback, checked after the existing EXIF-for-photo
+fallback (task #957) when the adapter reports no GPS at all: a photo
+tries EXIF first, then (if that also comes up empty, or the recording
+is a real video) the container tag. Both fallbacks are single-point
+fixes, so the same value now serves as both "start" and "stop" for
+either source, not just the EXIF case.
+
+**Fix 2 - photo scene description (`generate/scene.py`).**
+`describe_scene()` built a `{"type": "video", ...}` message
+unconditionally, for every input - so a photo recording's FRONT file
+got handed straight to qwen_vl_utils' video-decoding path (decord),
+which can't open a still image at all. `_do_describe_scene()`
+(bv-generate) and `_describe_recording()` (bv-scribe) both pass
+photo paths straight through with no photo-aware skip of their own
+(unlike the audio/transcribe actions, which do skip photos - see task
+#946 - scene description was always meant to run on photos too, a
+vision model reading a still image being at least as sensible as
+reading a video frame). Fixed at the shared root: `describe_scene()`
+now branches on `archive/photo.py`'s `is_photo_path()` and builds a
+real `{"type": "image", ...}` element instead, via a new
+`_photo_as_pil_image()` helper - decodes through an `ffmpeg`
+subprocess piped to a PNG in memory rather than handing the path to
+PIL directly, since PIL doesn't reliably cover every
+`PHOTO_EXTENSIONS` member (HEIC needs a plugin this project doesn't
+ship; GPR is GoPro's own RAW format) - the same reasoning
+`export/media.py`'s `render_image_as_video()` already uses ffmpeg
+over PIL for. `_extract_full_res_frames()` (the zoom-into-signs
+sub-pipeline's own frame source) got the same branch: a photo has no
+timeline to sample, so it returns a single `(0.0, image)` entry via
+`_photo_as_pil_image()` instead of reaching `decord.VideoReader` at
+all. `crop_top`/`crop_bottom` overlay cropping (previously
+video-tensor-only, via `_crop_top_bottom()`) now applies to the
+decoded PIL image directly for a photo, via the same
+`_crop_overlay_from_image()` the zoom pipeline already had.
+
+**Tests.** `test_container_gps.py` (new, 6 tests, real ffmpeg
+fixtures): reads back Christer's exact real tag shape
+(`+05.0448-073.7965/`, no altitude); a tag with an altitude field;
+returns `None` for a plain video with no tag and for an unreadable
+file; `container_location_fix()` builds a valid single-point `GpsFix`
+and returns `None` without a tag. `test_scene.py` gained a "photo
+support" section (5 tests): `_photo_as_pil_image()` decodes a real
+JPEG via ffmpeg and raises `MediaToolError` on an unreadable one;
+`_extract_full_res_frames()` returns exactly one frame for a photo
+without ever reaching decord (not even installed in this sandbox - a
+`ModuleNotFoundError` here would mean the video branch was wrongly
+taken); `describe_scene()` builds a real `"image"` content element
+(a decoded PIL Image, not a path string) for a photo, and still
+builds the original `"video"` element for an ordinary path - a
+regression check. Full sweep: `test_container_gps.py` 6/6,
+`test_scene.py` 29/29, `test_exif.py` 15/15, `test_photo.py` 18/18,
+`test_archive_browser.py` 58/58, `test_bv_generate.py` 109/111 (2
+pre-existing/unrelated - a sandbox-only `tomllib`-stub config-write
+quirk, confirmed present before this session's changes too via `git
+stash`), `test_bv_scribe.py` 25/26 (1 pre-existing/unrelated, same
+cause), `test_trip_export.py` 173/175 (2 pre-existing/unrelated,
+already documented above). `web/app.py` itself can't be imported in
+this sandbox (no `fastapi` installed), so the route change was
+verified via `ast.parse()` and manual review only, not a live
+request.
+
+Files changed: `src/blackvue/archive/container_gps.py` (new),
+`src/blackvue/archive/__init__.py`, `src/blackvue/web/app.py`,
+`src/blackvue/generate/scene.py`,
+`tests/blackvue/archive/test_container_gps.py` (new),
+`tests/blackvue/generate/test_scene.py`.
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,

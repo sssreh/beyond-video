@@ -51,6 +51,7 @@ from fastapi.templating import Jinja2Templates
 from ..adapters.registry import get_adapter
 from ..adapters.telemetry_bridge import recording_has_gps
 from ..archive.asset import Asset
+from ..archive.container_gps import container_location_fix
 from ..archive.exif import exif_gps_fix
 from ..archive.photo import recording_is_photo
 from .archive_browser import ArchiveRecording
@@ -619,22 +620,42 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             # No `.gps` sidecar (or the adapter has no GPS capability
             # at all) - the ordinary case for a photo recording, which
             # never has one (see archive/photo.py's own module
-            # docstring). A photo can still carry its own GPS fix
-            # right in its EXIF data though (most phone/GPS-equipped
-            # cameras write one), so it gets one more real chance here
-            # before this page gives up and shows "no GPS log" - a
-            # real photo, dropped into a trip, otherwise had no way at
-            # all to show a location on this page even when it
-            # actually has one.
-            exif_fix = None
+            # docstring), and also the ordinary case for a real video
+            # scanned by FolderAdapter/GoProAdapter with no embedded
+            # telemetry track. Two more real chances before this page
+            # gives up and shows "no GPS log":
+            #
+            # 1. A photo can still carry its own GPS fix right in its
+            #    EXIF data (most phone/GPS-equipped cameras write one)
+            #    - exif_gps_fix() (task #957).
+            # 2. A real video can carry a single-point GPS fix in its
+            #    own container metadata (the `location`/`location-eng`
+            #    ISO 6709 format tag QuickTime/MP4-family tools mux
+            #    in) - container_location_fix(). Real report from
+            #    Christer: a real ffprobe dump on a stock/downloaded
+            #    clip mixed into his GoPro archive showed exactly this
+            #    tag (`TAG:location=+05.0448-073.7965/`), and nothing
+            #    read it - "This looks like gps coordinates ... not
+            #    found by bv-generate."
+            #
+            # Without either fallback, a photo or a telemetry-less
+            # video dropped into a trip had no way at all to show a
+            # location on this page even when it actually has one.
+            fallback_fix = None
+            front = recording.recording.file(Asset.FRONT)
+
             if recording_is_photo(recording.recording):
-                front = recording.recording.file(Asset.FRONT)
                 if front is not None:
-                    exif_fix = exif_gps_fix(
+                    fallback_fix = exif_gps_fix(
                         front.path, timestamp=recording.recording.id.timestamp
                     )
 
-            if exif_fix is None:
+            if fallback_fix is None and front is not None:
+                fallback_fix = container_location_fix(
+                    front.path, timestamp=recording.recording.id.timestamp
+                )
+
+            if fallback_fix is None:
                 error = "This recording has no GPS log."
             else:
                 geocode_cache_dir = default_config_dir() / ".osm_cache"
@@ -643,12 +664,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     start_google_maps_url,
                     start_address,
                     start_address_error,
-                ) = _describe_gps_fix(exif_fix, geocode_cache_dir)
-                # A photo is a single instant, not a span - the same
-                # one EXIF fix serves as both "start" and "stop" so
-                # the template's existing start/stop layout works
-                # unchanged rather than needing its own photo-specific
-                # branch.
+                ) = _describe_gps_fix(fallback_fix, geocode_cache_dir)
+                # Both fallback sources are single-point fixes, not a
+                # span (a photo is one instant; a container location
+                # tag is one static point with no separate start/stop
+                # of its own) - the same fix serves as both "start"
+                # and "stop" so the template's existing start/stop
+                # layout works unchanged rather than needing its own
+                # single-point-specific branch.
                 stop_coordinates = start_coordinates
                 stop_google_maps_url = start_google_maps_url
                 stop_address = start_address
