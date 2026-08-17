@@ -71,6 +71,7 @@ from blackvue.generate.media import load_or_compute_duration
 from blackvue.generate.media import photo_aware_duration
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
+from blackvue.telemetry.movement import gps_implies_impossible_jump
 from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
@@ -495,6 +496,7 @@ def bv_export(
     timestamp: str | None = None,
     max_gap_minutes: int | None = None,
     movement: bool = False,
+    gps_split: bool = False,
     duration: bool = True,
     duration_heal_archive: bool = False,
     gap_tolerance_seconds: int | None = None,
@@ -780,6 +782,11 @@ def bv_export(
         if movement
         else None
     )
+    force_split = (
+        functools.partial(gps_implies_impossible_jump, adapter=adapter)
+        if gps_split
+        else None
+    )
 
     # Trip *detection* (below) is bounded to `interval` rather than
     # scanning the whole archive on every run - see TripBuilder.
@@ -824,6 +831,7 @@ def bv_export(
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
         max_parking_duration=max_parking_duration,
+        force_split=force_split,
     )
     if interval.first == "00000000_000000" and interval.last == "99999999_999999":
         # A true full-archive export (no --timestamp/--from/--until at
@@ -1147,6 +1155,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "day's footage. Until that has a fix, --max-gap (plus "
             "--gap-tolerance and --duration's real-span adjustment) is "
             "the sole trip-splitting rule unless you opt into this."
+        ),
+    )
+
+    parser.add_argument(
+        "--gps-split",
+        dest="gps_split",
+        action="store_true",
+        default=False,
+        help=(
+            "Force a trip split between two recordings whose GPS "
+            "position implies an impossible jump (e.g. a stock/"
+            "downloaded clip mixed into the archive that happens to "
+            "land within --max-gap of real footage, but was shot "
+            "somewhere else entirely). Off by default: this adds a "
+            "real per-pair GPS probe (an EXIF read and/or an ffprobe "
+            "subprocess) to every consecutive pair of recordings, not "
+            "just ones near an already-ambiguous gap."
         ),
     )
 
@@ -2061,6 +2086,7 @@ def _run(
             timestamp=args.timestamp,
             max_gap_minutes=args.max_gap_minutes,
             movement=args.movement,
+            gps_split=args.gps_split,
             duration=args.duration,
             duration_heal_archive=args.duration_heal_archive,
             gap_tolerance_seconds=args.gap_tolerance_seconds,

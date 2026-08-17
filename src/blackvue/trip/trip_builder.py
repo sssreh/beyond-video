@@ -102,6 +102,11 @@ _BOUNDARY_MARGIN_GROWTH = 2
 # build() only ever checks truthiness, never the exact type.
 Bridge = Callable[[Recording, Recording], "str | bool | None"]
 RecordingDuration = Callable[[Recording], "int | None"]
+# Same shape as Bridge (a short reason string, or False/None for "no
+# evidence") but inverted in effect - see `force_split`'s own docstring
+# below and telemetry/movement.py's gps_implies_impossible_jump(), the
+# one function this project currently wires in as a ForceSplit.
+ForceSplit = Callable[[Recording, Recording], "str | bool | None"]
 
 
 class TripBuilder:
@@ -205,6 +210,29 @@ class TripBuilder:
     "timestamp_reliable", True)`, so any recording (real or a test
     double) that doesn't define the attribute at all is treated as
     reliable - unaffected, exactly as if this check didn't exist.
+
+    An optional `force_split` callback is `bridge`'s mirror image:
+    where `bridge(previous, recording)` looks for evidence to *keep*
+    an over-threshold gap together, `force_split(previous, recording)`
+    looks for evidence to *split* recordings the ordinary gap rule
+    would otherwise have kept together - e.g. an implausible GPS
+    position jump implying these two recordings can't really be part
+    of the same trip (see telemetry/movement.py's
+    gps_implies_impossible_jump(), a stock/downloaded clip mixed into
+    a real archive being the motivating case). Checked unconditionally
+    for every pair (unlike `bridge`, which is only consulted once the
+    gap already exceeds threshold) but still skipped once
+    `parking_cap_exceeded`/`unreliable_timestamp` have already decided
+    to split - there's nothing left for it to usefully add once one of
+    those has already forced the split. A truthy return (conventionally
+    a short reason string, same convention as `bridge`) forces a split
+    even for a gap well within `max_gap`; never offered to `bridge`,
+    same reasoning as the parking-cap/unreliable-timestamp checks above
+    - this is a deliberate correctness decision about these two
+    specific recordings, not ambiguous gap evidence for movement
+    bridging to weigh in on. Unset (the default) is a no-op, same
+    "opt-in feature costs nothing when unused" shape as `bridge`/
+    `max_parking_duration`.
     """
 
     def __init__(
@@ -215,12 +243,14 @@ class TripBuilder:
         recording_duration: RecordingDuration | None = None,
         gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
         max_parking_duration: timedelta | None = None,
+        force_split: ForceSplit | None = None,
     ):
         self.max_gap = max_gap
         self.bridge = bridge
         self.recording_duration = recording_duration
         self.gap_tolerance = gap_tolerance
         self.max_parking_duration = max_parking_duration
+        self.force_split = force_split
 
     def _end_timestamp(self, recording: Recording) -> datetime:
         if self.recording_duration is not None:
@@ -333,15 +363,32 @@ class TripBuilder:
                 > self.max_parking_duration.total_seconds()
             )
 
-            # A cap-forced split (or an unreliable-timestamp forced
-            # split, below) is never offered to bridge - see build()'s
-            # own docstring for why (both are deliberate policy
-            # decisions / correctness guards, not ambiguous gap
-            # evidence for movement bridging to weigh in on).
+            # Checked unconditionally (not gated on gap > threshold,
+            # unlike bridge_reason below) since force_split is meant to
+            # split recordings the ordinary gap rule alone would have
+            # kept together - see TripBuilder's own docstring on
+            # `force_split`. Still skipped once parking_cap_exceeded/
+            # unreliable_timestamp have already decided to split -
+            # nothing left for it to usefully add at that point.
+            split_reason = None
+            if (
+                not parking_cap_exceeded
+                and not unreliable_timestamp
+                and self.force_split
+            ):
+                split_reason = self.force_split(previous, recording)
+
+            # A cap-forced split (or an unreliable-timestamp or
+            # force_split-forced split, below) is never offered to
+            # bridge - see build()'s own docstring for why (all three
+            # are deliberate policy decisions / correctness guards, not
+            # ambiguous gap evidence for movement bridging to weigh in
+            # on).
             bridge_reason = None
             if (
                 not parking_cap_exceeded
                 and not unreliable_timestamp
+                and not split_reason
                 and gap > threshold
                 and self.bridge
             ):
@@ -381,6 +428,22 @@ class TripBuilder:
                         "metadata, fell back to file mtime), so it's never "
                         "auto-grouped with a neighboring recording "
                         "regardless of the measured gap"
+                    )
+                trips.append(
+                    Trip(
+                        tuple(current_trip),
+                        recording_duration=self.recording_duration,
+                    )
+                )
+                current_trip = [recording]
+                trailing_parking_seconds = parking_increment
+            elif split_reason:
+                if reasons is not None:
+                    reasons[recording.id] = (
+                        f"starts a new trip - gap since {previous.id} was "
+                        f"{gap_desc}, within the {threshold_desc} "
+                        "max_gap+gap_tolerance threshold, but force_split "
+                        f"required a split anyway: {split_reason}"
                     )
                 trips.append(
                     Trip(

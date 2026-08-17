@@ -732,6 +732,175 @@ def test_fake_recordings_without_timestamp_reliable_attribute_are_unaffected():
     assert len(trips) == 1
 
 
+# --- force_split isolation ---
+#
+# Christer's own idea: split trips around a stock/downloaded clip
+# mixed into a real archive by detecting an implausible GPS jump
+# between two consecutive recordings, even when the ordinary gap rule
+# alone would have kept them together (see telemetry/movement.py's
+# gps_implies_impossible_jump(), the real function wired in here via
+# --gps-split). force_split is deliberately the mirror image of
+# `bridge`: bridge only ever *keeps together* what the gap rule would
+# split; force_split only ever *splits* what the gap rule would keep
+# together.
+
+
+def test_force_split_splits_recordings_well_within_the_gap_threshold():
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_100030")),
+    ]
+
+    trips = TripBuilder(
+        max_gap=timedelta(minutes=10), force_split=lambda prev, cur: "far apart"
+    ).build(recordings)
+
+    assert len(trips) == 2
+
+
+def test_force_split_returning_falsy_does_not_split():
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_100030")),
+    ]
+
+    trips = TripBuilder(
+        max_gap=timedelta(minutes=10), force_split=lambda prev, cur: None
+    ).build(recordings)
+
+    assert len(trips) == 1
+
+
+def test_force_split_is_checked_even_when_gap_already_exceeds_threshold():
+    # Unlike bridge (only consulted once a gap already exceeds
+    # threshold), force_split must fire here too - it's checked
+    # unconditionally, not gated on gap size.
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_103000")),
+    ]
+
+    trips = TripBuilder(
+        max_gap=timedelta(minutes=10), force_split=lambda prev, cur: "far apart"
+    ).build(recordings)
+
+    assert len(trips) == 2
+
+
+def test_force_split_is_not_consulted_once_parking_cap_already_split():
+    first = Recording(id=RecordingId("20260715_100000_N"))
+    second = Recording(id=RecordingId("20260715_100500_P"))
+    third = Recording(id=RecordingId("20260715_120000_N"))
+
+    duration = _duration_lookup({str(second.id): 90 * 60})
+
+    calls = []
+
+    def force_split(prev, cur):
+        calls.append((prev.id, cur.id))
+        return "far apart"
+
+    trips = TripBuilder(
+        recording_duration=duration,
+        max_parking_duration=timedelta(minutes=60),
+        force_split=force_split,
+    ).build([first, second, third])
+
+    assert len(trips) == 3
+    assert calls == []
+
+
+def test_force_split_is_not_consulted_once_unreliable_timestamp_already_split():
+    first = Recording(id=RecordingId("20260816_144000_V"))
+    second = Recording(
+        id=RecordingId("20260816_144005_V"), timestamp_reliable=False
+    )
+
+    calls = []
+
+    def force_split(prev, cur):
+        calls.append((prev.id, cur.id))
+        return "far apart"
+
+    trips = TripBuilder(max_gap=timedelta(minutes=5), force_split=force_split).build(
+        [first, second]
+    )
+
+    assert len(trips) == 2
+    assert calls == []
+
+
+def test_force_split_is_never_offered_to_bridge():
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_100030")),
+    ]
+
+    bridge_calls = []
+
+    def bridge(prev, cur):
+        bridge_calls.append((prev, cur))
+        return True
+
+    trips = TripBuilder(
+        max_gap=timedelta(minutes=10),
+        bridge=bridge,
+        force_split=lambda prev, cur: "far apart",
+    ).build(recordings)
+
+    assert len(trips) == 2
+    assert bridge_calls == []
+
+
+def test_force_split_receives_the_bracketing_recordings():
+    seen = []
+
+    def force_split(prev, cur):
+        seen.append((prev.id.timestamp, cur.id.timestamp))
+        return None
+
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_100030")),
+        FakeRecording(ts("20260715_100100")),
+    ]
+
+    TripBuilder(max_gap=timedelta(minutes=10), force_split=force_split).build(
+        recordings
+    )
+
+    assert seen == [
+        (ts("20260715_100000"), ts("20260715_100030")),
+        (ts("20260715_100030"), ts("20260715_100100")),
+    ]
+
+
+def test_force_split_reason_appears_in_reasons():
+    first = Recording(id=RecordingId("20260715_100000_N"))
+    second = Recording(id=RecordingId("20260715_100030_N"))
+
+    reasons = {}
+    TripBuilder(
+        max_gap=timedelta(minutes=10),
+        force_split=lambda prev, cur: "implied speed too high",
+    ).build([first, second], reasons=reasons)
+
+    reason = reasons[second.id]
+    assert "starts a new trip" in reason
+    assert "implied speed too high" in reason
+
+
+def test_unset_force_split_matches_old_behaviour():
+    recordings = [
+        FakeRecording(ts("20260715_100000")),
+        FakeRecording(ts("20260715_100500")),
+    ]
+
+    trips = TripBuilder(max_gap=timedelta(minutes=10)).build(recordings)
+
+    assert len(trips) == 1
+
+
 # --- build_for_interval() ---
 #
 # Christer: bv-export's own archive-wide trip detection felt slow even

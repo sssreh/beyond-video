@@ -11,6 +11,7 @@ from blackvue.telemetry.movement import gps_shows_movement_at_end
 from blackvue.telemetry.movement import gps_shows_movement_at_start
 from blackvue.telemetry.movement import gsensor_shows_movement_at_end
 from blackvue.telemetry.movement import gsensor_shows_movement_at_start
+from blackvue.telemetry.movement import gps_implies_impossible_jump
 from blackvue.telemetry.movement import movement_bridges_gap
 
 # All coordinates/timestamps below are fabricated for testing.
@@ -201,4 +202,136 @@ def test_movement_bridges_gap_returns_none_when_files_show_no_movement(
 
     assert (
         movement_bridges_gap(previous, current, adapter=BlackVueAdapter()) is None
+    )
+
+
+# --- gps_implies_impossible_jump (integration against real files on disk) ---
+#
+# Christer's own idea, prompted by seeing bv-ls's GPS column correctly
+# populate for a GoPro archive's stock/downloaded clips: use the same
+# GPS-fallback machinery to detect when two recordings sitting within
+# --max-gap of each other were clearly shot somewhere else entirely
+# (an implausible position jump), not just whether GPS data exists at
+# all. Real telemetry is read via BlackVueAdapter.read_gps() through
+# telemetry_bridge.py, same as movement_bridges_gap() above - a single
+# $GPRMC sentence per file gives one fix, which resolve_recording_gps_
+# span() returns as both start_fix and end_fix for that recording.
+
+
+def _gps_fix_file(path, *, unix_ms: int, lat: str, ns: str, lon: str, ew: str):
+    path.write_text(
+        f"[{unix_ms}]$GPRMC,120000.00,A,{lat},{ns},{lon},{ew},"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+
+def test_gps_implies_impossible_jump_returns_a_reason_for_a_huge_jump_in_minutes(
+    tmp_path,
+):
+    previous_gps = tmp_path / "prev.gps"
+    _gps_fix_file(
+        previous_gps,
+        unix_ms=1700000000000,
+        lat="4807.038",
+        ns="N",
+        lon="01131.000",
+        ew="E",
+    )
+    current_gps = tmp_path / "cur.gps"
+    _gps_fix_file(
+        current_gps,
+        # 15 minutes later - comfortably over the 60s minimum-elapsed
+        # guard - but ~6300km away from `previous`'s own fix.
+        unix_ms=1700000000000 + 900_000,
+        lat="4042.000",
+        ns="N",
+        lon="07400.000",
+        ew="W",
+    )
+
+    previous = _recording("N", "20260720_100000", gps_path=previous_gps)
+    current = _recording("N", "20260720_101500", gps_path=current_gps)
+
+    result = gps_implies_impossible_jump(previous, current, adapter=BlackVueAdapter())
+
+    assert result is not None
+    assert "implied speed" in result
+    assert str(previous.id) in result
+    assert str(current.id) in result
+
+
+def test_gps_implies_impossible_jump_returns_none_for_a_plausible_speed(tmp_path):
+    previous_gps = tmp_path / "prev.gps"
+    _gps_fix_file(
+        previous_gps,
+        unix_ms=1700000000000,
+        lat="4807.038",
+        ns="N",
+        lon="01131.000",
+        ew="E",
+    )
+    current_gps = tmp_path / "cur.gps"
+    _gps_fix_file(
+        current_gps,
+        # 10 minutes later, ~2km away - well under a car's plausible
+        # speed, let alone the 300 km/h ceiling.
+        unix_ms=1700000000000 + 600_000,
+        lat="4808.000",
+        ns="N",
+        lon="01132.000",
+        ew="E",
+    )
+
+    previous = _recording("N", "20260720_100000", gps_path=previous_gps)
+    current = _recording("N", "20260720_101000", gps_path=current_gps)
+
+    assert (
+        gps_implies_impossible_jump(previous, current, adapter=BlackVueAdapter())
+        is None
+    )
+
+
+def test_gps_implies_impossible_jump_returns_none_when_elapsed_time_too_short(
+    tmp_path,
+):
+    # Same huge jump as the "returns a reason" test above, but only 10
+    # seconds apart - under _MIN_ELAPSED_SECONDS_FOR_SPEED_CHECK, so an
+    # ordinary GPS position error at this timescale can't be
+    # distinguished from a real jump. Must return None regardless of
+    # how far apart the two fixes are.
+    previous_gps = tmp_path / "prev.gps"
+    _gps_fix_file(
+        previous_gps,
+        unix_ms=1700000000000,
+        lat="4807.038",
+        ns="N",
+        lon="01131.000",
+        ew="E",
+    )
+    current_gps = tmp_path / "cur.gps"
+    _gps_fix_file(
+        current_gps,
+        unix_ms=1700000000000 + 10_000,
+        lat="4042.000",
+        ns="N",
+        lon="07400.000",
+        ew="W",
+    )
+
+    previous = _recording("N", "20260720_100000", gps_path=previous_gps)
+    current = _recording("N", "20260720_100010", gps_path=current_gps)
+
+    assert (
+        gps_implies_impossible_jump(previous, current, adapter=BlackVueAdapter())
+        is None
+    )
+
+
+def test_gps_implies_impossible_jump_returns_none_when_no_gps_data_anywhere():
+    previous = _recording("N", "20260720_100000")
+    current = _recording("N", "20260720_101500")
+
+    assert (
+        gps_implies_impossible_jump(previous, current, adapter=BlackVueAdapter())
+        is None
     )

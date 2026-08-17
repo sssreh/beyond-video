@@ -8,7 +8,7 @@
 
 ```
 bv-ls [--all] [--full] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-      [--source PATTERN] [--trips] [--max-gap MINUTES] [--movement] [--no-duration]
+      [--source PATTERN] [--trips] [--max-gap MINUTES] [--movement] [--gps-split] [--no-duration]
       [--gap-tolerance SECONDS] [--config-dir DIR]
       [PATH]
 ```
@@ -41,6 +41,7 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 | `--trips` | List detected trips (start, end, duration, recording count) instead of individual recordings. |
 | `--max-gap MINUTES` | With `--trips`, the largest gap between two recordings that still counts as the same trip. Default: 5. |
 | `--movement` | With `--trips`, use GPS/g-sensor data to bridge a gap over `--max-gap` into one trip anyway, if the vehicle looks like it was still moving at the edge of the gap. **Off by default** - this heuristic has no ceiling on how large a gap it'll bridge (confirmed on a real archive to bridge a genuine 6-day gap off a single stray GPS speed reading). |
+| `--gps-split` | With `--trips`, force a split between two recordings whose GPS position implies an impossible jump, even for a gap well within `--max-gap` - e.g. a stock/downloaded clip mixed into a GoPro/folder-adapter archive that happens to land near real footage in time but was shot somewhere else entirely. Uses the same real-telemetry-then-EXIF/container-tag-fallback resolution as the GPS column below. **Off by default** - a real per-pair GPS probe (an EXIF read and/or an `ffprobe` subprocess) on every consecutive pair of recordings, not just ones near an already-ambiguous gap. |
 | `--no-duration` | With `--trips`, ignore `.duration.txt` files and measure gaps from each recording's start timestamp only, instead of folding in its real span first. |
 | `--gap-tolerance SECONDS` | With `--trips`, a small fixed margin added on top of `--max-gap` to absorb measurement noise, not a detection setting like `--max-gap` itself. Default: 10. |
 | `-h`, `--help` | Show help and exit. |

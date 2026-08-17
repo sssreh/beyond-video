@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import functools
 from datetime import timedelta
 from pathlib import Path
 
 from blackvue.adapters import registry
 from blackvue.adapters.base import CameraAdapter
-from blackvue.adapters.telemetry_bridge import read_recording_gps
-from blackvue.adapters.telemetry_bridge import recording_has_gps
-from blackvue.archive import Archive, Asset, Recording, recording_is_photo
-from blackvue.archive.container_gps import container_location_fix
-from blackvue.archive.exif import exif_gps_fix
+from blackvue.adapters.telemetry_bridge import resolve_recording_gps_span
+from blackvue.archive import Archive, Asset, Recording
 from blackvue.cli.display_group import DisplayGroup
 from blackvue.cli.display_group import source_name
 from blackvue.cli.errors import run_cli
@@ -21,6 +19,7 @@ from blackvue.core.joblog import wrap_say
 from blackvue.generate.media import photo_aware_duration
 from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
+from blackvue.telemetry.movement import gps_implies_impossible_jump
 from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
@@ -98,51 +97,17 @@ def _source_column_needed(groups: list[DisplayGroup], root: Path) -> bool:
 
 
 def _recording_gps_available(adapter: CameraAdapter, recording: Recording) -> bool:
-    """True if `recording` has a real, usable GPS position - either a
-    genuine adapter-read telemetry fix, or a still photo's EXIF GPS
-    tag or a video's own ISO 6709 container `location` tag.
-
-    Starts from the same two sources web/app.py's
-    `archive_recording_location()` route uses (see that route's own
-    comments for the real reports - Christer's stock/downloaded
-    GoPro-archive clips and photos - that motivated each one): a real
-    adapter read (recording_has_gps() + read_recording_gps()), or the
-    EXIF (photos) / container-tag (videos) fallback on the recording's
-    FRONT file.
-
-    Deliberately goes one step further than that route, though: the
-    route only tries the fallback when recording_has_gps() is False
-    outright, so a GoPro-adapter recording (gps_source_asset="FRONT",
-    recording_has_gps() True for any recording with a FRONT file)
-    whose FRONT file has no real GPMF track never reaches the
-    fallback there, even though its own container `location` tag
-    might carry a real fix - exactly Christer's own "No gps from"
-    report: a GoPro archive with stock/downloaded clips mixed in,
-    each with a real ISO 6709 location tag ffprobe can see
-    (container_gps.py's own docstring quotes his exact ffprobe dump)
-    but no GPMF stream for adapter.read_gps() to find. So here, a
-    real read that comes back with recording_has_gps() True but zero
-    valid fixes still falls through to the same fallback a "no GPS
-    source at all" recording would get, rather than stopping at "no
-    valid fix found" the way the web route does.
+    """True if `recording` has a real, usable GPS position - see
+    adapters/telemetry_bridge.py's resolve_recording_gps_span() for
+    the exact real-adapter-read-then-EXIF/container-tag-fallback
+    order (deliberately more thorough than web/app.py's own
+    `archive_recording_location()` route - see that function's own
+    docstring for why, and for the real report - Christer's own "No
+    gps from" - that motivated it).
     """
 
-    if recording_has_gps(adapter, recording):
-        if any(
-            fix.valid and fix.latitude is not None and fix.longitude is not None
-            for fix in read_recording_gps(adapter, recording)
-        ):
-            return True
-
-    front = recording.file(Asset.FRONT)
-    if front is None:
-        return False
-
-    if recording_is_photo(recording):
-        if exif_gps_fix(front.path, timestamp=recording.id.timestamp) is not None:
-            return True
-
-    return container_location_fix(front.path, timestamp=recording.id.timestamp) is not None
+    start_fix, _ = resolve_recording_gps_span(adapter, recording)
+    return start_fix is not None
 
 
 def _group_has_gps(group: DisplayGroup, adapter: CameraAdapter) -> bool:
@@ -217,7 +182,9 @@ def print_trips(
     max_gap: timedelta,
     use_movement: bool = False,
     use_duration: bool = True,
+    use_gps_split: bool = False,
     gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
+    adapter: CameraAdapter | None = None,
     say=print,
 ) -> None:
     """Print one row per detected trip instead of one row per
@@ -240,6 +207,16 @@ def print_trips(
     genuine 6-day gap into one trip off a single GPS speed reading at
     the very start of a later recording.
 
+    When use_gps_split is True (off by default - see --gps-split), a
+    consecutive pair of recordings whose GPS position implies an
+    impossible jump forces a trip split even when the ordinary gap
+    rule alone would have kept them together - see
+    telemetry.movement.gps_implies_impossible_jump()'s own docstring.
+    Requires `adapter` (the same CameraAdapter bv_ls() already opened
+    the archive with) to actually resolve GPS fixes; a no-op if
+    use_gps_split is True but adapter is None (defensive - every real
+    caller passes both together).
+
     Only recordings with a Front asset are considered - see
     recordings_with_front_video()'s own docstring for why (GPS/g
     -sensor/thumbnail-only recordings, common for an archive that
@@ -258,6 +235,11 @@ def print_trips(
     """
 
     bridge = movement_bridges_gap if use_movement else None
+    force_split = (
+        functools.partial(gps_implies_impossible_jump, adapter=adapter)
+        if use_gps_split and adapter is not None
+        else None
+    )
     recording_duration = (
         photo_aware_duration(read_duration_seconds) if use_duration else None
     )
@@ -266,6 +248,7 @@ def print_trips(
         bridge=bridge,
         recording_duration=recording_duration,
         gap_tolerance=gap_tolerance,
+        force_split=force_split,
     ).build(recordings_with_front_video(recordings))
 
     trip_width = max(
@@ -312,6 +295,7 @@ def bv_ls(
     trips: bool = False,
     max_gap_minutes: int | None = None,
     movement: bool = False,
+    gps_split: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     adapter_id: str = DEFAULT_ADAPTER_ID,
@@ -398,7 +382,9 @@ def bv_ls(
             max_gap=max_gap,
             use_movement=movement,
             use_duration=duration,
+            use_gps_split=gps_split,
             gap_tolerance=gap_tolerance,
+            adapter=adapter,
             say=say,
         )
         return 0
@@ -630,6 +616,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--gps-split",
+        dest="gps_split",
+        action="store_true",
+        default=False,
+        help=(
+            "With --trips, force a split between two recordings whose "
+            "GPS position implies an impossible jump (e.g. a stock/"
+            "downloaded clip mixed into the archive that happens to "
+            "land within --max-gap of real footage, but was shot "
+            "somewhere else entirely). Off by default: this adds a "
+            "real per-pair GPS probe (an EXIF read and/or an ffprobe "
+            "subprocess) to every consecutive pair of recordings, not "
+            "just ones near an already-ambiguous gap."
+        ),
+    )
+
+    parser.add_argument(
         "--no-duration",
         dest="duration",
         action="store_false",
@@ -684,6 +687,7 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         trips=args.trips,
         max_gap_minutes=args.max_gap_minutes,
         movement=args.movement,
+        gps_split=args.gps_split,
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         adapter_id=adapter_id,

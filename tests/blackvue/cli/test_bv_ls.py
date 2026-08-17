@@ -346,6 +346,81 @@ def test_main_leaves_movement_false_without_the_flag(tmp_path, capsys):
     assert "trip_20260715_100000_20260715_103000" not in out
 
 
+def test_trips_does_not_gps_split_by_default(tmp_path, capsys):
+    # Two recordings 2 minutes apart - within the default 5-minute
+    # max_gap - whose GPS positions imply an impossible jump.
+    # --gps-split is off by default, so they should still merge into
+    # one trip.
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    (tmp_path / "20260715_100200_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100200_N.gps").write_text(
+        "[1700000120000]$GPRMC,100200.00,A,4042.000,N,07400.000,W,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    exit_code = bv_ls(str(tmp_path), trips=True)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "trip_20260715_100000_20260715_100200" in out
+
+
+def test_trips_gps_split_flag_forces_a_split_on_an_implausible_jump(
+    tmp_path, capsys
+):
+    # Same fixture as the "off by default" test above, but with
+    # gps_split=True: the ~6300km jump in 2 minutes must force a split
+    # even though the ordinary gap (well within the default max_gap)
+    # alone would have merged them.
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    (tmp_path / "20260715_100200_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100200_N.gps").write_text(
+        "[1700000120000]$GPRMC,100200.00,A,4042.000,N,07400.000,W,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    exit_code = bv_ls(str(tmp_path), trips=True, gps_split=True)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "trip_20260715_100000_20260715_100000" in out
+    assert "trip_20260715_100200_20260715_100200" in out
+    assert "trip_20260715_100000_20260715_100200" not in out
+
+
+def test_main_gps_split_flag_forces_a_split_on_an_implausible_jump(
+    tmp_path, capsys
+):
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    (tmp_path / "20260715_100200_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100200_N.gps").write_text(
+        "[1700000120000]$GPRMC,100200.00,A,4042.000,N,07400.000,W,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    exit_code = main([str(tmp_path), "--trips", "--gps-split"])
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "trip_20260715_100000_20260715_100000" in out
+    assert "trip_20260715_100200_20260715_100200" in out
+
+
 def test_trips_uses_duration_file_to_avoid_a_false_split(tmp_path, capsys):
     # The first recording starts at 10:00:00 and, per its
     # .duration.txt, really runs 12 minutes - so it doesn't end until

@@ -604,6 +604,83 @@ def test_main_movement_flag_bridges_a_gap_with_gps_evidence(tmp_path):
     assert (target / "trip_20260720_100000_20260720_103000").is_dir()
 
 
+def test_bv_export_does_not_gps_split_by_default(tmp_path):
+    # Two recordings 2 minutes apart - well within DEFAULT_MAX_GAP -
+    # whose GPS positions imply an impossible jump. --gps-split is off
+    # by default, so this must still merge into one trip, same as any
+    # other archive with no --gps-split.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    _make_video(archive / "20260720_100200_NF.mp4")
+    (archive / "20260720_100200_N.gps").write_text(
+        "[1700000120000]$GPRMC,120200.00,A,4042.000,N,07400.000,W,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    bv_export(str(archive), target=str(target))
+
+    assert (target / "trip_20260720_100000_20260720_100200").is_dir()
+
+
+def test_bv_export_gps_split_flag_splits_an_implausible_jump(tmp_path):
+    # Same fixture as the "off by default" test above, but with
+    # gps_split=True: the ~6300km jump in 2 minutes must force a split
+    # even though the ordinary gap (well within DEFAULT_MAX_GAP) alone
+    # would have merged them.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    _make_video(archive / "20260720_100200_NF.mp4")
+    (archive / "20260720_100200_N.gps").write_text(
+        "[1700000120000]$GPRMC,120200.00,A,4042.000,N,07400.000,W,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    bv_export(str(archive), target=str(target), gps_split=True)
+
+    assert (target / "trip_20260720_100000_20260720_100000").is_dir()
+    assert (target / "trip_20260720_100200_20260720_100200").is_dir()
+    assert not (
+        target / "trip_20260720_100000_20260720_100200"
+    ).exists()
+
+
+def test_main_gps_split_flag_splits_an_implausible_jump(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    target = tmp_path / "out"
+
+    _make_video(archive / "20260720_100000_NF.mp4")
+    (archive / "20260720_100000_N.gps").write_text(
+        "[1700000000000]$GPRMC,120000.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+    _make_video(archive / "20260720_100200_NF.mp4")
+    (archive / "20260720_100200_N.gps").write_text(
+        "[1700000120000]$GPRMC,120200.00,A,4042.000,N,07400.000,W,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    exit_code = main([str(archive), "--target", str(target), "--gps-split"])
+
+    assert exit_code == 0
+    assert (target / "trip_20260720_100000_20260720_100000").is_dir()
+    assert (target / "trip_20260720_100200_20260720_100200").is_dir()
+
+
 def test_bv_export_uses_duration_file_to_avoid_a_false_split(tmp_path):
     archive = tmp_path / "archive"
     archive.mkdir()

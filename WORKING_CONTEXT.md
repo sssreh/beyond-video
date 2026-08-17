@@ -14708,3 +14708,94 @@ on a clean `git stash` baseline.
 
 Files changed: `src/blackvue/cli/bv_ls.py`, `tests/blackvue/cli/test_bv_ls.py`,
 `docs/man/bv-ls.md`, `docs/CAMERA_ADAPTERS.md`.
+
+## --gps-split: force a trip split on an implausible GPS jump (2026-08-17)
+
+Christer's idea, prompted by seeing bv-ls's GPS column correctly
+populate for a GoPro archive's stock/downloaded clips:
+
+    Instead of excluding objects from trips we might look at the
+    source [filenames] ... My guess is that the first part is an
+    incrementing sequence and by the difference between them probably
+    show that they don't belong together. If they also have gps
+    coordinates it could also tell you if they don't belong together.
+    Yes very fuzzy.
+
+Weighed both signals: a filename-sequence-number delta is fragile
+(different adapters, different numbering schemes, no guaranteed
+relationship to real-world distance), while a GPS-position jump is
+directly checkable now that the GPS-fallback machinery (task #974-977)
+can resolve a position for almost any recording, including ones with
+no real telemetry at all. Asked what the goal was; Christer: "split
+trips". Since this adds a real per-pair GPS probe (EXIF read/`ffprobe`
+subprocess) to every `TripBuilder` invocation - a broader, more
+frequent cost than bv-ls's own opt-in GPS column - surfaced the
+always-on-vs-opt-in tradeoff via `AskUserQuestion` rather than
+deciding unilaterally. Christer: "Opt-in flag (Recommended)".
+
+**`resolve_recording_gps_span()`** (`adapters/telemetry_bridge.py`,
+new): factored out of bv-ls's own GPS-column logic once a third call
+site needed the same "real telemetry first, EXIF/container-tag
+fallback otherwise" composition - returns `(start_fix, end_fix)`, the
+real first/last valid fixes when telemetry exists, or the same single
+fallback fix as both when it doesn't. `cli/bv_ls.py`'s
+`_recording_gps_available()` now delegates to it instead of
+duplicating the composition a second time.
+
+**`gps_implies_impossible_jump()`** (`telemetry/movement.py`, new):
+the inverse of `movement_bridges_gap()` - where that function looks
+for movement evidence to *bridge* a gap, this looks for an implied
+speed too high to be real (`DEFAULT_MAX_PLAUSIBLE_SPEED_KMH = 300.0`,
+deliberately generous - clears commercial aviation, since the two
+fixes are often single fallback points with real position error, not
+a dense track) between the end of one recording and the start of the
+next, using `resolve_recording_gps_span()` for both. A
+`_MIN_ELAPSED_SECONDS_FOR_SPEED_CHECK = 60.0` guard skips pairs too
+close in time to distinguish ordinary GPS jitter from a genuine jump.
+Returns `None` (never forces a split) when either recording has no
+resolvable fix, elapsed time is too short, or the implied speed is
+plausible.
+
+**`TripBuilder.force_split`** (`trip/trip_builder.py`, new optional
+param): `bridge`'s mirror image - checked unconditionally for every
+pair (unlike `bridge`, only consulted once a gap already exceeds
+threshold), but skipped once `parking_cap_exceeded`/
+`unreliable_timestamp` have already decided to split. A truthy return
+forces a split even for a gap well within `max_gap`; never offered to
+`bridge`, same "deliberate correctness decision, not ambiguous gap
+evidence" reasoning as those two existing checks.
+
+**`--gps-split`** wired into both `bv-export` and `bv-ls --trips`
+(mirroring `--movement`'s own `functools.partial(fn, adapter=adapter)
+if flag else None` pattern) - off by default. `bv_ls.py`'s
+`print_trips()` gained an `adapter` param (it previously discarded the
+one `bv_ls()` already opens) so the new `force_split` partial has
+something to bind.
+
+**Tests.** 4 new tests in `test_movement.py` (huge jump -> reason,
+plausible speed -> None, elapsed-time-too-short guard -> None, no GPS
+data -> None) against real `.gps` sidecar fixtures. 9 new tests in
+`test_trip_builder.py` covering `force_split`'s full contract (splits
+within threshold, falsy doesn't split, checked even when gap already
+exceeds threshold, skipped once parking-cap/unreliable-timestamp
+already split, never offered to `bridge`, receives the bracketing
+recordings, reason text reaches `reasons`, unset matches old
+behaviour). 3 new tests each in `test_bv_export.py`/`test_bv_ls.py`
+(off by default keeps a within-gap implausible jump merged; the flag
+forces the split; same via `main()`) against real ffmpeg-muxed videos
+with real `.gps` sidecars. Full regression sweep clean:
+`test_movement.py` 16/16, `test_trip_builder.py` 57/57,
+`test_bv_export.py` 133/138 and `test_bv_ls.py` 33/37 with the exact
+same pre-existing sandbox-only failures (tomllib-stub camera-config
+fixture quirk, the pre-existing `movement_bridges_gap()` adapter-kwarg
+bug in `bv_ls.py`'s own `print_trips()`) reproduced identically on a
+clean `git stash` baseline - untouched by this change, since fixing
+that bug was explicitly out of scope here.
+
+Files changed: `src/blackvue/adapters/telemetry_bridge.py`,
+`src/blackvue/telemetry/movement.py`, `src/blackvue/trip/trip_builder.py`,
+`src/blackvue/cli/bv_export.py`, `src/blackvue/cli/bv_ls.py`,
+`tests/blackvue/telemetry/test_movement.py`,
+`tests/blackvue/trip/test_trip_builder.py`,
+`tests/blackvue/cli/test_bv_export.py`, `tests/blackvue/cli/test_bv_ls.py`,
+`docs/man/bv-export.md`, `docs/man/bv-ls.md`.
