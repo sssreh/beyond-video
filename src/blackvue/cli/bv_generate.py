@@ -41,6 +41,7 @@ from ..generate import get_span
 from ..generate import gpu_available
 from ..generate import is_audio_silent
 from ..generate import normalize_language
+from ..generate import probe_audio_codec
 from ..generate import select_source
 from ..generate import short_code
 from ..generate import transcribe
@@ -674,6 +675,27 @@ def _do_extract_audio(
             "skipping audio extraction")
         return True
 
+    # Checked up front, same as the parking-mode/photo checks above:
+    # a clip with zero embedded audio streams (Christer's real case -
+    # stock/downloaded clips mixed into a GoPro archive, confirmed via
+    # `v-ls --all`'s blank Aud column) is exactly as unextractable as
+    # a photo or a parking-mode timelapse, just discovered later.
+    # Without this, extract_audio() still runs ffmpeg anyway (it only
+    # uses probe_audio_codec() internally to pick copy-vs-transcode,
+    # not to skip), which fails with a real but noisy multi-line dump
+    # ("Output file does not contain any stream" / "Error opening
+    # output file ... Invalid argument") - and bv_generate.py counted
+    # it as a real error (had_error=True) for a condition that isn't
+    # one. speech.py's detect_language()/transcribe() already skip
+    # this cleanly via the same probe_audio_codec() check (task #928);
+    # this brings extract-audio in line with that precedent instead of
+    # leaving it as the one action that still surfaces raw ffmpeg
+    # noise and a spurious non-zero exit code for a perfectly ordinary
+    # audio-less video.
+    if probe_audio_codec(source_file.path) is None:
+        warn(f"bv-generate: {recording.id}: no audio stream, skipping")
+        return False
+
     if args.dry_run:
         say(f"{recording.id}: would extract audio from "
             f"{source_file.name} -> {destination.name}")
@@ -1064,6 +1086,16 @@ def _do_translate_only(
                     "source, skipping translation")
                 return True
 
+            # Same upfront check as _do_extract_audio()/
+            # _do_transcribe_with_optional_translate(): a real video
+            # with zero audio streams at all is a normal, non-error
+            # skip, not a failure - matches the parking-mode/photo
+            # skips already at the top of _do_transcribe_and_translate().
+            if probe_audio_codec(video_source.path) is None:
+                warn(f"bv-generate: {recording.id}: no audio stream, "
+                    "skipping translation")
+                return False
+
             audio_destination = archive_path / f"{recording.id}.aac"
 
             try:
@@ -1219,6 +1251,24 @@ def _do_transcribe_with_optional_translate(
         if _existing_audio is not None and _has_usable_audio(_existing_audio.path)
         else select_source(recording)
     )
+
+    # Checked up front against whatever source_file actually resolved
+    # to (an already-extracted .aac, or the raw video) - a real video
+    # with zero audio streams at all (not just a silent one, which
+    # is_audio_silent() below already handles gracefully) can't
+    # produce a transcript no matter what. Without this,
+    # detect_language() below already fails cleanly on its own (task
+    # #928's probe_audio_codec() pre-check inside speech.py), but this
+    # function still treated that clean failure as a real error
+    # (had_error=True) - the same normal, non-error condition photos/
+    # parking-mode recordings get a free pass on above in the sibling
+    # _do_transcribe_and_translate(). Bailing out here, before any of
+    # the write-target/dry-run bookkeeping below, keeps this function
+    # consistent with that precedent instead of only being "clean" in
+    # its error message and not in its exit status.
+    if source_file is not None and probe_audio_codec(source_file.path) is None:
+        warn(f"bv-generate: {recording.id}: no audio stream, skipping transcription")
+        return False
 
     # The translation filename only depends on the (already known)
     # --translate target, so it can be checked without touching

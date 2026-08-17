@@ -592,6 +592,100 @@ def test_transcribe_and_translate_skip_photo_recordings(
     assert "no audio" in capsys.readouterr().err
 
 
+def test_extract_audio_skips_recordings_with_no_audio_stream(
+    tmp_path, monkeypatch, capsys
+):
+    # Real report from Christer's actual run (`bv-generate gp
+    # --extract-audio ...` against stock/downloaded clips mixed into
+    # his GoPro archive - `v-ls --all`'s Aud column blank for these):
+    #
+    #     bv-generate: 20211018_121839_V: ffmpeg failed for
+    #     9940813-uhd_2160_4096_25fps.mp4: [out#0/adts @ ...] Output
+    #     file does not contain any stream
+    #     Error opening output file X:\...\20211018_121839_V.aac.
+    #     Error opening output files: Invalid argument
+    #
+    # A real video with zero audio streams at all - not a photo, not
+    # parking-mode, not even a silent-but-real track (is_audio_silent()
+    # already handles that case) - used to reach extract_audio() and
+    # ffmpeg unconditionally, producing that noisy multi-line dump and
+    # counting as a real error (had_error=True) for a condition that
+    # isn't one. Now checked up front via probe_audio_codec(), same as
+    # photo/parking-mode above: extract_audio() is never even called.
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: None)
+
+    recording = Recording(id=RecordingId("20260715_134010_V"))
+    video_path = tmp_path / "9940813-uhd_2160_4096_25fps.mp4"
+    video_path.write_bytes(b"not a real video, doesn't matter here")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+    args = _base_args(extract_audio=True)
+
+    had_error = bv_generate._do_extract_audio(recording, tmp_path, args)
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_V.aac").exists()
+    assert "no audio stream" in capsys.readouterr().err
+
+
+def test_transcribe_skips_recordings_with_no_audio_stream(
+    tmp_path, monkeypatch, capsys
+):
+    # Same real-world condition as the extract-audio test above, hit
+    # via --transcribe instead: Christer's real run also showed
+    # "language detection failed for ...: no audio stream" for these
+    # same clips (task #928's own clean message), but bv_generate.py
+    # still counted that clean failure as a real error. Checked
+    # up front now, before any Whisper/detect_language work at all.
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "detect_language", _refuse)
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: None)
+
+    recording = Recording(id=RecordingId("20260715_134010_V"))
+    video_path = tmp_path / "9940813-uhd_2160_4096_25fps.mp4"
+    video_path.write_bytes(b"not a real video, doesn't matter here")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+    args = _base_args(transcribe=True)
+
+    had_error = bv_generate._do_transcribe_and_translate(
+        recording, tmp_path, args
+    )
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_V.transcript.txt").exists()
+    assert "no audio stream" in capsys.readouterr().err
+
+
+def test_translate_only_skips_recordings_with_no_audio_stream(
+    tmp_path, monkeypatch, capsys
+):
+    # Third and last extract_audio() call site (the --translate-only
+    # cache-first path) - same real condition, same fix.
+    monkeypatch.setattr(bv_generate, "transcribe", _refuse)
+    monkeypatch.setattr(bv_generate, "translate", _refuse)
+    monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: None)
+
+    recording = Recording(id=RecordingId("20260715_134010_V"))
+    video_path = tmp_path / "9940813-uhd_2160_4096_25fps.mp4"
+    video_path.write_bytes(b"not a real video, doesn't matter here")
+    recording.assets[Asset.FRONT] = AssetFile(
+        asset=Asset.FRONT, path=video_path
+    )
+    args = _base_args(translate="sv")
+
+    had_error = bv_generate._do_translate_only(recording, tmp_path, args)
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_V.translation.txt").exists()
+    assert "no audio stream" in capsys.readouterr().err
+
+
 def test_get_duration_still_runs_for_parking_recordings(
     tmp_path, monkeypatch
 ):
@@ -742,6 +836,7 @@ def test_translate_only_re_extracts_when_cached_audio_is_empty(
     tracked but empty .aac (the real-world leftover from a failed
     extraction) has to be treated as absent, not handed to
     transcribe() as-is."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     extracted = []
 
@@ -784,6 +879,7 @@ def test_translate_only_re_extracts_when_cached_audio_is_empty(
 def test_translate_only_extracts_and_persists_from_scratch(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     extracted = []
 
     def fake_extract_audio(source, destination):
@@ -989,6 +1085,7 @@ def test_translate_only_ignores_diarized_transcript_when_not_diarizing(
 def test_transcribe_extracts_and_persists_audio_when_missing(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     extracted = []
     transcribed = []
 
@@ -1037,6 +1134,7 @@ def test_transcribe_extracts_and_persists_audio_when_missing(
 def test_transcribe_threads_npu_model_dir_into_transcribe_call(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     # --npu-model-dir has to actually reach transcribe() for the NPU
     # backend (blackvue.generate.speech) to ever get used - this is
     # the CLI-layer half of that wiring; the backend itself (bypassing
@@ -1084,6 +1182,7 @@ def test_transcribe_threads_npu_model_dir_into_transcribe_call(
 def test_transcribe_reuses_existing_audio_without_extracting(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(bv_generate, "extract_audio", _refuse)
     monkeypatch.setattr(
         bv_generate,
@@ -1115,6 +1214,7 @@ def test_transcribe_reuses_existing_audio_without_extracting(
 def test_transcribe_reuses_audio_already_written_this_run(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     # Simulates --extract-audio and --transcribe running together:
     # the .aac lands on disk from --extract-audio before
     # --transcribe runs, but the in-memory Recording (built once at
@@ -1162,6 +1262,7 @@ def test_transcribe_treats_empty_cached_audio_as_absent_for_language_detection(
     Christer pasted. It must fall back to the video instead, the same
     self-healing discipline load_or_compute_duration() already
     applies to .duration.txt."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     # extract_audio() is legitimately called here too - the cached
     # .aac is empty, so the second self-healing check further down
@@ -1220,6 +1321,7 @@ def test_transcribe_re_extracts_when_cached_audio_file_is_empty(
     from the language-detection one) - an empty .aac already on disk
     must be overwritten by a fresh extraction, not handed to
     transcribe() as-is."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     extracted = []
 
@@ -1261,6 +1363,7 @@ def test_transcribe_and_translate_together_still_works(
     """Regression check: --transcribe (+ optional --translate) keeps
     using its own single-Whisper-run path, unaffected by the new
     cache-first --translate-only path."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     calls = []
 
@@ -1314,6 +1417,7 @@ def test_parse_args_srt_allowed_with_transcribe():
 
 
 def test_transcribe_writes_srt_when_requested(tmp_path, monkeypatch):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(
         bv_generate,
         "extract_audio",
@@ -1354,6 +1458,7 @@ def test_transcribe_srt_reflects_translate_language(tmp_path, monkeypatch):
     was always called with the untranslated transcript.segments, even
     when --translate was given - the docs' own example ("Transcribe
     and translate to Swedish, with subtitles") promises otherwise."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     monkeypatch.setattr(
         bv_generate,
@@ -1421,6 +1526,7 @@ def test_transcribe_srt_stays_original_language_without_translate(
     """Regression check: no --translate means --srt keeps behaving
     exactly as before - original spoken language, translate() never
     even called."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     monkeypatch.setattr(
         bv_generate,
@@ -1470,6 +1576,7 @@ def test_transcribe_srt_translation_failure_skips_srt_and_reports_error(
     language pack) must not silently fall back to writing an
     untranslated .srt - that would look like a success while quietly
     giving the user the wrong language again."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     monkeypatch.setattr(
         bv_generate,
@@ -1517,6 +1624,7 @@ def test_translate_only_srt_reflects_translate_language(tmp_path, monkeypatch):
     """Same fix, the _do_translate_only path (--translate without
     --transcribe) - this function only ever runs with --translate
     given, so its .srt must always be in the target language."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     monkeypatch.setattr(
         bv_generate,
@@ -1566,6 +1674,7 @@ def test_translate_only_srt_reflects_translate_language(tmp_path, monkeypatch):
 def test_transcribe_srt_only_still_transcribes_when_transcript_up_to_date(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     # Even if the transcript file itself is already there and doesn't
     # need rewriting, a missing .srt still has to trigger a fresh
     # transcribe() call - there's nowhere else to get segment timing.
@@ -1766,6 +1875,7 @@ def test_translate_only_srt_still_generated_when_translation_already_exists(
 def test_extract_audio_deletes_and_skips_a_silent_track(
     tmp_path, monkeypatch, capsys
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     # BlackVue cameras keep a real AAC stream in the container even
     # with in-camera voice recording turned off - extract_audio()
     # faithfully extracts that silent-but-real stream, so
@@ -1797,6 +1907,7 @@ def test_extract_audio_deletes_and_skips_a_silent_track(
 def test_extract_audio_keeps_the_file_if_the_silence_probe_itself_fails(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     # extract_audio() just succeeded, which normally means ffmpeg is
     # available - but if is_audio_silent()'s own ffmpeg probe still
     # fails for some reason (missing PATH in an unusual environment,
@@ -1833,6 +1944,7 @@ def test_extract_audio_keeps_the_file_if_the_silence_probe_itself_fails(
 
 
 def test_extract_audio_keeps_a_non_silent_track(tmp_path, monkeypatch):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(
         bv_generate,
         "extract_audio",
@@ -1858,6 +1970,7 @@ def test_extract_audio_keeps_a_non_silent_track(tmp_path, monkeypatch):
 def test_translate_only_skips_silent_freshly_extracted_audio(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(bv_generate, "transcribe", _refuse)
     monkeypatch.setattr(bv_generate, "translate", _refuse)
 
@@ -1891,6 +2004,7 @@ def test_translate_only_skips_silent_freshly_extracted_audio(
 def test_transcribe_skips_silent_freshly_extracted_audio(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(bv_generate, "transcribe", _refuse)
     monkeypatch.setattr(bv_generate, "detect_language", _refuse)
 
@@ -2375,6 +2489,7 @@ def test_transcribe_skips_writing_when_whisper_finds_no_speech(
     <id>_nno.transcript.txt - the wrong-looking language suffix was a
     symptom of Whisper guessing on nothing, not the actual bug. An
     empty transcript.text should mean "nothing generated", full stop."""
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
 
     monkeypatch.setattr(
         bv_generate,
@@ -2410,6 +2525,7 @@ def test_transcribe_skips_writing_when_whisper_finds_no_speech(
 
 
 def test_transcribe_still_writes_real_short_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     # The counterpart to the empty-result test above: a short but real
     # transcript ("Parking mode off." - the camera's own voice prompt)
     # must still be written, not treated as "empty".
@@ -2449,6 +2565,7 @@ def test_transcribe_still_writes_real_short_content(tmp_path, monkeypatch):
 def test_translate_only_skips_writing_when_whisper_finds_no_speech(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(bv_generate, "probe_audio_codec", lambda _path: "aac")
     monkeypatch.setattr(
         bv_generate,
         "extract_audio",

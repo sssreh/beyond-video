@@ -16,6 +16,7 @@ from .media import extract_audio
 from .media import get_span
 from .media import is_audio_silent
 from .media import probe
+from .media import probe_audio_codec
 from .media import select_source
 from .mp4_box_reader import Mp4Info
 from .mp4_box_reader import read_mp4_info
@@ -69,6 +70,7 @@ __all__ = [
     "normalize_language",
     "parse_srt",
     "probe",
+    "probe_audio_codec",
     "read_mp4_info",
     "select_source",
     "short_code",

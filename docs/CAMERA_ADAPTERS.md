@@ -1584,6 +1584,114 @@ Files changed: `src/blackvue/archive/container_gps.py` (new),
 `tests/blackvue/archive/test_container_gps.py` (new),
 `tests/blackvue/generate/test_scene.py`.
 
+## No-audio-stream recordings no longer counted as errors (2026-08-17)
+
+A real `bv-generate gp --describe-scene --get-duration --extract-audio
+--srt --transcribe` run against the same archive surfaced two more
+things worth fixing, both tied to the stock/downloaded clips mixed
+into it that have zero embedded audio streams at all (`v-ls --all`'s
+`Aud` column blank - distinct from a real-but-silent track, which
+`is_audio_silent()` already handled gracefully since task #724):
+
+    bv-generate: 20211018_121839_V: ffmpeg failed for
+    9940813-uhd_2160_4096_25fps.mp4: [out#0/adts @ ...] Output file
+    does not contain any stream
+    Error opening output file X:\...\20211018_121839_V.aac.
+    Error opening output files: Invalid argument
+    ...
+    bv-generate: 20211018_121839_V: language detection failed for
+    9940813-uhd_2160_4096_25fps.mp4: no audio stream
+
+Task #928 already made `_whisper_transcribe()` (`generate/speech.py`)
+pre-check `probe_audio_codec(source) is None` and fail with a clean
+"no audio stream" message - that's the second line above. But
+`extract_audio()` (`generate/media.py`) was deliberately left
+unchanged in that same session ("letting ffmpeg itself report 'no
+audio stream' rather than pre-checking"), so the `--extract-audio`
+step still ran ffmpeg unconditionally and produced the noisy
+multi-line dump above it. Worse, `bv_generate.py`'s CLI layer counted
+*both* of these as real errors (`had_error=True`, driving the
+process's exit code) for a condition that isn't an error at all - the
+exact same "no audio stream" fact, double-counted, for a recording
+that's neither a photo nor parking-mode footage (both of which already
+get a clean, non-error skip: `"photo has no audio, skipping"` /
+`"parking-mode (timelapse) recording has no audio, skipping"`, both
+`return False`).
+
+Fixed at the CLI orchestration layer (`cli/bv_generate.py`), not
+`extract_audio()` itself - `extract_audio()` keeps its existing
+"let ffmpeg report it" fallback for callers that don't pre-check (a
+legitimate safety net, not something worth touching for this fix).
+Added an upfront `probe_audio_codec(source) is None` check, mirroring
+the existing photo/parking-mode pattern, at all three of its real call
+sites: `_do_extract_audio()` (checked after resolving `source_file`,
+before the dry-run branch, so a dry run reports the skip too instead
+of falsely promising an extraction that would fail);
+`_do_transcribe_with_optional_translate()` (checked right after
+`source_file` is resolved - covers both the `detect_language()` and
+`extract_audio()` paths inside that one function); and
+`_do_translate_only()`'s own extract-audio fallback path. Each prints
+a clean `"no audio stream, skipping[...]"` line via `warn()` and
+returns `False` (not an error) - `extract_audio()`/`detect_language()`
+are never even called for this case now, so the noisy ffmpeg dump is
+gone entirely, not just shortened. `probe_audio_codec()` (already
+existed in `generate/media.py`, used internally by `extract_audio()`
+and `speech.py`) is now also exported from `blackvue.generate` for
+`bv_generate.py` to reuse.
+
+**Incidental fix: circular import from task #966's `container_gps.py`
+registration.** While regression-testing this, `tests/blackvue/generate/
+test_speech.py` turned out to be entirely unloadable
+(`ImportError: cannot import name 'MediaToolError' from partially
+initialized module 'blackvue.generate.media'`) - confirmed present
+already at the prior commit (`fcb4820`), unrelated to today's fix.
+Root cause: `archive/__init__.py`'s eager `from .container_gps import
+container_location_fix` (added for task #966) meant importing
+`blackvue.archive` first pulls in `container_gps.py` ->
+`telemetry.gps_reader` -> `generate.media` -> (via `generate/media.py`'s
+own `from ..archive.asset import Asset`) back into `blackvue.archive`
+while it's still mid-import - a real ordering bug that only bites when
+`generate.media` or `telemetry.gps_reader` happens to be the *first*
+thing a process imports, exactly what `test_speech.py` does. `archive/
+exif.py`'s `exif_gps_fix()` has the identical `telemetry.gps_reader`
+dependency but was never re-exported from `archive/__init__.py` in the
+first place - that's why task #957 never surfaced this. Fixed by
+matching that same precedent: removed `container_gps`'s import/`__all__`
+entry from `archive/__init__.py` (with a docstring explaining why, so
+it doesn't get re-added). `web/app.py` already imports
+`container_location_fix` directly from `archive.container_gps`, so
+nothing else needed to change.
+
+**Tests.** `test_bv_generate.py` gained 3 new tests -
+`test_extract_audio_skips_recordings_with_no_audio_stream`,
+`test_transcribe_skips_recordings_with_no_audio_stream`,
+`test_translate_only_skips_recordings_with_no_audio_stream` - each
+monkeypatches `probe_audio_codec` to return `None` and `extract_audio`/
+`transcribe`/`detect_language`/`translate` to raise if called, proving
+the skip happens before any of them run, and asserts `had_error is
+False` plus the clean message. The 23 existing tests that exercise
+`_do_extract_audio()`/`_do_transcribe_with_optional_translate()`/
+`_do_translate_only()` against synthetic (non-ffmpeg-decodable) fixture
+files each gained `monkeypatch.setattr(bv_generate, "probe_audio_codec",
+lambda _path: "aac")`, since the new unconditional check would
+otherwise hit a real `ffprobe` against those fixtures and fail before
+reaching the behavior under test - same idiom task #928 already
+established in `test_speech.py`. Full sweep: `test_bv_generate.py`
+112/114 (2 pre-existing/unrelated), `test_bv_scribe.py` 25/26 (1
+pre-existing/unrelated), `test_container_gps.py` 6/6, `test_exif.py`
+15/15, `test_scene.py` 29/29, `test_trips.py` 36/39 (3 pre-existing/
+unrelated), `test_trip_export.py` 173/175 (2 pre-existing/unrelated) -
+zero new regressions. `test_speech.py` now loads and runs at all
+(previously blocked entirely by the circular import): 20/46 pass, the
+remaining 26 are this sandbox's already-documented missing optional
+dependencies (`torch`, `ctranslate2`, `pyannote.audio`,
+`openvino_genai` - confirmed via direct `import` attempts), not logic
+failures.
+
+Files changed: `src/blackvue/cli/bv_generate.py`,
+`src/blackvue/generate/__init__.py`, `src/blackvue/archive/__init__.py`,
+`tests/blackvue/cli/test_bv_generate.py`.
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,
