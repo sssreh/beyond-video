@@ -1,4 +1,8 @@
 import os
+import subprocess
+from pathlib import Path
+
+from PIL import Image
 
 from blackvue.archive.asset import Asset
 from blackvue.cli.bv_ls import _asset_group_spans
@@ -7,6 +11,55 @@ from blackvue.cli.bv_ls import main
 from blackvue.core.camera_config import CameraConfig
 from blackvue.core.camera_config import config_path
 from blackvue.core.camera_config import save_camera_config
+
+# EXIF GPS sub-IFD tag ids - matches archive/exif.py's own private
+# constants (see test_exif.py, which duplicates them the same way for
+# the same reason: these tests would actually notice if the module
+# started reading the wrong tag id).
+_TAG_GPS_IFD = 34853
+
+
+def _make_photo_with_gps(path: Path) -> None:
+    image = Image.new("RGB", (100, 60), (200, 100, 50))
+    exif = image.getexif()
+    exif[_TAG_GPS_IFD] = {
+        1: "N",
+        2: (59.0, 17.0, 34.0),
+        3: "E",
+        4: (18.0, 5.0, 17.0),
+    }
+    image.save(path, exif=exif)
+
+
+def _make_video_with_location(path: Path, location: str = "+05.0448-073.7965/") -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", "1",
+            "-c:v", "libx264",
+            "-metadata", f"location={location}",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _make_plain_video(path: Path) -> None:
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", "1",
+            "-c:v", "libx264",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def test_asset_group_spans_merges_consecutive_same_group_assets():
@@ -608,3 +661,123 @@ def test_main_resolves_a_camera_id_to_its_configured_folder_adapter(
 
     assert exit_code == 0
     assert "_V" in out
+
+
+# ---------------------------------------------------------------------------
+# GPS column - live EXIF/container-tag fallback probe (task #974-977).
+#
+# bv-ls's GPS column used to be a pure DisplayGroup.has(Asset.GPS) file
+# -existence check, which never matches anything for a GoPro/folder
+# -adapter archive (no discrete .gps sidecar - see
+# _assets_with_any_match()'s own docstring) even when a recording
+# genuinely has usable GPS data via EXIF (photos) or a video's own ISO
+# 6709 container `location` tag. Christer's real report - a `bv-ls GP
+# --all` run on his real GoPro archive with "No gps from" as the
+# prefix - showed no GPS column at all. Wired in with his explicit
+# sign-off on the added per-row probe cost (AskUserQuestion: "Yes, add
+# it (with probe cost)").
+# ---------------------------------------------------------------------------
+
+
+def test_bv_ls_gps_column_shows_exif_fallback_for_a_photo(tmp_path):
+    # FolderAdapter never declares gps support at all (manifest.json's
+    # capabilities.gps is False) - a photo with real EXIF GPS data is
+    # exactly the case _recording_gps_available()'s fallback exists
+    # for.
+    photo = tmp_path / "beach.jpg"
+    _make_photo_with_gps(photo)
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), adapter_id="folder", say=lines.append)
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    row = lines[3]
+
+    assert "GPS" in asset_header
+    gps_col = asset_header.index("GPS")
+    assert row[gps_col:gps_col + 3].strip() == "X"
+
+
+def test_bv_ls_gps_column_shows_container_tag_fallback_for_a_video(tmp_path):
+    # Exactly Christer's real report: a stock/downloaded video mixed
+    # into a folder-adapter archive with no GPS sidecar at all, but a
+    # real ISO 6709 `location` tag in its own container metadata.
+    video = tmp_path / "clip.mp4"
+    _make_video_with_location(video)
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), adapter_id="folder", say=lines.append)
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    row = lines[3]
+
+    assert "GPS" in asset_header
+    gps_col = asset_header.index("GPS")
+    assert row[gps_col:gps_col + 3].strip() == "X"
+
+
+def test_bv_ls_gps_column_falls_back_for_gopro_clip_with_no_gpmf_track(tmp_path):
+    # The GoPro adapter declares real gps support (gps_source_asset=
+    # "FRONT"), so recording_has_gps() is True for any recording with
+    # a FRONT file - but a stock/downloaded clip mixed into a GoPro
+    # archive (Christer's exact real case, see container_gps.py's own
+    # module docstring) has no real GPMF stream: adapter.read_gps()
+    # raises MediaToolError, caught by read_recording_gps() as "no
+    # fixes". _recording_gps_available() must still fall through to
+    # the container-tag fallback here, rather than stopping at "no
+    # valid fix found" the way web/app.py's /location route does -
+    # this is the one place bv-ls's check is deliberately more
+    # thorough than that route (see its own docstring).
+    video = tmp_path / "clip.mp4"
+    _make_video_with_location(video)
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), adapter_id="gopro", say=lines.append)
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    row = lines[3]
+
+    assert "GPS" in asset_header
+    gps_col = asset_header.index("GPS")
+    assert row[gps_col:gps_col + 3].strip() == "X"
+
+
+def test_bv_ls_gps_column_hidden_when_no_gps_data_anywhere(tmp_path):
+    # A plain video with no EXIF, no container location tag, and no
+    # real telemetry source - the ordinary case for most recordings -
+    # must still drop the GPS column entirely by default, the same as
+    # any other all-blank asset column (_assets_with_any_match()).
+    video = tmp_path / "clip.mp4"
+    _make_plain_video(video)
+
+    lines = []
+    exit_code = bv_ls(str(tmp_path), adapter_id="folder", say=lines.append)
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    assert "GPS" not in asset_header
+
+
+def test_bv_ls_gps_column_full_flag_shows_it_even_with_no_match(tmp_path):
+    # --full bypasses _assets_with_any_match() entirely (see its own
+    # docstring) - the GPS column must still appear (blank) even
+    # though gps_marks is all-False for this archive, exactly like
+    # every other all-blank column already does under --full.
+    video = tmp_path / "clip.mp4"
+    _make_plain_video(video)
+
+    lines = []
+    exit_code = bv_ls(
+        str(tmp_path), adapter_id="folder", full=True, say=lines.append
+    )
+
+    assert exit_code == 0
+    asset_header = lines[1]
+    row = lines[3]
+
+    assert "GPS" in asset_header
+    gps_col = asset_header.index("GPS")
+    assert row[gps_col:gps_col + 3].strip() == ""

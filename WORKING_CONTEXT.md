@@ -14664,3 +14664,47 @@ prior "Not Applicable" answer was already fine in spirit). No test
 asserts exact prompt text; `test_scene.py` (29/29) unaffected.
 
 Files changed: `src/blackvue/generate/scene.py`.
+
+## bv-ls GPS column: live EXIF/container-tag fallback probe (2026-08-17)
+
+Christer's real report, prefixed "No gps from": a `bv-ls GP --all` run
+on his real GoPro archive showed no GPS column at all. Cause: the GPS
+column was a pure file-existence check on a discrete `.gps`-style
+sidecar the GoPro/folder adapters never populate - GPS lives inside
+the video's own GPMF track, or requires the EXIF/container-tag
+fallback added earlier this session (task #966/#957), neither of
+which bv-ls reflected. Confirmed via a research-only subagent this was
+"never built" for bv-ls, not a regression, and that fixing it meant a
+real per-row cost (an EXIF read and/or an `ffprobe` subprocess per
+recording) unlike every other free column - surfaced that tradeoff via
+`AskUserQuestion` rather than deciding unilaterally. Christer: "Yes,
+add it (with probe cost)."
+
+Added `_recording_gps_available()`/`_group_has_gps()` to `cli/bv_ls.py`:
+a real adapter read first (`recording_has_gps()` + `read_recording_gps()`),
+falling back to `exif_gps_fix()` (photos) / `container_location_fix()`
+(videos) on the recording's FRONT file. Deliberately more thorough
+than `web/app.py`'s `/location` route, which only tries that fallback
+when `recording_has_gps()` is False outright - so a GoPro clip with no
+real GPMF track (declared `gps_source_asset="FRONT"`, so
+`recording_has_gps()` is True) never reaches the fallback there even
+though its container `location` tag might carry a fix. Here, a real
+read that comes back empty still falls through to the fallback
+regardless of why. `gps_marks` is computed once per `bv_ls()` call and
+reused for both column-inclusion filtering and each row's mark, so
+nothing is probed twice; `--full` still forces the column to show even
+when every mark is False.
+
+5 new tests in `test_bv_ls.py` (EXIF fallback for a photo, container
+-tag fallback for a video, the GoPro-with-no-GPMF-track fallback case,
+column dropped with no data anywhere, `--full` still shows it blank) -
+all real fixtures (real `ffmpeg`-muxed `location` tags, real Pillow
+EXIF GPS writes), no mocking. Full `test_bv_ls.py`/`test_folder_adapter.py`
+/`test_archive_browser.py` regression sweep clean; the same 4-5
+pre-existing sandbox-only failures (tomllib-stub camera-config
+fixture quirk, a `movement_bridges_gap()` signature mismatch unrelated
+to this change, one flaky gopro-adapter fixture) reproduced identically
+on a clean `git stash` baseline.
+
+Files changed: `src/blackvue/cli/bv_ls.py`, `tests/blackvue/cli/test_bv_ls.py`,
+`docs/man/bv-ls.md`, `docs/CAMERA_ADAPTERS.md`.

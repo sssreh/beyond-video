@@ -5,7 +5,12 @@ from datetime import timedelta
 from pathlib import Path
 
 from blackvue.adapters import registry
-from blackvue.archive import Archive, Asset
+from blackvue.adapters.base import CameraAdapter
+from blackvue.adapters.telemetry_bridge import read_recording_gps
+from blackvue.adapters.telemetry_bridge import recording_has_gps
+from blackvue.archive import Archive, Asset, Recording, recording_is_photo
+from blackvue.archive.container_gps import container_location_fix
+from blackvue.archive.exif import exif_gps_fix
 from blackvue.cli.display_group import DisplayGroup
 from blackvue.cli.display_group import source_name
 from blackvue.cli.errors import run_cli
@@ -92,24 +97,96 @@ def _source_column_needed(groups: list[DisplayGroup], root: Path) -> bool:
     return False
 
 
+def _recording_gps_available(adapter: CameraAdapter, recording: Recording) -> bool:
+    """True if `recording` has a real, usable GPS position - either a
+    genuine adapter-read telemetry fix, or a still photo's EXIF GPS
+    tag or a video's own ISO 6709 container `location` tag.
+
+    Starts from the same two sources web/app.py's
+    `archive_recording_location()` route uses (see that route's own
+    comments for the real reports - Christer's stock/downloaded
+    GoPro-archive clips and photos - that motivated each one): a real
+    adapter read (recording_has_gps() + read_recording_gps()), or the
+    EXIF (photos) / container-tag (videos) fallback on the recording's
+    FRONT file.
+
+    Deliberately goes one step further than that route, though: the
+    route only tries the fallback when recording_has_gps() is False
+    outright, so a GoPro-adapter recording (gps_source_asset="FRONT",
+    recording_has_gps() True for any recording with a FRONT file)
+    whose FRONT file has no real GPMF track never reaches the
+    fallback there, even though its own container `location` tag
+    might carry a real fix - exactly Christer's own "No gps from"
+    report: a GoPro archive with stock/downloaded clips mixed in,
+    each with a real ISO 6709 location tag ffprobe can see
+    (container_gps.py's own docstring quotes his exact ffprobe dump)
+    but no GPMF stream for adapter.read_gps() to find. So here, a
+    real read that comes back with recording_has_gps() True but zero
+    valid fixes still falls through to the same fallback a "no GPS
+    source at all" recording would get, rather than stopping at "no
+    valid fix found" the way the web route does.
+    """
+
+    if recording_has_gps(adapter, recording):
+        if any(
+            fix.valid and fix.latitude is not None and fix.longitude is not None
+            for fix in read_recording_gps(adapter, recording)
+        ):
+            return True
+
+    front = recording.file(Asset.FRONT)
+    if front is None:
+        return False
+
+    if recording_is_photo(recording):
+        if exif_gps_fix(front.path, timestamp=recording.id.timestamp) is not None:
+            return True
+
+    return container_location_fix(front.path, timestamp=recording.id.timestamp) is not None
+
+
+def _group_has_gps(group: DisplayGroup, adapter: CameraAdapter) -> bool:
+    """Same all-recordings-in-the-group contract as
+    DisplayGroup.has(), just backed by _recording_gps_available()'s
+    real probe instead of a plain asset-file-exists check."""
+
+    return all(
+        _recording_gps_available(adapter, recording)
+        for recording in group.recordings
+    )
+
+
 def _assets_with_any_match(
-    groups: list[DisplayGroup], assets: list[Asset]
+    groups: list[DisplayGroup],
+    assets: list[Asset],
+    gps_marks: list[bool],
 ) -> list[Asset]:
     """Filter `assets` down to only those with at least one X somewhere
     in `groups` - an asset column nobody has is dead width on every
-    single row, most noticeably for GoPro/folder archives (no REAR,
-    INT, GPS, or GSENSOR columns ever match - that telemetry lives
-    inside FRONT itself, not a separate asset) but just as real for a
-    BlackVue archive that's never had --describe-scene or --diarize
-    run, whose Scene/diarized-Transcript columns are permanently
-    blank. `--full` (see parse_args()) skips this filter entirely for
-    someone who wants to see every possible column regardless of
-    whether this particular archive happens to use it."""
+    single row, most noticeably for GoPro/folder archives (no REAR or
+    INT columns ever match - that telemetry lives inside FRONT itself,
+    not a separate asset) but just as real for a BlackVue archive that
+    's never had --describe-scene or --diarize run, whose Scene/
+    diarized-Transcript columns are permanently blank. `--full` (see
+    parse_args()) skips this filter entirely for someone who wants to
+    see every possible column regardless of whether this particular
+    archive happens to use it.
+
+    GPS is special-cased to `gps_marks` (one already-computed
+    _group_has_gps() result per group, in the same order as `groups`)
+    rather than group.has(Asset.GPS) - see that function's own
+    docstring for why a plain file-existence check would always read
+    False for a GoPro/folder archive even when the live EXIF/
+    container-tag fallback would find a real fix."""
 
     return [
         asset
         for asset in assets
-        if any(group.has(asset) for group in groups)
+        if (
+            any(gps_marks)
+            if asset is Asset.GPS
+            else any(group.has(asset) for group in groups)
+        )
     ]
 
 
@@ -279,7 +356,8 @@ def bv_ls(
     first and handed to `say` once, complete - the printed result is
     byte-for-byte the same as before, just assembled differently."""
 
-    archive = registry.get_adapter(adapter_id).open_archive(Path(path))
+    adapter = registry.get_adapter(adapter_id)
+    archive = adapter.open_archive(Path(path))
     archive_root = Path(path)
 
     try:
@@ -332,8 +410,16 @@ def bv_ls(
     )
 
     assets = Asset.display_order()
+
+    # A real per-group probe (see _recording_gps_available()'s own
+    # docstring for the cost/why) - computed once here, up front, and
+    # reused for both the --full column-inclusion filter below and
+    # each row's own mark in the render loop, rather than probing the
+    # same recording twice.
+    gps_marks = [_group_has_gps(group, adapter) for group in groups]
+
     if not full:
-        assets = _assets_with_any_match(groups, assets)
+        assets = _assets_with_any_match(groups, assets, gps_marks)
 
     recording_width = max(
         [len("Recording")]
@@ -391,14 +477,17 @@ def bv_ls(
         )
     )
 
-    for group in groups:
+    for group, gps_mark in zip(groups, gps_marks):
         row = f"{group.label:<{recording_width}}" + "  "
 
         if show_source:
             row += f"{group.source_label(archive_root):<{source_width}}" + "  "
 
         for asset in assets:
-            mark = "X" if group.has(asset) else ""
+            if asset is Asset.GPS:
+                mark = "X" if gps_mark else ""
+            else:
+                mark = "X" if group.has(asset) else ""
             row += f"{mark:^{widths[asset]}}" + " "
 
         row += f"{format_size(group.size):>{size_width}}"

@@ -1744,6 +1744,53 @@ needed; `test_scene.py` (29/29) confirmed unaffected.
 
 Files changed: `src/blackvue/generate/scene.py`.
 
+## bv-ls GPS column: live EXIF/container-tag fallback probe (2026-08-17)
+
+Christer's real report - a `bv-ls GP --all` run on his real GoPro
+archive, message prefixed "No gps from" - showed no GPS column at
+all. Root cause: bv-ls's GPS column was a pure
+`DisplayGroup.has(Asset.GPS)` file-existence check on a discrete
+`Asset.GPS` sidecar the GoPro/folder adapters never populate (GPS
+lives inside the video's own GPMF track, or requires the EXIF/
+container-tag fallback added earlier this session - task #966/#957 -
+neither of which bv-ls reflected at all).
+
+Investigated via a research-only subagent before proposing anything -
+confirmed this was "never built" for bv-ls rather than a regression,
+and that wiring in the fallback meant a real per-row cost (an EXIF
+read and/or an `ffprobe` subprocess), not a free check like every
+other column. Surfaced that tradeoff to Christer via `AskUserQuestion`
+rather than deciding unilaterally; he chose "Yes, add it (with probe
+cost)."
+
+Added `_recording_gps_available()`/`_group_has_gps()` to `cli/bv_ls.py`,
+starting from the same two sources `web/app.py`'s
+`archive_recording_location()` route already uses
+(`recording_has_gps()` + `read_recording_gps()` for a real adapter
+read; `exif_gps_fix()` for photos and `container_location_fix()` for
+videos as fallbacks) - but deliberately going one step further than
+that route: the route only tries the fallback when
+`recording_has_gps()` is False outright, so a GoPro-adapter recording
+(`gps_source_asset="FRONT"`, `recording_has_gps()` True for any
+recording with a FRONT file) whose FRONT file has no real GPMF track
+never reaches the fallback there, even though its own container
+`location` tag might carry a real fix - exactly Christer's case. Here,
+a real read that comes back with `recording_has_gps()` True but zero
+valid fixes still falls through to the same fallback a "no GPS source
+at all" recording gets, rather than stopping at "no valid fix found"
+the way the web route does. (The web route itself still has this gap
+- out of scope for this task, but worth revisiting.)
+
+`gps_marks` (one probe result per display group) is computed once per
+`bv_ls()` call and reused for both `_assets_with_any_match()`'s
+column-inclusion filter and each row's own mark, so a recording's GPS
+status is never probed twice. `--full` still forces the column to
+show even when every mark is False, matching every other column's
+existing behavior.
+
+Files changed: `src/blackvue/cli/bv_ls.py`,
+`tests/blackvue/cli/test_bv_ls.py`, `docs/man/bv-ls.md`.
+
 ## See also
 
 - `docs/ARCHITECTURE.md` - main project overview; documents the earlier,
