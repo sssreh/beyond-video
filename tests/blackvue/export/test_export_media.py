@@ -1175,7 +1175,10 @@ def test_extract_first_frame_raises_for_an_unreadable_source(tmp_path):
 # ---------------------------------------------------------------------------
 # extract_video_thumbnail() - grabs one small JPEG frame from an
 # arbitrary real video, for the bv-web archive browser's thumbnail
-# grid (thumbnail_cache.py's generate-and-cache caller). Unlike
+# grid and bv-generate's --thumbnail action. Now lives in
+# generate/media.py (see that module's own copy of this function for
+# the real docstring); export/media.py just re-exports it so this
+# import and every other existing caller keep working unchanged. Unlike
 # extract_first_frame() above, this is not scoped to GIFs or frame 0 -
 # it seeks to offset_seconds (0.5s by default) to dodge a possibly
 # black/garbled startup frame. The source fixture here therefore needs

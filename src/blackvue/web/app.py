@@ -824,10 +824,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             camera_id,
             recording_id,
         )
-        thumbnail_cache_dir = default_config_dir() / ".thumbnail_cache"
-        path = recording.thumbnail_path(
-            direction, thumbnail_cache_dir=thumbnail_cache_dir
-        )
+        archive_root = _find_camera_archive(app.state.camera_config_cache, camera_id)
+        path = recording.thumbnail_path(direction, archive_root=archive_root)
         if path is None or not path.is_file():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="thumbnail not found"
@@ -991,6 +989,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         id: str = Form(...),
         extract_audio: bool = Form(False),
         get_duration: bool = Form(False),
+        thumbnail: bool = Form(False),
         transcribe: bool = Form(False),
         translate: str = Form(""),
         language: str = Form(""),
@@ -1025,6 +1024,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             "id": id,
             "extract_audio": extract_audio,
             "get_duration": get_duration,
+            "thumbnail": thumbnail,
             "transcribe": transcribe,
             "translate": translate,
             "language": language,
@@ -1061,13 +1061,15 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         if not (
             extract_audio
             or get_duration
+            or thumbnail
             or transcribe
             or translate
             or describe_scene
         ):
             error = (
                 "Select at least one action: extract audio, compute "
-                "duration, transcribe, translate, or describe scene."
+                "duration, thumbnail, transcribe, translate, or "
+                "describe scene."
             )
         elif diarize and not (transcribe or translate):
             error = "Label speakers requires transcribe or translate."
@@ -1100,6 +1102,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             timestamp=timestamp,
             extract_audio=extract_audio,
             get_duration=get_duration,
+            thumbnail=thumbnail,
             transcribe=transcribe,
             translate=translate,
             language=language,

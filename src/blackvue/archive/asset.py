@@ -32,6 +32,16 @@ class Asset(Enum):
 
     AUDIO = ("Aud",)
     DURATION = ("Dur",)
+    # A generated frame-grab thumbnail, permanently written next to a
+    # recording's other generated assets (see cli/bv_generate.py's
+    # --thumbnail action) - the FolderAdapter/GoProAdapter equivalent
+    # of a BlackVue camera's own downloaded FRONT_THUMBNAIL .thm file,
+    # for adapters whose manifest declares "thumbnails": "generated"
+    # (no camera-native sidecar exists to download in the first
+    # place). web/archive_browser.py's ArchiveRecording.thumbnail_path()
+    # checks this before falling back to generating one itself on the
+    # spot.
+    THUMBNAIL = ("Thm",)
 
     TRANSCRIPT = ("Plain", "Transcript")
     TRANSCRIPT_DIARIZED = ("Diar", "Transcript")

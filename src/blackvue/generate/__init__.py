@@ -13,6 +13,7 @@ from .media import MediaInfo
 from .media import MediaToolError
 from .media import compute_span
 from .media import extract_audio
+from .media import extract_video_thumbnail
 from .media import get_span
 from .media import is_audio_silent
 from .media import probe
@@ -62,6 +63,7 @@ __all__ = [
     "diarize",
     "extract_audio",
     "extract_description_section",
+    "extract_video_thumbnail",
     "format_diarized_transcript",
     "format_srt",
     "get_span",

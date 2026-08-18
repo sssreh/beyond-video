@@ -14928,3 +14928,93 @@ demand thumbnails - the feature ended up living entirely in bv-web's own
 `thumbnail_generator` code hook, since the fallback is generic across
 any adapter with a FRONT video, so no adapter-specific hook was actually
 needed.
+
+## Permanent thumbnail asset: `--thumbnail` + archive-browser fallback share one file (2026-08-18)
+
+The previous entry's `thumbnail_cache.py` design (LRU-capped, keyed by
+source-file fingerprint, living outside the archive under
+`default_config_dir() / ".thumbnail_cache"`) worked but meant a
+recording's thumbnail wasn't portable with the archive and wasn't
+something `bv-generate` could produce proactively/in bulk like every
+other derived asset. Asked to choose between "keep it a pure web-layer
+cache" and "make it a real generated asset, still with the web fallback
+for anything not yet generated," Christer: "Number 1, but also be
+created by archive browser if not exists" - i.e. option 1 (a real,
+permanent asset) *and* keep the on-demand web fallback.
+
+**New `Asset.THUMBNAIL`** (`archive/asset.py`, `("Thm",)`, in the
+Generated assets section next to `DURATION`). Suffix `.thumb.jpg`
+registered in `ArchiveReader.ASSETS` (right after `.duration.txt`) and
+in all three adapter manifests' `asset_suffix_table` - `blackvue`'s
+insertion had to match `ArchiveReader.ASSETS`'s order exactly
+(`test_manifest.py::test_blackvue_manifest_asset_suffix_table_matches_archive_reader`
+is order-sensitive). Written as `archive_path / f"{recording.id}.thumb.jpg"`,
+the same convention every other bv-generate output already uses -
+`generated_assets_for()`'s existing same-stem/root-level lookup finds
+it automatically for FolderAdapter/GoProAdapter archives, no extra
+wiring needed.
+
+**`extract_video_thumbnail()`** moved from `export/media.py` into
+`generate/media.py` (re-exported from its old location for backward
+compatibility) since it's now a real bv-generate action, not just an
+export-time helper - keeps the project's `generate/` must-not-import-
+`export/` layering rule intact (`export/` already imports from
+`generate/`, not the reverse).
+
+**`bv-generate --thumbnail`** (`cli/bv_generate.py`, mirrors the
+`--get-duration`/`--describe-scene` action-flag pattern exactly:
+argparse flag, "specify at least one action" OR-chain, `_do_thumbnail()`,
+`_requested_lock_assets()` entry, main dispatch loop entry,
+`core/lock.py`'s `LOCKABLE_ASSETS`). `_do_thumbnail()` skips (not an
+error) `recording_is_photo()` recordings (a photo already serves as its
+own thumbnail) and recordings that already have a native
+`FRONT_THUMBNAIL`/`REAR_THUMBNAIL`/`INTERIOR_THUMBNAIL` sidecar - the
+web fallback chain always prefers those anyway - so `--thumbnail` is
+effectively a no-op for ordinary BlackVue archives and a real generator
+only for FolderAdapter/GoProAdapter ones.
+
+**`ArchiveRecording.thumbnail_path()`** (`web/archive_browser.py`)
+rewritten with a fourth fallback tier ahead of the old on-demand-
+generate tier: (1) a real `*_THUMBNAIL` sidecar for any direction, (2)
+the new `Asset.THUMBNAIL` generated asset (front only) if bv-generate
+already produced it, (3) the recording's own FRONT file when it's a
+photo, (4) on-demand `extract_video_thumbnail()`, now writing directly
+to `archive_root / f"{recording.id}.thumb.jpg"` - the exact same
+permanent location tier (2) checks, so a thumbnail generated on first
+view is found instantly on every later view without needing
+`bv-generate` to ever run. Param renamed `thumbnail_cache_dir` ->
+`archive_root` to match. `web/app.py`'s thumbnail route now resolves
+`archive_root` via the existing `_find_camera_archive()` helper instead
+of building a `.thumbnail_cache` path.
+
+**Web wiring** (`web/jobs.py`, `web/app.py`,
+`job_new_bv_generate.html`) follows the `--describe-scene`/`--gps-split`
+precedent: `JobRunner.start_bv_generate()` gained a `thumbnail: bool`
+param and `--thumbnail` argv append; the `/jobs/bv-generate` POST route
+gained a `thumbnail: bool = Form(False)` field, folded into
+`raw_params` (so it round-trips through the reuse-a-previous-run
+picker) and into the "select at least one action" validation; the form
+gained a checkbox next to "Compute real-world duration."
+
+**Obsolete module removed**: `export/thumbnail_cache.py` and its test
+file - the LRU-cap/fingerprint-keying design is fully superseded by the
+single permanent, id-keyed file both producers (`bv-generate
+--thumbnail` and the web on-demand fallback) now write to.
+`generate/cache_utils.py`'s `enforce_cache_size_cap()` (a separate
+helper still used by `hevc_preview.py`/`mp4_repair.py`) is untouched.
+
+**Tests**: updated `test_lock.py`'s `LOCKABLE_ASSETS` expectation,
+`test_manifest.py`'s BlackVue suffix-table-order check (new fixture
+data), `test_bv_generate.py`'s `_base_args()`/`_requested_lock_assets()`
+tests for the new flag, and `test_jobs.py`'s `_generate_kwargs()`/flags-
+reach-parsed-args test. `test_archive_browser.py`'s thumbnail-fallback
+tests rewritten for the `archive_root` rename and the new asset-first
+tier (new test:
+`test_thumbnail_path_prefers_an_existing_generated_thumbnail_asset`).
+Full targeted run (`test_bv_generate.py`, `test_bv_lock.py`,
+`test_lock.py`, `test_manifest.py`, `test_jobs.py`,
+`test_archive_browser.py`, `test_export_media.py`) confirmed clean
+apart from a handful of already-documented pre-existing harness/test
+issues unrelated to this change (a `FakeTTY`/`pytest.approx` scratch-
+harness limitation, and two `test_jobs.py` params tests that fail
+identically on the unmodified tree - confirmed via `git stash`).

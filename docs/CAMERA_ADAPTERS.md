@@ -185,14 +185,23 @@ Design choices worth calling out:
   primary, keeps the rest of the pipeline (which expects a primary
   direction and at least one kind) working unmodified.
 - `thumbnails: "generated"` - no native `.thm` sidecar exists, so a
-  thumbnail comes from an on-demand `ffmpeg` frame-grab of the FRONT
-  video instead, cached under a `.thumbnail_cache` directory (see
-  `export/thumbnail_cache.py`). This ended up living in bv-web's own
-  `ArchiveRecording.thumbnail_path()` rather than as a per-adapter
-  `thumbnail_generator` code hook - the fallback is generic (any
-  recording with a FRONT video and no `*_THUMBNAIL` sidecar, on any
-  adapter), so no adapter-specific hook was actually needed. The
-  `code_hooks_required` entry below predates that design.
+  thumbnail comes from an `ffmpeg` frame-grab of the FRONT video
+  instead, written as a normal, permanent generated asset
+  (`<id>.thumb.jpg`, `Asset.THUMBNAIL` - see `archive/asset.py` and
+  this manifest's own `asset_suffix_table`), discovered the same way
+  as any other `bv-generate` output. Two producers write the exact
+  same file: `bv-generate --thumbnail`, run proactively/in bulk, and
+  bv-web's own `ArchiveRecording.thumbnail_path()`
+  (`web/archive_browser.py`), which generates it on the spot the first
+  time a recording with no thumbnail yet is actually viewed (earlier
+  revisions of this feature cached the on-demand thumbnail in a
+  separate `.thumbnail_cache` directory keyed by source-file
+  fingerprint - `export/thumbnail_cache.py` - that module has since
+  been removed in favor of the single permanent, id-keyed file both
+  producers now share). Both are generic across any adapter (any
+  recording with a FRONT video and no `*_THUMBNAIL` sidecar), so no
+  adapter-specific `thumbnail_generator` code hook was actually
+  needed. The `code_hooks_required` entry below predates that design.
 - `asset_suffix_table` only lists the *generated* assets (audio, duration,
   transcript, translation, subtitles, scene description) - the same
   suffixes BlackVue uses, since those are this project's own filenames,
@@ -409,6 +418,28 @@ own docstring - it turned out generic enough that no per-adapter
 gap. The grid also now shows each recording's real on-disk filename
 (`ArchiveRecording.source_filename`) alongside the thumbnail, for
 archives where that differs from the synthesized recording id.)*
+
+*(Update: the on-demand thumbnail's own cache mechanics were replaced
+by a permanent generated asset - Christer's own call when asked "cache
+the on-demand thumbnail" vs. "write a real permanent asset, and also
+let bv-generate produce it proactively": "Number 1, but also be
+created by archive browser if not exists." A new `Asset.THUMBNAIL`
+(`archive/asset.py`) is written as `<id>.thumb.jpg`, the same
+`archive_path / f"{recording.id}.<suffix>"` convention every other
+bv-generate output uses - registered in `ArchiveReader.ASSETS` and
+every adapter manifest's own `asset_suffix_table`. `bv-generate` grew
+a `--thumbnail` action (`generate/media.py`'s `extract_video_thumbnail()`,
+unchanged - it just now writes to the permanent location instead of a
+cache dir) that skips photos and recordings that already have a native
+`*_THUMBNAIL` sidecar. `ArchiveRecording.thumbnail_path()` gained a
+fourth fallback tier for exactly this asset, ahead of its own
+on-demand-generate-and-write tier, so a recording bv-generate already
+covered is served instantly while an uncovered one still gets
+generated (and permanently saved) on first view. The old
+`export/thumbnail_cache.py` module - the separate, LRU-capped,
+source-fingerprint-keyed cache this update note above described - has
+been deleted along with its test file; it's fully superseded by the
+single permanent, id-keyed file both producers now share.)*
 
 Verified: every new/changed module `py_compile`s; standalone scripts
 exercised `FolderAdapter.open_archive()`/`find_recording()` against real

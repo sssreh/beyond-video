@@ -42,8 +42,8 @@ from ..archive import Recording
 from ..archive import RecordingId
 from ..archive import recording_is_photo
 from ..core.camera_config import DEFAULT_ADAPTER_ID
-from ..export.thumbnail_cache import load_or_generate_thumbnail
 from ..generate.media import MediaToolError
+from ..generate.media import extract_video_thumbnail
 from ..generate.scene import extract_description_section
 from ..lexicaltimeparser import TimeInterval
 from ..telemetry.gps_reader import GpsFix
@@ -422,36 +422,42 @@ class ArchiveRecording:
         return None
 
     def thumbnail_path(
-        self, direction: str, *, thumbnail_cache_dir: Path | None = None
+        self, direction: str, *, archive_root: Path | None = None
     ) -> Path | None:
         """Resolve a direction name ("front"/"rear"/"interior") to
         its thumbnail file's path, or None if this recording has no
         thumbnail for that direction.
 
-        Three-step fallback chain for "front" (see thumbnail_direction's
+        Four-step fallback chain for "front" (see thumbnail_direction's
         own docstring - it must stay in sync with this):
 
         1. A real `*_THUMBNAIL` sidecar (every direction, not just
            front) - the fast, common case for a BlackVue archive.
-        2. The recording's own FRONT file when it's a photo (see
+        2. The generated Asset.THUMBNAIL asset (<id>.thumb.jpg) - a
+           normal, permanent archive asset like .aac/.duration.txt,
+           written either by `bv-generate --thumbnail` ahead of time or
+           by step 4 below on an earlier view of this same recording.
+           Unlike the old design (see WORKING_CONTEXT.md, "archive-
+           browser thumbnails"), this is not a separate app-level cache
+           keyed by a source-file fingerprint - it's discovered the
+           same way every other generated asset is, via each adapter's
+           `asset_suffix_table` (`generated_assets_for()`).
+        3. The recording's own FRONT file when it's a photo (see
            archive/photo.py) - the photo itself already *is* a small,
            real preview image, so serving it directly is a real
            thumbnail, no ffmpeg needed.
-        3. A generated frame-grab from the FRONT video, cached under
-           `thumbnail_cache_dir` (see export/thumbnail_cache.py) - the
-           fallback every FolderAdapter/GoProAdapter video needs, since
-           neither adapter ever writes a `*_THUMBNAIL` sidecar (their
-           manifests document `thumbnails: "generated"`, but nothing
-           generated one before this fallback existed). Only attempted
-           when `thumbnail_cache_dir` is given - callers with no cache
-           directory available (existing tests, any future non-web
-           caller) get steps 1-2 only, same as before this fallback was
-           added. A generation failure (ffmpeg missing, a corrupt or
-           truncated video) is swallowed, not raised - one recording's
-           thumbnail failing to generate shouldn't take down the whole
-           grid, the same "never break the whole page over one
-           recording" posture scene_texts already takes for a bad
-           scene.txt read.
+        4. A fresh frame-grab from the FRONT video, written straight to
+           the same permanent `archive_root / f"{id}.thumb.jpg"` path
+           step 2 checks - the on-demand fallback for a recording
+           bv-generate --thumbnail hasn't reached yet. Only attempted
+           when `archive_root` is given - callers with no archive root
+           available (existing tests, any future non-web caller) get
+           steps 1-3 only, same as before this fallback existed. A
+           generation failure (ffmpeg missing, a corrupt or truncated
+           video) is swallowed, not raised - one recording's thumbnail
+           failing to generate shouldn't take down the whole grid, the
+           same "never break the whole page over one recording" posture
+           scene_texts already takes for a bad scene.txt read.
         """
 
         asset = _THUMBNAIL_ASSET_BY_DIRECTION.get(direction)
@@ -462,16 +468,21 @@ class ArchiveRecording:
             return asset_file.path
         if direction != "front":
             return None
+        generated = self.recording.file(Asset.THUMBNAIL)
+        if generated is not None:
+            return generated.path
         if recording_is_photo(self.recording):
             front = self.recording.file(Asset.FRONT)
             return front.path if front is not None else None
         front = self.recording.file(Asset.FRONT)
-        if front is None or thumbnail_cache_dir is None:
+        if front is None or archive_root is None:
             return None
+        destination = archive_root / f"{self.recording.id}.thumb.jpg"
         try:
-            return load_or_generate_thumbnail(front.path, thumbnail_cache_dir)
+            extract_video_thumbnail(front.path, destination)
         except MediaToolError:
             return None
+        return destination
 
 
 def first_valid_gps_fix(adapter: CameraAdapter, recording: Recording) -> GpsFix | None:

@@ -351,14 +351,17 @@ def test_thumbnail_path_returns_none_for_rear_even_on_a_photo_recording(
 
 
 # ---------------------------------------------------------------------------
-# thumbnail_path()'s third fallback tier - a generated frame-grab from a
-# plain FRONT video with no *_THUMBNAIL sidecar and no photo (the real
-# FolderAdapter/GoProAdapter case that prompted this whole feature:
-# Christer, "archive browser for folder would look so much better with
-# a thumbnail"). Uses a real short ffmpeg-muxed video rather than a
-# mock, matching this project's usual fixture convention - see
-# export/test_thumbnail_cache.py for the cache-mechanics tests (cache
-# hit/miss/eviction) that are deliberately *not* re-tested here.
+# thumbnail_path()'s on-demand fallback tier - a generated frame-grab from
+# a plain FRONT video with no *_THUMBNAIL sidecar, no Asset.THUMBNAIL
+# generated asset yet, and no photo (the real FolderAdapter/GoProAdapter
+# case that prompted this whole feature: Christer, "archive browser for
+# folder would look so much better with a thumbnail"). Uses a real short
+# ffmpeg-muxed video rather than a mock, matching this project's usual
+# fixture convention. The permanent-asset design (Christer: "Number 1,
+# but also be created by archive browser if not exists") means this now
+# writes straight into the archive at <id>.thumb.jpg rather than a
+# separate app-level cache dir - see generate/media.py's
+# extract_video_thumbnail() and archive/asset.py's Asset.THUMBNAIL.
 # ---------------------------------------------------------------------------
 
 
@@ -378,30 +381,38 @@ def _make_video(path, duration_seconds: float = 1.0) -> None:
     )
 
 
-def test_thumbnail_path_generates_and_caches_a_video_frame_thumbnail(tmp_path):
+def test_thumbnail_path_generates_and_writes_a_permanent_video_frame_thumbnail(
+    tmp_path,
+):
     video_path = tmp_path / "GH010023.MP4"
     _make_video(video_path, duration_seconds=2.0)
-    cache_dir = tmp_path / "thumb_cache"
+    archive_root = tmp_path
 
+    recording_id = RecordingId("20260715_140212_V")
     recording = ArchiveRecording(
         camera_id="gopro",
         recording=Recording(
-            id=RecordingId("20260715_140212_V"),
+            id=recording_id,
             assets={Asset.FRONT: AssetFile(Asset.FRONT, video_path)},
         ),
     )
 
-    result = recording.thumbnail_path("front", thumbnail_cache_dir=cache_dir)
+    result = recording.thumbnail_path("front", archive_root=archive_root)
 
     assert result is not None
     assert result.is_file()
-    assert result.parent == cache_dir
+    # Written straight into the archive root as a normal, permanent
+    # generated asset - the same <id>.thumb.jpg path bv-generate
+    # --thumbnail and generated_assets_for() both expect.
+    assert result == archive_root / f"{recording_id}.thumb.jpg"
 
 
-def test_thumbnail_path_returns_none_for_a_plain_video_without_a_cache_dir(tmp_path):
-    # No thumbnail_cache_dir given (e.g. an existing non-web caller) -
-    # the video-frame fallback must not attempt anything, same as
-    # before this fallback existed.
+def test_thumbnail_path_returns_none_for_a_plain_video_without_an_archive_root(
+    tmp_path,
+):
+    # No archive_root given (e.g. an existing non-web caller) - the
+    # video-frame fallback must not attempt anything, same as before
+    # this fallback existed.
     video_path = tmp_path / "GH010023.MP4"
     _make_video(video_path, duration_seconds=2.0)
 
@@ -422,7 +433,6 @@ def test_thumbnail_path_swallows_a_generation_failure_and_returns_none(tmp_path)
     # raised (see thumbnail_path()'s own docstring).
     video_path = tmp_path / "corrupt.mp4"
     video_path.write_bytes(b"not a real video")
-    cache_dir = tmp_path / "thumb_cache"
 
     recording = ArchiveRecording(
         camera_id="gopro",
@@ -432,7 +442,31 @@ def test_thumbnail_path_swallows_a_generation_failure_and_returns_none(tmp_path)
         ),
     )
 
-    assert recording.thumbnail_path("front", thumbnail_cache_dir=cache_dir) is None
+    assert recording.thumbnail_path("front", archive_root=tmp_path) is None
+
+
+def test_thumbnail_path_prefers_an_existing_generated_thumbnail_asset(tmp_path):
+    # If a THUMBNAIL asset already exists (e.g. bv-generate --thumbnail
+    # ran ahead of time), thumbnail_path() must serve it directly
+    # rather than generating a fresh one from the video - even when an
+    # archive_root is given.
+    generated_path = tmp_path / "existing.thumb.jpg"
+    generated_path.write_bytes(b"jpeg bytes")
+    video_path = tmp_path / "GH010023.MP4"
+    video_path.write_bytes(b"pretend video bytes")
+
+    recording = ArchiveRecording(
+        camera_id="gopro",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={
+                Asset.FRONT: AssetFile(Asset.FRONT, video_path),
+                Asset.THUMBNAIL: AssetFile(Asset.THUMBNAIL, generated_path),
+            },
+        ),
+    )
+
+    assert recording.thumbnail_path("front", archive_root=tmp_path) == generated_path
 
 
 # ---------------------------------------------------------------------------

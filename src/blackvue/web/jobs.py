@@ -534,6 +534,7 @@ class JobRunner:
         timestamp: str | None,
         extract_audio: bool,
         get_duration: bool,
+        thumbnail: bool,
         transcribe: bool,
         translate: str | None,
         language: str | None,
@@ -594,6 +595,8 @@ class JobRunner:
             argv.append("--extract-audio")
         if get_duration:
             argv.append("--get-duration")
+        if thumbnail:
+            argv.append("--thumbnail")
         if transcribe:
             argv.append("--transcribe")
         if translate:

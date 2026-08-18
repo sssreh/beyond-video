@@ -63,6 +63,10 @@
         Compute real-world duration (.duration.txt)
       </label>
       <label class="filter-checkbox">
+        <input type="checkbox" id="thumbnail" name="thumbnail" value="true" style="width: auto; margin: 0;"{% if defaults.get('thumbnail') %} checked{% endif %}>
+        Generate thumbnail (.thumb.jpg) - only needed for archives with no camera-native thumbnail
+      </label>
+      <label class="filter-checkbox">
         <input type="checkbox" id="transcribe" name="transcribe" value="true" style="width: auto; margin: 0;"{% if defaults.get('transcribe') %} checked{% endif %}>
         Transcribe audio to text (.transcript.txt)
       </label>

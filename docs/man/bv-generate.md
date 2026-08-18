@@ -8,7 +8,7 @@
 
 ```
 bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-            [--extract-audio] [--get-duration]
+            [--extract-audio] [--get-duration] [--thumbnail]
             [--transcribe] [--translate LANG] [--language LANG]
             [--model-size SIZE] [--cpu] [--npu-model-dir PATH]
             [--diarize] [--hf-token TOKEN]
@@ -23,7 +23,7 @@ bv-generate [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
 
 `bv-generate` produces derived assets for recordings already downloaded into a local archive (see `bv-download(1)`), writing each one next to its source recording so it shows up in `bv-ls(1)` and is picked up automatically by `bv-export(1)` (trip-level subtitle/transcript merging, `--get-duration`'s span feeding trip-gap detection, etc.).
 
-At least one action flag (`--extract-audio`, `--get-duration`, `--transcribe`, `--translate`, or `--describe-scene`) must be given - `bv-generate` with no action does nothing.
+At least one action flag (`--extract-audio`, `--get-duration`, `--thumbnail`, `--transcribe`, `--translate`, or `--describe-scene`) must be given - `bv-generate` with no action does nothing.
 
 Parking-mode (`P`) recordings are 1-frame-per-second timelapses with no audio - audio-dependent actions (`--extract-audio`, `--transcribe`, `--translate`) are automatically skipped for them, while `--get-duration` still works (reporting the real elapsed time span, not the timelapse video's own short playback length).
 
@@ -62,6 +62,7 @@ Before walking the archive at all, `bv-generate` checks whether `bv-lock(1)` has
 |---|---|
 | `--extract-audio` | Extract the audio track from the front camera video (or rear, if there's no front). Saved as `<recording>.aac`. Skipped (and any extracted file removed) if the track is effectively silent - see below. |
 | `--get-duration` | Compute the real-world duration in seconds. Saved as `<recording>.duration.txt`. |
+| `--thumbnail` | Generate a small JPEG frame-grab thumbnail from the front camera video (or rear if there's no front). Saved as `<recording>.thumb.jpg`. Only useful for archives with no camera-native thumbnail sidecar (FolderAdapter/GoProAdapter - see `CAMERA_ADAPTERS.md`); a recording that already has one, or that's a photo (which already serves as its own thumbnail), is skipped. `bv-web`'s archive browser generates the same permanent file itself on first view if this hasn't been run yet, so running this ahead of time just avoids paying that cost on first view. |
 | `--transcribe` | Transcribe the recording's audio to text. Saved as `<recording>.transcript.txt`. |
 | `--translate LANG` | Translate the transcript into `LANG` (e.g. `es`, `fr`). Saved as `<recording>.translation.txt`. |
 | `--srt` | Also write an SRT subtitle file (`<recording>.srt`) with per-segment timestamps. Requires `--transcribe` or `--translate`. If `--translate` is also given, the subtitles are in the translated language, not the original spoken one. |

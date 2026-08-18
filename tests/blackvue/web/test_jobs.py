@@ -706,6 +706,7 @@ def _generate_kwargs(**overrides):
         timestamp=None,
         extract_audio=False,
         get_duration=False,
+        thumbnail=False,
         transcribe=False,
         translate=None,
         language=None,
@@ -764,6 +765,7 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
     runner = JobRunner()
     runner.start_bv_generate(
         **_generate_kwargs(
+            thumbnail=True,
             transcribe=True,
             translate="sv",
             language="en",
@@ -784,6 +786,7 @@ def test_start_bv_generate_flags_reach_parsed_args(monkeypatch):
 
     _wait_until(lambda: "args" in captured)
     args = captured["args"]
+    assert args.thumbnail is True
     assert args.transcribe is True
     assert args.translate == "sv"
     assert args.language == "en"

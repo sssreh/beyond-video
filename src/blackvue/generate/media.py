@@ -531,3 +531,70 @@ def is_audio_silent(
         return False
 
     return float(match.group(1)) <= threshold_db
+
+
+def extract_video_thumbnail(
+    source: Path, destination: Path, *, offset_seconds: float = 0.5
+) -> None:
+    """Grab one frame of `source` as a small JPEG at `destination` -
+    a generic "make a thumbnail out of any video" helper.
+
+    Two real callers, both writing to the *same* permanent, id-keyed
+    location (`archive_path / f"{recording.id}.thumb.jpg"`, the
+    Asset.THUMBNAIL generated-asset convention every other bv-generate
+    output already follows - see cli/bv_generate.py's `_do_thumbnail()`
+    and web/archive_browser.py's `ArchiveRecording.thumbnail_path()`):
+    bv-generate's `--thumbnail` action, run proactively/in bulk, and
+    the web archive browser's own on-demand fallback the first time a
+    recording with no thumbnail yet is actually viewed. Both write the
+    real sidecar file straight into the archive - unlike the earlier
+    design (see WORKING_CONTEXT.md, "archive-browser thumbnails"),
+    there is no separate app-level cache keyed by a source-file
+    fingerprint any more: once generated, the thumbnail is a normal,
+    permanent archive asset like .aac or .duration.txt, discovered by
+    every adapter's `asset_suffix_table` (`generated_assets_for()`)
+    the same way.
+
+    `-ss` before `-i` (input-side seek, same fast-seek trick
+    trim_media_head() in export/media.py uses) so this doesn't decode
+    the whole file just to throw away everything but one frame.
+    `offset_seconds` defaults to half a second rather than 0 - frame 0
+    of a dashcam/action-cam clip is disproportionately likely to still
+    be a black/garbled frame from the sensor's own startup, and half a
+    second is cheap insurance against that without adding a
+    meaningfully slower seek. `-vf scale=320:-1` keeps the output
+    small (a grid thumbnail, not a full preview) and `-q:v 4` is a
+    mid-low JPEG quality setting - both keep the permanent per-
+    recording sidecar small even across a large archive. `-f mjpeg` is
+    explicit rather than inferred from `destination`'s own extension,
+    the same "muxer can't be guessed from a `.tmp` name" reasoning
+    hevc_preview.py's own `-f mp4` comment already explains - callers
+    that write via an atomic temp-file rename have no `.jpg` in that
+    temp name at all.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(offset_seconds),
+                "-i", str(source),
+                "-frames:v", "1",
+                "-vf", "scale=320:-1",
+                "-q:v", "4",
+                "-f", "mjpeg",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"could not extract a thumbnail from {source.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc

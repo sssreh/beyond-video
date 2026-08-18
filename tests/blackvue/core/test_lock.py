@@ -160,6 +160,7 @@ def test_lockable_assets_matches_bv_generates_own_action_flags():
         {
             "extract-audio",
             "get-duration",
+            "thumbnail",
             "transcribe",
             "translate",
             "srt",

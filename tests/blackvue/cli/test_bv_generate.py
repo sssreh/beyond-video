@@ -107,6 +107,7 @@ def _base_args(**overrides):
     defaults = dict(
         extract_audio=False,
         get_duration=False,
+        thumbnail=False,
         transcribe=False,
         translate=None,
         language=None,
@@ -2608,6 +2609,7 @@ def test_requested_lock_assets_maps_every_action_flag():
     args = _base_args(
         extract_audio=True,
         get_duration=True,
+        thumbnail=True,
         transcribe=True,
         translate="sv",
         srt=True,
@@ -2618,6 +2620,7 @@ def test_requested_lock_assets_maps_every_action_flag():
     assert _requested_lock_assets(args) == {
         "extract-audio",
         "get-duration",
+        "thumbnail",
         "transcribe",
         "translate",
         "srt",

@@ -60,6 +60,7 @@ _LOCK_FILENAME = ".bv-lock.json"
 LOCKABLE_ASSETS = frozenset({
     "extract-audio",
     "get-duration",
+    "thumbnail",
     "transcribe",
     "translate",
     "srt",

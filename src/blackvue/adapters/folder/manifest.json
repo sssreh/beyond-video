@@ -20,6 +20,7 @@
   "asset_suffix_table": [
     {"suffix": ".aac", "asset": "AUDIO", "kind": "generated"},
     {"suffix": ".duration.txt", "asset": "DURATION", "kind": "generated"},
+    {"suffix": ".thumb.jpg", "asset": "THUMBNAIL", "direction": "V", "kind": "generated"},
     {"suffix": ".diarized.transcript.txt", "asset": "TRANSCRIPT_DIARIZED", "kind": "generated"},
     {"suffix": ".diarized.translation.txt", "asset": "TRANSLATION_DIARIZED", "kind": "generated"},
     {"suffix": ".transcript.txt", "asset": "TRANSCRIPT", "kind": "generated"},
@@ -40,8 +41,7 @@
   },
   "code_hooks_required": [
     "recursive_scanner",
-    "timestamp_resolver",
-    "thumbnail_generator"
+    "timestamp_resolver"
   ],
   "default_trip_gap_seconds": 300,
   "gps_source_asset": null,
@@ -54,7 +54,7 @@
     "No config.ini equivalent: trip gap threshold always uses default_trip_gap_seconds (300s) instead of a per-camera auto-derived nominal segment length.",
     "No Event/Manual/Parking distinction: no --mode filtering, no --include-parking skip-and-replace, no max_parking_duration cap - every file is just 'a video'.",
     "No live camera connection: bv-download, bv-config's endpoint setup, bv-gps, and bv-live are not applicable to this adapter and shouldn't be offered for it.",
-    "Thumbnails are generated on demand via an ffmpeg frame-grab, not read from a camera-native .thm sidecar - slower on first view, cacheable after.",
+    "Thumbnails are generated via an ffmpeg frame-grab, not read from a camera-native .thm sidecar - either proactively by bv-generate --thumbnail (a normal, permanent archive asset once written, same as .aac/.duration.txt) or, if that hasn't been run yet, on first view in bv-web, which writes the same permanent file so later views are instant.",
     "Timestamp comes from ffprobe's embedded creation_time metadata, falling back to file mtime if that's missing or looks wrong (e.g. reset by a file copy) - less reliable than BlackVue's own filename-embedded timestamp, so trip boundaries may be slightly off for files with bad/missing metadata."
   ]
 }

@@ -35,6 +35,7 @@ from ..generate import describe_scene
 from ..generate import detect_language
 from ..generate import diarize
 from ..generate import extract_audio
+from ..generate import extract_video_thumbnail
 from ..generate import format_diarized_transcript
 from ..generate import format_srt
 from ..generate import get_span
@@ -141,6 +142,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "mode (P) recordings are 1-frame-per-second timelapses, so "
             "the reported value is the real elapsed time span, not the "
             "video's own playback length. Saved as <recording>.duration.txt."
+        ),
+    )
+
+    parser.add_argument(
+        "--thumbnail",
+        action="store_true",
+        help=(
+            "Generate a small JPEG frame-grab thumbnail from the front "
+            "camera video (or rear if there is no front video). Saved "
+            "as <recording>.thumb.jpg. Only useful for archives with "
+            "no camera-native thumbnail sidecar (FolderAdapter/"
+            "GoProAdapter - see docs/CAMERA_ADAPTERS.md); a recording "
+            "that already has one, or that recording_is_photo() "
+            "already treats as its own thumbnail, is skipped. bv-web's "
+            "archive browser generates the same permanent file itself "
+            "on first view if this hasn't been run yet, so running "
+            "this ahead of time just avoids paying that cost on first "
+            "view."
         ),
     )
 
@@ -341,14 +360,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if not (
         args.extract_audio
         or args.get_duration
+        or args.thumbnail
         or args.transcribe
         or args.translate is not None
         or args.describe_scene
     ):
         parser.error(
             "specify at least one action: --extract-audio, "
-            "--get-duration, --transcribe, --translate, or "
-            "--describe-scene"
+            "--get-duration, --thumbnail, --transcribe, --translate, "
+            "or --describe-scene"
         )
 
     if args.scene_model is None:
@@ -459,6 +479,8 @@ def _requested_lock_assets(args: argparse.Namespace) -> set[str]:
         requested.add("extract-audio")
     if args.get_duration:
         requested.add("get-duration")
+    if args.thumbnail:
+        requested.add("thumbnail")
     if args.transcribe:
         requested.add("transcribe")
     if args.translate is not None:
@@ -755,6 +777,74 @@ def _do_get_duration(
         return False
 
     destination.write_text(f"{span}\n", encoding="utf-8")
+    _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
+    return False
+
+
+def _do_thumbnail(
+    recording: Recording,
+    archive_path: Path,
+    args: argparse.Namespace,
+    *,
+    say=print,
+    warn=_default_warn,
+) -> bool:
+    """Generate and write one recording's permanent thumbnail sidecar
+    (<recording>.thumb.jpg, the Asset.THUMBNAIL generated asset - see
+    archive/asset.py). Return True on error.
+
+    Skipped (not an error) for a photo recording - recording_is_photo()
+    already treats the photo itself as its own thumbnail, the same
+    check web/archive_browser.py's thumbnail_path() makes - or one
+    that already has a real camera-native `*_THUMBNAIL` sidecar
+    (FRONT_THUMBNAIL/REAR_THUMBNAIL/INTERIOR_THUMBNAIL): that
+    function's own fallback chain always prefers a native sidecar over
+    a generated frame-grab, so writing one here would just be wasted
+    work that's never actually served. In practice this makes
+    --thumbnail a no-op for ordinary BlackVue archives and a real
+    generator only for FolderAdapter/GoProAdapter archives, which is
+    the whole point - see CAMERA_ADAPTERS.md.
+
+    Once written, this is a normal, permanent archive asset like
+    .aac or .duration.txt - not a separate app-level cache. bv-web's
+    archive browser writes the exact same file itself, at the same
+    path, if a recording is viewed before this action has ever run for
+    it (see web/archive_browser.py's ArchiveRecording.thumbnail_path()),
+    so running this ahead of time only saves paying that cost on first
+    view - it isn't required for thumbnails to work at all."""
+
+    if recording_is_photo(recording):
+        return False
+
+    if (
+        recording.has(Asset.FRONT_THUMBNAIL)
+        or recording.has(Asset.REAR_THUMBNAIL)
+        or recording.has(Asset.INTERIOR_THUMBNAIL)
+    ):
+        return False
+
+    source_file = select_source(recording)
+    if source_file is None:
+        warn(f"bv-generate: {recording.id}: no front or rear video, "
+            "skipping thumbnail")
+        return True
+
+    destination = archive_path / f"{recording.id}.thumb.jpg"
+
+    if not _should_write_for(destination, args, warn=warn):
+        return False
+
+    if args.dry_run:
+        say(f"{recording.id}: would extract thumbnail from "
+            f"{source_file.name} -> {destination.name}")
+        return False
+
+    try:
+        extract_video_thumbnail(source_file.path, destination)
+    except MediaToolError as exc:
+        warn(f"bv-generate: {recording.id}: {exc}")
+        return True
+
     _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
     return False
 
@@ -1605,6 +1695,11 @@ def _run(
 
             if args.get_duration:
                 had_error |= _do_get_duration(
+                    recording, archive_path, args, say=say, warn=warn
+                )
+
+            if args.thumbnail:
+                had_error |= _do_thumbnail(
                     recording, archive_path, args, say=say, warn=warn
                 )
 
