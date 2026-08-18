@@ -357,6 +357,21 @@
       box-sizing: border-box; font: inherit;
     }
     .hint { color: var(--muted); font-size: 0.85rem; margin: -0.5rem 0 1rem; }
+    /* job_new_bv_search.html's "Search by voice" button (task #1008) -
+       sits next to the #text field, styled like .cancel-button/.copy-
+       button's existing outline-button convention rather than the
+       filled button[type=submit] look, since it's a secondary action
+       that fills the field rather than submitting the form. */
+    .text-with-voice { display: flex; gap: 0.5rem; align-items: center; margin: 0.35rem 0 0; }
+    .text-with-voice input[type="text"] { flex: 1; margin: 0; }
+    .voice-btn {
+      flex-shrink: 0; background: none; border: 1px solid var(--panel-border); color: inherit;
+      padding: 0.5rem 0.9rem; border-radius: 4px; font: inherit; font-size: 0.85rem; cursor: pointer;
+      white-space: nowrap;
+    }
+    .voice-btn:hover { border-color: var(--link); color: var(--link); }
+    .voice-btn.recording { border-color: var(--error); color: var(--error); }
+    .voice-status { margin-top: 0.35rem; }
     button[type="submit"] {
       background: var(--link); color: white; border: none; padding: 0.55rem 1.25rem;
       border-radius: 4px; font: inherit; cursor: pointer;

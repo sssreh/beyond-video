@@ -15134,3 +15134,67 @@ from the shared-scan change.
 
 Files changed: `src/blackvue/adapters/_recursive_scan.py`,
 `tests/blackvue/adapters/test_folder_adapter.py`.
+
+## "Search by voice" on the bv-search web form (2026-08-18)
+
+Christer asked (after the thumbnail fix above): "Are there any AI that
+can understand written text like you and also an take verbal order for
+search in bv?" - followed by "Great, i would like to be able to edit
+the transcript before search" once a Whisper-based voice-to-text
+button was proposed. Web UI only - there's no CLI equivalent, since
+`bv-search --text` already takes typed text directly and a terminal
+has no natural "record my voice" affordance.
+
+Backend: new `POST /jobs/bv-search/transcribe` route in `web/app.py`.
+Deliberately *not* a JobRunner background Job like bv-search itself -
+it follows the same "quick, on-demand action" precedent as
+`archive_recording_thumbnail()`/`archive_recording_file()`'s HEVC-
+preview branch: takes an uploaded audio clip (`UploadFile`), writes it
+to a temp file, runs `generate.speech.transcribe()` with
+`model_size="base"` (fast enough for a few-second spoken query - the
+existing `--transcribe`/`--translate` cascade paths keep using
+`"small"`/GPU-auto sizing for real recording-length audio, this is a
+separate, smaller default just for this route), and returns the
+transcript as JSON. A `MediaToolError` (e.g. "no audio stream" if
+nothing was actually recorded) is caught and returned as a 422 with an
+`error` field rather than a 500. The temp file is always cleaned up in
+a `finally` block.
+
+Frontend: `job_new_bv_search.html` gained a "Search by voice" button
+next to the `#text` field (new `.text-with-voice`/`.voice-btn`/
+`.voice-status` CSS in `base.html`, styled like the existing
+`.copy-button`/`.cancel-button` outline-button convention rather than
+the filled `button[type=submit]` look, since it's a secondary action
+that fills a field rather than submitting the form). Plain JS
+(MediaRecorder Web API, no new dependency) records on click, POSTs the
+blob to the new route on a second click, and - this was Christer's
+explicit requirement - fills the returned transcript into `#text` as
+plain editable text rather than auto-submitting the search. A first-
+pass Whisper transcript of a spoken query (place names, camera-
+specific terms, ...) is exactly the kind of thing that deserves a
+human check before it becomes a literal search string, especially with
+Regex/Case-sensitive sitting right next to it. If the browser has no
+`mediaDevices`/`MediaRecorder` support (or the page isn't in a secure
+context, which `getUserMedia` requires), the button hides itself
+instead of offering something that would just fail.
+
+No new dependency: `python-multipart` (needed for `UploadFile` uploads)
+was already in the `web` extra; `faster-whisper` is in the separate
+`speech` extra, which the Dockerfile already installs alongside `web`
+(`.[web,speech,translate]`) - a bare `pip install .[web]` dev install
+would need `speech` added too to actually use this button, same
+pre-existing caveat as the `--transcribe`/`--translate` CLI actions.
+
+Verified via `py_compile` on `app.py`/`speech.py`, an `ast.parse` check
+confirming the new `transcribe_voice_search` route function exists,
+and a real Jinja2 render of `job_new_bv_search.html` (through
+`base.html`) confirming the new button/status markup and the
+`/jobs/bv-search/transcribe` POST target appear in the rendered HTML.
+No live end-to-end run against a browser or real audio - the sandbox
+has no network access to install `fastapi` for an import-level check,
+consistent with this project's existing "no live pytest in this
+harness" limitation.
+
+Files changed: `src/blackvue/web/app.py`,
+`src/blackvue/web/templates/job_new_bv_search.html`,
+`src/blackvue/web/templates/base.html`.

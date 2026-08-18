@@ -27,16 +27,19 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import re
+import tempfile
 from argparse import ArgumentTypeError
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends
 from fastapi import FastAPI
+from fastapi import File
 from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi import Request
+from fastapi import UploadFile
 from fastapi import status
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse
@@ -94,6 +97,7 @@ from ..export.hevc_preview import open_hevc_preview_stream
 from ..export.kml_writer import gpx_to_kml
 from ..generate.media import MediaToolError
 from ..generate.mp4_repair import load_or_repair_parking_video
+from ..generate.speech import transcribe
 from ..lexicaltimeparser import LexicalTimeParser
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -1875,6 +1879,47 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         return RedirectResponse(
             url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
         )
+
+    @app.post("/jobs/bv-search/transcribe")
+    async def transcribe_voice_search(
+        audio: UploadFile = File(...),
+        user: User = Depends(require_viewer_or_owner),
+    ):
+        """Quick, synchronous voice-to-text for the bv-search form's
+        "Search by voice" button - deliberately NOT a JobRunner
+        background Job the way bv-search itself is. Same "on-demand
+        action, not a multi-minute run" precedent
+        archive_recording_thumbnail()/archive_recording_file()'s HEVC-
+        preview branch already set: a few-second spoken query
+        transcribes in well under a second to a few seconds on
+        model_size="base", nowhere near needing the Job/polling/
+        history machinery built for bv-generate/bv-export's multi-
+        minute runs.
+
+        Returns the raw transcript as plain text - the frontend fills
+        it into the #text search field rather than submitting it
+        directly. A first-pass Whisper transcript of a spoken query
+        (place names, camera-specific terms, ...) is exactly the kind
+        of thing a user should get to correct before it becomes a
+        literal search string, especially with --regex/--case-
+        sensitive available right next to it.
+        """
+
+        suffix = Path(audio.filename or "").suffix or ".webm"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(await audio.read())
+
+        try:
+            result = transcribe(tmp_path, model_size="base")
+        except MediaToolError as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        return JSONResponse({"text": result.text.strip()})
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_detail(

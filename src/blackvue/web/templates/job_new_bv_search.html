@@ -79,7 +79,11 @@
       Text
       <span class="help-tip" tabindex="0">?<span class="tooltip-text">Search for this in transcript/translation/scene-description text. Case-insensitive substring match by default.</span></span>
     </label>
-    <input type="text" id="text" name="text" value="{{ defaults.get('text', '') }}" placeholder="e.g. roundabout">
+    <div class="text-with-voice">
+      <input type="text" id="text" name="text" value="{{ defaults.get('text', '') }}" placeholder="e.g. roundabout">
+      <button type="button" id="voice-search-btn" class="voice-btn" title="Record a spoken query, then edit the transcript before searching">Search by voice</button>
+    </div>
+    <p class="hint voice-status" id="voice-status" hidden></p>
     <div class="field-row">
       <div class="field">
         <label class="field-label" for="asset">
@@ -150,4 +154,124 @@
 <p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
 with bv-config</a> first.</p>
 {% endif %}
+<script>
+(function () {
+  // "Search by voice" - records a short clip via the browser's
+  // MediaRecorder API, sends it to POST /jobs/bv-search/transcribe
+  // (a quick synchronous Whisper transcription route, not a
+  // JobRunner background Job - see that route's docstring in
+  // web/app.py), and fills the transcript into #text as *editable*
+  // text rather than auto-submitting the form. Christer's explicit
+  // ask: "i would like to be able to edit the transcript before
+  // search" - a first-pass Whisper transcript of a spoken query
+  // (place names, camera-specific terms, ...) is exactly the kind of
+  // thing that deserves a human check before it becomes a literal
+  // search string.
+  var btn = document.getElementById('voice-search-btn');
+  var textInput = document.getElementById('text');
+  var status = document.getElementById('voice-status');
+  if (!btn || !textInput) return;
+
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    // No mic support (older browser, or page loaded over plain HTTP
+    // on a non-localhost host - getUserMedia requires a secure
+    // context) - hide the button rather than offering something
+    // that will just fail.
+    btn.hidden = true;
+    return;
+  }
+
+  var mediaRecorder = null;
+  var chunks = [];
+  var recording = false;
+
+  function setStatus(text) {
+    if (!status) return;
+    if (text) {
+      status.textContent = text;
+      status.hidden = false;
+    } else {
+      status.hidden = true;
+    }
+  }
+
+  function startRecording() {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      chunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.addEventListener('dataavailable', function (event) {
+        if (event.data && event.data.size > 0) chunks.push(event.data);
+      });
+      mediaRecorder.addEventListener('stop', function () {
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        sendRecording();
+      });
+      mediaRecorder.start();
+      recording = true;
+      btn.textContent = 'Stop recording';
+      btn.classList.add('recording');
+      setStatus('Recording - click "Stop recording" when done.');
+    }).catch(function (err) {
+      setStatus('Could not access the microphone: ' + err.message);
+    });
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && recording) {
+      mediaRecorder.stop();
+    }
+    recording = false;
+    btn.textContent = 'Search by voice';
+    btn.classList.remove('recording');
+  }
+
+  function sendRecording() {
+    if (!chunks.length) {
+      setStatus('No audio captured - try again.');
+      return;
+    }
+    var blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+    var extension = blob.type.indexOf('ogg') !== -1 ? '.ogg' : '.webm';
+    var formData = new FormData();
+    formData.append('audio', blob, 'voice-query' + extension);
+
+    btn.disabled = true;
+    setStatus('Transcribing...');
+
+    fetch('/jobs/bv-search/transcribe', { method: 'POST', body: formData })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          return { ok: response.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        btn.disabled = false;
+        if (!result.ok || result.data.error) {
+          setStatus(result.data.error || 'Transcription failed.');
+          return;
+        }
+        var text = (result.data.text || '').trim();
+        if (!text) {
+          setStatus('No speech detected - try again.');
+          return;
+        }
+        textInput.value = text;
+        textInput.focus();
+        setStatus('Transcribed - edit the text above if needed, then click Start.');
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        setStatus('Transcription request failed: ' + err.message);
+      });
+  }
+
+  btn.addEventListener('click', function () {
+    if (recording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+})();
+</script>
 {% endblock %}
