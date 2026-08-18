@@ -13,6 +13,7 @@ from blackvue.export.media import concatenate_media
 from blackvue.export.media import encode_frame_sequence
 from blackvue.export.media import encode_with_nvenc_fallback
 from blackvue.export.media import extract_first_frame
+from blackvue.export.media import extract_video_thumbnail
 from blackvue.export.media import generate_silence
 from blackvue.export.media import mux_audio_track
 from blackvue.export.media import probe_video_dimensions
@@ -1169,6 +1170,64 @@ def test_extract_first_frame_raises_for_an_unreadable_source(tmp_path):
 
     with pytest.raises(MediaToolError):
         extract_first_frame(source_gif, tmp_path / "frame0.png")
+
+
+# ---------------------------------------------------------------------------
+# extract_video_thumbnail() - grabs one small JPEG frame from an
+# arbitrary real video, for the bv-web archive browser's thumbnail
+# grid (thumbnail_cache.py's generate-and-cache caller). Unlike
+# extract_first_frame() above, this is not scoped to GIFs or frame 0 -
+# it seeks to offset_seconds (0.5s by default) to dodge a possibly
+# black/garbled startup frame. The source fixture here therefore needs
+# to run longer than that default offset, unlike this file's usual
+# 0.5s _make_silent_video() clips elsewhere.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_video_thumbnail_produces_a_readable_jpeg(tmp_path):
+    source_video = tmp_path / "source.mp4"
+    _make_silent_video(source_video, 2.0)
+    destination = tmp_path / "thumb.jpg"
+
+    extract_video_thumbnail(source_video, destination)
+
+    assert destination.exists()
+    with Image.open(destination) as thumb:
+        assert thumb.width == 320
+        assert thumb.height > 0
+
+
+def test_extract_video_thumbnail_creates_parent_directories(tmp_path):
+    source_video = tmp_path / "source.mp4"
+    _make_silent_video(source_video, 2.0)
+    destination = tmp_path / "nested" / "thumb.jpg"
+
+    extract_video_thumbnail(source_video, destination)
+
+    assert destination.exists()
+
+
+def test_extract_video_thumbnail_raises_when_ffmpeg_itself_is_missing(
+    tmp_path, monkeypatch
+):
+    source_video = tmp_path / "source.mp4"
+    _make_silent_video(source_video, 2.0)
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("no ffmpeg")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    with pytest.raises(MediaToolError):
+        extract_video_thumbnail(source_video, tmp_path / "thumb.jpg")
+
+
+def test_extract_video_thumbnail_raises_for_an_unreadable_source(tmp_path):
+    source_video = tmp_path / "corrupt.mp4"
+    source_video.write_bytes(b"not a real video")
+
+    with pytest.raises(MediaToolError):
+        extract_video_thumbnail(source_video, tmp_path / "thumb.jpg")
 
 
 # ---------------------------------------------------------------------------

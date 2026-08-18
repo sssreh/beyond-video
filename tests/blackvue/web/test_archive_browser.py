@@ -223,13 +223,50 @@ def test_thumbnail_direction_prefers_front_then_rear_then_interior(tmp_path):
     assert recording.thumbnail_direction == "rear"
 
 
-def test_thumbnail_direction_is_none_without_any_thumbnail(tmp_path):
+def test_thumbnail_direction_is_none_without_any_front_asset(tmp_path):
+    # No thumbnail sidecar and no FRONT asset at all (rear-only) - the
+    # video-frame fallback is front-only (mirrors the photo fallback),
+    # so there's nothing left to fall back to.
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NR.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.thumbnail_direction is None
+
+
+def test_thumbnail_direction_is_front_for_a_plain_video_with_no_thumbnail_sidecar(
+    tmp_path,
+):
+    # No *_THUMBNAIL sidecar exists (e.g. a FolderAdapter/GoProAdapter
+    # archive, which never writes one), but a FRONT video does - a
+    # frame-grab can always be generated on demand (see
+    # thumbnail_path()'s own video-fallback tier), so this must report
+    # "front" rather than None or the grid never shows an <img> at all.
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.mp4")
 
     recording = scan_archive(archive, "kirby")[0]
 
-    assert recording.thumbnail_direction is None
+    assert recording.thumbnail_direction == "front"
+
+
+def test_thumbnail_direction_is_front_for_a_photo_recording_with_no_sidecar(tmp_path):
+    # The bug this docstring fix addresses: thumbnail_path()'s photo
+    # fallback (task #947) existed with no matching branch here, so a
+    # photo recording's thumbnail never actually rendered in the grid.
+    photo_path = tmp_path / "IMG_0001.jpg"
+    photo_path.write_bytes(b"jpeg bytes")
+
+    recording = ArchiveRecording(
+        camera_id="kirby",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, photo_path)},
+        ),
+    )
+
+    assert recording.thumbnail_direction == "front"
 
 
 def test_thumbnail_path_resolves_the_right_file(tmp_path):
@@ -311,6 +348,138 @@ def test_thumbnail_path_returns_none_for_rear_even_on_a_photo_recording(
     )
 
     assert recording.thumbnail_path("rear") is None
+
+
+# ---------------------------------------------------------------------------
+# thumbnail_path()'s third fallback tier - a generated frame-grab from a
+# plain FRONT video with no *_THUMBNAIL sidecar and no photo (the real
+# FolderAdapter/GoProAdapter case that prompted this whole feature:
+# Christer, "archive browser for folder would look so much better with
+# a thumbnail"). Uses a real short ffmpeg-muxed video rather than a
+# mock, matching this project's usual fixture convention - see
+# export/test_thumbnail_cache.py for the cache-mechanics tests (cache
+# hit/miss/eviction) that are deliberately *not* re-tested here.
+# ---------------------------------------------------------------------------
+
+
+def _make_video(path, duration_seconds: float = 1.0) -> None:
+    import subprocess
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+            "-t", str(duration_seconds),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_thumbnail_path_generates_and_caches_a_video_frame_thumbnail(tmp_path):
+    video_path = tmp_path / "GH010023.MP4"
+    _make_video(video_path, duration_seconds=2.0)
+    cache_dir = tmp_path / "thumb_cache"
+
+    recording = ArchiveRecording(
+        camera_id="gopro",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video_path)},
+        ),
+    )
+
+    result = recording.thumbnail_path("front", thumbnail_cache_dir=cache_dir)
+
+    assert result is not None
+    assert result.is_file()
+    assert result.parent == cache_dir
+
+
+def test_thumbnail_path_returns_none_for_a_plain_video_without_a_cache_dir(tmp_path):
+    # No thumbnail_cache_dir given (e.g. an existing non-web caller) -
+    # the video-frame fallback must not attempt anything, same as
+    # before this fallback existed.
+    video_path = tmp_path / "GH010023.MP4"
+    _make_video(video_path, duration_seconds=2.0)
+
+    recording = ArchiveRecording(
+        camera_id="gopro",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video_path)},
+        ),
+    )
+
+    assert recording.thumbnail_path("front") is None
+
+
+def test_thumbnail_path_swallows_a_generation_failure_and_returns_none(tmp_path):
+    # A corrupt/unreadable source must not blow up the whole grid -
+    # one recording's thumbnail failing to generate is swallowed, not
+    # raised (see thumbnail_path()'s own docstring).
+    video_path = tmp_path / "corrupt.mp4"
+    video_path.write_bytes(b"not a real video")
+    cache_dir = tmp_path / "thumb_cache"
+
+    recording = ArchiveRecording(
+        camera_id="gopro",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video_path)},
+        ),
+    )
+
+    assert recording.thumbnail_path("front", thumbnail_cache_dir=cache_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# source_filename - the real, on-disk FRONT filename, shown in the grid
+# for a FolderAdapter/GoProAdapter archive where it's genuinely
+# different information from the synthesized recording id (task #931's
+# bv-ls precedent, applied to the web grid).
+# ---------------------------------------------------------------------------
+
+
+def test_source_filename_is_none_for_an_id_derived_blackvue_filename(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.source_filename is None
+
+
+def test_source_filename_returns_the_real_name_for_a_non_id_derived_file(tmp_path):
+    video_path = tmp_path / "GH010023.MP4"
+    video_path.write_bytes(b"x")
+
+    recording = ArchiveRecording(
+        camera_id="gopro",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.FRONT: AssetFile(Asset.FRONT, video_path)},
+        ),
+    )
+
+    assert recording.source_filename == "GH010023.MP4"
+
+
+def test_source_filename_is_none_without_a_front_asset(tmp_path):
+    video_path = tmp_path / "GH010023.MP4"
+    video_path.write_bytes(b"x")
+
+    recording = ArchiveRecording(
+        camera_id="gopro",
+        recording=Recording(
+            id=RecordingId("20260715_140212_V"),
+            assets={Asset.REAR: AssetFile(Asset.REAR, video_path)},
+        ),
+    )
+
+    assert recording.source_filename is None
 
 
 def test_sidecars_lists_gps_and_gsensor_when_present(tmp_path):

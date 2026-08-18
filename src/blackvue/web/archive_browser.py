@@ -42,6 +42,8 @@ from ..archive import Recording
 from ..archive import RecordingId
 from ..archive import recording_is_photo
 from ..core.camera_config import DEFAULT_ADAPTER_ID
+from ..export.thumbnail_cache import load_or_generate_thumbnail
+from ..generate.media import MediaToolError
 from ..generate.scene import extract_description_section
 from ..lexicaltimeparser import TimeInterval
 from ..telemetry.gps_reader import GpsFix
@@ -218,11 +220,32 @@ class ArchiveRecording:
         e.g. an older archive predating the thumbnail sidecar-probing
         fix (see core/blackvue_camera.py's
         _probe_missing_thumbnails()), or a camera/firmware that
-        doesn't serve .thm files."""
+        doesn't serve .thm files.
+
+        Also returns "front" whenever thumbnail_path("front") would
+        itself return something even without a real `*_THUMBNAIL`
+        sidecar - a photo recording (served as its own thumbnail) or
+        any recording with a FRONT video at all (a frame-grab can
+        always be generated on demand - see thumbnail_path()'s own
+        docstring). This must stay in sync with thumbnail_path()'s
+        fallback chain: this property is what the grid template
+        checks to decide whether to render an <img> at all
+        (archive_recording_list.html), so if thumbnail_path() can
+        find something for "front" but this returns None for it, the
+        grid would wrongly show "No thumbnail" over a recording that
+        actually has one - exactly the bug this docstring update
+        fixed (thumbnail_path()'s own photo fallback existed for a
+        while with no matching branch here, so photo recordings never
+        actually showed a thumbnail in the grid despite the code
+        appearing to support it)."""
 
         for label, _, thumbnail_asset in _DIRECTIONS:
             if self.recording.has(thumbnail_asset):
                 return label.lower()
+        if recording_is_photo(self.recording):
+            return "front"
+        if self.recording.file(Asset.FRONT) is not None:
+            return "front"
         return None
 
     @property
@@ -238,6 +261,34 @@ class ArchiveRecording:
             if asset_file is not None:
                 result.append((label, asset_file.name))
         return result
+
+    @property
+    def source_filename(self) -> str | None:
+        """This recording's real, on-disk FRONT filename, or None if
+        it's already id-derived (a BlackVue archive's own filenames
+        are synthesized from the recording id, e.g.
+        "20260715_133255_NF.mp4" for id "20260715_133255_N" - showing
+        it there would just repeat the Recording id already shown
+        right next to it) or it has no FRONT asset at all.
+
+        For a FolderAdapter/GoProAdapter archive the real filename is
+        genuinely different information - a GoPro's own
+        "GH010023.MP4" or an arbitrary folder video's own name - useful
+        for spotting a same-id collision (two different files that
+        happened to resolve to the same synthesized id) and for
+        recognizing a specific file Christer already knows by name.
+        Same "is the real filename worth showing at all" predicate
+        cli/bv_ls.py's own _source_column_needed() already uses per-
+        archive; this is the same check applied per-recording, since
+        the grid has no equivalent whole-archive gate to hang off of.
+        """
+
+        asset_file = self.recording.file(Asset.FRONT)
+        if asset_file is None:
+            return None
+        if asset_file.path.name.startswith(str(self.recording.id)):
+            return None
+        return asset_file.name
 
     @property
     def sidecars(self) -> list[tuple[str, str]]:
@@ -370,20 +421,38 @@ class ArchiveRecording:
                 return asset_file.path
         return None
 
-    def thumbnail_path(self, direction: str) -> Path | None:
+    def thumbnail_path(
+        self, direction: str, *, thumbnail_cache_dir: Path | None = None
+    ) -> Path | None:
         """Resolve a direction name ("front"/"rear"/"interior") to
         its thumbnail file's path, or None if this recording has no
         thumbnail for that direction.
 
-        For "front", falls back to the recording's own FRONT file when
-        it's a photo (see archive/photo.py) and no *_THUMBNAIL sidecar
-        exists for it - true for every photo recording today, since
-        nothing generates thumbnail sidecars for stills (folder/gopro's
-        own manifests document `thumbnails: "generated"` as an unbuilt
-        hook). The photo itself already *is* a small, real preview
-        image, so serving it directly is a real thumbnail, not a
-        placeholder - no ffmpeg frame-extraction needed the way a real
-        video would require."""
+        Three-step fallback chain for "front" (see thumbnail_direction's
+        own docstring - it must stay in sync with this):
+
+        1. A real `*_THUMBNAIL` sidecar (every direction, not just
+           front) - the fast, common case for a BlackVue archive.
+        2. The recording's own FRONT file when it's a photo (see
+           archive/photo.py) - the photo itself already *is* a small,
+           real preview image, so serving it directly is a real
+           thumbnail, no ffmpeg needed.
+        3. A generated frame-grab from the FRONT video, cached under
+           `thumbnail_cache_dir` (see export/thumbnail_cache.py) - the
+           fallback every FolderAdapter/GoProAdapter video needs, since
+           neither adapter ever writes a `*_THUMBNAIL` sidecar (their
+           manifests document `thumbnails: "generated"`, but nothing
+           generated one before this fallback existed). Only attempted
+           when `thumbnail_cache_dir` is given - callers with no cache
+           directory available (existing tests, any future non-web
+           caller) get steps 1-2 only, same as before this fallback was
+           added. A generation failure (ffmpeg missing, a corrupt or
+           truncated video) is swallowed, not raised - one recording's
+           thumbnail failing to generate shouldn't take down the whole
+           grid, the same "never break the whole page over one
+           recording" posture scene_texts already takes for a bad
+           scene.txt read.
+        """
 
         asset = _THUMBNAIL_ASSET_BY_DIRECTION.get(direction)
         if asset is None:
@@ -391,10 +460,18 @@ class ArchiveRecording:
         asset_file = self.recording.file(asset)
         if asset_file is not None:
             return asset_file.path
-        if direction == "front" and recording_is_photo(self.recording):
+        if direction != "front":
+            return None
+        if recording_is_photo(self.recording):
             front = self.recording.file(Asset.FRONT)
             return front.path if front is not None else None
-        return None
+        front = self.recording.file(Asset.FRONT)
+        if front is None or thumbnail_cache_dir is None:
+            return None
+        try:
+            return load_or_generate_thumbnail(front.path, thumbnail_cache_dir)
+        except MediaToolError:
+            return None
 
 
 def first_valid_gps_fix(adapter: CameraAdapter, recording: Recording) -> GpsFix | None:

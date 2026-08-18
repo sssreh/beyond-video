@@ -14844,3 +14844,87 @@ Files changed: `src/blackvue/web/jobs.py`, `src/blackvue/web/app.py`,
 `src/blackvue/web/templates/job_new_bv_export.html`,
 `src/blackvue/web/templates/job_new_bv_ls.html`,
 `tests/blackvue/web/test_jobs.py`.
+
+## Archive-browser thumbnails + source filename for folder/GoPro adapters (2026-08-18)
+
+Christer: "archive browser for folder would look so much better with a
+thumbnail or another picture and with source name to." A FolderAdapter/
+GoProAdapter archive has no `*_THUMBNAIL` sidecar (only BlackVue cameras
+write `.thm` files), so every recording's grid card showed "No
+thumbnail" - and the grid never showed a recording's real on-disk
+filename either, only the synthesized recording id.
+
+**Thumbnail generation.** Added `extract_video_thumbnail()` to
+`export/media.py` - a generic single-frame ffmpeg grab (`-ss 0.5` before
+`-i` for a fast seek past a possibly-black/garbled frame 0, `scale=320:-1`
++ `-q:v 4` for a small cached file, explicit `-f mjpeg` since the caller's
+atomic-rename temp file has no real extension). Wrapped in a new
+`export/thumbnail_cache.py` module mirroring `hevc_preview.py`'s proven
+cache pattern exactly: `sha256(resolved path)[:16]` + `st_mtime_ns` +
+`st_size` as the cache key, atomic `.tmp` write + `os.replace()`, and
+`enforce_cache_size_cap()` (the shared LRU helper from task #710) called
+after every fresh write with its own `_MAX_CACHE_BYTES = 200 MiB`.
+
+**`ArchiveRecording.thumbnail_path()`** (`web/archive_browser.py`) gained
+a third fallback tier after the existing sidecar and photo-itself
+fallbacks: for `direction == "front"` with a FRONT video and no sidecar/
+photo, it calls `load_or_generate_thumbnail()` against a
+`thumbnail_cache_dir` param (new, optional - existing/non-web callers get
+tiers 1-2 only) and swallows `MediaToolError` (one bad video shouldn't
+break the whole grid). `web/app.py`'s `/archive/{camera_id}/{recording_id}/
+thumbnail/{direction}` route now passes `default_config_dir() / ".thumbnail_cache"`
+for this, mirroring the existing `.hevc_preview_cache`/`.parking_repair_cache`
+inline-computed-cache-dir pattern already in that file.
+
+**Real bug found and fixed along the way**: `thumbnail_direction` (the
+property the grid template gates on to decide whether to render an
+`<img>` at all) never had a matching branch for `thumbnail_path()`'s own
+photo fallback (task #947) - so a photo recording's thumbnail has never
+actually rendered in the grid despite the code appearing to support it.
+Fixed by adding the same three-tier check to `thumbnail_direction`:
+sidecar exists -> that direction; else `recording_is_photo()` -> "front";
+else a FRONT asset exists at all -> "front" (a frame-grab can always be
+attempted). This last branch is the intended behavior change for plain
+videos too - previously a video-only archive with no sidecar reported
+`None` and showed no thumbnail; now it reports "front" since a
+frame-grab is always attemptable. Updated the one existing test that
+assumed the old behavior (`test_thumbnail_direction_is_none_without_any_thumbnail`
+-> split into `test_thumbnail_direction_is_none_without_any_front_asset`,
+covering the still-real rear-only-no-fallback case, plus two new tests
+covering the video and photo "front" cases).
+
+**Source filename.** New `source_filename` property on `ArchiveRecording`:
+the real on-disk FRONT filename, or `None` when it's already
+id-derived (BlackVue's own filenames are synthesized from the recording
+id, so showing them would just repeat what's already displayed) or
+there's no FRONT asset. Same "is this genuinely different information"
+predicate as `cli/bv_ls.py`'s existing `_source_column_needed()` (task
+#931), reimplemented natively on the web side rather than importing a
+CLI-layer module into bv-web. Shown in `archive_recording_list.html`
+right under each card's timestamp/kind badge, in a small muted line with
+a `title=` tooltip for long names; CSS added to `base.html` as
+`.thumb-source`.
+
+**Tests**: `extract_video_thumbnail()` mirrors `extract_first_frame()`'s
+existing four-test shape in `test_export_media.py` (readable output,
+parent-dir creation, ffmpeg-missing, unreadable source) using a real
+2-second ffmpeg `testsrc` fixture (long enough to survive the 0.5s seek).
+New `tests/blackvue/export/test_thumbnail_cache.py` covers generate-on-
+miss, reuse-on-hit, and cache-cap-enforcement-only-on-a-fresh-write,
+mirroring `test_hevc_preview.py`'s style. `test_archive_browser.py`
+gained the `thumbnail_direction` fix coverage above, three
+`thumbnail_path()` tests for the new video-fallback tier (generates +
+caches for real, returns `None` with no `thumbnail_cache_dir` given,
+swallows a generation failure), and three `source_filename` tests
+(id-derived -> `None`, real GoPro-style name -> the name, no FRONT asset
+-> `None`). All 133 tests in the three files pass; `test_jobs.py`'s
+already-documented pre-existing baseline failures are unrelated to this
+change (that file wasn't touched).
+
+Updated `docs/CAMERA_ADAPTERS.md` and `adapters/folder/adapter.py`'s
+docstring, both of which had "not implemented yet" language for on-
+demand thumbnails - the feature ended up living entirely in bv-web's own
+`ArchiveRecording`/`thumbnail_cache.py` rather than as a per-adapter
+`thumbnail_generator` code hook, since the fallback is generic across
+any adapter with a FRONT video, so no adapter-specific hook was actually
+needed.

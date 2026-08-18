@@ -185,9 +185,14 @@ Design choices worth calling out:
   primary, keeps the rest of the pipeline (which expects a primary
   direction and at least one kind) working unmodified.
 - `thumbnails: "generated"` - no native `.thm` sidecar exists, so a
-  thumbnail would need to come from an on-demand `ffmpeg` frame-grab
-  instead (also not implemented yet - `code_hooks_required` lists
-  `thumbnail_generator`).
+  thumbnail comes from an on-demand `ffmpeg` frame-grab of the FRONT
+  video instead, cached under a `.thumbnail_cache` directory (see
+  `export/thumbnail_cache.py`). This ended up living in bv-web's own
+  `ArchiveRecording.thumbnail_path()` rather than as a per-adapter
+  `thumbnail_generator` code hook - the fallback is generic (any
+  recording with a FRONT video and no `*_THUMBNAIL` sidecar, on any
+  adapter), so no adapter-specific hook was actually needed. The
+  `code_hooks_required` entry below predates that design.
 - `asset_suffix_table` only lists the *generated* assets (audio, duration,
   transcript, translation, subtitles, scene description) - the same
   suffixes BlackVue uses, since those are this project's own filenames,
@@ -393,6 +398,17 @@ an older/incomplete BlackVue archive already does throughout bv-web -
 `ArchiveRecording.thumbnail_direction` returns `None`, the grid shows no
 image, nothing errors). `bv-download` SD-card import (next roadmap step)
 and further adapter variants (GoPro, drone) remain unstarted.
+
+*(Update: on-demand thumbnail generation was built in a later pass -
+Christer, "archive browser for folder would look so much better with a
+thumbnail or another picture and with source name to." See
+`export/thumbnail_cache.py` and `ArchiveRecording.thumbnail_path()`'s
+own docstring - it turned out generic enough that no per-adapter
+`thumbnail_generator` hook was needed after all, so that entry in
+`code_hooks_required` is now aspirational/historical rather than a real
+gap. The grid also now shows each recording's real on-disk filename
+(`ArchiveRecording.source_filename`) alongside the thumbnail, for
+archives where that differs from the synthesized recording id.)*
 
 Verified: every new/changed module `py_compile`s; standalone scripts
 exercised `FolderAdapter.open_archive()`/`find_recording()` against real

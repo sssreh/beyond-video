@@ -544,6 +544,18 @@
       display: flex; justify-content: space-between; align-items: center;
       padding: 0.4rem 0.6rem; font-size: 0.8rem;
     }
+    /* Real on-disk filename (see ArchiveRecording.source_filename) -
+       only rendered at all for an adapter whose filenames aren't
+       already id-derived (GoPro/folder, not BlackVue), so this is
+       genuinely new information rather than repeating the Recording
+       id shown right above it in .thumb-meta. Truncated with an
+       ellipsis rather than wrapped - a long GoPro/folder path would
+       otherwise blow out every card's height unevenly across the
+       grid; the full name is still available via the title tooltip. */
+    .thumb-source {
+      padding: 0 0.6rem 0.4rem; font-size: 0.72rem; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .filter-bar {
       background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 6px;
       padding: 0.85rem 1rem; margin-bottom: 1.25rem;

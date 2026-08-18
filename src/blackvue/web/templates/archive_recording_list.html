@@ -79,6 +79,9 @@
       <span>{{ recording.timestamp.strftime("%H:%M:%S") }}</span>
       <span class="badge">{{ recording.kind_label }}</span>
     </div>
+    {% if recording.source_filename %}
+    <div class="thumb-source" title="{{ recording.source_filename }}">{{ recording.source_filename }}</div>
+    {% endif %}
   </a>
   {% endfor %}
 </div>

@@ -824,7 +824,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             camera_id,
             recording_id,
         )
-        path = recording.thumbnail_path(direction)
+        thumbnail_cache_dir = default_config_dir() / ".thumbnail_cache"
+        path = recording.thumbnail_path(
+            direction, thumbnail_cache_dir=thumbnail_cache_dir
+        )
         if path is None or not path.is_file():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="thumbnail not found"

@@ -1103,6 +1103,68 @@ def extract_first_frame(source_gif: Path, destination: Path) -> None:
         ) from exc
 
 
+def extract_video_thumbnail(
+    source: Path, destination: Path, *, offset_seconds: float = 0.5
+) -> None:
+    """Grab one frame of `source` as a small JPEG at `destination` -
+    a generic "make a thumbnail out of any video" helper, unlike
+    extract_first_frame() above which is narrowly scoped to a single-
+    frame GIF's own frame 0.
+
+    Real caller: thumbnail_cache.py's load_or_generate_thumbnail(),
+    itself called from web/archive_browser.py's
+    ArchiveRecording.thumbnail_path() as the last-resort fallback for
+    a recording with no camera-native `*_THUMBNAIL` sidecar and no
+    `recording_is_photo()` match - true for every FolderAdapter/
+    GoProAdapter video today, since neither adapter's manifest-declared
+    `"thumbnails": "generated"` capability had an actual generator
+    behind it until this function existed (see CAMERA_ADAPTERS.md).
+
+    `-ss` before `-i` (input-side seek, same fast-seek trick
+    trim_media_head() above already uses) so this doesn't decode the
+    whole file just to throw away everything but one frame.
+    `offset_seconds` defaults to half a second rather than 0 - frame 0
+    of a dashcam/action-cam clip is disproportionately likely to still
+    be a black/garbled frame from the sensor's own startup, and half a
+    second is cheap insurance against that without adding a
+    meaningfully slower seek. `-vf scale=320:-1` keeps the output
+    small (a grid thumbnail, not a full preview) and `-q:v 4` is a
+    mid-low JPEG quality setting - both keep the on-disk cache this
+    feeds (see thumbnail_cache.py) small even across a large archive.
+    `-f mjpeg` is explicit rather than inferred from `destination`'s
+    own extension, the same "muxer can't be guessed from a `.tmp` name"
+    reasoning hevc_preview.py's own `-f mp4` comment already explains -
+    thumbnail_cache.py's atomic-rename temp file has no `.jpg` in its
+    name at all.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(offset_seconds),
+                "-i", str(source),
+                "-frames:v", "1",
+                "-vf", "scale=320:-1",
+                "-q:v", "4",
+                "-f", "mjpeg",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        raise MediaToolError(
+            f"could not extract a thumbnail from {source.name}: "
+            f"{exc.stderr.strip()}"
+        ) from exc
+
+
 def render_image_as_video(
     source_image: Path,
     destination: Path,
