@@ -59,6 +59,14 @@ def test_download_passes_on_bytes_through_to_every_entry(tmp_path):
 
 
 def test_download_on_bytes_is_optional(tmp_path):
+    # download() always wraps whatever on_bytes it passes down to the
+    # client in its own internal _record_bytes closure now (see
+    # download()'s docstring) - it needs to track bytes transferred
+    # per entry itself, to report through on_entry's third argument,
+    # regardless of whether the caller passed their own on_bytes. So
+    # the client always receives *some* callable; what's "optional"
+    # from the caller's point of view is only that omitting on_bytes
+    # doesn't raise or change the outcome.
     client = _FakeClient()
     camera = BlackVueCamera(client)
 
@@ -70,7 +78,7 @@ def test_download_on_bytes_is_optional(tmp_path):
     changed = camera.download(recording, tmp_path)
 
     assert changed is True
-    assert client.calls[0][2] is None
+    assert callable(client.calls[0][2])
 
 
 def test_download_calls_on_entry_for_every_transferred_file(tmp_path):
@@ -88,17 +96,22 @@ def test_download_calls_on_entry_for_every_transferred_file(tmp_path):
     reported = []
     camera.download(
         recording, tmp_path,
-        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+        on_entry=lambda entry, elapsed, transferred: reported.append(
+            (entry, elapsed, transferred)
+        ),
     )
 
-    assert [entry.path.as_posix() for entry, _elapsed in reported] == [
+    assert [entry.path.as_posix() for entry, _elapsed, _transferred in reported] == [
         "/Record/20260101_000000_NF.mp4",
         "/Record/20260101_000000_N.gps",
     ]
     # Real wall-clock time against a fake client is ~instant but never
     # negative - that's all worth asserting here without making the
     # test flaky on a slow CI runner.
-    assert all(elapsed >= 0 for _entry, elapsed in reported)
+    assert all(elapsed >= 0 for _entry, elapsed, _transferred in reported)
+    # _FakeClient.download() reports 123 bytes via on_bytes for every
+    # entry - on_entry's third argument should reflect that.
+    assert all(transferred == 123 for _entry, _elapsed, transferred in reported)
 
 
 def test_download_skips_on_entry_for_files_not_actually_downloaded(tmp_path):
@@ -124,11 +137,13 @@ def test_download_skips_on_entry_for_files_not_actually_downloaded(tmp_path):
     reported = []
     changed = camera.download(
         recording, tmp_path,
-        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+        on_entry=lambda entry, elapsed, transferred: reported.append(
+            (entry, elapsed, transferred)
+        ),
     )
 
     assert changed is True  # the .gps entry still transferred
-    assert [entry.path.as_posix() for entry, _elapsed in reported] == [
+    assert [entry.path.as_posix() for entry, _elapsed, _transferred in reported] == [
         "/Record/20260101_000000_N.gps"
     ]
 

@@ -630,11 +630,21 @@ class _FakeDownloadCamera:
         *,
         failing_id: str | None = None,
         fail_on: str = "download",
+        elapsed_seconds: float = 0.0,
+        bytes_per_entry: int = 0,
     ):
         self._recordings = recordings
         self._failing_id = failing_id
         self._fail_on = fail_on
         self.downloaded_ids: list[str] = []
+        # Real elapsed/byte figures a caller can override to exercise
+        # bv-download's speed formatting (Christer: "an average
+        # download speed in parantheses for video files") - default
+        # 0.0s/0 bytes keeps every pre-existing test's assertions
+        # (which predate the speed feature) unchanged, since seconds
+        # <= 0 means the speed parenthetical is omitted entirely.
+        self._elapsed_seconds = elapsed_seconds
+        self._bytes_per_entry = bytes_per_entry
 
     def recordings(self) -> list[Recording]:
         return self._recordings
@@ -653,7 +663,7 @@ class _FakeDownloadCamera:
         if on_entry is not None:
             for entry in recording.entries:
                 if select is None or select(entry):
-                    on_entry(entry, 0.0)
+                    on_entry(entry, self._elapsed_seconds, self._bytes_per_entry)
         return True
 
 
@@ -819,6 +829,84 @@ def test_run_reports_per_video_duration_and_sidecar_total(
     out = capsys.readouterr().out
     assert "20260803_161020_N: downloaded (video+metadata) [F 0.0s, R 0.0s]" in out
     assert "sidecar files: 2 downloaded in 0.0s total" in out
+
+
+def test_run_reports_average_speed_for_video_files_only(
+    tmp_path, monkeypatch, capsys
+):
+    # Christer's follow-up: "I would also want an average download
+    # speed in paranteses for video files." Fixed elapsed=2.0s and
+    # bytes_per_entry=2*1024*1024 (2 MiB) per entry makes the expected
+    # figure an exact, non-flaky 1.0 MB/s for every entry - video
+    # *and* sidecar - but the sidecar total line has no per-file speed
+    # at all, only video's per-direction line does.
+    populated_recording = Recording(
+        id="20260803_161020_N",
+        entries=[
+            vod_entry("20260803_161020_NF.mp4"),
+            vod_entry("20260803_161020_NR.mp4"),
+            vod_entry("20260803_161020_N.gps"),
+        ],
+    )
+    camera = _FakeDownloadCamera(
+        [populated_recording],
+        elapsed_seconds=2.0,
+        bytes_per_entry=2 * 1024 * 1024,
+    )
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    assert exit_code == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert (
+        "20260803_161020_N: downloaded (video+metadata) "
+        "[F 2.0s (1.0 MB/s), R 2.0s (1.0 MB/s)]" in out
+    )
+    # The sidecar total line stays duration-only - no speed there.
+    assert "sidecar files: 1 downloaded in 2.0s total" in out
+
+
+def test_run_omits_speed_when_elapsed_is_zero(tmp_path, monkeypatch, capsys):
+    # A near-instant transfer (e.g. --media from a fast local source,
+    # or this very fake with its 0.0s default) has an undefined speed
+    # - the parenthetical must be omitted rather than showing a bogus
+    # divide-by-zero-derived figure.
+    populated_recording = Recording(
+        id="20260803_161020_N",
+        entries=[vod_entry("20260803_161020_NF.mp4")],
+    )
+    camera = _FakeDownloadCamera(
+        [populated_recording], elapsed_seconds=0.0, bytes_per_entry=1024
+    )
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    assert exit_code == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "20260803_161020_N: downloaded (video+metadata) [F 0.0s]" in out
+    assert "MB/s" not in out
 
 
 def test_summarize_found_kinds_all_three():

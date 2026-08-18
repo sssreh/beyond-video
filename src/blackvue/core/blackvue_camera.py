@@ -140,7 +140,7 @@ class BlackVueCamera:
         *,
         select: Callable[[VodEntry], bool] | None = None,
         on_bytes: Callable[[int], None] | None = None,
-        on_entry: Callable[[VodEntry, float], None] | None = None,
+        on_entry: Callable[[VodEntry, float, int], None] | None = None,
     ) -> bool:
         """Download a recording.
 
@@ -154,16 +154,24 @@ class BlackVueCamera:
         If on_entry is given, it's called once per entry that was
         actually downloaded (not one already present at `destination`
         with nothing to transfer - see BlackVueClient.download()'s own
-        return value) with the entry itself and how many seconds that
-        entry's own download() call took. Christer: "duration for
-        downloading all of [the sidecars] ... and a duration each
-        video per recordingid" - bv-download's _run() uses this to
-        report per-video download time per recording plus a running
-        total across every sidecar (.gps/.3gf/.thm) file downloaded in
-        the run (see cli/bv_download.py). Only entries that actually
-        transferred bytes fire this - an already-up-to-date recording
-        (nothing to resume) doesn't add a near-zero measurement to
-        either total.
+        return value) with the entry itself, how many seconds that
+        entry's own download() call took, and how many bytes were
+        actually transferred during that call (the resumed remainder
+        only, for a partially-downloaded video - not the file's full
+        size). Christer: "duration for downloading all of [the
+        sidecars] ... and a duration each video per recordingid",
+        later "an average download speed in parantheses for video
+        files" - bv-download's _run() uses elapsed+bytes together to
+        report a per-video MB/s figure alongside the duration, plus a
+        running total across every sidecar (.gps/.3gf/.thm) file
+        downloaded in the run (see cli/bv_download.py). Only entries
+        that actually transferred bytes fire this - an already-up-to-
+        date recording (nothing to resume) doesn't add a near-zero/
+        undefined-speed measurement to either total. The byte count is
+        collected via the same chunk callback BlackVueClient.download()
+        already reports through on_bytes, so it costs nothing extra to
+        also track here regardless of whether the caller passed its
+        own on_bytes.
 
         Returns True if any file was downloaded or resumed.
         """
@@ -181,16 +189,23 @@ class BlackVueCamera:
 
             filename = destination / entry.path.name
             started = time.monotonic()
+            transferred = 0
+
+            def _record_bytes(count: int) -> None:
+                nonlocal transferred
+                transferred += count
+                if on_bytes is not None:
+                    on_bytes(count)
 
             if self._client.download(
                 entry,
                 filename,
-                on_bytes=on_bytes,
+                on_bytes=_record_bytes,
             ):
                 changed = True
 
                 if on_entry is not None:
-                    on_entry(entry, time.monotonic() - started)
+                    on_entry(entry, time.monotonic() - started, transferred)
 
         return changed
     

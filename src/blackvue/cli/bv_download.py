@@ -971,25 +971,33 @@ def _run(
     #
     # Christer: "a total duration for all the sidecars and ... a
     # duration each video per recordingid" - meaning download *time*,
-    # not video content length. sidecar_seconds_total/
+    # not video content length. Later: "an average download speed in
+    # parantheses for video files." sidecar_seconds_total/
     # sidecar_files_total accumulate across the whole run (a single
     # figure at the end, not broken out per recording - sidecars are
     # small and numerous, a per-recording total isn't interesting);
-    # video_seconds is rebuilt fresh for each recording and printed
+    # video_stats is rebuilt fresh for each recording and printed
     # right on that recording's own "downloaded" line, keyed by
     # camera direction letter (F/R/I) since that's what's actually
     # meaningful to compare recording-to-recording, not the raw
-    # filename. Both are populated via camera.download()'s on_entry
-    # hook (see core/blackvue_camera.py / core/media_camera.py),
-    # which only fires for an entry that actually transferred bytes -
-    # an already-up-to-date recording contributes nothing to either
-    # total rather than polluting them with a near-zero measurement.
+    # filename - each value is (elapsed_seconds, bytes_transferred) so
+    # the line can show both the duration and a derived MB/s figure.
+    # Speed is video-only, per Christer's request; sidecars only ever
+    # get the run-total duration, no per-file speed. Both are
+    # populated via camera.download()'s on_entry hook (see
+    # core/blackvue_camera.py / core/media_camera.py), which only
+    # fires for an entry that actually transferred bytes - an
+    # already-up-to-date recording contributes nothing to either total
+    # rather than polluting them with a near-zero/undefined-speed
+    # measurement.
     #
     sidecar_seconds_total = 0.0
     sidecar_files_total = 0
-    video_seconds: dict[str, float] = {}
+    video_stats: dict[str, tuple[float, int]] = {}
 
-    def _on_entry(entry: VodEntry, elapsed_seconds: float) -> None:
+    def _on_entry(
+        entry: VodEntry, elapsed_seconds: float, bytes_transferred: int
+    ) -> None:
         nonlocal sidecar_seconds_total, sidecar_files_total
 
         if entry.is_video:
@@ -1002,7 +1010,7 @@ def _run(
             else:
                 direction = entry.path.stem[-1]
 
-            video_seconds[direction] = elapsed_seconds
+            video_stats[direction] = (elapsed_seconds, bytes_transferred)
         else:
             sidecar_seconds_total += elapsed_seconds
             sidecar_files_total += 1
@@ -1068,7 +1076,7 @@ def _run(
                 continue
 
             select = None if want_video else (lambda entry: not entry.is_video)
-            video_seconds.clear()
+            video_stats.clear()
 
             try:
                 changed = camera.download(
@@ -1090,12 +1098,26 @@ def _run(
                 kind = "video+metadata" if want_video else "metadata only"
                 timing = ""
 
-                if video_seconds:
-                    parts = ", ".join(
-                        f"{direction} {seconds:.1f}s"
-                        for direction, seconds in sorted(video_seconds.items())
-                    )
-                    timing = f" [{parts}]"
+                if video_stats:
+                    formatted = []
+
+                    for direction, (seconds, transferred) in sorted(
+                        video_stats.items()
+                    ):
+                        piece = f"{direction} {seconds:.1f}s"
+
+                        # seconds can be 0.0 against a very fast local
+                        # source (e.g. --media from an SD card, or a
+                        # test double) - speed is undefined there, so
+                        # the parenthetical is just omitted rather
+                        # than showing a bogus infinite/huge figure.
+                        if seconds > 0:
+                            mb_per_s = transferred / (1024 * 1024) / seconds
+                            piece += f" ({mb_per_s:.1f} MB/s)"
+
+                        formatted.append(piece)
+
+                    timing = f" [{', '.join(formatted)}]"
 
                 say(f"bv-download: {recording.id}: downloaded ({kind}){timing}")
             elif args.verbose:

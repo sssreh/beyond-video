@@ -229,14 +229,19 @@ def test_download_calls_on_entry_for_every_copied_file(tmp_path):
     reported = []
     camera.download(
         camera.recordings()[0], tmp_path / "dest",
-        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+        on_entry=lambda entry, elapsed, transferred: reported.append(
+            (entry, elapsed, transferred)
+        ),
     )
 
-    assert {entry.path.name for entry, _elapsed in reported} == {
+    assert {entry.path.name for entry, _elapsed, _transferred in reported} == {
         "20260802_162130_NF.mp4",
         "20260802_162130_N.gps",
     }
-    assert all(elapsed >= 0 for _entry, elapsed in reported)
+    assert all(elapsed >= 0 for _entry, elapsed, _transferred in reported)
+    by_name = {entry.path.name: transferred for entry, _e, transferred in reported}
+    assert by_name["20260802_162130_NF.mp4"] == 100
+    assert by_name["20260802_162130_N.gps"] == 5
 
 
 def test_download_skips_on_entry_for_a_file_already_up_to_date(tmp_path):
@@ -249,7 +254,9 @@ def test_download_skips_on_entry_for_a_file_already_up_to_date(tmp_path):
     reported = []
     camera.download(
         camera.recordings()[0], dest,
-        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+        on_entry=lambda entry, elapsed, transferred: reported.append(
+            (entry, elapsed, transferred)
+        ),
     )
 
     assert reported == []  # nothing to copy the second time

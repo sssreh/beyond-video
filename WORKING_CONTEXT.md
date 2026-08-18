@@ -15538,3 +15538,90 @@ Files changed: `src/blackvue/core/blackvue_camera.py`,
 `tests/blackvue/core/test_blackvue_camera.py`,
 `tests/blackvue/core/test_media_camera.py`,
 `tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
+
+## Average download speed for bv-download's per-video timing (2026-08-18)
+
+Christer, immediately after the per-video/sidecar duration feature
+above shipped: "I would also want an average download speed in
+paranteses for video files." A direct, unambiguous follow-up - no
+clarification needed - extending the `[F 4.2s, R 4.0s]` suffix to
+`[F 4.2s (23.8 MB/s), R 4.0s (25.0 MB/s)]` for video entries only;
+sidecars keep their existing duration-only run total, no per-file
+speed anywhere for them (not asked for, and speed on files this small
+isn't interesting the way it is for a multi-minute video).
+
+Getting a real speed figure meant knowing bytes transferred per
+entry, not just elapsed time - `on_entry`'s hook (both
+`BlackVueCamera.download()`/`MediaCamera.download()`) gained a third
+`bytes_transferred: int` argument. Rather than `stat()`-ing the
+destination file after the fact (which would count the *whole* file,
+including any portion resumed from an earlier run via BlackVue's HTTP
+Range support - producing a misleadingly-inflated MB/s for a
+partially-resumed video), the byte count is accumulated live from the
+same chunk-level callback mechanism already threaded through for
+`--trace`'s progress dots: `blackvue_camera.py` wraps whatever
+`on_bytes` the caller passed (or `None`) in an internal
+`_record_bytes` closure that both accumulates into a per-entry
+`transferred` counter and forwards to the caller's own callback if
+any; `media_camera.py`'s manual copy loop just adds `len(chunk)`
+inline, since it already owns that loop directly. Either way this
+costs nothing extra to compute and always reflects only the bytes
+actually moved by *this* call.
+
+In `bv_download.py`, `_on_entry`'s per-video storage changed from a
+bare `video_seconds: dict[str, float]` to `video_stats: dict[str,
+tuple[float, int]]` (elapsed, bytes) so the formatting step can
+derive `transferred / (1024*1024) / elapsed` (MB/s, same MiB-labeled-
+as-MB convention `--trace`'s `TRACE_INTERVAL_BYTES` already uses) per
+direction. `elapsed <= 0` (an effectively-instant transfer, e.g. a
+fake test double or a very fast `--media` local copy) omits the
+parenthetical entirely rather than showing a divide-by-zero-derived
+or otherwise meaningless figure - the duration alone still prints.
+
+Unconditionally wrapping `on_bytes` in `blackvue_camera.py`'s
+`_record_bytes` (needed so byte tracking works even when the caller
+passed no `on_bytes` of their own) changed a pre-existing behavior
+detail: the underlying `BlackVueClient.download()` call now always
+receives *some* callable, never a bare `None`, even when neither
+`on_bytes` nor `on_entry` was given by the top-level caller. This
+broke `test_blackvue_camera.py::test_download_on_bytes_is_optional`,
+which had asserted `client.calls[0][2] is None` - updated to assert
+`callable(client.calls[0][2])` instead, since "optional" was always
+about the *caller* not needing to supply one, not about what the
+client itself receives.
+
+Added two new tests to `test_bv_download.py`:
+`test_run_reports_average_speed_for_video_files_only` (fixed
+`elapsed=2.0s`/`bytes_per_entry=2 MiB` per entry makes the expected
+figure an exact, non-flaky `1.0 MB/s`, and confirms the sidecar-total
+line stays speed-free) and `test_run_omits_speed_when_elapsed_is_zero`
+(confirms the omission path doesn't leak a `MB/s` string at all).
+Updated every existing `on_entry` lambda/fake across
+`test_blackvue_camera.py`, `test_media_camera.py`, and
+`test_bv_download.py`'s `_FakeDownloadCamera` for the new 3-arg
+signature (`_FakeDownloadCamera` gained `elapsed_seconds`/
+`bytes_per_entry` constructor params, defaulting to `0.0`/`0` so
+every pre-existing assertion - written before this feature - is
+unaffected).
+
+Verified via `py_compile` on every changed file, the `/tmp/fakepytest`
+harness (97 passed, 0 failed, including the on_bytes-optional fix and
+every updated on_entry test), and a standalone script exercising
+`_run()` end-to-end with monkeypatched `connect()`/`BlackVueCamera`
+for the two new `capsys`/`monkeypatch`-based tests the harness can't
+run directly (same limitation as this file's other `_run()`-level
+tests) - confirmed the exact `[F 2.0s (1.0 MB/s), R 2.0s (1.0 MB/s)]`
+and zero-elapsed `[F 0.0s]` (no `MB/s`) output. Also discovered and
+fixed a verification-script mistake along the way (omitting `--mode
+all`, which `select_by_context()`'s default event/manual policy
+doesn't select video for on its own for a plain `_N` recording) -
+worth remembering for future ad hoc `_run()` verification scripts.
+
+Updated `docs/man/bv-download.md`'s output-format paragraph for the
+new speed figure and its omission rule.
+
+Files changed: `src/blackvue/core/blackvue_camera.py`,
+`src/blackvue/core/media_camera.py`, `src/blackvue/cli/bv_download.py`,
+`tests/blackvue/core/test_blackvue_camera.py`,
+`tests/blackvue/core/test_media_camera.py`,
+`tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
