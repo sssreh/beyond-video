@@ -49,19 +49,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..adapters.registry import get_adapter
-from ..adapters.telemetry_bridge import recording_has_gps
-from ..archive.asset import Asset
-from ..archive.container_gps import container_location_fix
-from ..archive.exif import exif_gps_fix
-from ..archive.photo import recording_is_photo
+from ..adapters.telemetry_bridge import recording_gps_available
+from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
 from .archive_browser import filter_recordings
 from .archive_browser import find_recording
-from .archive_browser import first_valid_gps_fix
 from .archive_browser import group_by_day
 from .archive_browser import kind_options
-from .archive_browser import last_valid_gps_fix
 from .archive_browser import scan_archive
 from .auth import SESSION_COOKIE_NAME
 from .auth import THEME_COOKIE_NAME
@@ -578,10 +573,25 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             camera_id,
             recording_id,
         )
+        adapter_id = _find_camera_adapter_id(app.state.camera_config_cache, camera_id)
+        adapter = get_adapter(adapter_id)
+        # A real per-recording probe (real telemetry, falling back to a
+        # photo's EXIF tag or a video's own container location tag - see
+        # recording_gps_available()'s own docstring), not the old
+        # recording.has_gps property, which only ever checked for a
+        # BlackVue .gps sidecar and so never lit up this link for a
+        # folder/GoPro-adapter recording with a real GPS fix from EXIF
+        # or a container location tag.
+        gps_available = recording_gps_available(adapter, recording.recording)
         return templates.TemplateResponse(
             request,
             "archive_recording_detail.html",
-            {"user": user, "camera_id": camera_id, "recording": recording},
+            {
+                "user": user,
+                "camera_id": camera_id,
+                "recording": recording,
+                "gps_available": gps_available,
+            },
         )
 
     @app.get(
@@ -616,66 +626,33 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         error = None
 
-        if not recording_has_gps(adapter, recording.recording):
-            # No `.gps` sidecar (or the adapter has no GPS capability
-            # at all) - the ordinary case for a photo recording, which
-            # never has one (see archive/photo.py's own module
-            # docstring), and also the ordinary case for a real video
-            # scanned by FolderAdapter/GoProAdapter with no embedded
-            # telemetry track. Two more real chances before this page
-            # gives up and shows "no GPS log":
-            #
-            # 1. A photo can still carry its own GPS fix right in its
-            #    EXIF data (most phone/GPS-equipped cameras write one)
-            #    - exif_gps_fix() (task #957).
-            # 2. A real video can carry a single-point GPS fix in its
-            #    own container metadata (the `location`/`location-eng`
-            #    ISO 6709 format tag QuickTime/MP4-family tools mux
-            #    in) - container_location_fix(). Real report from
-            #    Christer: a real ffprobe dump on a stock/downloaded
-            #    clip mixed into his GoPro archive showed exactly this
-            #    tag (`TAG:location=+05.0448-073.7965/`), and nothing
-            #    read it - "This looks like gps coordinates ... not
-            #    found by bv-generate."
-            #
-            # Without either fallback, a photo or a telemetry-less
-            # video dropped into a trip had no way at all to show a
-            # location on this page even when it actually has one.
-            fallback_fix = None
-            front = recording.recording.file(Asset.FRONT)
+        # resolve_recording_gps_span() replaces the old two-branch
+        # "real GPS log, or bust straight to EXIF/container-tag
+        # fallback only when there's no GPS source at all" logic with
+        # one shared call: real telemetry first, falling through to a
+        # photo's EXIF GPS tag or a video's own ISO 6709 container
+        # `location` tag whenever real telemetry comes up with zero
+        # valid fixes - not just when recording_has_gps() is False
+        # outright. That extra case (a GoPro-adapter recording that
+        # declares GPS support but has no real GPMF track - a
+        # stock/downloaded clip mixed into the archive) used to leave
+        # this page stuck showing "no GPS log" even though a usable
+        # fallback fix existed; see recording_gps_available()'s own
+        # docstring in adapters/telemetry_bridge.py for the same gap
+        # already fixed in cli/bv_ls.py's GPS column and bv-web's
+        # archive detail page link (tasks #974-977, #998-999).
+        #
+        # The old first_valid_gps_fix()/last_valid_gps_fix() calls were
+        # each wrapped in try/except MediaToolError, but
+        # read_recording_gps() (which both of those, and
+        # resolve_recording_gps_span(), ultimately call) already
+        # swallows MediaToolError internally and returns an empty
+        # tuple - that wrapper never actually fired, so it's dropped
+        # here rather than carried forward.
+        start_fix, stop_fix = resolve_recording_gps_span(adapter, recording.recording)
 
-            if recording_is_photo(recording.recording):
-                if front is not None:
-                    fallback_fix = exif_gps_fix(
-                        front.path, timestamp=recording.recording.id.timestamp
-                    )
-
-            if fallback_fix is None and front is not None:
-                fallback_fix = container_location_fix(
-                    front.path, timestamp=recording.recording.id.timestamp
-                )
-
-            if fallback_fix is None:
-                error = "This recording has no GPS log."
-            else:
-                geocode_cache_dir = default_config_dir() / ".osm_cache"
-                (
-                    start_coordinates,
-                    start_google_maps_url,
-                    start_address,
-                    start_address_error,
-                ) = _describe_gps_fix(fallback_fix, geocode_cache_dir)
-                # Both fallback sources are single-point fixes, not a
-                # span (a photo is one instant; a container location
-                # tag is one static point with no separate start/stop
-                # of its own) - the same fix serves as both "start"
-                # and "stop" so the template's existing start/stop
-                # layout works unchanged rather than needing its own
-                # single-point-specific branch.
-                stop_coordinates = start_coordinates
-                stop_google_maps_url = start_google_maps_url
-                stop_address = start_address
-                stop_address_error = start_address_error
+        if start_fix is None and stop_fix is None:
+            error = "This recording has no GPS log."
         else:
             # Reverse-geocoded and cached under default_config_dir() -
             # bv-web's own writable scratch space (the same directory
@@ -692,30 +669,11 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             # Christer's NAS - see WORKING_CONTEXT.md.
             geocode_cache_dir = default_config_dir() / ".osm_cache"
 
-            # first_valid_gps_fix()/last_valid_gps_fix() call
-            # adapter.read_gps() (via telemetry_bridge.read_recording_gps()),
-            # which raises MediaToolError on an unreadable GPS source
-            # (permissions, a truncated/corrupt file, etc.) - trip_export.py's
-            # own _merge_gps() guards the exact same read via
-            # read_recording_gps() the same way (skip and move on)
-            # rather than letting it propagate, and this route needs
-            # the same guard: without it, a single bad GPS source 500s
-            # the page instead of showing a friendly message. Start and
-            # stop are looked up independently since a recording can,
-            # in principle, lose its GPS fix again right before it ends
-            # even though it had one at the start (or vice versa).
-            try:
-                start_fix = first_valid_gps_fix(adapter, recording.recording)
-            except MediaToolError as exc:
-                start_fix = None
-                start_error = f"could not read this recording's GPS log: {exc}"
-
             if start_fix is None:
-                if start_error is None:
-                    start_error = (
-                        "No valid GPS fix found in this recording's GPS "
-                        "log (no signal)."
-                    )
+                start_error = (
+                    "No valid GPS fix found in this recording's GPS "
+                    "log (no signal)."
+                )
             else:
                 (
                     start_coordinates,
@@ -724,18 +682,11 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     start_address_error,
                 ) = _describe_gps_fix(start_fix, geocode_cache_dir)
 
-            try:
-                stop_fix = last_valid_gps_fix(adapter, recording.recording)
-            except MediaToolError as exc:
-                stop_fix = None
-                stop_error = f"could not read this recording's GPS log: {exc}"
-
             if stop_fix is None:
-                if stop_error is None:
-                    stop_error = (
-                        "No valid GPS fix found in this recording's GPS "
-                        "log (no signal)."
-                    )
+                stop_error = (
+                    "No valid GPS fix found in this recording's GPS "
+                    "log (no signal)."
+                )
             else:
                 (
                     stop_coordinates,

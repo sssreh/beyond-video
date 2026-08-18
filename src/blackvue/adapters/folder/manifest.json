@@ -48,7 +48,7 @@
   "gsensor_source_asset": null,
   "grouping_hint": "subfolder",
   "unsupported_notes": [
-    "No GPS: no map.mp4, no GPX export, no reverse geocoding, no start/stop location pages, no --movement trip bridging. Trip splitting still works on timestamp gaps alone.",
+    "No GPS: no map.mp4, no GPX export, no --movement trip bridging. Trip splitting still works on timestamp gaps alone. The archive detail page's start/stop location link and reverse geocoding still work per-recording when a photo carries an EXIF GPS tag or a video carries its own ISO 6709 container `location` tag - just no continuous real telemetry track for the trip as a whole.",
     "No g-sensor: no gsensor.mp4/gsensor_graph.mp4, no --stitch-gsensor panel.",
     "No multi-direction video: no --stitch camera-layout compositor, no rearview_mirror layout - export is a single-track passthrough of whichever video file each recording is.",
     "No config.ini equivalent: trip gap threshold always uses default_trip_gap_seconds (300s) instead of a per-camera auto-derived nominal segment length.",

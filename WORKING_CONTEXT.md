@@ -15018,3 +15018,62 @@ apart from a handful of already-documented pre-existing harness/test
 issues unrelated to this change (a `FakeTTY`/`pytest.approx` scratch-
 harness limitation, and two `test_jobs.py` params tests that fail
 identically on the unmodified tree - confirmed via `git stash`).
+
+## Archive detail/location page GPS link: shared availability probe (2026-08-18)
+
+Christer: "folder archive browser should show link to gps and address
+if a gps file is found." The archive detail page's "Show Start and
+stop location" link only ever lit up for BlackVue recordings -
+`ArchiveRecording.has_gps` was a raw `self.recording.has(Asset.GPS)`
+check on the BlackVue-only `.gps` sidecar, so a folder/GoPro-adapter
+recording with a real fix from a photo's EXIF GPS tag or a video's own
+ISO 6709 container `location` tag never got the link at all, even
+though clicking through to `/location` directly would have found it.
+This was an already-diagnosed, already-flagged gap: the previous
+session's bv-ls GPS-column fix (2026-08-17 entry above) explicitly
+noted "The web route itself still has this gap - out of scope for
+that task, but worth revisiting" - so this was picked up and fixed
+without needing further clarification from Christer.
+
+Factored the shared check into a new
+`adapters/telemetry_bridge.recording_gps_available(adapter,
+recording)`: real telemetry first, falling through to the EXIF/
+container-tag fallback whenever real telemetry comes up with zero
+valid fixes - not just when there's no GPS source at all - the same
+order `resolve_recording_gps_span()` already used. `cli/bv_ls.py`'s
+GPS column now delegates to this shared function instead of keeping
+its own private `_recording_gps_available()` copy.
+
+`web/app.py` changes: `archive_recording_detail()` now fetches the
+camera's adapter (same pattern the `/location` route already used) and
+passes a `gps_available` boolean into the template, replacing
+`archive_recording_detail.html`'s `{% if recording.has_gps %}` gate
+with `{% if gps_available %}` - `ArchiveRecording.has_gps`/`gps_path`
+themselves are untouched, they still describe the raw BlackVue `.gps`
+sidecar for their existing callers. `archive_recording_location()`
+was simplified from its old ~90-line hand-rolled "try
+`recording_has_gps()`, else read EXIF/container tag directly" branch
+down to one `resolve_recording_gps_span()` call - which also let the
+route drop its `first_valid_gps_fix()`/`last_valid_gps_fix()`
+`try/except MediaToolError` wrappers, confirmed dead code since
+`read_recording_gps()` already swallows `MediaToolError` internally.
+
+New `tests/blackvue/adapters/test_telemetry_bridge.py` (no test file
+existed for this module before) covers `recording_gps_available()`
+directly against real FolderAdapter/GoProAdapter instances and real
+Pillow/ffmpeg-generated fixtures - the same style
+`cli/bv_ls.py`'s own GPS-column tests already use for this fallback
+behavior, confirming the function is correct independent of either
+caller. Re-ran `test_bv_ls.py` and `test_archive_browser.py` in full
+(harness shim, no real pytest available) - all passing, no regressions.
+Also updated `folder/manifest.json`'s `unsupported_notes` GPS wording
+and added an "(Update: ...)" addendum to `docs/CAMERA_ADAPTERS.md`'s
+bv-ls entry pointing at the new one, per this project's convention of
+updating historical entries in place rather than rewriting them.
+
+Files changed: `src/blackvue/adapters/telemetry_bridge.py`,
+`src/blackvue/cli/bv_ls.py`, `src/blackvue/web/app.py`,
+`src/blackvue/web/templates/archive_recording_detail.html`,
+`src/blackvue/adapters/folder/manifest.json`,
+`tests/blackvue/adapters/test_telemetry_bridge.py` (new),
+`docs/CAMERA_ADAPTERS.md`.

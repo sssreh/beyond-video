@@ -24,6 +24,13 @@ container-tag (video) fallback archive/exif.py and archive/container_gps.py
 provide for a recording with no real telemetry source at all - see its
 own docstring for the exact fallback order and the real report that
 motivated it.
+
+recording_gps_available() (added when bv-web's archive detail page
+"Show start and stop location" link turned out to have the same "real
+source exists but zero valid fixes never falls through to the
+fallback" gap cli/bv_ls.py's GPS column already had - see that
+function's own docstring) is the shared yes/no probe both callers now
+use instead of each keeping their own copy.
 """
 
 from __future__ import annotations
@@ -139,7 +146,7 @@ def resolve_recording_gps_span(
     archive_recording_location() route ("the same fix serves as both
     start and stop"). Reached whenever real telemetry comes up empty,
     not just when recording_has_gps() is False outright - see
-    cli/bv_ls.py's own _recording_gps_available() docstring for why a
+    recording_gps_available()'s own docstring below for why a
     GoPro-adapter recording that declares gps support but has no real
     GPMF track (a stock/downloaded clip mixed into the archive) needs
     this same fallback, not just a "no telemetry source at all" one.
@@ -182,3 +189,31 @@ def resolve_recording_gps_span(
         )
 
     return fallback_fix, fallback_fix
+
+
+def recording_gps_available(adapter: CameraAdapter, recording: Recording) -> bool:
+    """True if `recording` has a real, usable GPS position - real
+    telemetry preferred, falling back to a photo's EXIF tag or a
+    video's own container location tag, exactly the same order
+    resolve_recording_gps_span() uses (see its own docstring for the
+    exact fallback order and the real report that motivated it).
+
+    A thin, testable wrapper for callers that just want a yes/no
+    answer rather than the fixes themselves - cli/bv_ls.py's GPS
+    column and bv-web's archive detail page "Show start and stop
+    location" link both used to duplicate this exact check
+    independently (the web route's own version was narrower, stopping
+    at "no GPS source at all" instead of also falling through when a
+    real source exists but comes back with zero valid fixes - see
+    docs/CAMERA_ADAPTERS.md's "bv-ls GPS column" entry for the report
+    that motivated fixing bv-ls first, and the same fix landing here
+    for the archive detail page's link).
+
+    Same real-per-recording-probe cost warning as
+    resolve_recording_gps_span() itself: a caller of this function
+    should already know it may pay a Pillow/ffprobe subprocess cost
+    when there's no real telemetry to short-circuit on.
+    """
+
+    start_fix, _ = resolve_recording_gps_span(adapter, recording)
+    return start_fix is not None

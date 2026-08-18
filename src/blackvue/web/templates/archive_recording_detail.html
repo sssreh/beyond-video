@@ -26,7 +26,7 @@
   {% endfor %}
 </ul>
 
-{% if recording.has_gps %}
+{% if gps_available %}
 <p><a href="/archive/{{ camera_id }}/{{ recording.id }}/location">Show Start and stop location</a></p>
 {% endif %}
 

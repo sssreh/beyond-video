@@ -7,7 +7,7 @@ from pathlib import Path
 
 from blackvue.adapters import registry
 from blackvue.adapters.base import CameraAdapter
-from blackvue.adapters.telemetry_bridge import resolve_recording_gps_span
+from blackvue.adapters.telemetry_bridge import recording_gps_available
 from blackvue.archive import Archive, Asset, Recording
 from blackvue.cli.display_group import DisplayGroup
 from blackvue.cli.display_group import source_name
@@ -96,27 +96,18 @@ def _source_column_needed(groups: list[DisplayGroup], root: Path) -> bool:
     return False
 
 
-def _recording_gps_available(adapter: CameraAdapter, recording: Recording) -> bool:
-    """True if `recording` has a real, usable GPS position - see
-    adapters/telemetry_bridge.py's resolve_recording_gps_span() for
-    the exact real-adapter-read-then-EXIF/container-tag-fallback
-    order (deliberately more thorough than web/app.py's own
-    `archive_recording_location()` route - see that function's own
-    docstring for why, and for the real report - Christer's own "No
-    gps from" - that motivated it).
-    """
-
-    start_fix, _ = resolve_recording_gps_span(adapter, recording)
-    return start_fix is not None
-
-
 def _group_has_gps(group: DisplayGroup, adapter: CameraAdapter) -> bool:
-    """Same all-recordings-in-the-group contract as
-    DisplayGroup.has(), just backed by _recording_gps_available()'s
-    real probe instead of a plain asset-file-exists check."""
+    """Same all-recordings-in-the-group contract as DisplayGroup.has(),
+    just backed by telemetry_bridge.recording_gps_available()'s real
+    probe (real-adapter-read-then-EXIF/container-tag-fallback - see its
+    own docstring for the exact order, deliberately more thorough than
+    web/app.py's own archive_recording_location() route used to be
+    before it was fixed to use the same shared check - and for the
+    real report, Christer's own "No gps from", that motivated it)
+    instead of a plain asset-file-exists check."""
 
     return all(
-        _recording_gps_available(adapter, recording)
+        recording_gps_available(adapter, recording)
         for recording in group.recordings
     )
 
@@ -397,7 +388,7 @@ def bv_ls(
 
     assets = Asset.display_order()
 
-    # A real per-group probe (see _recording_gps_available()'s own
+    # A real per-group probe (see recording_gps_available()'s own
     # docstring for the cost/why) - computed once here, up front, and
     # reused for both the --full column-inclusion filter below and
     # each row's own mark in the render loop, rather than probing the
