@@ -15336,3 +15336,46 @@ Files changed: `src/blackvue/web/voice_time.py` (new),
 `src/blackvue/web/app.py`,
 `src/blackvue/web/templates/job_new_bv_search.html`,
 `tests/blackvue/web/test_voice_time.py` (new).
+
+## "Read aloud" - first test of voice output (2026-08-18)
+
+Christer, after the two voice-search parsing fixes above: "Is it
+possible to lev bv to speak" (let bv speak). Asked what use case he
+had in mind (voice confirmation of search queries, results summary,
+or reading scene descriptions aloud) - he said he didn't know yet and
+just wanted to try something, picked "scene descriptions" as the
+first test.
+
+Unlike voice *input* (which needed Whisper + a server route to turn
+audio into text), voice *output* needs nothing server-side: the
+browser's built-in Web Speech API (`window.speechSynthesis`) can turn
+text already on the page into audio using the OS's own TTS voices, no
+new dependency, no round-trip.
+
+Added a "Read aloud" button to each per-direction block in the
+"Scene summary" panel on `archive_recording_detail.html` (the
+description + legible sign/plate reads that `ArchiveRecording.
+scene_summary` already produces, task #699-702). Restructured that
+panel's markup slightly - the label and new button now share a
+`.scene-text-header` flex row, and the description/reads moved into
+a `.scene-text-content` wrapper the button's JS reads via
+`textContent` (so it always speaks exactly what's visually shown, no
+duplicate string-building in Jinja). Reuses `.voice-btn`'s existing
+outline-button CSS from the bv-search voice-input feature, including
+its `.recording` red-outline state, repurposed here for "click again
+to stop speaking" instead of "click again to stop recording".
+
+Plain vanilla JS, feature-detects `window.speechSynthesis` and hides
+every button if unsupported. Only one utterance plays at a time -
+clicking a second "Read aloud" button while one is speaking stops the
+first and starts the new one; clicking the currently-speaking button
+again just stops it.
+
+Verified via a real Jinja2 render of the template (fake Recording
+with a two-direction scene_summary) confirming the new button/wrapper
+markup and `SpeechSynthesisUtterance` call appear in the output. No
+Python changes in this pass - template/CSS/JS only, so no
+py_compile/test-harness step applies.
+
+Files changed: `src/blackvue/web/templates/archive_recording_detail.html`,
+`src/blackvue/web/templates/base.html`.

@@ -388,6 +388,13 @@
        .scene.txt sidecar, .scene-text-body styled like pre.job-output's
        own read-only text panel since both are "dump of a text file". */
     .scene-text { margin-bottom: 1rem; }
+    /* archive_recording_detail.html's "Read aloud" button (Christer:
+       "Is it possible to lev bv to speak" / "lets try nr 3") - sits
+       next to each scene-summary block's direction label, reusing
+       .voice-btn's outline-button look and its .recording ->
+       red-outline state for "click again to stop speaking". */
+    .scene-text-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+    .scene-text-header .hint { margin: 0; }
     .scene-text-body {
       background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
       padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word;

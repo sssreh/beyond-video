@@ -35,17 +35,22 @@
 <p class="hint">Description and legible sign/plate reads only, parsed fresh from the files below - not a separate file, and "not legible" reads are left out. <a href="#full-scene-text">See the full text</a> for everything, including the raw on-screen-text dump.</p>
 {% for label, description, legible_reads in recording.scene_summary %}
 <div class="scene-text">
-  <p class="hint">{{ label }}</p>
-  {% if description %}
-  <p>{{ description }}</p>
-  {% endif %}
-  {% if legible_reads %}
-  <ul class="sign-reads">
-    {% for read in legible_reads %}
-    <li>{{ read }}</li>
-    {% endfor %}
-  </ul>
-  {% endif %}
+  <div class="scene-text-header">
+    <p class="hint">{{ label }}</p>
+    <button type="button" class="voice-btn speak-btn" title="Read this description aloud">Read aloud</button>
+  </div>
+  <div class="scene-text-content">
+    {% if description %}
+    <p>{{ description }}</p>
+    {% endif %}
+    {% if legible_reads %}
+    <ul class="sign-reads">
+      {% for read in legible_reads %}
+      <li>{{ read }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
 </div>
 {% endfor %}
 {% endif %}
@@ -64,4 +69,56 @@
 </details>
 {% endif %}
 </div>
+
+<script>
+(function () {
+  // "Read aloud" - a first, small test of voice *output* to go with
+  // the existing voice *input* on the bv-search form (Christer: "Is
+  // it possible to lev bv to speak" / "lets try nr 3" - scene
+  // descriptions). Uses the browser's built-in Web Speech API
+  // (SpeechSynthesis) - no server round-trip, no new dependency,
+  // unlike the Whisper-based voice-search feature, since going text
+  // -> speech is something the browser/OS can already do on its own.
+  if (!window.speechSynthesis) {
+    // No TTS support in this browser - hide every button rather than
+    // offering something that will just fail.
+    document.querySelectorAll('.speak-btn').forEach(function (btn) {
+      btn.hidden = true;
+    });
+    return;
+  }
+
+  var activeButton = null;
+
+  function stop() {
+    window.speechSynthesis.cancel();
+    if (activeButton) {
+      activeButton.textContent = 'Read aloud';
+      activeButton.classList.remove('recording');
+      activeButton = null;
+    }
+  }
+
+  document.querySelectorAll('.speak-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var wasActive = btn === activeButton;
+      stop();
+      if (wasActive) return; // clicking the same button again just stops it
+
+      var content = btn.closest('.scene-text').querySelector('.scene-text-content');
+      var text = (content ? content.textContent : '').replace(/\s+/g, ' ').trim();
+      if (!text) return;
+
+      var utterance = new SpeechSynthesisUtterance(text);
+      utterance.addEventListener('end', stop);
+      utterance.addEventListener('error', stop);
+      window.speechSynthesis.speak(utterance);
+
+      activeButton = btn;
+      btn.textContent = 'Stop';
+      btn.classList.add('recording');
+    });
+  });
+})();
+</script>
 {% endblock %}
