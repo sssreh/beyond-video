@@ -644,10 +644,16 @@ class _FakeDownloadCamera:
             raise OSError("timed out")
         return []
 
-    def download(self, recording, destination, *, select=None, on_bytes=None) -> bool:
+    def download(
+        self, recording, destination, *, select=None, on_bytes=None, on_entry=None
+    ) -> bool:
         if self._fail_on == "download" and recording.id == self._failing_id:
             raise OSError("timed out")
         self.downloaded_ids.append(recording.id)
+        if on_entry is not None:
+            for entry in recording.entries:
+                if select is None or select(entry):
+                    on_entry(entry, 0.0)
         return True
 
 
@@ -774,6 +780,45 @@ def test_run_returns_ok_when_every_recording_succeeds(
 
     assert exit_code == EXIT_OK
     assert "failed and were skipped" not in capsys.readouterr().err
+
+
+def test_run_reports_per_video_duration_and_sidecar_total(
+    tmp_path, monkeypatch, capsys
+):
+    # Christer: "a total duration for all the sidecars and ... a
+    # duration each video per recordingid" - see _run()'s own
+    # _on_entry closure. Real elapsed times are ~0.0s here (the fake
+    # camera below fires on_entry synchronously with no actual I/O),
+    # which is exactly what makes the format string's rendering
+    # deterministic enough to assert on.
+    populated_recording = Recording(
+        id="20260803_161020_N",
+        entries=[
+            vod_entry("20260803_161020_NF.mp4"),
+            vod_entry("20260803_161020_NR.mp4"),
+            vod_entry("20260803_161020_N.gps"),
+            vod_entry("20260803_161020_N.3gf"),
+        ],
+    )
+    camera = _FakeDownloadCamera([populated_recording])
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    assert exit_code == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "20260803_161020_N: downloaded (video+metadata) [F 0.0s, R 0.0s]" in out
+    assert "sidecar files: 2 downloaded in 0.0s total" in out
 
 
 def test_summarize_found_kinds_all_three():
@@ -933,7 +978,9 @@ class _FakeMediaCamera:
     def probe_missing_sidecars(self, recording: Recording) -> list[VodEntry]:
         return []
 
-    def download(self, recording, destination, *, select=None, on_bytes=None) -> bool:
+    def download(
+        self, recording, destination, *, select=None, on_bytes=None, on_entry=None
+    ) -> bool:
         self.downloaded_ids.append(recording.id)
         return True
 

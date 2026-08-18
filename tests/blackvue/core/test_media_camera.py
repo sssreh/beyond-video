@@ -221,6 +221,40 @@ def test_download_second_run_is_a_noop_when_file_already_matches(tmp_path):
     assert second is False
 
 
+def test_download_calls_on_entry_for_every_copied_file(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    _touch(tmp_path / "20260802_162130_N.gps", size=5)
+    camera = MediaCamera(tmp_path)
+
+    reported = []
+    camera.download(
+        camera.recordings()[0], tmp_path / "dest",
+        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+    )
+
+    assert {entry.path.name for entry, _elapsed in reported} == {
+        "20260802_162130_NF.mp4",
+        "20260802_162130_N.gps",
+    }
+    assert all(elapsed >= 0 for _entry, elapsed in reported)
+
+
+def test_download_skips_on_entry_for_a_file_already_up_to_date(tmp_path):
+    _touch(tmp_path / "20260802_162130_NF.mp4", size=100)
+    camera = MediaCamera(tmp_path)
+    dest = tmp_path / "dest"
+
+    camera.download(camera.recordings()[0], dest)  # first copy
+
+    reported = []
+    camera.download(
+        camera.recordings()[0], dest,
+        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+    )
+
+    assert reported == []  # nothing to copy the second time
+
+
 def test_download_recopies_when_destination_size_differs(tmp_path):
     # A partial/stale file at the destination (different size) is
     # replaced wholesale - a local copy has no partial-transfer state

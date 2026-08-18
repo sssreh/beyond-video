@@ -15,16 +15,21 @@ def _entry(path: str) -> VodEntry:
 
 
 class _FakeClient:
-    def __init__(self, probe_results: dict[str, bool] | None = None):
+    def __init__(
+        self,
+        probe_results: dict[str, bool] | None = None,
+        download_results: dict[str, bool] | None = None,
+    ):
         self.calls = []
         self.probe_calls = []
         self._probe_results = probe_results or {}
+        self._download_results = download_results or {}
 
     def download(self, entry, destination, *, on_bytes=None):
         self.calls.append((entry, destination, on_bytes))
         if on_bytes is not None:
             on_bytes(123)
-        return True
+        return self._download_results.get(entry.path.as_posix(), True)
 
     def probe(self, path: str) -> bool:
         self.probe_calls.append(path)
@@ -66,6 +71,81 @@ def test_download_on_bytes_is_optional(tmp_path):
 
     assert changed is True
     assert client.calls[0][2] is None
+
+
+def test_download_calls_on_entry_for_every_transferred_file(tmp_path):
+    client = _FakeClient()
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NF.mp4"),
+            _entry("/Record/20260101_000000_N.gps"),
+        ],
+    )
+
+    reported = []
+    camera.download(
+        recording, tmp_path,
+        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+    )
+
+    assert [entry.path.as_posix() for entry, _elapsed in reported] == [
+        "/Record/20260101_000000_NF.mp4",
+        "/Record/20260101_000000_N.gps",
+    ]
+    # Real wall-clock time against a fake client is ~instant but never
+    # negative - that's all worth asserting here without making the
+    # test flaky on a slow CI runner.
+    assert all(elapsed >= 0 for _entry, elapsed in reported)
+
+
+def test_download_skips_on_entry_for_files_not_actually_downloaded(tmp_path):
+    # A file already present at the destination with a matching size
+    # doesn't transfer any bytes (see BlackVueClient.download()'s own
+    # resume/skip logic) - on_entry shouldn't fire for it, since
+    # bv-download's own duration reporting (cli/bv_download.py) would
+    # otherwise show a near-zero, meaningless measurement for a file
+    # that needed no work at all.
+    client = _FakeClient(
+        download_results={"/Record/20260101_000000_NF.mp4": False}
+    )
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[
+            _entry("/Record/20260101_000000_NF.mp4"),
+            _entry("/Record/20260101_000000_N.gps"),
+        ],
+    )
+
+    reported = []
+    changed = camera.download(
+        recording, tmp_path,
+        on_entry=lambda entry, elapsed: reported.append((entry, elapsed)),
+    )
+
+    assert changed is True  # the .gps entry still transferred
+    assert [entry.path.as_posix() for entry, _elapsed in reported] == [
+        "/Record/20260101_000000_N.gps"
+    ]
+
+
+def test_download_on_entry_is_optional(tmp_path):
+    client = _FakeClient()
+    camera = BlackVueCamera(client)
+
+    recording = Recording(
+        id="20260101_000000_N",
+        entries=[_entry("/Record/20260101_000000_NF.mp4")],
+    )
+
+    # Should not raise with on_entry omitted entirely.
+    changed = camera.download(recording, tmp_path)
+
+    assert changed is True
 
 
 def test_probe_missing_sidecars_adds_entries_the_camera_actually_serves():

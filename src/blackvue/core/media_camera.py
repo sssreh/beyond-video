@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -292,18 +293,22 @@ class MediaCamera:
         *,
         select: Callable[[VodEntry], bool] | None = None,
         on_bytes: Callable[[int], None] | None = None,
+        on_entry: Callable[[VodEntry, float], None] | None = None,
     ) -> bool:
         """Copy a recording's files from the card into `destination`.
 
         Mirrors BlackVueCamera.download()'s own contract (select/
-        on_bytes/return value) so bv-download's shared download loop
-        in _run() works unmodified regardless of which camera
+        on_bytes/on_entry/return value - see its own docstring for
+        on_entry's meaning) so bv-download's shared download loop in
+        _run() works unmodified regardless of which camera
         implementation is driving it. A file already present at the
         destination with the same size is skipped, not re-copied - the
         local equivalent of BlackVueClient.download()'s own resume
         support, except a local copy has no partial-transfer state
         worth resuming into: either the whole file already made it
-        across, or it didn't.
+        across, or it didn't. on_entry only fires for a file that was
+        actually copied, matching that same "skip means no
+        measurement" behavior.
         """
 
         destination.mkdir(parents=True, exist_ok=True)
@@ -320,6 +325,8 @@ class MediaCamera:
             if target.exists() and target.stat().st_size == source.stat().st_size:
                 continue
 
+            started = time.monotonic()
+
             with source.open("rb") as src, target.open("wb") as dst:
                 while chunk := src.read(64 * 1024):
                     dst.write(chunk)
@@ -328,6 +335,9 @@ class MediaCamera:
                         on_bytes(len(chunk))
 
             changed = True
+
+            if on_entry is not None:
+                on_entry(entry, time.monotonic() - started)
 
         return changed
 

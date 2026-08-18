@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -139,6 +140,7 @@ class BlackVueCamera:
         *,
         select: Callable[[VodEntry], bool] | None = None,
         on_bytes: Callable[[int], None] | None = None,
+        on_entry: Callable[[VodEntry, float], None] | None = None,
     ) -> bool:
         """Download a recording.
 
@@ -148,6 +150,20 @@ class BlackVueCamera:
 
         If on_bytes is given, it's passed straight through to
         BlackVueClient.download() for every entry - see its docstring.
+
+        If on_entry is given, it's called once per entry that was
+        actually downloaded (not one already present at `destination`
+        with nothing to transfer - see BlackVueClient.download()'s own
+        return value) with the entry itself and how many seconds that
+        entry's own download() call took. Christer: "duration for
+        downloading all of [the sidecars] ... and a duration each
+        video per recordingid" - bv-download's _run() uses this to
+        report per-video download time per recording plus a running
+        total across every sidecar (.gps/.3gf/.thm) file downloaded in
+        the run (see cli/bv_download.py). Only entries that actually
+        transferred bytes fire this - an already-up-to-date recording
+        (nothing to resume) doesn't add a near-zero measurement to
+        either total.
 
         Returns True if any file was downloaded or resumed.
         """
@@ -164,6 +180,7 @@ class BlackVueCamera:
                 continue
 
             filename = destination / entry.path.name
+            started = time.monotonic()
 
             if self._client.download(
                 entry,
@@ -171,6 +188,9 @@ class BlackVueCamera:
                 on_bytes=on_bytes,
             ):
                 changed = True
+
+                if on_entry is not None:
+                    on_entry(entry, time.monotonic() - started)
 
         return changed
     

@@ -968,6 +968,45 @@ def _run(
     #
     failed_ids: list[str] = []
 
+    #
+    # Christer: "a total duration for all the sidecars and ... a
+    # duration each video per recordingid" - meaning download *time*,
+    # not video content length. sidecar_seconds_total/
+    # sidecar_files_total accumulate across the whole run (a single
+    # figure at the end, not broken out per recording - sidecars are
+    # small and numerous, a per-recording total isn't interesting);
+    # video_seconds is rebuilt fresh for each recording and printed
+    # right on that recording's own "downloaded" line, keyed by
+    # camera direction letter (F/R/I) since that's what's actually
+    # meaningful to compare recording-to-recording, not the raw
+    # filename. Both are populated via camera.download()'s on_entry
+    # hook (see core/blackvue_camera.py / core/media_camera.py),
+    # which only fires for an entry that actually transferred bytes -
+    # an already-up-to-date recording contributes nothing to either
+    # total rather than polluting them with a near-zero measurement.
+    #
+    sidecar_seconds_total = 0.0
+    sidecar_files_total = 0
+    video_seconds: dict[str, float] = {}
+
+    def _on_entry(entry: VodEntry, elapsed_seconds: float) -> None:
+        nonlocal sidecar_seconds_total, sidecar_files_total
+
+        if entry.is_video:
+            if entry.is_front:
+                direction = "F"
+            elif entry.is_rear:
+                direction = "R"
+            elif entry.is_interior:
+                direction = "I"
+            else:
+                direction = entry.path.stem[-1]
+
+            video_seconds[direction] = elapsed_seconds
+        else:
+            sidecar_seconds_total += elapsed_seconds
+            sidecar_files_total += 1
+
     try:
         for recording, want_video in selection:
             #
@@ -1029,6 +1068,7 @@ def _run(
                 continue
 
             select = None if want_video else (lambda entry: not entry.is_video)
+            video_seconds.clear()
 
             try:
                 changed = camera.download(
@@ -1036,6 +1076,7 @@ def _run(
                     destination,
                     select=select,
                     on_bytes=progress,
+                    on_entry=_on_entry,
                 )
             except OSError as exc:
                 failed_ids.append(recording.id)
@@ -1047,12 +1088,27 @@ def _run(
 
             if changed:
                 kind = "video+metadata" if want_video else "metadata only"
-                say(f"bv-download: {recording.id}: downloaded ({kind})")
+                timing = ""
+
+                if video_seconds:
+                    parts = ", ".join(
+                        f"{direction} {seconds:.1f}s"
+                        for direction, seconds in sorted(video_seconds.items())
+                    )
+                    timing = f" [{parts}]"
+
+                say(f"bv-download: {recording.id}: downloaded ({kind}){timing}")
             elif args.verbose:
                 say(f"bv-download: {recording.id}: already up to date")
     finally:
         if progress is not None:
             progress.finish()
+
+    if sidecar_files_total:
+        say(
+            f"bv-download: sidecar files: {sidecar_files_total} downloaded "
+            f"in {sidecar_seconds_total:.1f}s total"
+        )
 
     if failed_ids:
         warn(

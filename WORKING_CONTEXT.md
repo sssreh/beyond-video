@@ -15460,3 +15460,81 @@ table row for the new default and the web-form split.
 
 Files changed: `src/blackvue/cli/bv_download.py`,
 `docs/man/bv-download.md`.
+
+## Per-video and total-sidecar download duration reporting for bv-download (2026-08-18)
+
+Christer: "Please add a total duration for all the sidecars and for a
+duration each video per recordingid". Clarified this meant *download
+time* (wall-clock elapsed), not video content length - camera-hosted
+recordings aren't downloaded yet at listing time, so a content
+duration isn't available without probing/downloading the file
+anyway; and "sidecars" meant the literal `.gps`/`.3gf`/`.thm`
+metadata files (see `probe_missing_sidecars()`), which don't have a
+meaningful video duration but do have a download time worth
+reporting - a single total across the whole run, not broken out per
+recording (there was no "per recordingid" qualifier on that half of
+the request), unlike the per-video timing.
+
+Added an optional `on_entry: Callable[[VodEntry, float], None]`
+parameter to both `BlackVueCamera.download()`
+(`core/blackvue_camera.py`) and `MediaCamera.download()`
+(`core/media_camera.py`), called once per entry that actually
+transferred bytes (not one already present at the destination with
+nothing to copy/resume) with the entry itself and how many seconds
+its own `download()` call took (`time.monotonic()` before/after).
+Deliberately skipped for a no-op entry, since a near-zero
+already-up-to-date measurement would be meaningless clutter in either
+total.
+
+Wired this into `cli/bv_download.py`'s `_run()`: a `_on_entry()`
+closure defined once before the main per-recording loop accumulates
+`sidecar_seconds_total`/`sidecar_files_total` across the whole run
+(entries where `is_video` is False), and repopulates a fresh
+`video_seconds: dict[str, F/R/I -> elapsed]` for each recording
+(cleared right before that recording's `camera.download()` call).
+When a recording's `changed` is True, its own "downloaded" line gets
+a `[F 4.2s, R 4.0s]`-style suffix built from `video_seconds`,
+direction letters taken from `VodEntry.is_front`/`is_rear`/
+`is_interior` (already-existing properties). After the whole loop
+(inside the same `finally`-guarded block as the DotProgress cleanup,
+but after it), a single `sidecar files: N downloaded in X.Xs total`
+line prints if any sidecar file was actually downloaded.
+
+Both existing `_FakeDownloadCamera`/`_FakeMediaCamera` test doubles
+in `tests/blackvue/cli/test_bv_download.py` needed an `on_entry=None`
+parameter added to their `download()` signatures to keep matching
+the real interface - `_run()` now always passes `on_entry=` as a
+keyword argument. New tests: `test_download_calls_on_entry_for_every_
+transferred_file`/`test_download_skips_on_entry_for_files_not_
+actually_downloaded`/`test_download_on_entry_is_optional` in
+`test_blackvue_camera.py`, matching pairs in `test_media_camera.py`,
+and `test_run_reports_per_video_duration_and_sidecar_total` in
+`test_bv_download.py` (uses populated `VodEntry` lists, unlike this
+file's other `_run()` tests which use empty-`entries` `Recording`
+stand-ins - needed here since the timing suffix only appears when
+there's something in `recording.entries` to time).
+
+Verified via `py_compile` on every changed file, the existing
+`/tmp/fakepytest` harness for `test_blackvue_camera.py`/
+`test_media_camera.py` (all passing, including the new on_entry
+tests), and a standalone script exercising `_run()` end-to-end with
+monkeypatched `connect()`/`BlackVueCamera` (this repo's `test_bv_
+download.py::test_run_reports_per_video_duration_and_sidecar_total`
+itself can't run under the harness - it needs `monkeypatch`/`capsys`,
+which the shim doesn't support, same limitation as this file's other
+`_run()`-level tests already had) - confirmed both the
+`[F 0.0s, R 0.0s]` suffix and the `sidecar files: 2 downloaded in
+0.0s total` summary line print exactly as designed. Also had to add a
+local-only `tomllib` shim to `/tmp/fakepytest` (Python 3.10 in this
+sandbox predates the stdlib module `core/camera_config.py` imports
+unconditionally) purely to get `test_bv_download.py` importable for
+this verification pass - not part of the repo.
+
+Updated `docs/man/bv-download.md`'s main description with the new
+output format.
+
+Files changed: `src/blackvue/core/blackvue_camera.py`,
+`src/blackvue/core/media_camera.py`, `src/blackvue/cli/bv_download.py`,
+`tests/blackvue/core/test_blackvue_camera.py`,
+`tests/blackvue/core/test_media_camera.py`,
+`tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
