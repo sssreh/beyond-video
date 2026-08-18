@@ -15198,3 +15198,59 @@ harness" limitation.
 Files changed: `src/blackvue/web/app.py`,
 `src/blackvue/web/templates/job_new_bv_search.html`,
 `src/blackvue/web/templates/base.html`.
+
+## Voice search: parse "less than X meters from PLACE" into Place/Radius (2026-08-18)
+
+Immediate follow-up report after shipping the feature above: "Well the
+transcribed worked, but the text 'Vissa alla videos som är mindre än
+1000 meter ifrån vårby gård någon gång.' doesnt understand do do a
+radius search." The Whisper transcription itself was accurate - the
+gap was that the raw transcript landed straight in bv-search's Text
+field, which only does a literal/regex substring match against
+transcript/translation/scene-description content. Christer's sentence
+means "find recordings within 1000m of Vårby gård", i.e. exactly what
+bv-search's own Place/Radius fields already do
+(`blackvue.search.search_near()` via forward-geocoding) - it just
+never got routed there.
+
+New `src/blackvue/web/voice_query.py`, `parse_spoken_query()`:
+recognizes the "within/less than/under <distance> <unit> of/from
+<place>" shape in English and Swedish ("mindre än/inom/närmare än
+... ifrån/från ...") via a small regex list, converts km to meters,
+strips a short list of trailing filler words that grammatically
+follow the place name in speech (Christer's own sentence ends
+"...vårby gård någon gång" - "...Vårby gård at some point"), and
+returns a `ParsedVoiceQuery(text, place, radius_meters)`. Deliberately
+not a general NLU layer - no LLM call, no new dependency, just the one
+pattern this report demonstrated a real need for.
+
+Important correctness detail: when the pattern matches, `text` is
+always returned as `""`, never as "whatever came before the match".
+`cli/bv_search.py`'s `_run()` ANDs Text and Place/Radius together (a
+recording must satisfy both when both are given) - so leaving leading
+command words like "Vissa alla videos som är" in Text would silently
+zero out every result even though Place/Radius parsed correctly. An
+empty Text plus a correct Place/Radius is strictly safer than a
+populated-but-wrong Text field.
+
+`POST /jobs/bv-search/transcribe` (web/app.py) now calls
+`parse_spoken_query()` on the Whisper transcript and returns
+`{transcript, text, place, radius_meters}` instead of just `{text}`.
+`job_new_bv_search.html`'s voice-search JS fills `#place`/`#radius` in
+addition to `#text` (clearing `#near` too, since Near/Place are
+mutually exclusive in the form), and shows a status line quoting what
+was heard alongside the parsed interpretation - e.g. `Heard: "..." -
+filled in as Place "vårby gård" within 1000 m.` All three fields
+remain exactly as editable as before; nothing auto-submits.
+
+New `tests/blackvue/web/test_voice_query.py` (7 tests, no fixtures
+needed since `parse_spoken_query()` is pure) covers Christer's exact
+reported sentence, an English equivalent, km-to-meters conversion,
+Swedish decimal-comma numbers, trailing-filler stripping, the
+plain-text fallback, and the empty-transcript edge case - all 7 pass
+under the local harness shim (`/tmp/run_tests.py`).
+
+Files changed: `src/blackvue/web/voice_query.py` (new),
+`src/blackvue/web/app.py`,
+`src/blackvue/web/templates/job_new_bv_search.html`,
+`tests/blackvue/web/test_voice_query.py` (new).

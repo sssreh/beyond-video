@@ -84,6 +84,7 @@ from .trips import first_gpx_point
 from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
+from .voice_query import parse_spoken_query
 from ..core.camera_config import CameraConfigCache
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
@@ -1896,13 +1897,18 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         history machinery built for bv-generate/bv-export's multi-
         minute runs.
 
-        Returns the raw transcript as plain text - the frontend fills
-        it into the #text search field rather than submitting it
-        directly. A first-pass Whisper transcript of a spoken query
-        (place names, camera-specific terms, ...) is exactly the kind
-        of thing a user should get to correct before it becomes a
-        literal search string, especially with --regex/--case-
-        sensitive available right next to it.
+        Whisper transcribes the audio accurately, but the raw
+        transcript is not itself a bv-search query - a sentence like
+        "less than 1000 meters from Vårby gård" typed verbatim into
+        the Text field just searches for that literal sentence and
+        (correctly) finds nothing (real report from Christer: exactly
+        this happened). parse_spoken_query() (web/voice_query.py)
+        recognizes the common "within/less than <distance> <unit>
+        of/from <place>" shape (English and Swedish) and splits it
+        into bv-search's own Place/Radius fields instead, which is
+        what that phrasing actually means. Every field in the
+        response is still just an editable suggestion - the frontend
+        fills the form but never auto-submits.
         """
 
         suffix = Path(audio.filename or "").suffix or ".webm"
@@ -1919,7 +1925,16 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-        return JSONResponse({"text": result.text.strip()})
+        transcript = result.text.strip()
+        parsed = parse_spoken_query(transcript)
+        return JSONResponse(
+            {
+                "transcript": transcript,
+                "text": parsed.text,
+                "place": parsed.place,
+                "radius_meters": parsed.radius_meters,
+            }
+        )
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_detail(

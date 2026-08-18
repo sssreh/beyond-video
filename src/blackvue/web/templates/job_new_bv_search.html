@@ -160,15 +160,23 @@ with bv-config</a> first.</p>
   // MediaRecorder API, sends it to POST /jobs/bv-search/transcribe
   // (a quick synchronous Whisper transcription route, not a
   // JobRunner background Job - see that route's docstring in
-  // web/app.py), and fills the transcript into #text as *editable*
-  // text rather than auto-submitting the form. Christer's explicit
-  // ask: "i would like to be able to edit the transcript before
-  // search" - a first-pass Whisper transcript of a spoken query
-  // (place names, camera-specific terms, ...) is exactly the kind of
-  // thing that deserves a human check before it becomes a literal
-  // search string.
+  // web/app.py), and fills the result into the form as *editable*
+  // fields rather than auto-submitting. Christer's explicit ask: "i
+  // would like to be able to edit the transcript before search".
+  //
+  // The route does more than raw transcription: a sentence like
+  // "less than 1000 meters from Vårby gård" means a Place+Radius
+  // search, not a literal Text search (Christer's own follow-up
+  // report: dictating exactly that "doesnt understand do do a radius
+  // search" when it just landed in Text). So the response carries
+  // text/place/radius_meters separately (see voice_query.py's
+  // parse_spoken_query()) and this script routes each into its own
+  // existing field - Place/Radius stay just as editable as Text
+  // always was.
   var btn = document.getElementById('voice-search-btn');
   var textInput = document.getElementById('text');
+  var placeInput = document.getElementById('place');
+  var radiusInput = document.getElementById('radius');
   var status = document.getElementById('voice-status');
   if (!btn || !textInput) return;
 
@@ -250,14 +258,37 @@ with bv-config</a> first.</p>
           setStatus(result.data.error || 'Transcription failed.');
           return;
         }
-        var text = (result.data.text || '').trim();
-        if (!text) {
+        var data = result.data;
+        var transcript = (data.transcript || '').trim();
+        if (!transcript) {
           setStatus('No speech detected - try again.');
           return;
         }
-        textInput.value = text;
-        textInput.focus();
-        setStatus('Transcribed - edit the text above if needed, then click Start.');
+
+        textInput.value = data.text || '';
+        if (data.place && placeInput) {
+          placeInput.value = data.place;
+          // Place and Near are mutually exclusive in bv-search - clear
+          // Near so the parsed place actually takes effect if it was
+          // previously filled in.
+          var nearInput = document.getElementById('near');
+          if (nearInput) nearInput.value = '';
+        }
+        if (data.radius_meters && radiusInput) {
+          radiusInput.value = Math.round(data.radius_meters);
+        }
+
+        if (data.place) {
+          textInput.focus();
+          setStatus(
+            'Heard: "' + transcript + '" - filled in as Place "' + data.place +
+            '" within ' + Math.round(data.radius_meters) +
+            ' m. Check the fields below, then click Start.'
+          );
+        } else {
+          textInput.focus();
+          setStatus('Transcribed - edit the text above if needed, then click Start.');
+        }
       })
       .catch(function (err) {
         btn.disabled = false;
