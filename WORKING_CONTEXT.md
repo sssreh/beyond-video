@@ -15625,3 +15625,75 @@ Files changed: `src/blackvue/core/blackvue_camera.py`,
 `tests/blackvue/core/test_blackvue_camera.py`,
 `tests/blackvue/core/test_media_camera.py`,
 `tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
+
+## Talkative per-recording header+detail output for bv-download (2026-08-18)
+
+Christer said the single-line format felt thin ("it doesn't say
+much"), then specified exactly what he wanted instead: "I want
+separate download time for all sidecars together, then for each
+video file i want download time and speed" - a talkative,
+per-recording breakdown, not the single `<id>: downloaded (kind)
+[F 4.2s (23.8 MB/s), ...]` line with a separate whole-run sidecar
+total this used to be.
+
+Replaced that single line with an id header followed by indented
+detail lines, matching the header-then-indented-lines style
+`--dry-run --files` already established elsewhere in this same file
+(see its `say(f"{recording.id}:")` / `say(f"  {filename}: ...")`
+pair) - deliberately unprefixed with `bv-download:` for the header
+and detail lines, same precedent:
+
+```
+20260818_092350_N (video+metadata):
+  sidecars: 0.3s
+  F: 4.2s (23.8 MB/s)
+  R: 4.0s (25.0 MB/s)
+```
+
+Key reinterpretation: "all sidecars together" means every
+`.gps`/`.3gf`/`.thm` file *for that one recording* combined into a
+single duration figure - not the old run-wide total printed once at
+the very end. Renamed `sidecar_seconds_total`/`sidecar_files_total`
+to `sidecar_seconds`/`sidecar_files` and reset them per recording
+(alongside the pre-existing `video_stats.clear()`) instead of
+accumulating across the whole run; deleted the old end-of-run
+`if sidecar_files_total: say("sidecar files: N downloaded in X.Xs
+total")` block entirely - there's no longer a single combined figure
+to report, only per-recording ones. The `sidecars:` line only prints
+if that recording actually transferred at least one sidecar file;
+each video direction only gets its own line if it actually
+transferred - a recording needing no work at all (already fully
+present) still prints nothing here, same as before (its
+`--verbose`-gated "already up to date" line is untouched).
+
+Kept the `(kind)` - `video+metadata`/`metadata only` - annotation on
+the header line itself, since the man page had documented it as
+"basic confirmation of what's happening" worth keeping even though
+the rest of the line's shape changed completely.
+
+Rewrote the three tests directly asserting the old single-line format
+(`test_run_reports_per_video_duration_and_sidecar_total` ->
+`test_run_reports_per_recording_sidecar_total_and_per_video_duration`,
+`test_run_reports_average_speed_for_video_files_only`,
+`test_run_omits_speed_when_elapsed_is_zero`) to assert against
+`out.splitlines()` membership instead of substring matches on one
+combined string - clearer given each detail is now its own line -
+and added `test_run_omits_sidecars_line_when_recording_has_none` plus
+updated `test_run_prints_a_line_per_downloaded_recording_without_verbose`
+for the new header format.
+
+Verified via `py_compile`, the `/tmp/fakepytest` harness (97 passed,
+0 failed across `test_blackvue_camera.py`/`test_media_camera.py`/
+`test_bv_download.py`), and a standalone script exercising `_run()`
+end-to-end for all four scenarios the harness's `capsys`/`monkeypatch`
+limitation can't run directly - base sidecars+video breakdown, real
+speed figures, zero-elapsed speed omission, and a video-only
+recording never showing a `sidecars:` line - all matched exactly.
+
+Updated `docs/man/bv-download.md`'s output-format paragraph (dropped
+the old single-line example, added the header+indented-lines example
+and the per-recording-not-run-wide sidecar clarification) and the
+`--verbose` option row's stale `<id>: downloaded (...)` reference.
+
+Files changed: `src/blackvue/cli/bv_download.py`,
+`tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.

@@ -972,33 +972,37 @@ def _run(
     # Christer: "a total duration for all the sidecars and ... a
     # duration each video per recordingid" - meaning download *time*,
     # not video content length. Later: "an average download speed in
-    # parantheses for video files." sidecar_seconds_total/
-    # sidecar_files_total accumulate across the whole run (a single
-    # figure at the end, not broken out per recording - sidecars are
-    # small and numerous, a per-recording total isn't interesting);
-    # video_stats is rebuilt fresh for each recording and printed
-    # right on that recording's own "downloaded" line, keyed by
-    # camera direction letter (F/R/I) since that's what's actually
-    # meaningful to compare recording-to-recording, not the raw
-    # filename - each value is (elapsed_seconds, bytes_transferred) so
-    # the line can show both the duration and a derived MB/s figure.
-    # Speed is video-only, per Christer's request; sidecars only ever
-    # get the run-total duration, no per-file speed. Both are
+    # parantheses for video files." Later still: "I want separate
+    # download time for all sidecars together, then for each video
+    # file i want download time and speed" - a talkative, per-
+    # recording breakdown (id header line, then indented detail
+    # lines), not the single-line-with-a-run-total format this used
+    # to be. sidecar_seconds/sidecar_files are reset per recording
+    # (see the `.clear()`/reassignment right before camera.download()
+    # in the loop below) - "all sidecars together" means every
+    # .gps/.3gf/.thm file *for that one recording* combined into one
+    # figure, not a single total across the whole run. video_stats is
+    # likewise rebuilt fresh per recording, keyed by camera direction
+    # letter (F/R/I) since that's the actual file-level granularity
+    # for BlackVue (one video file per direction) - each value is
+    # (elapsed_seconds, bytes_transferred) so the line can show both
+    # the duration and a derived MB/s figure. Speed is video-only,
+    # per Christer's request; sidecars never get one. Both are
     # populated via camera.download()'s on_entry hook (see
     # core/blackvue_camera.py / core/media_camera.py), which only
     # fires for an entry that actually transferred bytes - an
-    # already-up-to-date recording contributes nothing to either total
+    # already-up-to-date recording contributes nothing to either
     # rather than polluting them with a near-zero/undefined-speed
     # measurement.
     #
-    sidecar_seconds_total = 0.0
-    sidecar_files_total = 0
+    sidecar_seconds = 0.0
+    sidecar_files = 0
     video_stats: dict[str, tuple[float, int]] = {}
 
     def _on_entry(
         entry: VodEntry, elapsed_seconds: float, bytes_transferred: int
     ) -> None:
-        nonlocal sidecar_seconds_total, sidecar_files_total
+        nonlocal sidecar_seconds, sidecar_files
 
         if entry.is_video:
             if entry.is_front:
@@ -1012,8 +1016,8 @@ def _run(
 
             video_stats[direction] = (elapsed_seconds, bytes_transferred)
         else:
-            sidecar_seconds_total += elapsed_seconds
-            sidecar_files_total += 1
+            sidecar_seconds += elapsed_seconds
+            sidecar_files += 1
 
     try:
         for recording, want_video in selection:
@@ -1077,6 +1081,8 @@ def _run(
 
             select = None if want_video else (lambda entry: not entry.is_video)
             video_stats.clear()
+            sidecar_seconds = 0.0
+            sidecar_files = 0
 
             try:
                 changed = camera.download(
@@ -1096,41 +1102,38 @@ def _run(
 
             if changed:
                 kind = "video+metadata" if want_video else "metadata only"
-                timing = ""
 
-                if video_stats:
-                    formatted = []
+                # Talkative, per-recording breakdown (Christer: "I
+                # want separate download time for all sidecars
+                # together, then for each video file i want download
+                # time and speed") - an id header line (unprefixed,
+                # matching --dry-run --files' own header-then-indented
+                # style above) followed by indented detail lines:
+                # sidecars first (one combined figure for every
+                # .gps/.3gf/.thm this recording transferred), then one
+                # line per video direction with duration and - unless
+                # elapsed rounds to 0.0s, where speed is undefined - a
+                # derived MB/s figure.
+                say(f"{recording.id} ({kind}):")
 
-                    for direction, (seconds, transferred) in sorted(
-                        video_stats.items()
-                    ):
-                        piece = f"{direction} {seconds:.1f}s"
+                if sidecar_files:
+                    say(f"  sidecars: {sidecar_seconds:.1f}s")
 
-                        # seconds can be 0.0 against a very fast local
-                        # source (e.g. --media from an SD card, or a
-                        # test double) - speed is undefined there, so
-                        # the parenthetical is just omitted rather
-                        # than showing a bogus infinite/huge figure.
-                        if seconds > 0:
-                            mb_per_s = transferred / (1024 * 1024) / seconds
-                            piece += f" ({mb_per_s:.1f} MB/s)"
+                for direction, (seconds, transferred) in sorted(
+                    video_stats.items()
+                ):
+                    line = f"  {direction}: {seconds:.1f}s"
 
-                        formatted.append(piece)
+                    if seconds > 0:
+                        mb_per_s = transferred / (1024 * 1024) / seconds
+                        line += f" ({mb_per_s:.1f} MB/s)"
 
-                    timing = f" [{', '.join(formatted)}]"
-
-                say(f"bv-download: {recording.id}: downloaded ({kind}){timing}")
+                    say(line)
             elif args.verbose:
                 say(f"bv-download: {recording.id}: already up to date")
     finally:
         if progress is not None:
             progress.finish()
-
-    if sidecar_files_total:
-        say(
-            f"bv-download: sidecar files: {sidecar_files_total} downloaded "
-            f"in {sidecar_seconds_total:.1f}s total"
-        )
 
     if failed_ids:
         warn(

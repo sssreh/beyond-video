@@ -792,15 +792,20 @@ def test_run_returns_ok_when_every_recording_succeeds(
     assert "failed and were skipped" not in capsys.readouterr().err
 
 
-def test_run_reports_per_video_duration_and_sidecar_total(
+def test_run_reports_per_recording_sidecar_total_and_per_video_duration(
     tmp_path, monkeypatch, capsys
 ):
     # Christer: "a total duration for all the sidecars and ... a
-    # duration each video per recordingid" - see _run()'s own
-    # _on_entry closure. Real elapsed times are ~0.0s here (the fake
-    # camera below fires on_entry synchronously with no actual I/O),
-    # which is exactly what makes the format string's rendering
-    # deterministic enough to assert on.
+    # duration each video per recordingid" - later refined to "I want
+    # separate download time for all sidecars together, then for each
+    # video file i want download time and speed" - a talkative,
+    # per-recording breakdown: an id header line, then an indented
+    # sidecars line (every .gps/.3gf/.thm *for this one recording*
+    # combined into one figure - not a single total across the whole
+    # run), then one indented line per video direction. Real elapsed
+    # times are ~0.0s here (the fake camera fires on_entry
+    # synchronously with no actual I/O), which is exactly what makes
+    # the format string's rendering deterministic enough to assert on.
     populated_recording = Recording(
         id="20260803_161020_N",
         entries=[
@@ -827,8 +832,14 @@ def test_run_reports_per_video_duration_and_sidecar_total(
     assert exit_code == EXIT_OK
 
     out = capsys.readouterr().out
-    assert "20260803_161020_N: downloaded (video+metadata) [F 0.0s, R 0.0s]" in out
-    assert "sidecar files: 2 downloaded in 0.0s total" in out
+    lines = out.splitlines()
+    assert "20260803_161020_N (video+metadata):" in lines
+    assert "  sidecars: 0.0s" in lines
+    assert "  F: 0.0s" in lines
+    assert "  R: 0.0s" in lines
+    # The old single-line-with-a-run-total format is gone entirely.
+    assert "downloaded (video+metadata)" not in out
+    assert "sidecar files:" not in out
 
 
 def test_run_reports_average_speed_for_video_files_only(
@@ -838,8 +849,8 @@ def test_run_reports_average_speed_for_video_files_only(
     # speed in paranteses for video files." Fixed elapsed=2.0s and
     # bytes_per_entry=2*1024*1024 (2 MiB) per entry makes the expected
     # figure an exact, non-flaky 1.0 MB/s for every entry - video
-    # *and* sidecar - but the sidecar total line has no per-file speed
-    # at all, only video's per-direction line does.
+    # *and* sidecar - but the sidecars line has no per-file speed at
+    # all, only each video direction's own line does.
     populated_recording = Recording(
         id="20260803_161020_N",
         entries=[
@@ -869,12 +880,12 @@ def test_run_reports_average_speed_for_video_files_only(
     assert exit_code == EXIT_OK
 
     out = capsys.readouterr().out
-    assert (
-        "20260803_161020_N: downloaded (video+metadata) "
-        "[F 2.0s (1.0 MB/s), R 2.0s (1.0 MB/s)]" in out
-    )
-    # The sidecar total line stays duration-only - no speed there.
-    assert "sidecar files: 1 downloaded in 2.0s total" in out
+    lines = out.splitlines()
+    assert "20260803_161020_N (video+metadata):" in lines
+    # The sidecars line stays duration-only - no speed there.
+    assert "  sidecars: 2.0s" in lines
+    assert "  F: 2.0s (1.0 MB/s)" in lines
+    assert "  R: 2.0s (1.0 MB/s)" in lines
 
 
 def test_run_omits_speed_when_elapsed_is_zero(tmp_path, monkeypatch, capsys):
@@ -905,8 +916,38 @@ def test_run_omits_speed_when_elapsed_is_zero(tmp_path, monkeypatch, capsys):
     assert exit_code == EXIT_OK
 
     out = capsys.readouterr().out
-    assert "20260803_161020_N: downloaded (video+metadata) [F 0.0s]" in out
+    assert "  F: 0.0s" in out.splitlines()
     assert "MB/s" not in out
+
+
+def test_run_omits_sidecars_line_when_recording_has_none(
+    tmp_path, monkeypatch, capsys
+):
+    # A recording whose only transferred file is video shouldn't get
+    # a "  sidecars: 0.0s" line at all - that would misleadingly
+    # suggest a sidecar was actually downloaded.
+    populated_recording = Recording(
+        id="20260803_161020_N",
+        entries=[vod_entry("20260803_161020_NF.mp4")],
+    )
+    camera = _FakeDownloadCamera([populated_recording])
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path))
+
+    assert exit_code == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "sidecars:" not in out
 
 
 def test_summarize_found_kinds_all_three():
@@ -1011,8 +1052,8 @@ def test_run_prints_a_line_per_downloaded_recording_without_verbose(
 
     assert exit_code == EXIT_OK
     out = capsys.readouterr().out
-    assert "20260803_161020_N: downloaded (video+metadata)" in out
-    assert "20260803_161120_N: downloaded (video+metadata)" in out
+    assert "20260803_161020_N (video+metadata):" in out
+    assert "20260803_161120_N (video+metadata):" in out
 
 
 # ---------------------------------------------------------------------------

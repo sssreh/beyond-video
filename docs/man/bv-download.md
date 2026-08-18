@@ -28,9 +28,18 @@ By default it downloads video for **event** and **manual** recordings, plus the 
 
 If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the default mode becomes `all` - requesting a specific time range already signals you want everything in it, not just the usual events-plus-context subset.
 
-Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`), and one line per recording as it's actually downloaded (`<id>: downloaded (video+metadata)` or `<id>: downloaded (metadata only)`) - neither gated behind `--verbose`, since both are basic confirmation of what's happening rather than extra diagnostic detail. `--verbose` adds detail on top of this (sidecar-probe results, an "already up to date" line for a recording that needed no download, etc.), it doesn't turn the per-file confirmation on or off.
+Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`), and a talkative, per-recording breakdown as each one is actually downloaded - not gated behind `--verbose`, since it's basic confirmation of what's happening rather than extra diagnostic detail. `--verbose` adds detail on top of this (sidecar-probe results, an "already up to date" line for a recording that needed no download, etc.), it doesn't turn the per-recording confirmation on or off.
 
-When a recording's own video file(s) actually transferred, the "downloaded" line is suffixed with how long each one took, by camera direction letter, plus an average transfer speed in parentheses - e.g. `20260818_092350_N: downloaded (video+metadata) [F 4.2s (23.8 MB/s), R 4.0s (25.0 MB/s)]`. The speed figure is video-only - sidecars never get one, even in the run-total line below - and is omitted for a video whose own elapsed time rounds to 0.0s, since a speed derived from a near-zero duration would be meaningless. Once the whole run finishes, a single summary line reports the total across every sidecar (`.gps`/`.3gf`/`.thm`) file downloaded in the run - e.g. `sidecar files: 6 downloaded in 1.8s total` - printed only if at least one sidecar file was actually transferred. A recording (or sidecar) that needed no work because it was already fully present doesn't contribute a measurement to either figure.
+For a recording that actually transferred something, the id prints as its own header line, followed by indented detail lines - sidecars first (one combined duration for every `.gps`/`.3gf`/`.thm` file *this recording* transferred, not a running total across the whole batch), then one line per video direction with its own duration and - unless that video's elapsed time rounds to 0.0s, where a speed figure would be meaningless - an average transfer speed in parentheses:
+
+```
+20260818_092350_N (video+metadata):
+  sidecars: 0.3s
+  F: 4.2s (23.8 MB/s)
+  R: 4.0s (25.0 MB/s)
+```
+
+The `sidecars:` line is only printed if at least one sidecar file actually transferred for that recording, and likewise a video direction only gets a line if its file actually transferred - a recording that needed no work at all because everything was already fully present prints nothing here (see `--verbose`'s "already up to date" line above for that case instead).
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
@@ -64,7 +73,7 @@ Each `ID`-based run also reads the camera's current `config.ini` (over the netwo
 | `--dry-run` | List what would be downloaded without downloading it. |
 | `--files` | With `--dry-run`, list every individual file (video, thumbnail, GPS, gsensor, etc.) for each matching recording, and whether it would be downloaded, instead of one summary line per recording id. Requires `--dry-run`. |
 | `--yes` | Skip the interactive range confirmation. |
-| `-v`, `--verbose` | Extra diagnostic detail: sidecar-probe results, RecordTime-backfill notes, and "already up to date" lines for recordings that needed no download. Per-recording download confirmation itself (`<id>: downloaded (...)`) always prints, with or without this flag - see below. |
+| `-v`, `--verbose` | Extra diagnostic detail: sidecar-probe results, RecordTime-backfill notes, and "already up to date" lines for recordings that needed no download. Per-recording download confirmation itself (the `<id> (...):` header and its indented detail lines) always prints, with or without this flag - see below. |
 | `--trace` | Print a `.` for every 10MB downloaded - a simple progress indicator across the whole run, independent of `-v`. |
 | `-h`, `--help` | Show help and exit. |
 
