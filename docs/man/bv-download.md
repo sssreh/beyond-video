@@ -54,7 +54,7 @@ Each `ID`-based run also reads the camera's current `config.ini` (over the netwo
 | `--media DIR` | Import recordings from a mounted SD card, USB-connected camera, or other removable media at `DIR` instead of connecting over the network. Combine with `ID` to import into that camera's configured archive, or with `--target` for a one-off import with no config. Can't be combined with `--host`. `--sdcard` still works as a deprecated hidden alias for this flag. |
 | `--target DIR` | Directory to download into. Requires `--host` or a bare `--media` (no `ID`). |
 | `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
-| `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
+| `--timeout SECONDS` | Per-endpoint connection timeout, and the timeout for every other camera request in the run (sidecar probes, downloads). Default: 30. The bv-web job form uses its own separate 5s default. |
 | `--mode {A,E,M,N,P,all}[,...]` | Recording kinds to download video for (comma-separated, case-insensitive), or `all`. `E`=event, `M`=manual, `N`=normal, `P`=parking, `A`=unknown meaning (observed on real hardware but not yet identified - see `WORKING_CONTEXT.md`). Default: event/manual recordings plus the recording before each. |
 | `--from TIMESTAMP` | Only consider recordings from this timestamp onward. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |

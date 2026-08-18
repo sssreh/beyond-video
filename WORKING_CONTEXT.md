@@ -15419,3 +15419,44 @@ needing a browser). No Python changes.
 
 Files changed: `src/blackvue/web/templates/archive_recording_detail.html`,
 `src/blackvue/web/templates/base.html`.
+
+## Bump bv-download's --timeout default to 30s for terminal use (2026-08-18)
+
+Christer, from a real run: `bv-download kirby --timestamp 20260818_0923`
+printed `couldn't check for sidecar files (timed out) - continuing
+without it`, even though the recording downloaded fine right after.
+Root cause: `BlackVueClient`'s timeout (`core/blackvue_client.py`) is
+a single value that covers *every* request made through it - the
+initial endpoint connect (`core/connection.py:connect()`), then each
+sidecar probe (`probe_missing_sidecars()` in
+`core/blackvue_camera.py`, which can fire up to 5 sequential GETs -
+`.gps`/`.3gf`/`.thm` plus per-direction thumbnail probes - before the
+real download even starts), then the download itself. bv-download's
+old `--timeout` default of 5s is comfortable on local WiFi but tight
+over the "Internet" WAN-relay endpoint his NAS log showed the camera
+being reached through that same run - one slow-but-working probe
+among the several sequential ones was enough to trip it.
+
+Bumped `--timeout`'s argparse default in `cli/bv_download.py` from 5
+to 30. Left `core/connection.py`'s own `connect(timeout: int = 5)`
+default alone since every real call site already passes an explicit
+value; only bv-download's CLI parser default was in play.
+
+Deliberately did *not* touch bv-web's job-form default: `web/app.py`'s
+`start_bv_download` route (`Form(5, ge=1)`) and
+`job_new_bv_download.html`'s `<input ... value="5">` are a separate,
+hardcoded 5s that bv-web's route always passes explicitly as
+`--timeout` regardless of the CLI parser's own default - so this
+change only affects a terminal user who omits `--timeout` outright,
+exactly the case Christer hit. A stuck background job ties up a job
+slot in a way a person watching a terminal (free to Ctrl-C) isn't, so
+keeping the web path's shorter default made sense to leave as-is.
+
+Verified via `py_compile`/`ast.parse` on `bv_download.py` (no pytest/
+network available in this sandbox - see WORKING_CONTEXT.md's other
+entries for why); no existing test asserts the old default value, so
+none needed updating. Updated `docs/man/bv-download.md`'s `--timeout`
+table row for the new default and the web-form split.
+
+Files changed: `src/blackvue/cli/bv_download.py`,
+`docs/man/bv-download.md`.

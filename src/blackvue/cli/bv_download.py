@@ -289,10 +289,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory camera configs live in (default: %(default)s).",
     )
 
+    # 30s, not 5s: this single value covers every request made with the
+    # resulting client - endpoint connect, size/probe/sidecar checks,
+    # and the download itself (see core/connection.py's connect()) -
+    # and a real request over the "Internet" WAN-relay endpoint can
+    # comfortably take longer than 5s to answer, especially the several
+    # sequential sidecar-probe GETs that happen before a single byte of
+    # video is even requested. Christer hit exactly this from a
+    # terminal: a slow-but-working Internet-relay probe tripped the old
+    # 5s default and printed "couldn't check for sidecar files (timed
+    # out)" even though the recording downloaded fine right after.
+    # bv-web's own job form (job_new_bv_download.html /
+    # web/app.py's start_bv_download route) hardcodes its own,
+    # separate 5s default rather than reading this one - deliberately
+    # left alone, since a stuck background job ties up a job slot in a
+    # way a person watching a terminal and free to Ctrl-C isn't
+    # affected by.
     parser.add_argument(
         "--timeout",
         type=int,
-        default=5,
+        default=30,
         help="Per-endpoint connection timeout in seconds (default: %(default)s).",
     )
 
