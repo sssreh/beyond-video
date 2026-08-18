@@ -799,13 +799,17 @@ def test_run_reports_per_recording_sidecar_total_and_per_video_duration(
     # duration each video per recordingid" - later refined to "I want
     # separate download time for all sidecars together, then for each
     # video file i want download time and speed" - a talkative,
-    # per-recording breakdown: an id header line, then an indented
-    # sidecars line (every .gps/.3gf/.thm *for this one recording*
-    # combined into one figure - not a single total across the whole
-    # run), then one indented line per video direction. Real elapsed
-    # times are ~0.0s here (the fake camera fires on_entry
-    # synchronously with no actual I/O), which is exactly what makes
-    # the format string's rendering deterministic enough to assert on.
+    # per-recording breakdown. Finally, a worked example ("when every
+    # task is done, the [ids] where already downloaded") fixed the
+    # exact shape: a bare id line (no `(kind)` annotation, no trailing
+    # colon), then an indented "Metadata" line (every .gps/.3gf/.thm
+    # *for this one recording* combined into one figure - not a single
+    # total across the whole run), then one indented line per video
+    # direction spelled out in full ("Front"/"Rear"/"Interior", not
+    # "F"/"R"/"I"). Real elapsed times are ~0.0s here (the fake camera
+    # fires on_entry synchronously with no actual I/O), which is
+    # exactly what makes the format string's rendering deterministic
+    # enough to assert on.
     populated_recording = Recording(
         id="20260803_161020_N",
         entries=[
@@ -833,13 +837,18 @@ def test_run_reports_per_recording_sidecar_total_and_per_video_duration(
 
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert "20260803_161020_N (video+metadata):" in lines
-    assert "  sidecars: 0.0s" in lines
-    assert "  F: 0.0s" in lines
-    assert "  R: 0.0s" in lines
-    # The old single-line-with-a-run-total format is gone entirely.
+    assert "20260803_161020_N" in lines
+    assert "  Metadata: 0.0s" in lines
+    assert "  Front: 0.0s" in lines
+    assert "  Rear: 0.0s" in lines
+    # The old formats - run-wide sidecar total, "(kind):" header, bare
+    # F/R letters - are gone entirely.
     assert "downloaded (video+metadata)" not in out
     assert "sidecar files:" not in out
+    assert "20260803_161020_N (video+metadata):" not in out
+    assert "  sidecars:" not in out
+    assert "  F:" not in out
+    assert "  R:" not in out
 
 
 def test_run_reports_average_speed_for_video_files_only(
@@ -881,11 +890,11 @@ def test_run_reports_average_speed_for_video_files_only(
 
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert "20260803_161020_N (video+metadata):" in lines
-    # The sidecars line stays duration-only - no speed there.
-    assert "  sidecars: 2.0s" in lines
-    assert "  F: 2.0s (1.0 MB/s)" in lines
-    assert "  R: 2.0s (1.0 MB/s)" in lines
+    assert "20260803_161020_N" in lines
+    # The Metadata line stays duration-only - no speed there.
+    assert "  Metadata: 2.0s" in lines
+    assert "  Front: 2.0s (1.0 MB/s)" in lines
+    assert "  Rear: 2.0s (1.0 MB/s)" in lines
 
 
 def test_run_omits_speed_when_elapsed_is_zero(tmp_path, monkeypatch, capsys):
@@ -916,16 +925,16 @@ def test_run_omits_speed_when_elapsed_is_zero(tmp_path, monkeypatch, capsys):
     assert exit_code == EXIT_OK
 
     out = capsys.readouterr().out
-    assert "  F: 0.0s" in out.splitlines()
+    assert "  Front: 0.0s" in out.splitlines()
     assert "MB/s" not in out
 
 
-def test_run_omits_sidecars_line_when_recording_has_none(
+def test_run_omits_metadata_line_when_recording_has_none(
     tmp_path, monkeypatch, capsys
 ):
     # A recording whose only transferred file is video shouldn't get
-    # a "  sidecars: 0.0s" line at all - that would misleadingly
-    # suggest a sidecar was actually downloaded.
+    # a "  Metadata: 0.0s" line at all - that would misleadingly
+    # suggest metadata was actually downloaded.
     populated_recording = Recording(
         id="20260803_161020_N",
         entries=[vod_entry("20260803_161020_NF.mp4")],
@@ -947,7 +956,44 @@ def test_run_omits_sidecars_line_when_recording_has_none(
     assert exit_code == EXIT_OK
 
     out = capsys.readouterr().out
-    assert "sidecars:" not in out
+    assert "Metadata:" not in out
+
+
+def test_run_prints_bare_id_with_no_detail_lines_when_nothing_transferred(
+    tmp_path, monkeypatch, capsys
+):
+    # Christer's worked example: "when every task is done, the [ids]
+    # where already downloaded" - listing every id in the range, with
+    # only some carrying indented detail lines underneath. A recording
+    # that transfers nothing (already fully present, or - as here - no
+    # entries at all) still gets its bare id line, with or without
+    # --verbose; there's no separate "already up to date" message
+    # anymore, and this is no longer gated behind --verbose the way
+    # the old per-recording confirmation used to be.
+    untouched = recording("20260803_161020_N")
+    camera = _FakeDownloadCamera([untouched])
+
+    monkeypatch.setattr(
+        bv_download,
+        "connect",
+        lambda endpoints, timeout: (
+            Endpoint(name="host", address="10.99.88.1"),
+            _FakeDownloadClient(),
+        ),
+    )
+    monkeypatch.setattr(bv_download, "BlackVueCamera", lambda client: camera)
+
+    exit_code = _run(_host_args(tmp_path, verbose=False))
+
+    assert exit_code == EXIT_OK
+
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert "20260803_161020_N" in lines
+    assert "already up to date" not in out
+    # No indented detail line follows the bare id - nothing transferred.
+    idx = lines.index("20260803_161020_N")
+    assert idx + 1 == len(lines) or not lines[idx + 1].startswith("  ")
 
 
 def test_summarize_found_kinds_all_three():
@@ -1052,8 +1098,8 @@ def test_run_prints_a_line_per_downloaded_recording_without_verbose(
 
     assert exit_code == EXIT_OK
     out = capsys.readouterr().out
-    assert "20260803_161020_N (video+metadata):" in out
-    assert "20260803_161120_N (video+metadata):" in out
+    assert "20260803_161020_N" in out
+    assert "20260803_161120_N" in out
 
 
 # ---------------------------------------------------------------------------

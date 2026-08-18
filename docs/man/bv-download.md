@@ -28,18 +28,18 @@ By default it downloads video for **event** and **manual** recordings, plus the 
 
 If `--from`/`--until`/`--timestamp` is given without an explicit `--mode`, the default mode becomes `all` - requesting a specific time range already signals you want everything in it, not just the usual events-plus-context subset.
 
-Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`), and a talkative, per-recording breakdown as each one is actually downloaded - not gated behind `--verbose`, since it's basic confirmation of what's happening rather than extra diagnostic detail. `--verbose` adds detail on top of this (sidecar-probe results, an "already up to date" line for a recording that needed no download, etc.), it doesn't turn the per-recording confirmation on or off.
+Every run prints one line up front stating the camera and the folder it's downloading into (or would, under `--dry-run`), then a bare id line for every recording in the range as it's processed - unconditionally, not gated behind `--verbose`, whether or not anything actually needed downloading. `--verbose` adds diagnostic detail on top of this (sidecar-probe results, RecordTime-backfill notes, etc.), it doesn't turn the per-recording id line on or off, and there's no separate message for a recording that needed no work - see below.
 
-For a recording that actually transferred something, the id prints as its own header line, followed by indented detail lines - sidecars first (one combined duration for every `.gps`/`.3gf`/`.thm` file *this recording* transferred, not a running total across the whole batch), then one line per video direction with its own duration and - unless that video's elapsed time rounds to 0.0s, where a speed figure would be meaningless - an average transfer speed in parentheses:
+For a recording that actually transferred something, indented detail lines follow its id: `Metadata` first (one combined duration for every `.gps`/`.3gf`/`.thm` file *this recording* transferred, not a running total across the whole batch), then one line per video direction (`Front`/`Rear`/`Interior`) with its own duration and - unless that video's elapsed time rounds to 0.0s, where a speed figure would be meaningless - an average transfer speed in parentheses:
 
 ```
-20260818_092350_N (video+metadata):
-  sidecars: 0.3s
-  F: 4.2s (23.8 MB/s)
-  R: 4.0s (25.0 MB/s)
+20260818_092350_N
+  Metadata: 0.3s
+  Front: 4.2s (23.8 MB/s)
+  Rear: 4.0s (25.0 MB/s)
 ```
 
-The `sidecars:` line is only printed if at least one sidecar file actually transferred for that recording, and likewise a video direction only gets a line if its file actually transferred - a recording that needed no work at all because everything was already fully present prints nothing here (see `--verbose`'s "already up to date" line above for that case instead).
+The `Metadata:` line is only printed if at least one sidecar file actually transferred for that recording, and likewise a video direction only gets a line if its file actually transferred - a recording that needed no work at all because everything was already fully present just prints its bare id, with nothing indented underneath.
 
 Endpoints configured in `bv-config` are tried in order; the first one that responds within `--timeout` is used for the whole run.
 
@@ -73,7 +73,7 @@ Each `ID`-based run also reads the camera's current `config.ini` (over the netwo
 | `--dry-run` | List what would be downloaded without downloading it. |
 | `--files` | With `--dry-run`, list every individual file (video, thumbnail, GPS, gsensor, etc.) for each matching recording, and whether it would be downloaded, instead of one summary line per recording id. Requires `--dry-run`. |
 | `--yes` | Skip the interactive range confirmation. |
-| `-v`, `--verbose` | Extra diagnostic detail: sidecar-probe results, RecordTime-backfill notes, and "already up to date" lines for recordings that needed no download. Per-recording download confirmation itself (the `<id> (...):` header and its indented detail lines) always prints, with or without this flag - see below. |
+| `-v`, `--verbose` | Extra diagnostic detail: sidecar-probe results, RecordTime-backfill notes, etc. Per-recording confirmation itself (the bare `<id>` line, plus its indented detail lines when something transferred) always prints, with or without this flag - see below. |
 | `--trace` | Print a `.` for every 10MB downloaded - a simple progress indicator across the whole run, independent of `-v`. |
 | `-h`, `--help` | Show help and exit. |
 

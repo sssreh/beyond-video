@@ -58,6 +58,13 @@ ALL_KINDS = frozenset({"N", "E", "M", "P", "A"})
 
 TRACE_INTERVAL_BYTES = 10 * 1024 * 1024
 
+# Camera direction letter -> full word, for the per-recording download
+# report below (Christer's worked example spelled these out in full:
+# "Metadata"/"Front"/"Rear" rather than "sidecars"/"F"/"R"). An
+# unrecognized letter (see _on_entry's own fallback for a direction
+# BlackVue hasn't shipped yet) just prints as-is via .get()'s default.
+_DIRECTION_LABELS = {"F": "Front", "R": "Rear", "I": "Interior"}
+
 
 class DotProgress:
     """A --trace progress indicator: print '.' to stdout every
@@ -976,24 +983,34 @@ def _run(
     # download time for all sidecars together, then for each video
     # file i want download time and speed" - a talkative, per-
     # recording breakdown (id header line, then indented detail
-    # lines), not the single-line-with-a-run-total format this used
-    # to be. sidecar_seconds/sidecar_files are reset per recording
-    # (see the `.clear()`/reassignment right before camera.download()
-    # in the loop below) - "all sidecars together" means every
-    # .gps/.3gf/.thm file *for that one recording* combined into one
-    # figure, not a single total across the whole run. video_stats is
-    # likewise rebuilt fresh per recording, keyed by camera direction
-    # letter (F/R/I) since that's the actual file-level granularity
-    # for BlackVue (one video file per direction) - each value is
-    # (elapsed_seconds, bytes_transferred) so the line can show both
-    # the duration and a derived MB/s figure. Speed is video-only,
-    # per Christer's request; sidecars never get one. Both are
-    # populated via camera.download()'s on_entry hook (see
+    # lines). And finally: "when every task is done, the [ids] where
+    # already downloaded" plus a worked example - every recording in
+    # the range gets its own id line printed unconditionally (not
+    # gated behind --verbose, and no `(kind)` annotation cluttering
+    # it), and only a recording that actually transferred something
+    # gets indented detail lines under its id; one already fully
+    # present just shows its bare id with nothing under it. Christer's
+    # example also spelled out "Metadata"/"Front"/"Rear" in full
+    # rather than "sidecars"/"F"/"R" - see _DIRECTION_LABELS below.
+    # sidecar_seconds/sidecar_files are reset per recording (see the
+    # `.clear()`/reassignment right before camera.download() in the
+    # loop below) - "all sidecars together" means every .gps/.3gf/.thm
+    # file *for that one recording* combined into one figure, not a
+    # single total across the whole run. video_stats is likewise
+    # rebuilt fresh per recording, keyed by camera direction letter
+    # (F/R/I, mapped to a full word only at print time - see
+    # _DIRECTION_LABELS) since that's the actual file-level
+    # granularity for BlackVue (one video file per direction) - each
+    # value is (elapsed_seconds, bytes_transferred) so the line can
+    # show both the duration and a derived MB/s figure. Speed is
+    # video-only, per Christer's request; sidecars never get one.
+    # Both are populated via camera.download()'s on_entry hook (see
     # core/blackvue_camera.py / core/media_camera.py), which only
     # fires for an entry that actually transferred bytes - an
     # already-up-to-date recording contributes nothing to either
     # rather than polluting them with a near-zero/undefined-speed
-    # measurement.
+    # measurement (and, per the above, ends up with no detail lines
+    # under its id at all).
     #
     sidecar_seconds = 0.0
     sidecar_files = 0
@@ -1085,7 +1102,7 @@ def _run(
             sidecar_files = 0
 
             try:
-                changed = camera.download(
+                camera.download(
                     recording,
                     destination,
                     select=select,
@@ -1100,37 +1117,36 @@ def _run(
                 )
                 continue
 
-            if changed:
-                kind = "video+metadata" if want_video else "metadata only"
+            # Christer's worked example ("when every task is done, the
+            # [ids] where already downloaded", with every id in the
+            # range listed and only some carrying indented detail
+            # lines underneath) prints every recording's bare id
+            # unconditionally - no `(kind)` annotation, no trailing
+            # colon - whether it needed a download or was already
+            # fully present. Detail lines (Metadata/Front/Rear/
+            # Interior) only appear underneath a recording that
+            # actually transferred something, via the same
+            # sidecar_files/video_stats populated by _on_entry above.
+            # This replaces the old changed/--verbose gating: there's
+            # no separate "already up to date" message anymore, since
+            # a bare id with nothing indented under it already says
+            # that.
+            say(recording.id)
 
-                # Talkative, per-recording breakdown (Christer: "I
-                # want separate download time for all sidecars
-                # together, then for each video file i want download
-                # time and speed") - an id header line (unprefixed,
-                # matching --dry-run --files' own header-then-indented
-                # style above) followed by indented detail lines:
-                # sidecars first (one combined figure for every
-                # .gps/.3gf/.thm this recording transferred), then one
-                # line per video direction with duration and - unless
-                # elapsed rounds to 0.0s, where speed is undefined - a
-                # derived MB/s figure.
-                say(f"{recording.id} ({kind}):")
+            if sidecar_files:
+                say(f"  Metadata: {sidecar_seconds:.1f}s")
 
-                if sidecar_files:
-                    say(f"  sidecars: {sidecar_seconds:.1f}s")
+            for direction, (seconds, transferred) in sorted(
+                video_stats.items()
+            ):
+                label = _DIRECTION_LABELS.get(direction, direction)
+                line = f"  {label}: {seconds:.1f}s"
 
-                for direction, (seconds, transferred) in sorted(
-                    video_stats.items()
-                ):
-                    line = f"  {direction}: {seconds:.1f}s"
+                if seconds > 0:
+                    mb_per_s = transferred / (1024 * 1024) / seconds
+                    line += f" ({mb_per_s:.1f} MB/s)"
 
-                    if seconds > 0:
-                        mb_per_s = transferred / (1024 * 1024) / seconds
-                        line += f" ({mb_per_s:.1f} MB/s)"
-
-                    say(line)
-            elif args.verbose:
-                say(f"bv-download: {recording.id}: already up to date")
+                say(line)
     finally:
         if progress is not None:
             progress.finish()

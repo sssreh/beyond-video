@@ -15703,3 +15703,34 @@ Files changed: `src/blackvue/cli/bv_download.py`,
 Christer, after trying the current "Read aloud" feature (task #1018 - `archive_recording_detail.html`'s browser-native `speechSynthesis`/Web Speech API voice picker, no server round-trip): "The voices of Susan and hazel where better, but i woild probably le elevenlabs do the work if i implement it in full" - i.e. those two are OS/browser-supplied voices in the current picker, and he liked them, but if this gets built out properly he'd rather go with the ElevenLabs API than keep relying on whatever voices happen to be installed on a given machine/browser (which is also why the current picker's voice list varies from PC to PC in the first place - no consistency across visitors/devices).
 
 **Not implemented.** Would mean a real architecture change from the current design: a server-side route that calls the ElevenLabs API (network dependency, API key, per-character cost) and streams/returns audio, replacing (or offered alongside) the client-only `speechSynthesis` call. Noted here so the idea isn't lost - no action taken for now.
+
+## bv-download output: always-print-bare-id, drop (kind)/colon, spell out Metadata/Front/Rear/Interior (2026-08-18)
+
+A further, more concrete revision of the header+indented-lines format from the entry above. Christer gave a worked example straight from a real run:
+
+```
+I want the output to be and printed as when every task  is done, the  20260818_09 files where  already downloaded.
+20260818_093253_N
+20260818_093414_P
+20260818_110459_P
+20260818_133412_N
+  Metadata: 3s
+  Front: 402.1s (0.7 MB/s)
+  Rear: 336.1s (0.7 MB/s)
+```
+
+Three changes from the previous shape:
+
+Every recording in the range now prints its bare id line unconditionally, whether or not anything actually needed downloading - not just the ones that transferred something, and not gated behind `--verbose` either way. This replaces the old `if changed: ... elif args.verbose: say(f"{id}: already up to date")` branching entirely: `changed` (the return value of `camera.download()`) is no longer captured or checked at all, since it was only ever read in this one spot (confirmed via grep before removing it). A recording that needed no work just shows its bare id with nothing indented underneath - there's no more separate "already up to date" message.
+
+Dropped the `(video+metadata)`/`(metadata only)` parenthetical and the trailing colon from the id line - Christer's example has nothing after the id at all.
+
+Spelled out the indented labels in full: `Metadata` instead of `sidecars`, and `Front`/`Rear`/`Interior` instead of the bare `F`/`R`/`I` direction letters. Added a small `_DIRECTION_LABELS = {"F": "Front", "R": "Rear", "I": "Interior"}` module-level mapping near the top of `bv_download.py`, looked up via `.get(direction, direction)` at print time only - `_on_entry`'s internal `video_stats` dict is still keyed by the bare letter (unchanged), since that's the natural key for a per-direction dict and nothing else in the file needs the full word.
+
+Rewrote the affected tests in `test_bv_download.py` to assert the new shape (bare id in `out.splitlines()`, `"  Metadata: ...s"`, `"  Front: ...s (... MB/s)"`, `"  Rear: ...s"`) and added a new test, `test_run_prints_bare_id_with_no_detail_lines_when_nothing_transferred`, covering the genuinely new behavior: a recording with nothing to transfer still prints its bare id, without `--verbose`, and nothing appears indented under it.
+
+Verified via `py_compile` on both the source and test file, the `/tmp/fakepytest` harness (43 passed, 0 failed for `test_bv_download.py`, rest skipped for `capsys`/`monkeypatch`), and a standalone `_run()` script (`/tmp/verify_e.py`) covering all six scenarios the harness can't run directly: sidecar+video breakdown, real speed figures, zero-elapsed speed omission, no-metadata-line-when-none, bare-id-with-nothing-transferred, and multiple untouched recordings all still printing their own bare id line.
+
+Updated `docs/man/bv-download.md`'s output-format paragraph (new example, "Metadata"/"Front"/"Rear" wording, "no separate already-up-to-date message" framing) and the `--verbose` option row's description.
+
+Files changed: `src/blackvue/cli/bv_download.py`, `tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
