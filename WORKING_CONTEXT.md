@@ -15697,3 +15697,9 @@ and the per-recording-not-run-wide sidecar clarification) and the
 
 Files changed: `src/blackvue/cli/bv_download.py`,
 `tests/blackvue/cli/test_bv_download.py`, `docs/man/bv-download.md`.
+
+## Note: consider ElevenLabs for "Read aloud" instead of browser TTS (future improvement)
+
+Christer, after trying the current "Read aloud" feature (task #1018 - `archive_recording_detail.html`'s browser-native `speechSynthesis`/Web Speech API voice picker, no server round-trip): "The voices of Susan and hazel where better, but i woild probably le elevenlabs do the work if i implement it in full" - i.e. those two are OS/browser-supplied voices in the current picker, and he liked them, but if this gets built out properly he'd rather go with the ElevenLabs API than keep relying on whatever voices happen to be installed on a given machine/browser (which is also why the current picker's voice list varies from PC to PC in the first place - no consistency across visitors/devices).
+
+**Not implemented.** Would mean a real architecture change from the current design: a server-side route that calls the ElevenLabs API (network dependency, API key, per-character cost) and streams/returns audio, replacing (or offered alongside) the client-only `speechSynthesis` call. Noted here so the idea isn't lost - no action taken for now.
