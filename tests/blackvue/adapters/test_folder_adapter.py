@@ -207,6 +207,45 @@ def test_same_stem_generated_asset_wins_over_root_id_named_one(adapter, tmp_path
     assert transcript_file.path.read_text() == "same-stem version"
 
 
+def test_generated_thumbnail_is_not_scanned_as_its_own_recording(adapter, tmp_path):
+    # Real report from Christer: bv-generate --thumbnail's own
+    # {recording.id}.thumb.jpg output (a root-level generated asset,
+    # same convention as .transcript.txt/.srt above) was being picked
+    # up by the scan as a second, bogus standalone photo recording -
+    # ".jpg" is both a real photo extension and (as part of the
+    # compound ".thumb.jpg" suffix) a generated-asset suffix, and nothing
+    # distinguished the two before scan_video_files()'s exclude_suffixes
+    # parameter existed. Confirms the fix: exactly one recording, and
+    # the thumbnail file is attached to it as Asset.THUMBNAIL instead.
+    _touch(tmp_path / "clip.mp4", mtime=1700000000)
+    recording_id = adapter.open_archive(tmp_path).recordings[0].id
+
+    (tmp_path / f"{recording_id}.thumb.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert len(archive.recordings) == 1
+    recording = archive.recordings[0]
+    assert recording.has(Asset.THUMBNAIL)
+
+
+def test_same_stem_generated_thumbnail_is_not_scanned_as_its_own_recording(
+    adapter, tmp_path
+):
+    # Same bug, same-stem variant (thumbnail written next to the video
+    # rather than root-id-named) - both discovery paths funnel through
+    # the same scan_video_files() candidate collection this fix
+    # changes.
+    _touch(tmp_path / "clip.mp4", mtime=1700000000)
+    (tmp_path / "clip.thumb.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    archive = adapter.open_archive(tmp_path)
+
+    assert len(archive.recordings) == 1
+    recording = archive.recordings[0]
+    assert recording.has(Asset.THUMBNAIL)
+
+
 def test_collision_disambiguation_bumps_the_later_id_by_a_second(
     adapter, tmp_path
 ):

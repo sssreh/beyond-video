@@ -15077,3 +15077,60 @@ Files changed: `src/blackvue/adapters/telemetry_bridge.py`,
 `src/blackvue/adapters/folder/manifest.json`,
 `tests/blackvue/adapters/test_telemetry_bridge.py` (new),
 `docs/CAMERA_ADAPTERS.md`.
+
+## Generated thumbnails scanned as their own bogus recordings (2026-08-18)
+
+Christer's follow-up report right after the GPS-link fix above: "I
+realize that the thumbnails now are their own recording in archive
+browser. I dint think about that." - a real regression from task
+#992-997's permanent-thumbnail feature, surfaced by actually looking
+at a folder-adapter archive browser after generating thumbnails for
+it.
+
+Root cause, found via a research-only subagent: `_recursive_scan.py`'s
+`scan_video_files()` (the shared scan both FolderAdapter and
+GoProAdapter use) collects every file under the archive root whose
+`Path.suffix` - the *last* dot-component only - is in the manifest's
+video/photo/GIF extension set. `bv-generate --thumbnail` writes
+`{recording.id}.thumb.jpg` at the archive root; `Path("...thumb.jpg").suffix`
+is just `.jpg`, indistinguishable from a real standalone photo, so the
+thumbnail file was collected as a scan candidate right alongside actual
+recordings, given its own synthesized `RecordingId`, and shown as a
+second, bogus row in the browser grid - `generated_assets_for()`
+(the function that's supposed to recognize generated-asset files) is
+only ever consulted *after* a recording already exists, to attach
+siblings to it, never as a filter during the initial candidate
+collection. `.duration.txt`/`.scene.txt`/etc. never had this problem,
+but only by accident - `.txt` was never itself a video/photo/GIF
+extension in the first place, so those files were never candidates to
+begin with. `.thumb.jpg` was the first generated suffix whose *last*
+component (`.jpg`) collided with a real standalone-recording extension.
+
+Fix: `scan_video_files()` gained an `exclude_suffixes` parameter,
+matched by `str.endswith()` against the file's *full name* (not
+`Path.suffix`) - so a compound suffix like `.thumb.jpg` is correctly
+distinguished from a bare `.jpg`. `_scan()` now computes this list from
+`manifest.asset_suffix_table`'s `kind == "generated"` entries (every
+entry in both `folder/manifest.json` and `gopro/manifest.json` today)
+and passes it through before the extension-membership test runs at
+all - not a change to `generated_assets_for()`'s own sibling-attachment
+logic, which is unaffected and still runs afterward to attach the now-
+correctly-excluded thumbnail file to the recording it belongs to.
+
+New tests in `test_folder_adapter.py`
+(`test_generated_thumbnail_is_not_scanned_as_its_own_recording`,
+`test_same_stem_generated_thumbnail_is_not_scanned_as_its_own_recording`)
+cover both the root-id-named and same-stem thumbnail-write shapes -
+mirrors the existing `test_root_id_named_generated_assets_are_discovered`/
+`test_same_stem_generated_assets_are_discovered` pair's precedent, plus
+the file's own existing note that GoPro/folder both go through this
+same shared `_scan()` so one adapter's coverage is enough. Also
+verified directly against a real `FolderAdapter` in the sandbox
+(`@pytest.fixture()`-based tests in this file can't run under the
+local harness shim - a pre-existing limitation, not new) and re-ran
+the full `test_bv_ls.py`/`test_archive_browser.py`/
+`test_telemetry_bridge.py` suite (88 passed) to confirm no regression
+from the shared-scan change.
+
+Files changed: `src/blackvue/adapters/_recursive_scan.py`,
+`tests/blackvue/adapters/test_folder_adapter.py`.

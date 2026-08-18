@@ -177,17 +177,43 @@ def _resolve_timestamp(
     return ResolvedTimestamp(datetime.fromtimestamp(path.stat().st_mtime), False)
 
 
-def scan_video_files(root: Path, extensions: frozenset[str]) -> list[Path]:
+def scan_video_files(
+    root: Path,
+    extensions: frozenset[str],
+    *,
+    exclude_suffixes: tuple[str, ...] = (),
+) -> list[Path]:
     """Recursively collect every file under `root` whose extension is
     one of `extensions` - sorted for deterministic, reproducible scan
     order (os.walk()'s own order is filesystem-dependent and not
     something callers, or assign_recording_ids()'s own collision-
-    disambiguation, should rely on)."""
+    disambiguation, should rely on).
+
+    `exclude_suffixes` drops any file whose *full name* ends with one
+    of these strings before the `extensions` test even applies - meant
+    for a manifest's own generated-asset suffixes (`.thumb.jpg`,
+    `.scene.txt`, ...), matched by `str.endswith()` against the whole
+    filename rather than `Path.suffix` (which only ever returns the
+    last dot-component, so `"...thumb.jpg".suffix` is just `.jpg` -
+    indistinguishable from a real photo). Real report from Christer:
+    `bv-generate --thumbnail`'s own `{recording.id}.thumb.jpg` output
+    was being picked up by this scan as its own standalone photo
+    recording, showing up as a second, bogus row in the archive
+    browser right next to the real recording it was generated for -
+    `.jpg` is both a legitimate standalone-photo extension and (as
+    part of the compound `.thumb.jpg`) a generated-asset suffix, and
+    nothing here distinguished the two before this parameter existed.
+    `.duration.txt`/`.scene.txt`/etc. never had this problem by
+    accident (`.txt` was never itself a video/photo/GIF extension), not
+    because of any real exclusion - `.thumb.jpg` was the first
+    generated suffix whose *last* component collided with one."""
 
     return sorted(
         path
         for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() in extensions
+        if path.is_file()
+        and path.suffix.lower() in extensions
+        and not any(path.name.endswith(suffix) for suffix in exclude_suffixes)
     )
 
 
@@ -349,7 +375,10 @@ def _scan(
     # given file turns out to be is decided per-file, downstream, by
     # recording_is_photo() (see its own docstring) - not at scan time.
     extensions = frozenset(manifest.video_extensions) | PHOTO_EXTENSIONS | GIF_EXTENSIONS
-    video_paths = scan_video_files(path, extensions)
+    generated_suffixes = tuple(
+        entry.suffix for entry in manifest.asset_suffix_table if entry.kind == "generated"
+    )
+    video_paths = scan_video_files(path, extensions, exclude_suffixes=generated_suffixes)
     resolved = {
         p: _resolve_timestamp(p, telemetry_timestamp=telemetry_timestamp)
         for p in video_paths
