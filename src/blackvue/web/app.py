@@ -85,6 +85,7 @@ from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
 from .voice_query import parse_spoken_query
+from .voice_time import parse_spoken_timerange
 from ..core.camera_config import CameraConfigCache
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
@@ -1902,13 +1903,27 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         "less than 1000 meters from Vårby gård" typed verbatim into
         the Text field just searches for that literal sentence and
         (correctly) finds nothing (real report from Christer: exactly
-        this happened). parse_spoken_query() (web/voice_query.py)
-        recognizes the common "within/less than <distance> <unit>
-        of/from <place>" shape (English and Swedish) and splits it
-        into bv-search's own Place/Radius fields instead, which is
-        what that phrasing actually means. Every field in the
-        response is still just an editable suggestion - the frontend
-        fills the form but never auto-submits.
+        this happened). Two heuristic parsers turn recognized phrases
+        into bv-search's own structured fields instead of leaving
+        everything as literal Text:
+
+        - parse_spoken_query() (web/voice_query.py): "within/less
+          than <distance> <unit> of/from <place>" -> Place/Radius.
+        - parse_spoken_timerange() (web/voice_time.py): relative or
+          explicit dates/date-ranges ("yesterday", "last week", "from
+          July 15th to July 20th", ...) -> Timestamp or From/Until.
+
+        Both run over the same transcript; the time-range match (if
+        any) is stripped first so the place/radius parser doesn't
+        have to independently recognize date words. If *either*
+        parser recognized something, Text is cleared rather than left
+        as whatever wasn't consumed - see voice_query.py's own
+        docstring for why: bv-search ANDs Text against every other
+        filter, so stray leftover words there would silently zero out
+        results that are otherwise correctly filtered by place/radius
+        or date. Every field in the response is still just an
+        editable suggestion - the frontend fills the form but never
+        auto-submits.
         """
 
         suffix = Path(audio.filename or "").suffix or ".webm"
@@ -1926,13 +1941,22 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             tmp_path.unlink(missing_ok=True)
 
         transcript = result.text.strip()
-        parsed = parse_spoken_query(transcript)
+        time_range = parse_spoken_timerange(transcript, datetime.now().date())
+        remainder = time_range.remainder if time_range.matched else transcript
+        parsed = parse_spoken_query(remainder)
+
+        matched_something = time_range.matched or parsed.place is not None
+        final_text = "" if matched_something else parsed.text
+
         return JSONResponse(
             {
                 "transcript": transcript,
-                "text": parsed.text,
+                "text": final_text,
                 "place": parsed.place,
                 "radius_meters": parsed.radius_meters,
+                "timestamp": time_range.timestamp,
+                "from_": time_range.from_,
+                "until": time_range.until,
             }
         )
 

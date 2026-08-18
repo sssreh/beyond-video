@@ -15254,3 +15254,85 @@ Files changed: `src/blackvue/web/voice_query.py` (new),
 `src/blackvue/web/app.py`,
 `src/blackvue/web/templates/job_new_bv_search.html`,
 `tests/blackvue/web/test_voice_query.py` (new).
+
+## Voice search: parse spoken date/date-range into Timestamp/From/Until (2026-08-18)
+
+Christer's one-word follow-up after the place/radius fix above:
+"timestamp range?" - asking whether voice search understood spoken
+date references the same way it now understands "less than X meters
+from PLACE". It didn't - bv-search's own `LexicalTimeParser` only
+expands numeric `YYYYMMDD` prefixes, it has no concept of spoken
+phrases like "yesterday" at all. Asked Christer whether to support
+relative phrases ("yesterday", "last week"), explicit dates ("July
+15th"), or both - chose both.
+
+New `src/blackvue/web/voice_time.py`, `parse_spoken_timerange()`:
+recognizes, in English and Swedish:
+
+- Relative single days: today/idag, yesterday/igår, tomorrow/imorgon,
+  "last <weekday>" (English) and the Swedish "i <weekday>s" idiom
+  ("i tisdags" = "last Tuesday") - resolved via `Recording.id`-style
+  full weekday lookback (never today, even if today is that weekday).
+- Relative spans: this/last week (Monday-Sunday), this/last month
+  (calendar month via `calendar.monthrange()`).
+- Explicit dates: "15 July 2026" / "July 15th, 2026" / "15 juli 2026"
+  / ISO "2026-07-15", year optional (defaults to the current year).
+- Explicit ranges: "from X to Y" / "between X and Y" (English),
+  "från X till Y" / "mellan X och Y" (Swedish), where X/Y are any of
+  the single-day forms above, each clause bounded to at most 3 tokens
+  so a stray "to" elsewhere in the sentence (e.g. "...going to work")
+  can't swallow unrelated words into a false-positive range - the
+  clause still has to resolve to a real date via the shared
+  `_DATE_TOKEN` regex, so an over-matched clause simply fails and the
+  parser falls through to the next pattern.
+
+A single day resolves to bv-search's `timestamp` field; a span/range
+resolves to `from_`/`until` - mirroring bv-search's own mutual
+exclusivity between Timestamp and From/Until.
+
+Two bugs caught during manual testing before wiring this in: (1) the
+Swedish "this month" regex required a literal `naden` suffix
+(`m[aå]naden?`) instead of an optional `en` after the base word
+`månad` (`m[aå]nad(?:en)?`), so "denna manad" silently failed to
+match - fixed. (2) In a spoken range where only one side states a
+year ("between July 15 and July 20 2025"), the year-less side was
+defaulting to *today's* year instead of inheriting the one actually
+said - a spoken range normally states the year once, applying to both
+ends. Fixed by having `_resolve_date_token()` return whether its year
+was explicit, and `_resolve_connector()` cross-applies an explicit
+year from either side onto the other when exactly one side has one.
+
+`POST /jobs/bv-search/transcribe` (web/app.py) now runs
+`parse_spoken_timerange()` first (using the server's current date),
+strips the matched span, then runs `parse_spoken_query()` (the
+place/radius parser) on the remainder - so a sentence combining both
+("videos from last week within 500m of Slussen") isn't confused by
+having date words sitting in the place/radius parser's input. If
+*either* parser recognized something, Text is cleared - same
+AND-conflict reasoning as the place/radius fix: bv-search filters by
+time range before applying Text/Place/Radius, so stray leftover words
+in Text would zero out results that are otherwise correctly
+date-filtered.
+
+`job_new_bv_search.html`'s voice-search JS fills `#timestamp` or
+`#from_`/`#until` (clearing whichever pair doesn't apply, since
+Timestamp and From/Until are mutually exclusive in the form) and adds
+the parsed interpretation to the same status line as the place/radius
+fix, e.g. `Heard: "..." - filled in as Place "Slussen" within 500 m,
+Timestamp 2026-07-15.` All fields remain fully editable.
+
+New `tests/blackvue/web/test_voice_time.py` (16 tests, no fixtures)
+covers relative days, the "last Tuesday can't be today" edge case,
+both languages' weekday idioms, week/month spans, explicit dates in
+both languages plus ISO, the year-omitted-defaults-to-current-year
+case, both directions of the year-sharing fix, the Swedish range
+connector, the plain-text fallback, and the stray-"to"-doesn't-
+false-positive case - all pass under the local harness shim. Existing
+`test_voice_query.py` (7 tests) re-run clean, confirming the route
+change (running the time parser first, then place/radius on the
+remainder) didn't regress the place/radius feature.
+
+Files changed: `src/blackvue/web/voice_time.py` (new),
+`src/blackvue/web/app.py`,
+`src/blackvue/web/templates/job_new_bv_search.html`,
+`tests/blackvue/web/test_voice_time.py` (new).

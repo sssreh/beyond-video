@@ -168,17 +168,30 @@ with bv-config</a> first.</p>
   // "less than 1000 meters from Vårby gård" means a Place+Radius
   // search, not a literal Text search (Christer's own follow-up
   // report: dictating exactly that "doesnt understand do do a radius
-  // search" when it just landed in Text). So the response carries
-  // text/place/radius_meters separately (see voice_query.py's
-  // parse_spoken_query()) and this script routes each into its own
-  // existing field - Place/Radius stay just as editable as Text
-  // always was.
+  // search" when it just landed in Text), and "videos from last week"
+  // means a Timestamp/From+Until search, not literal text either. So
+  // the response carries text/place/radius_meters/timestamp/from_/
+  // until separately (see voice_query.py's parse_spoken_query() and
+  // voice_time.py's parse_spoken_timerange()) and this script routes
+  // each into its own existing field - every field stays just as
+  // editable as Text always was.
   var btn = document.getElementById('voice-search-btn');
   var textInput = document.getElementById('text');
   var placeInput = document.getElementById('place');
   var radiusInput = document.getElementById('radius');
+  var timestampInput = document.getElementById('timestamp');
+  var fromInput = document.getElementById('from_');
+  var untilInput = document.getElementById('until');
   var status = document.getElementById('voice-status');
   if (!btn || !textInput) return;
+
+  function formatYmd(ymd) {
+    // "20260715" -> "2026-07-15", for the human-readable status line
+    // only - the actual field value stays in bv-search's own YYYYMMDD
+    // convention.
+    if (!ymd || ymd.length !== 8) return ymd;
+    return ymd.slice(0, 4) + '-' + ymd.slice(4, 6) + '-' + ymd.slice(6, 8);
+  }
 
   if (!navigator.mediaDevices || !window.MediaRecorder) {
     // No mic support (older browser, or page loaded over plain HTTP
@@ -266,6 +279,8 @@ with bv-config</a> first.</p>
         }
 
         textInput.value = data.text || '';
+        var interpreted = [];
+
         if (data.place && placeInput) {
           placeInput.value = data.place;
           // Place and Near are mutually exclusive in bv-search - clear
@@ -273,20 +288,38 @@ with bv-config</a> first.</p>
           // previously filled in.
           var nearInput = document.getElementById('near');
           if (nearInput) nearInput.value = '';
-        }
-        if (data.radius_meters && radiusInput) {
-          radiusInput.value = Math.round(data.radius_meters);
+          if (data.radius_meters && radiusInput) {
+            radiusInput.value = Math.round(data.radius_meters);
+          }
+          interpreted.push(
+            'Place "' + data.place + '" within ' + Math.round(data.radius_meters) + ' m'
+          );
         }
 
-        if (data.place) {
-          textInput.focus();
+        if (data.timestamp && timestampInput) {
+          // Timestamp and From/Until are mutually exclusive in
+          // bv-search - clear From/Until so the single-day match
+          // actually takes effect.
+          timestampInput.value = data.timestamp;
+          if (fromInput) fromInput.value = '';
+          if (untilInput) untilInput.value = '';
+          interpreted.push('Timestamp ' + formatYmd(data.timestamp));
+        } else if (data.from_ && data.until && fromInput && untilInput) {
+          fromInput.value = data.from_;
+          untilInput.value = data.until;
+          if (timestampInput) timestampInput.value = '';
+          interpreted.push(
+            'From ' + formatYmd(data.from_) + ' to ' + formatYmd(data.until)
+          );
+        }
+
+        textInput.focus();
+        if (interpreted.length) {
           setStatus(
-            'Heard: "' + transcript + '" - filled in as Place "' + data.place +
-            '" within ' + Math.round(data.radius_meters) +
-            ' m. Check the fields below, then click Start.'
+            'Heard: "' + transcript + '" - filled in as ' + interpreted.join(', ') +
+            '. Check the fields below, then click Start.'
           );
         } else {
-          textInput.focus();
           setStatus('Transcribed - edit the text above if needed, then click Start.');
         }
       })
