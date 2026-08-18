@@ -395,6 +395,14 @@
        red-outline state for "click again to stop speaking". */
     .scene-text-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
     .scene-text-header .hint { margin: 0; }
+    /* The "Read-aloud voice" picker above the scene-summary blocks -
+       only shown when the browser actually has more than one TTS
+       voice to choose from (see archive_recording_detail.html's own
+       JS). Inline layout so it doesn't take a full row like the
+       stacked field-label/select convention used elsewhere. */
+    .tts-controls { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+    .tts-controls .field-label { margin: 0; }
+    .tts-controls select { width: auto; margin: 0; }
     .scene-text-body {
       background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 4px;
       padding: 0.75rem 1rem; white-space: pre-wrap; word-break: break-word;

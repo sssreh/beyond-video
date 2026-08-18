@@ -33,6 +33,10 @@
 {% if recording.scene_summary %}
 <h3>Scene summary</h3>
 <p class="hint">Description and legible sign/plate reads only, parsed fresh from the files below - not a separate file, and "not legible" reads are left out. <a href="#full-scene-text">See the full text</a> for everything, including the raw on-screen-text dump.</p>
+<div class="tts-controls" id="tts-controls" hidden>
+  <label class="field-label" for="tts-voice">Read-aloud voice</label>
+  <select id="tts-voice"></select>
+</div>
 {% for label, description, legible_reads in recording.scene_summary %}
 <div class="scene-text">
   <div class="scene-text-header">
@@ -88,6 +92,87 @@
     return;
   }
 
+  // Christer's follow-up after trying this: "it works, but with a
+  // very robotic voice" - the default voice SpeechSynthesis picks is
+  // often the OS's oldest/lowest-quality one (e.g. an offline
+  // espeak-style voice), while the same browser usually also lists
+  // one or more much more natural options (Windows Edge's "Online
+  // (Natural)" voices, Chrome's networked "Google ..." voices, macOS
+  // Safari's "Enhanced"/"Premium" voices) buried further down the
+  // list. _scoreVoice() below picks the best-sounding one available
+  // by default; the "Read-aloud voice" dropdown lets Christer
+  // override that choice, remembered across visits via localStorage.
+  var VOICE_STORAGE_KEY = 'bv-tts-voice';
+  var voiceSelect = document.getElementById('tts-voice');
+  var ttsControls = document.getElementById('tts-controls');
+  var voices = [];
+  var selectedVoice = null;
+
+  function voiceKey(voice) {
+    return voice.name + '|' + voice.lang;
+  }
+
+  function scoreVoice(voice) {
+    var score = 0;
+    if (/natural|neural|online|enhanced|premium/i.test(voice.name)) score += 100;
+    if (!voice.localService) score += 20; // networked voices are usually higher quality
+    if (voice.lang && navigator.language && voice.lang.slice(0, 2) === navigator.language.slice(0, 2)) score += 10;
+    if (voice.default) score += 5;
+    return score;
+  }
+
+  function bestVoice() {
+    var best = null;
+    var bestScore = -1;
+    voices.forEach(function (voice) {
+      var score = scoreVoice(voice);
+      if (score > bestScore) {
+        bestScore = score;
+        best = voice;
+      }
+    });
+    return best;
+  }
+
+  function populateVoiceList() {
+    voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return;
+
+    var stored = null;
+    try {
+      var storedKey = localStorage.getItem(VOICE_STORAGE_KEY);
+      if (storedKey) stored = voices.find(function (v) { return voiceKey(v) === storedKey; });
+    } catch (err) { /* localStorage unavailable - fall through to auto-pick */ }
+
+    selectedVoice = stored || bestVoice();
+
+    if (voiceSelect) {
+      voiceSelect.innerHTML = '';
+      voices.forEach(function (voice) {
+        var option = document.createElement('option');
+        option.value = voiceKey(voice);
+        option.textContent = voice.name + ' (' + voice.lang + ')';
+        if (selectedVoice && voiceKey(voice) === voiceKey(selectedVoice)) option.selected = true;
+        voiceSelect.appendChild(option);
+      });
+      // Only worth showing a picker if there's an actual choice to make.
+      if (ttsControls) ttsControls.hidden = voices.length < 2;
+    }
+  }
+
+  if (voiceSelect) {
+    voiceSelect.addEventListener('change', function () {
+      selectedVoice = voices.find(function (v) { return voiceKey(v) === voiceSelect.value; }) || null;
+      try { localStorage.setItem(VOICE_STORAGE_KEY, voiceSelect.value); } catch (err) { /* ignore */ }
+    });
+  }
+
+  populateVoiceList();
+  // Chrome/Edge load the voice list asynchronously - it's frequently
+  // empty on the first call above and only populated once this event
+  // fires, sometimes more than once as more voices become available.
+  window.speechSynthesis.addEventListener('voiceschanged', populateVoiceList);
+
   var activeButton = null;
 
   function stop() {
@@ -110,6 +195,7 @@
       if (!text) return;
 
       var utterance = new SpeechSynthesisUtterance(text);
+      if (selectedVoice) utterance.voice = selectedVoice;
       utterance.addEventListener('end', stop);
       utterance.addEventListener('error', stop);
       window.speechSynthesis.speak(utterance);

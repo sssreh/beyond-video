@@ -15379,3 +15379,43 @@ py_compile/test-harness step applies.
 
 Files changed: `src/blackvue/web/templates/archive_recording_detail.html`,
 `src/blackvue/web/templates/base.html`.
+
+## Fix robotic default TTS voice with a scored auto-pick + picker (2026-08-18)
+
+Christer, right after trying "Read aloud": "Well it works, but with a
+very robotic voice." Expected - `speechSynthesis.getVoices()` usually
+lists both low-quality offline voices (the ones that get picked by
+default/index-0 on most browsers) and much better ones further down
+the list (Windows Edge's "... Online (Natural)" voices, Chrome's
+networked "Google ..." voices, macOS Safari's "Enhanced"/"Premium"
+voices) - nothing was choosing among them before.
+
+Added a `scoreVoice()` heuristic to the same script: +100 if the
+voice's name matches `/natural|neural|online|enhanced|premium/i`, +20
+if it's not a local/offline voice (`!voice.localService` - networked
+voices are typically higher quality), +10 if its language matches the
+browser's, +5 if it's the browser's own marked default. The
+highest-scoring voice becomes the default for every "Read aloud"
+click - no naming assumptions baked in beyond that regex, so it
+degrades gracefully to "whatever the browser marks default" on a
+machine with only generic voices.
+
+Also added a "Read-aloud voice" `<select>` above the Scene summary
+panel so Christer can override the auto-pick directly, only shown
+when there's actually more than one voice available (`voices.length <
+2` keeps it hidden on a plain single-voice setup). The choice persists
+across visits via `localStorage` (`bv-tts-voice`, keyed by `name|lang`
+since voice names alone aren't guaranteed unique across languages).
+Voice loading is async in Chrome/Edge (`getVoices()` often returns
+empty on first call) - handled via the `voiceschanged` event, which
+can fire more than once as more voices become available, so the
+populate function is idempotent and safe to call repeatedly.
+
+Verified via the same real Jinja2 render as the previous entry (now
+also asserting `scoreVoice`/`voiceschanged`/`VOICE_STORAGE_KEY` appear
+in the output) plus a Node.js syntax check on the extracted `<script>`
+block (`new Function(scriptBody)` - catches any JS parse error without
+needing a browser). No Python changes.
+
+Files changed: `src/blackvue/web/templates/archive_recording_detail.html`,
+`src/blackvue/web/templates/base.html`.
