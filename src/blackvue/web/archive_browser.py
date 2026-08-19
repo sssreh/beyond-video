@@ -500,12 +500,24 @@ def _rescale_events_to_duration(
     ]
 
 
+# Multiplier applied to the raw `duration_seconds / max_frames` average
+# frame-sampling interval in _apply_frame_sampling_lag() below - see
+# that function's own docstring for the two real-world data points
+# this was calibrated against. 1.0 (one interval) matched Christer's
+# first report almost exactly; his second report, on a different
+# ~3-minute clip, needed roughly 1.5 intervals' worth of extra shift.
+# Kept as its own named constant, not folded into the one-line formula,
+# so a third data point can update just this number without touching
+# the surrounding logic.
+_FRAME_SAMPLING_LAG_MULTIPLIER = 1.5
+
+
 def _apply_frame_sampling_lag(
     events: list[DescriptionEvent], duration_seconds: float
 ) -> list[DescriptionEvent]:
     """Shift every (already-rescaled) description event later by roughly
-    one frame-sampling interval, to correct a systematic early bias
-    _rescale_events_to_duration() alone can't fix.
+    one and a half frame-sampling intervals, to correct a systematic
+    early bias _rescale_events_to_duration() alone can't fix.
 
     Christer, testing the rescaled timestamps against a real clip: "put
     description 11 seconds later." Root cause is the same frame
@@ -513,25 +525,42 @@ def _apply_frame_sampling_lag(
     explains: describe_scene() only ever shows the model
     SceneOptions.max_frames (16 by default) frames spread evenly across
     the whole clip, so for a ~3-minute recording those frames sit
-    roughly `duration / 16` ~= 11 seconds apart - which is exactly the
-    11 seconds Christer observed. The model describes what it sees in a
-    given sampled frame, but that frame is itself already partway
-    through the interval it represents - proportional rescaling alone
-    corrects the *spread* of timestamps across the clip, not this
-    per-frame lag, since every event ends up anchored slightly earlier
-    than the real moment it describes, by about the same amount.
+    roughly `duration / 16` ~= 11 seconds apart - which is close to the
+    11 seconds Christer first observed. The model describes what it
+    sees in a given sampled frame, but that frame is itself already
+    partway through the interval it represents - proportional
+    rescaling alone corrects the *spread* of timestamps across the
+    clip, not this per-frame lag, since every event ends up anchored
+    slightly earlier than the real moment it describes, by about the
+    same amount.
 
-    Nudging every rescaled timestamp forward by one average
-    frame-sampling interval (`duration_seconds / max_frames`)
-    compensates for that systematic lag - it generalizes to clips of
-    any length rather than hardcoding the literal "11" Christer's own
-    3-minute test clip happened to produce, since a much shorter or
-    longer recording would have a proportionally smaller or larger
-    frame interval. bv-web has no record of what SceneOptions were
-    actually used to generate a given scene.txt (that's a
-    generation-time-only parameter, not persisted anywhere), so this
-    assumes the default max_frames - the same approximation-not-exact-
-    fix spirit as the rescale itself.
+    First fix landed with a 1x multiplier (one full average interval),
+    matching that first report closely enough. Christer then tested
+    against a second, different ~3-minute clip after this shipped and
+    found the description events - not just the one he originally
+    flagged, "most/all cues" - still consistently landing early by
+    roughly another 5 seconds on top of the already-applied offset.
+    Same clip length, same nominal `duration/max_frames` interval
+    (~11.25s), but a meaningfully different amount of *additional* lag
+    needed - confirming what this function's docstring already
+    admitted: the "one interval" model is itself an approximation of
+    the model's own narrative pacing, which varies per generation, not
+    a value derivable exactly from clip length alone.  Bumped
+    `_FRAME_SAMPLING_LAG_MULTIPLIER` from 1.0 to 1.5 (~16.9s for that
+    same 3-minute clip, close to the ~16.25s his second report implied)
+    to split the difference across both real data points rather than
+    refitting only to the newest one and potentially overshooting the
+    first clip Christer already confirmed was correct. Still a
+    duration-proportional formula, not a hardcoded literal, so it
+    keeps generalizing across clip lengths the way Christer originally
+    asked for - just tuned to a bigger multiplier now that a second
+    real measurement showed the first one undershooting.
+
+    bv-web has no record of what SceneOptions were actually used to
+    generate a given scene.txt (that's a generation-time-only
+    parameter, not persisted anywhere), so this assumes the default
+    max_frames - the same approximation-not-exact-fix spirit as the
+    rescale itself.
 
     Capped at _rescale_events_to_duration()'s own `target_max` (the
     `duration_seconds * n / (n+1)` reserved-trailing-room ceiling) so
@@ -550,7 +579,7 @@ def _apply_frame_sampling_lag(
     if max_frames <= 0:
         return events
 
-    offset = duration_seconds / max_frames
+    offset = duration_seconds / max_frames * _FRAME_SAMPLING_LAG_MULTIPLIER
     cap = duration_seconds * len(events) / (len(events) + 1)
     return [
         DescriptionEvent(min(event.timestamp_seconds + offset, cap), event.text)
