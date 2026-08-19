@@ -442,10 +442,26 @@ def build_description_srt_from_events(
     the same way build_sign_read_srt()'s cursor does, and the
     `duration_seconds` cap guards against a model timestamp that
     overshoots the recording's real length (a plausible estimation
-    error, not something worth trusting blindly). A cue that collapses
-    to zero or negative length after clamping is dropped rather than
-    written as a degenerate SRT entry; if every cue collapses that way
-    (pathological input), returns None so the caller can fall back to
+    error, not something worth trusting blindly).
+
+    A cue that collapses to zero or negative length after clamping
+    doesn't just lose its text: Christer, after the first real-world
+    fix to this feature's parsing, pasted a real response whose very
+    first bullet had a negative timestamp ("[t=-0.3s]") that clamped
+    to the same instant as the following bullet - under the original
+    drop-it-silently behavior that sentence would have vanished from
+    the .srt entirely (while still showing up fine in the plain-prose
+    description elsewhere, since that path doesn't clamp anything).
+    So a collapsed cue's text is instead prepended onto whichever cue
+    ends up starting next, as long as there *is* a next one - the
+    described moment still gets shown, just sharing a caption with the
+    next real cue rather than getting a broken zero-length entry of
+    its own. The one case this does NOT apply to is the very last
+    event in the list collapsing (typically a timestamp past
+    `duration_seconds` with nothing left in the video to attach it
+    to) - there's no following cue to merge into, so it's dropped, the
+    same as before. If every cue collapses this way (pathological
+    input), returns None so the caller can fall back to
     build_description_srt()'s evenly-spaced chunking instead of
     downloading something broken.
 
@@ -458,6 +474,7 @@ def build_description_srt_from_events(
     ordered = sorted(events, key=lambda event: event.timestamp_seconds)
     segments: list[SpeechSegment] = []
     cursor = 0.0
+    pending_text: list[str] = []
     for index, event in enumerate(ordered):
         start = max(min(event.timestamp_seconds, duration_seconds), cursor)
         if index + 1 < len(ordered):
@@ -465,9 +482,16 @@ def build_description_srt_from_events(
         else:
             next_start = duration_seconds
         end = max(next_start, start)
+        text = " ".join([*pending_text, event.text]) if pending_text else event.text
         if end > start:
-            segments.append(SpeechSegment(start=start, end=end, text=event.text))
+            segments.append(SpeechSegment(start=start, end=end, text=text))
             cursor = end
+            pending_text = []
+        else:
+            # Collapsed - carry the text forward instead of dropping
+            # it, unless this is the last event (nothing left to carry
+            # it into, see docstring).
+            pending_text.append(event.text)
 
     if not segments:
         return None

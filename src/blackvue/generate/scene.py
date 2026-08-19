@@ -56,6 +56,34 @@ when reading it:
    model being asked to hold a non-trivial formatting constraint
    across a long combined prompt.
 
+4. Compliance without conformance - the model followed the bullet
+   instruction but not the implied formatting around it. Once finding
+   #3's fix landed, the very next real run against Christer's own
+   footage DID produce bulleted "- [t=...]" markers - but crammed all
+   ten of them onto a single line with no newlines between them, and
+   varied the whitespace inside the brackets in every way a human
+   never would: "[t=-0.3s]", "[ t=0s ]", "-[t= 0.6s]", even
+   "[t = 0 .9 s]" with a space inside the number itself. The original
+   parser assumed one bullet per line (splitlines() plus a
+   line-anchored regex) and a fixed bracket format, so none of this
+   matched - extract_description_events() silently found zero events
+   and fell all the way back to raw bracket-laden prose (read aloud
+   verbatim by the TTS "Read aloud" button) and the old evenly-spaced
+   SRT chunking, exactly the "clean, silent fallback" behavior
+   described in #3, just triggered by a new cause. Fixed by scanning
+   the whole section text for "- [t=...]" markers wherever they occur
+   (_BULLET_START_RE.finditer(), not splitlines()) and by stripping
+   ALL whitespace out of the captured timestamp token before parsing
+   it as a float (_parse_timestamp_token()), rather than assuming any
+   particular spacing. A negative leading timestamp (t=-0.3s - the
+   model's estimate for content right at the clip's start) is treated
+   as legitimate input, not an error; see
+   build_description_srt_from_events()'s docstring in
+   web/archive_browser.py for how a cue that collapses to zero length
+   after clamping now carries its text forward onto the next surviving
+   cue instead of silently dropping it, which this negative-timestamp
+   case triggers.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -463,15 +491,46 @@ def _extract_raw_description_section(output_text: str) -> str:
     return "\n".join(section).strip()
 
 
-# Matches one "- [t=12.4s] some sentence." bullet's timestamp prefix,
-# once the leading "- " has already been stripped - same shape as
-# web/archive_browser.py's own _SIGN_READ_TIMESTAMP_RE, kept as a
-# separate constant here rather than a shared import since the two
-# live in different layers (this one parses describe_scene()'s own
-# freshly-generated output; that one parses zoom_into_signs()'s bullets
-# back out for display) and there's no real reuse to be had beyond the
-# regex shape itself.
-_TIMED_EVENT_RE = re.compile(r"^\[t=(?P<seconds>\d+(?:\.\d+)?)s\]\s*(?P<rest>.*)$")
+# Matches a "- [t=12.4s]" bullet marker anywhere in the text - not
+# anchored to line start, and tolerant of stray whitespace inside the
+# brackets. First real-world run of this feature (Christer, pasting
+# the actual TTS/srt output back): the model didn't reliably put one
+# bullet per line, and didn't reliably write "t=12.4s" with no
+# whitespace either - real output included everything crammed onto a
+# single line ("- [t=-0.3s] ... - [ t=0s ] ... -[t= 0.6s] ... - [t = 0
+# .9 s] ..."), with spaces appearing between "t"/"="/the digits/the
+# decimal point/"s" in every possible combination, and even a leading
+# negative timestamp before the clip's actual start. The original
+# regex was anchored to the start of an already-newline-split "- "
+# line and required the exact literal "[t=12.4s]" with zero
+# whitespace tolerance - it matched none of that, so every bullet
+# silently failed to parse and the whole thing fell back to being
+# treated as one big plain-text blob (bracket notation and all, read
+# aloud verbatim by TTS). Finding bullet markers by scanning the whole
+# text with this looser pattern - rather than requiring line
+# boundaries - handles both the one-bullet-per-line format the prompt
+# asks for and the single-line-crammed-together format the model
+# actually produced.
+_BULLET_START_RE = re.compile(r"-\s*\[\s*t\s*=\s*(?P<raw_seconds>[^\]]*)\]", re.IGNORECASE)
+
+
+def _parse_timestamp_token(raw_seconds: str) -> float | None:
+    """Turn whatever text a real model put between 't=' and ']' into a
+    float number of seconds - tolerating internal whitespace anywhere
+    (including inside the number itself, e.g. '0 .9 s') and an
+    optional trailing 's' unit, both observed in real output (see
+    _BULLET_START_RE's own comment). Returns None for anything that
+    still isn't a number once whitespace is stripped, so one genuinely
+    malformed bullet is skipped rather than crashing the whole parse
+    or being silently treated as zero."""
+
+    token = re.sub(r"\s+", "", raw_seconds)
+    if token.lower().endswith("s"):
+        token = token[:-1]
+    try:
+        return float(token)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -502,41 +561,29 @@ def _parse_timed_events(section_text: str) -> list[DescriptionEvent]:
     bulleted - so every caller can treat "no events" as "fall back to
     treating this as plain prose" without a separate format check.
 
-    Folds any non-bullet, non-blank line into the bullet currently
-    being built (joined with a space) rather than dropping it, the same
-    defensive multi-line-continuation handling
-    web/archive_browser.py's _parse_sign_reads() already uses and was
-    specifically bug-fixed for once (see that function's own
-    docstring) - a long event description wrapping across lines in the
-    raw text must not silently lose its tail here either."""
+    Deliberately does not assume one bullet per line. Finds every
+    "- [t=...]" marker anywhere in the text via _BULLET_START_RE and
+    takes each bullet's text as the span between one marker and the
+    next (or end of text for the last one) - this naturally folds
+    multi-line-wrapped bullet text back together (whitespace, newlines
+    included, gets collapsed when building the text below) the same
+    way the old line-based version's continuation-folding did, but
+    also survives the model cramming every bullet onto a single line
+    with no newlines at all (see _BULLET_START_RE's own comment for
+    the real-world example that broke the original line-anchored
+    version)."""
 
-    lines = section_text.splitlines()
+    matches = list(_BULLET_START_RE.finditer(section_text))
     events: list[DescriptionEvent] = []
-    current: str | None = None
-
-    def _flush() -> None:
-        nonlocal current
-        if current is not None:
-            content = current.strip()
-            if content:
-                match = _TIMED_EVENT_RE.match(content)
-                if match:
-                    events.append(
-                        DescriptionEvent(
-                            timestamp_seconds=float(match.group("seconds")),
-                            text=match.group("rest").strip(),
-                        )
-                    )
-            current = None
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            _flush()
-            current = stripped[2:].strip()
-        elif stripped and current is not None:
-            current += " " + stripped
-    _flush()
+    for index, match in enumerate(matches):
+        seconds = _parse_timestamp_token(match.group("raw_seconds"))
+        if seconds is None:
+            continue
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(section_text)
+        text = " ".join(section_text[start:end].split())
+        if text:
+            events.append(DescriptionEvent(timestamp_seconds=seconds, text=text))
 
     return events
 

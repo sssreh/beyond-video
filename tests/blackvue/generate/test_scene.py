@@ -121,6 +121,77 @@ def test_extract_description_events_folds_a_multi_line_bullet():
     ]
 
 
+def test_extract_description_events_parses_a_single_line_crammed_real_world_response():
+    # Christer, first real run against his own footage after
+    # _BULLET_START_RE's original line-anchored version shipped: "Now
+    # the description looks like [...] the voice is reading the
+    # timestamps and the srt file is still evenly spread. The timing
+    # seems to be when the model created the description, not the time
+    # in the video" - pasted back a real Qwen3-VL response that (a)
+    # crammed every bullet onto one single line with no newlines at
+    # all, and (b) used wildly inconsistent whitespace inside the
+    # brackets ("[ t=0s ]", "-[t= 0.6s]", "[t = 0 .9 s]") plus a
+    # negative leading timestamp ("[t=-0.3s]"). None of that matched
+    # the original regex, so every bullet silently failed to parse and
+    # the raw bracket text got read aloud verbatim. This is that exact
+    # text (trimmed to 4 bullets), asserting it parses correctly now.
+    text = (
+        "## Description\n"
+        "- [t=-0.3s] The view is from inside a moving car, looking forward "
+        "through the windshield at a multi-lane road under overcast skies. "
+        "- [ t=0s ] Several cars are visible ahead and beside the viewer's "
+        "vehicle. "
+        "-[t= 0.6s]The perspective shifts slightly as the car continues "
+        "straight. "
+        "- [t = 0 .9 s]A large blue sign becomes visible ahead, mounted on "
+        "a pole near the roadside.\n"
+    )
+
+    events = scene.extract_description_events(text)
+
+    assert events == [
+        scene.DescriptionEvent(
+            -0.3,
+            "The view is from inside a moving car, looking forward "
+            "through the windshield at a multi-lane road under overcast "
+            "skies.",
+        ),
+        scene.DescriptionEvent(
+            0.0,
+            "Several cars are visible ahead and beside the viewer's "
+            "vehicle.",
+        ),
+        scene.DescriptionEvent(
+            0.6,
+            "The perspective shifts slightly as the car continues "
+            "straight.",
+        ),
+        scene.DescriptionEvent(
+            0.9,
+            "A large blue sign becomes visible ahead, mounted on a pole "
+            "near the roadside.",
+        ),
+    ]
+
+
+def test_extract_description_events_skips_a_bullet_with_an_unparseable_timestamp():
+    # A malformed bracket that still isn't a number once whitespace is
+    # stripped (e.g. the model writing actual words in there) should be
+    # dropped rather than crashing the whole parse - the surrounding,
+    # well-formed bullets must still come through.
+    text = (
+        "## Description\n"
+        "- [t=soon] Something happens near the start.\n"
+        "- [t=5.0s] A cyclist crosses the road ahead.\n"
+    )
+
+    events = scene.extract_description_events(text)
+
+    assert events == [
+        scene.DescriptionEvent(5.0, "A cyclist crosses the road ahead."),
+    ]
+
+
 def test_extract_description_section_strips_timestamps_into_clean_prose():
     # This is the "please keep the old output" guarantee: every caller
     # of extract_description_section() (trip-summary input, the

@@ -1062,6 +1062,32 @@ def test_build_description_srt_from_events_clamps_overshoot_and_drops_dead_cue()
     assert "00:00:00,000 --> 00:00:40,000" in srt
 
 
+def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forward():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import build_description_srt_from_events
+
+    # A negative leading timestamp (a plausible model estimation error for
+    # content right at/before the clip's start, observed in real output)
+    # clamps up to cursor=0.0. If the next event is also at 0.0, that
+    # produces a zero-length "cue" for the first event. Unlike the
+    # overshoot-past-duration case (nothing after it to merge into), there
+    # IS a following cue here, so the first event's text must be carried
+    # forward onto it rather than silently dropped.
+    events = [
+        DescriptionEvent(-0.3, "first"),
+        DescriptionEvent(0.0, "second"),
+        DescriptionEvent(10.0, "third"),
+    ]
+
+    srt = build_description_srt_from_events(events, 30.0)
+
+    assert srt is not None
+    assert "first" in srt
+    assert "second" in srt
+    assert "1\n00:00:00,000 --> 00:00:10,000\nfirst second\n" in srt
+    assert "2\n00:00:10,000 --> 00:00:30,000\nthird\n" in srt
+
+
 def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
     from blackvue.generate.scene import DescriptionEvent
     from blackvue.web.archive_browser import build_description_srt_from_events
