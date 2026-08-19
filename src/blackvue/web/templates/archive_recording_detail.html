@@ -203,6 +203,17 @@
   var voices = [];
   var audio = document.getElementById('tts-player');
   var activeButton = null;
+  // Which voice_id the clip currently loaded into `audio` was actually
+  // synthesized with - the click handler's toggle-play/pause shortcut
+  // below must not fire once this stops matching the picker's current
+  // selection, otherwise switching voices silently does nothing until
+  // a page refresh (Christer: "After selecting another voice, i need
+  // to refresh page for it to take effekt") - `activeButton` alone
+  // isn't enough to gate that shortcut, since it stays set to the same
+  // button after playback finishes naturally (see the 'ended' handler
+  // below, which resets the button label but not `activeButton`
+  // itself) even though the voice picker may have changed since.
+  var activeVoiceId = null;
 
   function showStatus(message) {
     if (!ttsStatus) return;
@@ -239,6 +250,7 @@
       resetButton(activeButton);
       activeButton = null;
     }
+    activeVoiceId = null;
   }
 
   audio.addEventListener('play', function () {
@@ -681,11 +693,22 @@
 
   speakButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
-      if (btn === activeButton && audio.src) {
-        // Already this button's clip - toggle play/pause on the
-        // existing player instead of re-fetching from ElevenLabs, so
-        // clicking the button and using the native controls bar are
-        // interchangeable.
+      var voiceId = selectedVoiceId();
+
+      if (btn === activeButton && audio.src && voiceId === activeVoiceId) {
+        // Already this button's clip, synthesized with the currently
+        // selected voice - toggle play/pause on the existing player
+        // instead of re-fetching from ElevenLabs, so clicking the
+        // button and using the native controls bar are interchangeable.
+        // The voiceId match is required, not just the button: after
+        // playback finishes naturally, `activeButton` stays set to this
+        // same button (see the 'ended' handler above, which only resets
+        // the button's label) - without checking activeVoiceId too,
+        // picking a different voice and clicking "Read aloud" again
+        // would just replay the old clip instead of resynthesizing,
+        // which is exactly what Christer reported: "After selecting
+        // another voice, i need to refresh page for it to take
+        // effekt."
         if (audio.paused) {
           audio.play();
         } else {
@@ -694,9 +717,8 @@
         return;
       }
 
-      stop(); // switching to a different block - abandon whatever was playing
+      stop(); // switching to a different block/voice - abandon whatever was playing
 
-      var voiceId = selectedVoiceId();
       if (!voiceId) return;
 
       // Blocks that have a real description.srt (see the
@@ -710,6 +732,7 @@
       var srtLink = btn.closest('.scene-text').querySelector('.description-srt-link');
       if (srtLink) {
         activeButton = btn; // set early so a fetch failure below can stop() cleanly
+        activeVoiceId = voiceId;
         showStatus('Loading description.srt…');
         btn.textContent = 'Loading…';
         btn.disabled = true;
@@ -751,6 +774,7 @@
 
       showStatus('');
       activeButton = btn;
+      activeVoiceId = voiceId;
       btn.textContent = 'Loading…';
       btn.disabled = true;
 

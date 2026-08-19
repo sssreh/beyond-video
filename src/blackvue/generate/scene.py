@@ -113,6 +113,25 @@ when reading it:
    about another vehicle's movement relative to the camera as
    unverified, alongside plate/sign/place-name reads.
 
+   Follow-up, same day: Christer pushed back on the "probably BILEN"
+   correction above - "I am pretty sure BIELEN came from the rear
+   camera, but nothing in the description indicates behind the car or
+   rear view." That observation doesn't actually settle which reading
+   is right, but it sharpens the concern either way: if BIELEŃ really
+   is rear-camera content bleeding into a front-camera description,
+   the text gives no self-aware signal of that at all (no "behind
+   me"/"rear view" phrasing) - which is exactly what unflagged
+   cross-camera bleed looks like from the outside, a plain factual-
+   sounding sentence with no marker that it belongs to a different
+   camera. The "correction to that earlier entry" framing above
+   overreached by treating the BILEN theory as settled when it isn't -
+   left as an open question rather than corrected further, since the
+   real fix doesn't depend on resolving it: the DESCRIBE_PROMPT guard
+   above (don't describe rear-facing footage as the front view or vice
+   versa) targets the failure mode itself - unflagged cross-camera
+   content presented as plain fact - regardless of which reading of
+   this one ambiguous word turns out to be correct.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later

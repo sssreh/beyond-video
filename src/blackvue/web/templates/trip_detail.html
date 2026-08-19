@@ -137,6 +137,11 @@
   var voices = [];
   var audio = document.getElementById('tts-player');
   var activeButton = null;
+  // Which voice_id the clip currently loaded into `audio` was actually
+  // synthesized with - see archive_recording_detail.html's identical
+  // fix for the full reasoning (Christer: "After selecting another
+  // voice, i need to refresh page for it to take effekt").
+  var activeVoiceId = null;
 
   function showStatus(message) {
     if (!ttsStatus) return;
@@ -166,6 +171,7 @@
       resetButton(activeButton);
       activeButton = null;
     }
+    activeVoiceId = null;
   }
 
   audio.addEventListener('play', function () {
@@ -364,11 +370,15 @@
 
   speakButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
-      if (btn === activeButton && audio.src) {
-        // Already this button's clip - toggle play/pause on the
-        // existing player instead of re-fetching from ElevenLabs, so
-        // clicking the button and using the native controls bar are
-        // interchangeable.
+      var voiceId = selectedVoiceId();
+
+      if (btn === activeButton && audio.src && voiceId === activeVoiceId) {
+        // Already this button's clip, synthesized with the currently
+        // selected voice - toggle play/pause on the existing player
+        // instead of re-fetching from ElevenLabs, so clicking the
+        // button and using the native controls bar are interchangeable.
+        // See archive_recording_detail.html's identical check for why
+        // the voiceId match is required, not just the button.
         if (audio.paused) {
           audio.play();
         } else {
@@ -377,9 +387,8 @@
         return;
       }
 
-      stop(); // switching to a different block - abandon whatever was playing
+      stop(); // switching to a different block/voice - abandon whatever was playing
 
-      var voiceId = selectedVoiceId();
       if (!voiceId) return;
 
       var content = btn.closest('.scene-text').querySelector('.scene-text-content');
@@ -388,6 +397,7 @@
 
       showStatus('');
       activeButton = btn;
+      activeVoiceId = voiceId;
       btn.textContent = 'Loading…';
       btn.disabled = true;
 
