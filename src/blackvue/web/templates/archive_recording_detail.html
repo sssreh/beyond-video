@@ -53,15 +53,19 @@
 <div class="scene-text">
   <div class="scene-text-header">
     <p class="hint">{{ label }}</p>
+    {% if description %}
     <div class="tts-actions">
       <button type="button" class="voice-btn speak-btn" title="Read this description aloud">Read aloud</button>
       <a class="voice-btn tts-download" href="#" download="speech.mp3" hidden>Download</a>
       <a class="voice-btn tts-download-srt" href="#" download="speech.srt" hidden>Download SRT</a>
     </div>
+    {% endif %}
   </div>
   <div class="scene-text-content">
     {% if description %}
+    <div class="tts-text">
     <p>{{ description }}</p>
+    </div>
     <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/description.srt?direction={{ label|lower }}" download>Download {{ label }} description as .srt (video-synced)</a> - timed against the {{ label }} video's own real length, for importing alongside it in your editor (not the same as the ElevenLabs "Download SRT" above, which is timed to the narration voice instead).</p>
     {% endif %}
     {% if legible_reads %}
@@ -398,7 +402,15 @@
       var voiceId = selectedVoiceId();
       if (!voiceId) return;
 
-      var content = btn.closest('.scene-text').querySelector('.scene-text-content');
+      // Only the description paragraph itself should be spoken - not
+      // the surrounding "Download .srt" hint links or the sign-reads
+      // list, which used to get swept in too because they all live
+      // inside the same .scene-text-content block (Christer: "1 funny
+      // thing is now that the text to speech say all of it below" -
+      // it was reading the download-link sentences and every sign
+      // read out loud along with the actual description). The
+      // description alone is wrapped in .tts-text for exactly this.
+      var content = btn.closest('.scene-text').querySelector('.tts-text');
       var text = (content ? content.textContent : '').replace(/\s+/g, ' ').trim();
       if (!text) return;
 
