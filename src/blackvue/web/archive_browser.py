@@ -499,8 +499,52 @@ def _rescale_events_to_duration(
     ]
 
 
+# Reading-time cap for a real-timestamp description/sign cue - without
+# this, a cue spans the *entire* gap until the next event, which can
+# be a long, uneventful stretch once _rescale_events_to_duration()
+# starts spreading events across a multi-minute clip. Christer, after
+# the rescale fix landed: "The timstamps are better, the should
+# probably be trimmed in the begining and and the end, so more
+# centered at not that long" - a cue was staying on screen for the
+# whole gap to the next event rather than just long enough to read it.
+# CHARS_PER_SECOND is a plain, round approximation of comfortable
+# on-screen caption reading speed (roughly the low end of what
+# broadcast captioning guidelines use - erring slow rather than fast,
+# since these are read while also watching driving footage, not a
+# dedicated subtitle track); PADDING_SECONDS adds a little breathing
+# room beyond the raw reading-time estimate; MIN_SECONDS is a floor so
+# a very short bullet ("A bus passes.") still gets a comfortable
+# minimum, not a cue that blinks by in under a second.
+_CUE_READING_CHARS_PER_SECOND = 15.0
+_CUE_READING_PADDING_SECONDS = 1.0
+_CUE_READING_MIN_SECONDS = 2.0
+
+
+def _trim_cue_to_reading_time(start: float, end: float, text: str) -> tuple[float, float]:
+    """Shrink a cue's [start, end) window down to roughly how long
+    `text` actually takes to read, trimming evenly off both ends so
+    the caption is centered within its original window rather than
+    glued to the window's start - see the reading-speed constants
+    above for where the cap comes from. A no-op if the cue is already
+    shorter than the cap (the common case for a short bullet with a
+    naturally short gap before the next one)."""
+
+    max_duration = max(
+        _CUE_READING_MIN_SECONDS,
+        len(text) / _CUE_READING_CHARS_PER_SECOND + _CUE_READING_PADDING_SECONDS,
+    )
+    span = end - start
+    if span <= max_duration:
+        return start, end
+    trim = (span - max_duration) / 2
+    return start + trim, end - trim
+
+
 def build_description_srt_from_events(
-    events: list[DescriptionEvent], duration_seconds: float
+    events: list[DescriptionEvent],
+    duration_seconds: float,
+    *,
+    signs: list[SignRead] | None = None,
 ) -> str | None:
     """Build a downloadable .srt for a recording's '## Description'
     events using their *real* per-event timestamps, once DESCRIBE_PROMPT
@@ -515,23 +559,53 @@ def build_description_srt_from_events(
     deliver that, since it has no idea when in the clip anything
     actually happens; real per-event timestamps do.
 
-    Before anything else, every event's timestamp is rescaled by
-    _rescale_events_to_duration() so the latest one lines up with the
-    recording's real end - see that function's own docstring for why:
-    the model's raw timestamps reflect its own narrative pacing
-    between the handful of frames it was actually shown, not real
-    elapsed video time, so used verbatim they come back bunched into
-    the first few seconds of a much longer clip.
+    `signs`, if given, are this recording's zoomed-in sign/plate reads
+    (see build_sign_read_srt()/_parse_sign_reads()) merged onto the
+    same timeline as the description events, so one .srt covers
+    everything with a real per-frame or per-event timestamp instead of
+    two separate downloads. Christer: "I would also like the signs be
+    included both in the srt and the read aloud." Unlike description
+    events, sign reads are NOT rescaled - zoom_into_signs() samples
+    real frames at known seconds (see generate/scene.py's
+    _extract_full_res_frames()), so their timestamps are already
+    accurate video time, not the model's own narrative pacing the way
+    description events are (see _rescale_events_to_duration()'s
+    docstring). Each sign read is converted to a DescriptionEvent
+    (same timestamp_seconds/text shape) purely so it can flow through
+    the same sort/clamp/merge pipeline below as an ordinary event -
+    its text is the plain sign/plate read ("BIELEŃ"), not the "At N
+    seconds, ..." phrasing display_text uses for the on-page list and
+    read-aloud narration, since a synced caption already conveys
+    timing by when it appears on screen.
+
+    Before anything else, every *description* event's timestamp is
+    rescaled by _rescale_events_to_duration() so the latest one lines
+    up with the recording's real end - see that function's own
+    docstring for why: the model's raw timestamps reflect its own
+    narrative pacing between the handful of frames it was actually
+    shown, not real elapsed video time, so used verbatim they come
+    back bunched into the first few seconds of a much longer clip.
 
     Each (now-rescaled) event's cue starts at its own timestamp and
     runs until the next event's timestamp (or `duration_seconds` for
-    the last one), so a caption stays on screen for exactly the span
-    of video it describes. Both the start and the next event's
-    timestamp are clamped to `[cursor, duration_seconds]` - `cursor`
-    (the previous cue's own end) guards against out-of-order or
-    duplicate timestamps the same way build_sign_read_srt()'s cursor
-    does, and the `duration_seconds` cap guards against any remaining
-    rounding overshoot past the recording's real length.
+    the last one), then gets trimmed down to roughly how long its own
+    text takes to read (_trim_cue_to_reading_time()) rather than
+    staying on screen for the entire gap - Christer, right after the
+    rescale fix spread events out across the whole clip: "The
+    timstamps are better, the should probably be trimmed in the
+    begining and and the end, so more centered at not that long." The
+    untrimmed window is still what `cursor` and the overlap/collapse
+    guards below track - only the segment actually written to the
+    .srt is shortened, so an out-of-order or duplicate timestamp is
+    still detected exactly as before; trimming happens purely as a
+    last step, after a cue is confirmed to be real.
+
+    Both the start and the next event's timestamp are clamped to
+    `[cursor, duration_seconds]` - `cursor` (the previous cue's own
+    untrimmed end) guards against out-of-order or duplicate timestamps
+    the same way build_sign_read_srt()'s cursor does, and the
+    `duration_seconds` cap guards against any remaining rounding
+    overshoot past the recording's real length.
 
     A cue that collapses to zero or negative length after clamping
     doesn't just lose its text: Christer, after the first real-world
@@ -554,14 +628,17 @@ def build_description_srt_from_events(
     build_description_srt()'s evenly-spaced chunking instead of
     downloading something broken.
 
-    None if there are no events or no usable duration - same contract
-    as build_description_srt()."""
+    None if there are no events (and no signs) or no usable duration -
+    same contract as build_description_srt()."""
 
-    if not events or duration_seconds <= 0:
+    sign_events = [
+        DescriptionEvent(read.timestamp_seconds, read.text) for read in (signs or [])
+    ]
+    if (not events and not sign_events) or duration_seconds <= 0:
         return None
 
     events = _rescale_events_to_duration(events, duration_seconds)
-    ordered = sorted(events, key=lambda event: event.timestamp_seconds)
+    ordered = sorted(events + sign_events, key=lambda event: event.timestamp_seconds)
     segments: list[SpeechSegment] = []
     cursor = 0.0
     pending_text: list[str] = []
@@ -574,7 +651,8 @@ def build_description_srt_from_events(
         end = max(next_start, start)
         text = " ".join([*pending_text, event.text]) if pending_text else event.text
         if end > start:
-            segments.append(SpeechSegment(start=start, end=end, text=text))
+            display_start, display_end = _trim_cue_to_reading_time(start, end, text)
+            segments.append(SpeechSegment(start=display_start, end=display_end, text=text))
             cursor = end
             pending_text = []
         else:
@@ -890,6 +968,18 @@ class ArchiveRecording:
         keep working exactly as they did; only a freshly (re-)generated
         scene.txt gets the real-timestamp upgrade.
 
+        Also passes this direction's zoomed-in sign/plate reads (see
+        _parse_sign_reads()) into build_description_srt_from_events()'s
+        `signs` param - Christer: "I would also like the signs be
+        included both in the srt and the read aloud." Those keep their
+        own real per-frame timestamps rather than joining the
+        description events' pool that gets rescaled (see that
+        function's own docstring for why description timestamps need
+        rescaling and sign-read ones don't). A recording with legible
+        signs but no '## Description' events at all still gets a real,
+        signs-only .srt out of this - the events-based path is tried
+        whenever there's *either* events or signs, not just events.
+
         Sources the recording's real length from generate/media.py's
         load_or_compute_duration() - the same .duration.txt asset
         every other "how long did this recording actually last" answer
@@ -925,8 +1015,9 @@ class ArchiveRecording:
         duration_seconds = float(duration_seconds)
 
         events = extract_description_events(raw_text)
-        if events:
-            srt = build_description_srt_from_events(events, duration_seconds)
+        signs = _parse_sign_reads(raw_text)
+        if events or signs:
+            srt = build_description_srt_from_events(events, duration_seconds, signs=signs)
             if srt is not None:
                 return srt
 

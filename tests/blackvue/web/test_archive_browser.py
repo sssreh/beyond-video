@@ -1091,11 +1091,17 @@ def test_build_description_srt_from_events_uses_real_per_event_timestamps():
     # Real timestamps get rescaled (see _rescale_events_to_duration())
     # so the latest one lands at duration_seconds * n/(n+1) rather than
     # trusted verbatim - here n=3, duration=40.0, so 25.0 (the raw max)
-    # maps to 30.0, and 12.4 scales by the same 1.2x factor to 14.88.
+    # maps to 30.0, and 12.4 scales by the same 1.2x factor to 14.88,
+    # giving true intervals of [0, 14.88), [14.88, 30.0), [30.0, 40.0).
+    # Christer then asked for cues to be "trimmed in the beginning and
+    # the end, so more centered" rather than spanning the whole gap
+    # (see _trim_cue_to_reading_time()) - each true interval above is
+    # longer than its text's reading-time cap, so every displayed cue
+    # here is a symmetric shrink of that interval, centered within it.
     assert srt is not None
-    assert "1\n00:00:00,000 --> 00:00:14,880\n" in srt
-    assert "2\n00:00:14,880 --> 00:00:30,000\n" in srt
-    assert "3\n00:00:30,000 --> 00:00:40,000\n" in srt
+    assert "1\n00:00:05,973 --> 00:00:08,907\n" in srt
+    assert "2\n00:00:20,973 --> 00:00:23,907\n" in srt
+    assert "3\n00:00:32,967 --> 00:00:37,033\n" in srt
     assert "red bus" in srt
 
 
@@ -1123,9 +1129,13 @@ def test_build_description_srt_from_events_rescales_an_overshoot_into_range():
     assert "second" in srt
     # n=2, duration=40.0 -> target_max = 40 * 2/3 = 26.6667, scale =
     # 26.6667/50 = 0.5333; second's rescaled start is 26.6667s, well
-    # inside the clip, and its cue runs through to the real end.
-    assert "1\n00:00:00,000 --> 00:00:26,667\nfirst\n" in srt
-    assert "2\n00:00:26,667 --> 00:00:40,000\nsecond - past duration\n" in srt
+    # inside the clip, giving true intervals [0, 26.667) and
+    # [26.667, 40.0). Both are longer than their short texts' reading
+    # caps, so _trim_cue_to_reading_time() centers a shorter displayed
+    # cue within each one (see the trimming test above for the general
+    # mechanic).
+    assert "1\n00:00:12,333 --> 00:00:14,333\nfirst\n" in srt
+    assert "2\n00:00:32,100 --> 00:00:34,567\nsecond - past duration\n" in srt
 
 
 def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forward():
@@ -1151,12 +1161,18 @@ def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forwar
     # -0.3*2.25=-0.675 (still clamps to cursor=0.0, still collides with
     # the second event's own 0.0*2.25=0.0), 10.0*2.25=22.5. The
     # collapse-and-merge-forward mechanic this test exists for still
-    # fires - just at the rescaled numbers.
+    # fires - just at the rescaled numbers - giving true intervals
+    # [0, 22.5) for the merged "first second" cue and [22.5, 30.0) for
+    # "third". _trim_cue_to_reading_time() then centers each displayed
+    # cue within its (untrimmed) true interval; note that the merge
+    # decision itself is keyed off the true interval's cursor tracking,
+    # not the trimmed display window, so this collapse behavior is
+    # unaffected by trimming.
     assert srt is not None
     assert "first" in srt
     assert "second" in srt
-    assert "1\n00:00:00,000 --> 00:00:22,500\nfirst second\n" in srt
-    assert "2\n00:00:22,500 --> 00:00:30,000\nthird\n" in srt
+    assert "1\n00:00:10,250 --> 00:00:12,250\nfirst second\n" in srt
+    assert "2\n00:00:25,250 --> 00:00:27,250\nthird\n" in srt
 
 
 def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
@@ -1171,10 +1187,13 @@ def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
     srt = build_description_srt_from_events(events, 30.0)
 
     # n=2, duration=30.0 -> target_max=20.0, scale=2.0: 2.0*2=4.0,
-    # 10.0*2=20.0.
+    # 10.0*2=20.0, giving true intervals [4.0, 20.0) and [20.0, 30.0).
+    # Both texts are short relative to their true interval, so
+    # _trim_cue_to_reading_time() centers a shorter displayed cue
+    # within each.
     assert srt.index("earlier thing") < srt.index("later thing")
-    assert "1\n00:00:04,000 --> 00:00:20,000\n" in srt
-    assert "2\n00:00:20,000 --> 00:00:30,000\n" in srt
+    assert "1\n00:00:10,567 --> 00:00:13,433\n" in srt
+    assert "2\n00:00:23,667 --> 00:00:26,333\n" in srt
 
 
 def test_build_description_srt_from_events_none_for_no_events_or_duration():
@@ -1185,6 +1204,109 @@ def test_build_description_srt_from_events_none_for_no_events_or_duration():
     assert build_description_srt_from_events([], 30.0) is None
     assert build_description_srt_from_events(events, 0) is None
     assert build_description_srt_from_events(events, -5) is None
+
+
+# ---------------------------------------------------------------------------
+# _trim_cue_to_reading_time() - Christer, right after the real-per-event-
+# timestamp rescale fix landed: "The timstamps are better, the should
+# probably be trimmed in the begining and and the end, so more centered at
+# not that long." A cue that spans the whole (possibly long, uneventful)
+# gap between two events reads as sluggish; this shrinks the *displayed*
+# window down to roughly how long the text actually takes to read,
+# trimming evenly off both ends so the caption sits centered in its
+# original window rather than glued to the start of it.
+# ---------------------------------------------------------------------------
+
+
+def test_trim_cue_to_reading_time_is_a_noop_when_span_is_already_short():
+    from blackvue.web.archive_browser import _trim_cue_to_reading_time
+
+    # "Hi." needs nowhere near 1.5s to read, but the window itself is
+    # already under the reading-time cap - nothing to trim.
+    assert _trim_cue_to_reading_time(5.0, 6.5, "Hi.") == (5.0, 6.5)
+
+
+def test_trim_cue_to_reading_time_centers_a_shorter_window_for_long_spans():
+    from blackvue.web.archive_browser import _trim_cue_to_reading_time
+
+    # text is 29 chars -> max_duration = 29/15 + 1 = 2.9333s. Original
+    # window is 20s wide; trim = (20 - 2.9333) / 2 = 8.5333s off each
+    # end, leaving a ~2.9333s window centered inside [0, 20).
+    start, end = _trim_cue_to_reading_time(0.0, 20.0, "A red bus passes on the left.")
+    assert round(start, 3) == 8.533
+    assert round(end, 3) == 11.467
+    assert round(end - start, 3) == 2.933
+
+
+def test_trim_cue_to_reading_time_never_shrinks_below_the_minimum_floor():
+    from blackvue.web.archive_browser import _trim_cue_to_reading_time
+
+    # Even near-empty text still gets at least _CUE_READING_MIN_SECONDS
+    # (2.0s) of display time - here the window (1.0s) is already under
+    # that floor, so it's left alone rather than trimmed to nothing.
+    assert _trim_cue_to_reading_time(0.0, 1.0, "x") == (0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# build_description_srt_from_events(signs=...) - Christer, same message as
+# the trimming request above: "I would also like the signs be included
+# both in the srt and the read aloud." Sign/plate reads carry their own
+# real per-frame timestamps (see SignRead's docstring), so they merge into
+# the sorted cue timeline as-is, without going through
+# _rescale_events_to_duration() the way the (unreliable) description
+# events do.
+# ---------------------------------------------------------------------------
+
+
+def test_build_description_srt_from_events_merges_signs_without_rescaling_them():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import SignRead, build_description_srt_from_events
+
+    # These two description events force a real rescale (n=2,
+    # duration=40.0 -> target_max=26.667, scale=0.5333): 50.0 lands at
+    # 26.667, not verbatim. The sign read's own 5.0s timestamp must
+    # come through completely untouched by that same scale factor -
+    # landing between the two description events at its real position,
+    # not at 5.0*0.5333=2.667.
+    events = [
+        DescriptionEvent(0.0, "first"),
+        DescriptionEvent(50.0, "second - past duration"),
+    ]
+    signs = [SignRead(5.0, "STOP sign visible")]
+
+    srt = build_description_srt_from_events(events, 40.0, signs=signs)
+
+    assert srt is not None
+    # Chronological order: first (0), the sign (5.0, unscaled), then
+    # the rescaled second event (26.667) - not the original list order.
+    assert srt.index("first") < srt.index("STOP sign") < srt.index("second")
+    assert "1\n00:00:01,500 --> 00:00:03,500\nfirst\n" in srt
+    assert "2\n00:00:14,767 --> 00:00:16,900\nSTOP sign visible\n" in srt
+    assert "3\n00:00:32,100 --> 00:00:34,567\nsecond - past duration\n" in srt
+
+
+def test_build_description_srt_from_events_signs_only_with_no_description_events():
+    from blackvue.web.archive_browser import SignRead, build_description_srt_from_events
+
+    # A recording can have legible signs but no '## Description' events
+    # at all (or an older scene.txt with only the old-format plain-
+    # prose description, which build_description_srt_from_events()
+    # never sees). This still produces a real, signs-only .srt - the
+    # events-based path is tried whenever there's *either* events or
+    # signs, not just events (see ArchiveRecording.description_srt()).
+    signs = [SignRead(5.0, "YIELD sign visible")]
+
+    srt = build_description_srt_from_events([], 30.0, signs=signs)
+
+    assert srt is not None
+    assert "YIELD sign visible" in srt
+
+
+def test_build_description_srt_from_events_none_when_signs_and_events_both_empty():
+    from blackvue.web.archive_browser import build_description_srt_from_events
+
+    assert build_description_srt_from_events([], 30.0, signs=[]) is None
+    assert build_description_srt_from_events([], 30.0, signs=None) is None
 
 
 def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
@@ -1205,11 +1327,14 @@ def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
 
     srt = recording.description_srt("front")
     assert srt is not None
-    # Same rescale as the unit-test version above: n=3, duration=40.0
-    # -> target_max=30.0, scale=1.2, so the 12.4s "red bus" event
-    # lands at 14.88s and its cue runs to the (also rescaled) 30.0s
-    # start of the third event.
-    assert "00:00:14,880 --> 00:00:30,000" in srt
+    # Same rescale + trim as the unit-test version above: n=3,
+    # duration=40.0 -> target_max=30.0, scale=1.2, so the 12.4s "red
+    # bus" event lands at a true interval of 14.88s through the (also
+    # rescaled) 30.0s start of the third event - then
+    # _trim_cue_to_reading_time() centers a shorter displayed cue
+    # within that true interval, per Christer's "trimmed in the
+    # beginning and the end, so more centered" request.
+    assert "00:00:20,973 --> 00:00:23,907" in srt
     assert "red bus" in srt
 
     # scene_summary's description text stays clean prose, with no
@@ -1224,15 +1349,89 @@ def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
     )
 
 
-def test_description_srt_builds_from_scene_text_and_cached_duration(tmp_path):
-    # _COMBINED_SCENE_TEXT's '## Description' is old-format plain prose
-    # (no bulleted timestamps) - this exercises the evenly-spaced
-    # fallback path, still exactly as before this feature existed.
+def test_description_srt_merges_sign_reads_from_a_real_scene_txt(tmp_path):
+    # End-to-end version of the signs= unit tests above: a real
+    # scene.txt with both a '## Description' section (needs rescaling)
+    # and a '## Zoomed sign reads' section (real per-frame timestamps,
+    # not rescaled) - Christer: "I would also like the signs be
+    # included both in the srt and the read aloud." This exercises
+    # ArchiveRecording.description_srt()'s own signs-gathering
+    # (_parse_sign_reads()) rather than calling
+    # build_description_srt_from_events() directly.
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.mp4")
     _write(
         archive, "20260715_140212_N.scene.txt",
-        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+        content=(
+            "## Description\n"
+            "- [t=0.0s] Clear weather, light traffic.\n"
+            "- [t=25.0s] The vehicle continues through an intersection.\n"
+            "## Zoomed sign reads\n"
+            "- [t=12.4s] STOP sign visible\n"
+        ).encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"40")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.description_srt("front")
+    assert srt is not None
+    # Chronological order in the merged .srt: the description event at
+    # 0.0, then the sign read, then the description event at 25.0 -
+    # the sign uses SignRead.text (no "At N seconds" prefix), since the
+    # cue's own timestamp already conveys "when" for the .srt.
+    assert srt.index("Clear weather") < srt.index("STOP sign") < srt.index("vehicle continues")
+    assert "1\n00:00:04,733 --> 00:00:07,667\nClear weather, light traffic.\n" in srt
+    assert "2\n00:00:18,467 --> 00:00:20,600\nSTOP sign visible\n" in srt
+    assert "3\n00:00:31,300 --> 00:00:35,367\nThe vehicle continues through an intersection.\n" in srt
+
+    # The on-page sign-reads list still uses the natural-language
+    # display_text ("At 12 seconds, ...") since scene_summary has no
+    # other visual timing cue - only the .srt's own cue text drops the
+    # "At N seconds" prefix.
+    [(_label, _description, legible_reads)] = recording.scene_summary
+    assert legible_reads == ["At 12 seconds, STOP sign visible"]
+
+
+def test_description_srt_builds_signs_only_srt_when_no_description_section(tmp_path):
+    # A recording can have legible signs but no '## Description'
+    # section at all - still produces a real, signs-only .srt rather
+    # than None (see build_description_srt_from_events()'s "or signs"
+    # guard).
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=(
+            "## Zoomed sign reads\n"
+            "- [t=5.0s] YIELD sign visible\n"
+        ).encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"30")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.description_srt("front")
+    assert srt is not None
+    assert "YIELD sign visible" in srt
+
+
+def test_description_srt_builds_from_scene_text_and_cached_duration(tmp_path):
+    # Old-format plain-prose '## Description' (no bulleted timestamps)
+    # and no '## Zoomed sign reads' section at all - this exercises the
+    # evenly-spaced fallback path, still exactly as before this feature
+    # existed. (Deliberately NOT using _COMBINED_SCENE_TEXT here since
+    # that fixture also has legible sign reads, which would now route
+    # through the signs-only build_description_srt_from_events() path
+    # instead of the fallback this test means to cover.)
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=(
+            "## Description\n"
+            "A quiet residential street, clear weather, light traffic.\n"
+        ).encode("utf-8"),
     )
     # Pre-seed the self-healing .duration.txt cache so this test stays
     # ffmpeg-free - load_or_compute_duration() reads this straight off
@@ -1261,12 +1460,36 @@ def test_description_srt_matches_direction_case_insensitively(tmp_path):
     assert recording.description_srt("Front") == recording.description_srt("front")
 
 
-def test_description_srt_none_when_direction_has_no_description(tmp_path):
+def test_description_srt_returns_a_signs_only_srt_when_direction_has_no_description(tmp_path):
+    # _OCR_ONLY_SCENE_TEXT has legible sign reads but no '## Description'
+    # section - since signs now merge into description.srt too (see
+    # build_description_srt_from_events()'s signs= param), this must no
+    # longer be None: it's a real signs-only .srt built from the one
+    # legible read ("not legible" reads are still dropped as always).
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.mp4")
     _write(
         archive, "20260715_140212_N.rear.scene.txt",
         content=_OCR_ONLY_SCENE_TEXT.encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"180")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.description_srt("rear")
+    assert srt is not None
+    assert "MALL OF SCANDINAVIA" in srt
+    assert "not legible" not in srt
+
+
+def test_description_srt_none_when_direction_has_no_description_or_signs(tmp_path):
+    # _ALL_NOT_LEGIBLE_SCENE_TEXT has neither a description section nor
+    # any legible sign read - genuinely nothing to build a cue from.
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_ALL_NOT_LEGIBLE_SCENE_TEXT.encode("utf-8"),
     )
     _write(archive, "20260715_140212_N.duration.txt", content=b"180")
 
