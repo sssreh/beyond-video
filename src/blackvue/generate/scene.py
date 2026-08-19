@@ -38,6 +38,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -94,11 +95,26 @@ DESCRIBE_PROMPT = (
     "what IS in the frame - never answer by saying what it is not "
     "(for example 'this is not dashcam footage' or 'the request "
     "cannot be fulfilled'), and never refuse to describe an image just "
-    "because it doesn't show a road. If nothing notable happens in "
-    "ordinary driving footage, say so in a single plain sentence (for "
-    "example: 'Routine driving, nothing notable happened.') - don't "
+    "because it doesn't show a road.\n\n"
+    "If this is a video clip (not a single still photo), break your "
+    "description into a bulleted list of distinct moments, each one "
+    "prefixed with its approximate elapsed time from the start of the "
+    "clip in seconds, in exactly this format: '- [t=12.4s] A red bus "
+    "passes on the left, driving in the opposite direction.' Start a "
+    "new bullet whenever something worth mentioning appears, changes, "
+    "or ends (a vehicle passing, a turn, a change in traffic or "
+    "weather, and so on) - roughly one bullet every 5-15 seconds of "
+    "footage is typical, more often if things are changing quickly, "
+    "less often during a long uneventful stretch. Each bullet should "
+    "be a complete, self-contained sentence ending in a period, since "
+    "these will be read back individually. If nothing notable happens "
+    "for the whole clip, output a single bullet instead (for example: "
+    "'- [t=0.0s] Routine driving, nothing notable happened.') - don't "
     "invent drama, and don't list off categories of incident that "
-    "didn't occur."
+    "didn't occur. If this is a single still photo instead of a video "
+    "clip, skip the timestamp/bullet format entirely - there is no "
+    "timeline to reference - and just describe it directly in a "
+    "sentence or two."
 )
 
 OCR_PROMPT = (
@@ -393,10 +409,14 @@ def build_prompt(task: str) -> str:
     return COMBINED_PROMPT
 
 
-def extract_description_section(output_text: str) -> str:
+def _extract_raw_description_section(output_text: str) -> str:
     """Pull just the '## Description' section out of a per-recording
-    result, dropping the on-screen-text/zoomed-sign-reads sections -
-    used to build summarize_trip()'s input."""
+    result, verbatim - dropping the on-screen-text/zoomed-sign-reads
+    sections, but not otherwise touching the content. Shared by
+    extract_description_section() (which cleans this up for display/
+    summarization) and extract_description_events() (which parses the
+    real per-event timestamps back out of it) below - both need the
+    exact same raw slice, just processed differently."""
 
     lines = output_text.splitlines()
     section = []
@@ -411,6 +431,130 @@ def extract_description_section(output_text: str) -> str:
         if in_description:
             section.append(line)
     return "\n".join(section).strip()
+
+
+# Matches one "- [t=12.4s] some sentence." bullet's timestamp prefix,
+# once the leading "- " has already been stripped - same shape as
+# web/archive_browser.py's own _SIGN_READ_TIMESTAMP_RE, kept as a
+# separate constant here rather than a shared import since the two
+# live in different layers (this one parses describe_scene()'s own
+# freshly-generated output; that one parses zoom_into_signs()'s bullets
+# back out for display) and there's no real reuse to be had beyond the
+# regex shape itself.
+_TIMED_EVENT_RE = re.compile(r"^\[t=(?P<seconds>\d+(?:\.\d+)?)s\]\s*(?P<rest>.*)$")
+
+
+@dataclass(frozen=True)
+class DescriptionEvent:
+    """One parsed '## Description' bullet, once DESCRIBE_PROMPT started
+    asking for timestamped events instead of one holistic paragraph -
+    see that prompt's own text for the exact format requested, and
+    _parse_timed_events() for how a raw section turns into these.
+    Christer, right after getting the sign-reads' scene.srt and the
+    (then evenly-spaced) description.srt working: "It would have been
+    nice to both say and subtitle 'To the left, there's a red bus
+    passing alongside the vehicle' at the same time you can see the
+    red buss pass" - this is what makes that possible: real per-event
+    sync points for the description, the same way zoom_into_signs()
+    already provides them for sign/plate reads."""
+
+    timestamp_seconds: float
+    text: str
+
+
+def _parse_timed_events(section_text: str) -> list[DescriptionEvent]:
+    """Parse a raw '## Description' section (as returned by
+    _extract_raw_description_section()) into DescriptionEvents, if it's
+    in the new bulleted-and-timestamped format DESCRIBE_PROMPT now asks
+    for. Returns [] for anything else - a still photo's plain sentence
+    (no timeline to bullet), an older scene.txt written before this
+    format existed, or any other free-text response that isn't
+    bulleted - so every caller can treat "no events" as "fall back to
+    treating this as plain prose" without a separate format check.
+
+    Folds any non-bullet, non-blank line into the bullet currently
+    being built (joined with a space) rather than dropping it, the same
+    defensive multi-line-continuation handling
+    web/archive_browser.py's _parse_sign_reads() already uses and was
+    specifically bug-fixed for once (see that function's own
+    docstring) - a long event description wrapping across lines in the
+    raw text must not silently lose its tail here either."""
+
+    lines = section_text.splitlines()
+    events: list[DescriptionEvent] = []
+    current: str | None = None
+
+    def _flush() -> None:
+        nonlocal current
+        if current is not None:
+            content = current.strip()
+            if content:
+                match = _TIMED_EVENT_RE.match(content)
+                if match:
+                    events.append(
+                        DescriptionEvent(
+                            timestamp_seconds=float(match.group("seconds")),
+                            text=match.group("rest").strip(),
+                        )
+                    )
+            current = None
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            _flush()
+            current = stripped[2:].strip()
+        elif stripped and current is not None:
+            current += " " + stripped
+    _flush()
+
+    return events
+
+
+def extract_description_section(output_text: str) -> str:
+    """Pull just the '## Description' section out of a per-recording
+    result and return it as a single clean, readable paragraph - used
+    to build summarize_trip()'s input (see that function's own
+    docstring) and by web/archive_browser.py's on-page description/TTS
+    narration.
+
+    Since DESCRIBE_PROMPT started asking for a bulleted, per-event-
+    timestamped description (see that prompt and DescriptionEvent
+    above) rather than one holistic paragraph, this strips each
+    bullet's "- [t=X.Ys] " prefix and joins the remaining sentences
+    with spaces into one flowing paragraph - callers here never see
+    the bracket notation, exactly as if the model had written a plain
+    paragraph directly. Christer: after getting the real-timestamp
+    request in ("It would have been nice to both say and subtitle
+    ... at the same time you can see ...  pass"), also: "please keep
+    the old output" - this is that: every existing caller of this
+    function keeps getting the same kind of plain-prose text back it
+    always has, whether the underlying scene.txt is old-format (no
+    bullets at all - returned unchanged, exactly as before this
+    change) or new-format (bullets stripped down to prose). Callers
+    that want the real per-event timestamps instead of prose should
+    use extract_description_events() below."""
+
+    raw = _extract_raw_description_section(output_text)
+    events = _parse_timed_events(raw)
+    if not events:
+        return raw
+    return " ".join(event.text for event in events)
+
+
+def extract_description_events(output_text: str) -> list[DescriptionEvent]:
+    """The real per-event timestamps behind extract_description_section()'s
+    clean prose, for a caller that actually wants to sync something to
+    the video's own timeline instead of just reading the text (see
+    web/archive_browser.py's description_srt(), which prefers these
+    real timestamps over its own evenly-spaced-chunk fallback whenever
+    they're available). [] for a still photo or an older, pre-
+    timestamp scene.txt - see _parse_timed_events()'s own docstring for
+    why an empty list is exactly the right "nothing to sync against
+    here" signal for callers to fall back on."""
+
+    raw = _extract_raw_description_section(output_text)
+    return _parse_timed_events(raw)
 
 
 def _fetch_vision_inputs(process_vision_info, messages):

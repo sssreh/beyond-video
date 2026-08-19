@@ -22,8 +22,10 @@ from .media import select_source
 from .mp4_box_reader import Mp4Info
 from .mp4_box_reader import read_mp4_info
 from .scene import DEFAULT_MODEL as SCENE_DEFAULT_MODEL
+from .scene import DescriptionEvent
 from .scene import SceneOptions
 from .scene import describe_scene
+from .scene import extract_description_events
 from .scene import extract_description_section
 from .scene import summarize_trip
 from .scene import unload_scene_model
@@ -50,6 +52,7 @@ __all__ = [
     "SCENE_DEFAULT_MODEL",
     "SEGMENTATION_MODEL",
     "SILENCE_THRESHOLD_DB",
+    "DescriptionEvent",
     "MediaInfo",
     "MediaToolError",
     "Mp4Info",
@@ -62,6 +65,7 @@ __all__ = [
     "detect_language",
     "diarize",
     "extract_audio",
+    "extract_description_events",
     "extract_description_section",
     "extract_video_thumbnail",
     "format_diarized_transcript",

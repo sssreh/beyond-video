@@ -46,6 +46,8 @@ from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..generate.media import MediaToolError
 from ..generate.media import extract_video_thumbnail
 from ..generate.media import load_or_compute_duration
+from ..generate.scene import DescriptionEvent
+from ..generate.scene import extract_description_events
 from ..generate.scene import extract_description_section
 from ..generate.speech import SpeechSegment
 from ..generate.subtitles import format_srt
@@ -415,6 +417,64 @@ def build_description_srt(description: str, duration_seconds: float) -> str | No
     return format_srt(segments)
 
 
+def build_description_srt_from_events(
+    events: list[DescriptionEvent], duration_seconds: float
+) -> str | None:
+    """Build a downloadable .srt for a recording's '## Description'
+    events using their *real* per-event timestamps, once DESCRIBE_PROMPT
+    started asking the model for a bulleted, timestamped description
+    (see generate/scene.py's DescriptionEvent/extract_description_events())
+    instead of one holistic paragraph. This is what
+    ArchiveRecording.description_srt() actually wants: Christer, right
+    after getting the evenly-spaced version of this feature working:
+    "It would have been nice to both say and subtitle 'To the left,
+    there's a red bus passing alongside the vehicle' at the same time
+    you can see the red buss pass" - evenly-spaced chunking could never
+    deliver that, since it has no idea when in the clip anything
+    actually happens; real per-event timestamps do.
+
+    Each event's cue starts at its own timestamp and runs until the
+    next event's timestamp (or `duration_seconds` for the last one),
+    so a caption stays on screen for exactly the span of video it
+    describes. Both the start and the next event's timestamp are
+    clamped to `[cursor, duration_seconds]` - `cursor` (the previous
+    cue's own end) guards against out-of-order or duplicate timestamps
+    the same way build_sign_read_srt()'s cursor does, and the
+    `duration_seconds` cap guards against a model timestamp that
+    overshoots the recording's real length (a plausible estimation
+    error, not something worth trusting blindly). A cue that collapses
+    to zero or negative length after clamping is dropped rather than
+    written as a degenerate SRT entry; if every cue collapses that way
+    (pathological input), returns None so the caller can fall back to
+    build_description_srt()'s evenly-spaced chunking instead of
+    downloading something broken.
+
+    None if there are no events or no usable duration - same contract
+    as build_description_srt()."""
+
+    if not events or duration_seconds <= 0:
+        return None
+
+    ordered = sorted(events, key=lambda event: event.timestamp_seconds)
+    segments: list[SpeechSegment] = []
+    cursor = 0.0
+    for index, event in enumerate(ordered):
+        start = max(min(event.timestamp_seconds, duration_seconds), cursor)
+        if index + 1 < len(ordered):
+            next_start = min(ordered[index + 1].timestamp_seconds, duration_seconds)
+        else:
+            next_start = duration_seconds
+        end = max(next_start, start)
+        if end > start:
+            segments.append(SpeechSegment(start=start, end=end, text=event.text))
+            cursor = end
+
+    if not segments:
+        return None
+
+    return format_srt(tuple(segments))
+
+
 # RecordingId.kind's single-letter codes - see recording_id.py's own
 # docstring on "A" (observed on real hardware, meaning unconfirmed).
 _KIND_LABELS = {
@@ -691,19 +751,32 @@ class ArchiveRecording:
 
     def description_srt(self, direction: str) -> str | None:
         """A downloadable .srt for this recording's main '## Description'
-        paragraph, timed against the recording's own real elapsed time
-        rather than any TTS narration's speech timing - see
-        build_description_srt()'s own docstring for the full backstory
-        (Christer: "Could i also get a srt file that is synced with the
-        video of 3minutes", right after getting the sign-read .srt
-        above). Complements sign_read_srt() - that one has real per-
-        frame sync points to build cues from (zoom_into_signs()'s own
-        sampled timestamps); this one doesn't (describe_scene()'s main
-        pass has no internal timing at all), so it spaces the
-        description's own text evenly across the recording's real
-        length instead.
+        text, timed against the recording's own real elapsed time
+        rather than any TTS narration's speech timing. Christer,
+        right after getting the sign-read .srt above: "Could i also
+        get a srt file that is synced with the video of 3minutes" -
+        and then, once that shipped as evenly-spaced chunking (the
+        best available option at the time, since describe_scene()'s
+        description pass had no internal timing at all): "It would
+        have been nice to both say and subtitle 'To the left, there's
+        a red bus passing alongside the vehicle' at the same time you
+        can see the red buss pass." That's what this now does for real:
+        DESCRIBE_PROMPT asks the model for a bulleted, per-event-
+        timestamped description (see generate/scene.py's
+        DescriptionEvent/extract_description_events()), so a recording
+        generated after that change has real per-event sync points to
+        build cues from - build_description_srt_from_events() is tried
+        first. Christer, same message: "please keep the old output" -
+        an older scene.txt written before this change (or a still
+        photo, which has no timeline to timestamp against at all) has
+        no events to find, so extract_description_events() returns []
+        and this falls straight back to the original evenly-spaced
+        build_description_srt() behavior, completely unchanged from
+        before. Nothing needs regenerating for existing archives to
+        keep working exactly as they did; only a freshly (re-)generated
+        scene.txt gets the real-timestamp upgrade.
 
-        Sources that real length from generate/media.py's
+        Sources the recording's real length from generate/media.py's
         load_or_compute_duration() - the same .duration.txt asset
         every other "how long did this recording actually last" answer
         in this codebase already uses (self-healing: reads the cached
@@ -711,7 +784,8 @@ class ArchiveRecording:
         probes it once via ffprobe and writes the cache for next time)
         - deliberately reusing that existing generation-pipeline
         machinery rather than adding a second, web-layer-specific way
-        to probe a video's length.
+        to probe a video's length. Both the events-based and evenly-
+        spaced builders use this same duration as their upper bound.
 
         `direction` follows the same lowercase "front"/"rear" matching
         against scene_texts' capitalized labels as sign_read_srt().
@@ -723,19 +797,30 @@ class ArchiveRecording:
         t=0 .srt file.
         """
 
-        description = None
+        raw_text = None
         for label, text in self.scene_texts:
             if label.lower() == direction.lower():
-                description = extract_description_section(text)
+                raw_text = text
                 break
-        if not description:
+        if raw_text is None:
             return None
 
         duration_seconds = load_or_compute_duration(self.recording)
         if not duration_seconds:
             return None
+        duration_seconds = float(duration_seconds)
 
-        return build_description_srt(description, float(duration_seconds))
+        events = extract_description_events(raw_text)
+        if events:
+            srt = build_description_srt_from_events(events, duration_seconds)
+            if srt is not None:
+                return srt
+
+        description = extract_description_section(raw_text)
+        if not description:
+            return None
+
+        return build_description_srt(description, duration_seconds)
 
     @property
     def known_filenames(self) -> frozenset[str]:

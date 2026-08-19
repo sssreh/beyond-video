@@ -42,6 +42,114 @@ def test_extract_description_section_missing_heading_returns_empty():
     assert scene.extract_description_section("no headings here") == ""
 
 
+# ---------------------------------------------------------------------------
+# extract_description_events() / DescriptionEvent - added once DESCRIBE_PROMPT
+# started asking for a bulleted, per-event-timestamped description instead of
+# one holistic paragraph. Christer, after getting the (then evenly-spaced)
+# description.srt working: "It would have been nice to both say and subtitle
+# 'To the left, there's a red bus passing alongside the vehicle' at the same
+# time you can see the red buss pass" - answered by real per-event
+# timestamps, the same way zoom_into_signs() already provides them for sign
+# reads. Christer, same message: "please keep the old output" - see the
+# backward-compatibility tests below for how extract_description_section()
+# guarantees that for every existing caller.
+# ---------------------------------------------------------------------------
+
+_TIMED_DESCRIPTION_TEXT = (
+    "## Description\n"
+    "- [t=0.0s] Clear weather, light traffic on a two-lane suburban road.\n"
+    "- [t=12.4s] A red bus passes on the left, driving in the opposite "
+    "direction.\n"
+    "- [t=25.0s] The vehicle continues straight through a quiet "
+    "intersection.\n"
+    "\n"
+    "## On-screen text\n"
+    "- 42 km/h\n"
+)
+
+
+def test_extract_description_events_parses_bulleted_timestamps():
+    events = scene.extract_description_events(_TIMED_DESCRIPTION_TEXT)
+
+    assert events == [
+        scene.DescriptionEvent(
+            0.0, "Clear weather, light traffic on a two-lane suburban road."
+        ),
+        scene.DescriptionEvent(
+            12.4,
+            "A red bus passes on the left, driving in the opposite direction.",
+        ),
+        scene.DescriptionEvent(
+            25.0, "The vehicle continues straight through a quiet intersection."
+        ),
+    ]
+
+
+def test_extract_description_events_returns_empty_for_old_plain_prose():
+    # An older scene.txt (or a still photo's response) has no bullets at
+    # all - extract_description_events() must return [] rather than
+    # trying to force-parse a timestamp out of plain prose, so callers
+    # can treat "no events" as "nothing to sync against here."
+    old_text = "## Description\nRoutine driving, nothing notable happened.\n"
+    assert scene.extract_description_events(old_text) == []
+
+
+def test_extract_description_events_returns_empty_when_heading_missing():
+    assert scene.extract_description_events("no headings here") == []
+
+
+def test_extract_description_events_folds_a_multi_line_bullet():
+    # Same defensive multi-line-continuation handling
+    # web/archive_browser.py's _parse_sign_reads() already needed (see
+    # that function's own docstring for the real bug it fixed) - a long
+    # event description wrapping across raw lines must not lose its
+    # tail here either.
+    text = (
+        "## Description\n"
+        "- [t=8.0s] A blue sedan overtakes on the left, then merges back\n"
+        "into the lane ahead of the vehicle.\n"
+    )
+
+    events = scene.extract_description_events(text)
+
+    assert events == [
+        scene.DescriptionEvent(
+            8.0,
+            "A blue sedan overtakes on the left, then merges back into "
+            "the lane ahead of the vehicle.",
+        )
+    ]
+
+
+def test_extract_description_section_strips_timestamps_into_clean_prose():
+    # This is the "please keep the old output" guarantee: every caller
+    # of extract_description_section() (trip-summary input, the
+    # scene_summary display/TTS text) keeps getting a single readable
+    # paragraph back, with no bracket notation visible, whether the
+    # underlying scene.txt is old-format or new-format.
+    result = scene.extract_description_section(_TIMED_DESCRIPTION_TEXT)
+
+    assert result == (
+        "Clear weather, light traffic on a two-lane suburban road. "
+        "A red bus passes on the left, driving in the opposite direction. "
+        "The vehicle continues straight through a quiet intersection."
+    )
+    assert "[t=" not in result
+
+
+def test_extract_description_section_still_unchanged_for_old_plain_prose():
+    old_text = (
+        "## Description\n"
+        "Routine driving, nothing notable happened.\n\n"
+        "## On-screen text\n"
+        "- 84 km/h\n"
+    )
+
+    result = scene.extract_description_section(old_text)
+
+    assert result == "Routine driving, nothing notable happened."
+
+
 def test_normalize_plate_text_ignores_case_and_whitespace():
     assert scene._normalize_plate_text("  etr 734  ") == "ETR 734"
     assert scene._normalize_plate_text("ETR734") == "ETR734"

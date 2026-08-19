@@ -925,9 +925,22 @@ def test_extract_legible_sign_reads_uses_natural_language_timestamp(tmp_path):
 # timed against the recording's own real video length rather than any TTS
 # narration. Christer, right after the scene.srt (sign-reads) feature above:
 # "Could i also get a srt file that is synced with the video of 3minutes"
-# (see WORKING_CONTEXT.md). Unlike sign reads, describe_scene()'s main pass
-# has no internal per-sentence timestamps at all, so the text is chunked and
-# spaced evenly across the recording's real duration instead.
+# (see WORKING_CONTEXT.md).
+#
+# Originally describe_scene()'s main pass had no internal per-sentence
+# timestamps at all, so this chunked the text and spaced it evenly across
+# the recording's real duration - that fallback path (_chunk_description_
+# text()/build_description_srt(), tested below) still exists and is what
+# an older scene.txt (written before DESCRIBE_PROMPT started asking for
+# timestamped events) or a still photo's description falls back to.
+# Christer, on seeing the evenly-spaced version: "It would have been nice
+# to both say and subtitle 'To the left, there's a red bus passing
+# alongside the vehicle' at the same time you can see the red buss pass" -
+# "yes, but please keep the old output" - answered by
+# build_description_srt_from_events(), which ArchiveRecording.
+# description_srt() now prefers whenever generate/scene.py's
+# extract_description_events() finds real per-event timestamps to build
+# cues from (see that function's own tests in test_scene.py).
 # ---------------------------------------------------------------------------
 
 
@@ -1010,7 +1023,108 @@ def test_build_description_srt_none_for_non_positive_duration():
     assert build_description_srt("Some description text.", -5) is None
 
 
+def test_build_description_srt_from_events_uses_real_per_event_timestamps():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import build_description_srt_from_events
+
+    events = [
+        DescriptionEvent(0.0, "Clear weather, light traffic."),
+        DescriptionEvent(12.4, "A red bus passes on the left."),
+        DescriptionEvent(25.0, "The vehicle continues through an intersection."),
+    ]
+
+    srt = build_description_srt_from_events(events, 40.0)
+
+    assert srt is not None
+    assert "1\n00:00:00,000 --> 00:00:12,400\n" in srt
+    assert "2\n00:00:12,400 --> 00:00:25,000\n" in srt
+    assert "3\n00:00:25,000 --> 00:00:40,000\n" in srt
+    assert "red bus" in srt
+
+
+def test_build_description_srt_from_events_clamps_overshoot_and_drops_dead_cue():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import build_description_srt_from_events
+
+    # A timestamp past the recording's real duration (plausible model
+    # estimation error) must never produce a cue that starts after the
+    # video actually ends - clamped to duration_seconds, and dropped
+    # entirely if that clamp collapses it to zero length.
+    events = [
+        DescriptionEvent(0.0, "first"),
+        DescriptionEvent(50.0, "second - past duration"),
+    ]
+
+    srt = build_description_srt_from_events(events, 40.0)
+
+    assert srt is not None
+    assert "second" not in srt
+    assert "00:00:00,000 --> 00:00:40,000" in srt
+
+
+def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import build_description_srt_from_events
+
+    events = [
+        DescriptionEvent(10.0, "later thing, listed first"),
+        DescriptionEvent(2.0, "earlier thing, listed second"),
+    ]
+
+    srt = build_description_srt_from_events(events, 30.0)
+
+    assert srt.index("earlier thing") < srt.index("later thing")
+    assert "1\n00:00:02,000 --> 00:00:10,000\n" in srt
+    assert "2\n00:00:10,000 --> 00:00:30,000\n" in srt
+
+
+def test_build_description_srt_from_events_none_for_no_events_or_duration():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import build_description_srt_from_events
+
+    events = [DescriptionEvent(0.0, "something")]
+    assert build_description_srt_from_events([], 30.0) is None
+    assert build_description_srt_from_events(events, 0) is None
+    assert build_description_srt_from_events(events, -5) is None
+
+
+def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=(
+            "## Description\n"
+            "- [t=0.0s] Clear weather, light traffic on a two-lane road.\n"
+            "- [t=12.4s] A red bus passes on the left.\n"
+            "- [t=25.0s] The vehicle continues through an intersection.\n"
+        ).encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"40")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.description_srt("front")
+    assert srt is not None
+    assert "00:00:12,400 --> 00:00:25,000" in srt
+    assert "red bus" in srt
+
+    # scene_summary's description text stays clean prose, with no
+    # bracket notation ever surfacing on the page/in TTS narration -
+    # Christer: "please keep the old output".
+    [(_label, description, _reads)] = recording.scene_summary
+    assert "[t=" not in description
+    assert description == (
+        "Clear weather, light traffic on a two-lane road. "
+        "A red bus passes on the left. "
+        "The vehicle continues through an intersection."
+    )
+
+
 def test_description_srt_builds_from_scene_text_and_cached_duration(tmp_path):
+    # _COMBINED_SCENE_TEXT's '## Description' is old-format plain prose
+    # (no bulleted timestamps) - this exercises the evenly-spaced
+    # fallback path, still exactly as before this feature existed.
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.mp4")
     _write(
