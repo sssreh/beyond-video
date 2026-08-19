@@ -45,6 +45,7 @@ from ..archive import recording_is_photo
 from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..generate.media import MediaToolError
 from ..generate.media import extract_video_thumbnail
+from ..generate.media import load_or_compute_duration
 from ..generate.scene import extract_description_section
 from ..generate.speech import SpeechSegment
 from ..generate.subtitles import format_srt
@@ -126,11 +127,31 @@ class SignRead:
         needs sub-second precision on where a sign was noticed either.
         round() here follows Python's banker's-rounding (round-half-
         to-even), which is an acceptable trade-off since this is a
-        display convenience, not a precise timestamp."""
+        display convenience, not a precise timestamp.
 
-        seconds = round(self.timestamp_seconds)
-        unit = "second" if seconds == 1 else "seconds"
-        return f"At {seconds} {unit}, {self.text}"
+        Follow-up, once recordings ran past the one-minute mark and
+        "At 90 seconds" started showing up: Christer - "When naming the
+        sign timestamps it ok to include minutes to if timestamp > 60
+        secods." Past 59 seconds this now speaks/shows whole minutes
+        plus any remaining seconds ("At 1 minute 30 seconds", "At 2
+        minutes"  when the remainder is exactly 0) instead of a bare
+        seconds count someone would have to do the math on themselves;
+        under a minute it's unchanged ("At 45 seconds")."""
+
+        total_seconds = round(self.timestamp_seconds)
+        minutes, seconds = divmod(total_seconds, 60)
+
+        if minutes == 0:
+            time_phrase = f"{seconds} second" + ("" if seconds == 1 else "s")
+        else:
+            minute_phrase = f"{minutes} minute" + ("" if minutes == 1 else "s")
+            if seconds == 0:
+                time_phrase = minute_phrase
+            else:
+                second_phrase = f"{seconds} second" + ("" if seconds == 1 else "s")
+                time_phrase = f"{minute_phrase} {second_phrase}"
+
+        return f"At {time_phrase}, {self.text}"
 
 
 def _parse_sign_reads(text: str) -> list[SignRead]:
@@ -282,6 +303,117 @@ def build_sign_read_srt(text: str) -> str | None:
         cursor = end
 
     return format_srt(tuple(segments))
+
+
+# Target chunk size for description.srt's cues - same 90-char budget
+# archive_recording_detail.html's own client-side buildSrtCues() uses
+# for the ElevenLabs-narration SRT, so a "how long is a cue" reader
+# expectation stays consistent across every .srt this app produces.
+_DESCRIPTION_CUE_MAX_CHARS = 90
+
+
+def _chunk_description_text(text: str) -> list[str]:
+    """Split a scene description paragraph into short, caption-sized
+    chunks (~_DESCRIPTION_CUE_MAX_CHARS each) for build_description_srt()
+    to space evenly across the recording's real duration - see that
+    function's own docstring for why there's no per-sentence timing to
+    chunk against here, unlike build_sign_read_srt()'s per-frame reads.
+
+    Prefers to break at the end of a sentence ('.', '!', '?') within
+    the chunk window, but only once at least 20 characters in - a
+    period 3 characters into the remaining text would produce a
+    flood of tiny one-clause cues instead of readable ones. Falls back
+    to the last word boundary in the window, and finally a hard cut at
+    the window's own edge if no space exists at all (never expected
+    from real prose, but keeps this from looping forever on
+    pathological input). Every branch consumes at least one character
+    of `remaining` per iteration, so this always terminates.
+
+    Ported from (not sharing code with) archive_recording_detail.html's
+    own client-side buildSrtCues() - that one chunks against
+    ElevenLabs' per-character alignment data (JS, browser-side,
+    audio-timed); this one chunks plain text server-side with no
+    alignment data to lean on at all, since describe_scene()'s main
+    narrative pass has no internal timestamps whatsoever (see
+    ArchiveRecording.description_srt()'s own docstring)."""
+
+    text = text.strip()
+    if not text:
+        return []
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= _DESCRIPTION_CUE_MAX_CHARS:
+            chunks.append(remaining)
+            break
+
+        window = remaining[:_DESCRIPTION_CUE_MAX_CHARS]
+        break_at = None
+        for punct in ".!?":
+            idx = window.rfind(punct)
+            if idx >= 20:
+                break_at = idx + 1
+                break
+        if break_at is None:
+            space_idx = window.rfind(" ")
+            break_at = space_idx if space_idx > 0 else _DESCRIPTION_CUE_MAX_CHARS
+
+        chunks.append(remaining[:break_at].strip())
+        remaining = remaining[break_at:].strip()
+
+    return chunks
+
+
+def build_description_srt(description: str, duration_seconds: float) -> str | None:
+    """Build a downloadable .srt for a recording's main '## Description'
+    paragraph, timed against the *real video's* actual length rather
+    than any narration's speech timing - meant for importing alongside
+    the dashcam footage itself in an editor (Christer uses Filmora),
+    distinct from the ElevenLabs-narration .srt (archive_recording_
+    detail.html's own client-side download), which is synced to how
+    fast the chosen TTS voice happens to read the text aloud, not to
+    the video's own timeline. Christer, right after getting
+    build_sign_read_srt() working: "Could i also get a srt file that
+    is synced with the video of 3minutes" (see WORKING_CONTEXT.md).
+
+    describe_scene()'s main pass has no internal timing at all - it
+    feeds the whole video to the model as one multi-frame inference
+    call and gets back one holistic paragraph, unlike zoom_into_signs()'s
+    per-frame sign reads - so there's no real per-sentence sync info to
+    build cues from. Instead, this splits the description into short
+    chunks (_chunk_description_text()) and spaces them evenly across
+    `duration_seconds`, so the captions progress through the clip at a
+    steady pace rather than appearing all at once. `duration_seconds`
+    is expected to be the recording's own real elapsed time - see
+    ArchiveRecording.description_srt(), which sources it from
+    generate/media.py's load_or_compute_duration() (the same
+    .duration.txt asset the rest of this codebase already treats as
+    the source of truth for a recording's real length, self-healing
+    via ffprobe if it hasn't been computed yet) rather than probing the
+    video a second, web-layer-specific way.
+
+    None if there's no text to chunk or no usable duration - the
+    caller turns that into a 404 rather than downloading an empty or
+    all-cues-at-t=0 .srt file.
+    """
+
+    chunks = _chunk_description_text(description)
+    if not chunks or duration_seconds <= 0:
+        return None
+
+    cue_seconds = duration_seconds / len(chunks)
+    segments = tuple(
+        SpeechSegment(
+            start=index * cue_seconds,
+            end=(index + 1) * cue_seconds,
+            text=chunk,
+        )
+        for index, chunk in enumerate(chunks)
+    )
+
+    return format_srt(segments)
+
 
 # RecordingId.kind's single-letter codes - see recording_id.py's own
 # docstring on "A" (observed on real hardware, meaning unconfirmed).
@@ -556,6 +688,54 @@ class ArchiveRecording:
             if label.lower() == direction.lower():
                 return build_sign_read_srt(text)
         return None
+
+    def description_srt(self, direction: str) -> str | None:
+        """A downloadable .srt for this recording's main '## Description'
+        paragraph, timed against the recording's own real elapsed time
+        rather than any TTS narration's speech timing - see
+        build_description_srt()'s own docstring for the full backstory
+        (Christer: "Could i also get a srt file that is synced with the
+        video of 3minutes", right after getting the sign-read .srt
+        above). Complements sign_read_srt() - that one has real per-
+        frame sync points to build cues from (zoom_into_signs()'s own
+        sampled timestamps); this one doesn't (describe_scene()'s main
+        pass has no internal timing at all), so it spaces the
+        description's own text evenly across the recording's real
+        length instead.
+
+        Sources that real length from generate/media.py's
+        load_or_compute_duration() - the same .duration.txt asset
+        every other "how long did this recording actually last" answer
+        in this codebase already uses (self-healing: reads the cached
+        file if bv-generate --get-duration has already run, otherwise
+        probes it once via ffprobe and writes the cache for next time)
+        - deliberately reusing that existing generation-pipeline
+        machinery rather than adding a second, web-layer-specific way
+        to probe a video's length.
+
+        `direction` follows the same lowercase "front"/"rear" matching
+        against scene_texts' capitalized labels as sign_read_srt().
+
+        None if this direction has no '## Description' text at all, or
+        no duration could be determined (no front/rear video to probe,
+        or the probe itself failed) - the route above turns either
+        case into a 404 rather than a link to an empty or all-cues-at-
+        t=0 .srt file.
+        """
+
+        description = None
+        for label, text in self.scene_texts:
+            if label.lower() == direction.lower():
+                description = extract_description_section(text)
+                break
+        if not description:
+            return None
+
+        duration_seconds = load_or_compute_duration(self.recording)
+        if not duration_seconds:
+            return None
+
+        return build_description_srt(description, float(duration_seconds))
 
     @property
     def known_filenames(self) -> frozenset[str]:

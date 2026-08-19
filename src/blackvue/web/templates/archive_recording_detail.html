@@ -62,6 +62,7 @@
   <div class="scene-text-content">
     {% if description %}
     <p>{{ description }}</p>
+    <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/description.srt?direction={{ label|lower }}" download>Download {{ label }} description as .srt (video-synced)</a> - timed against the {{ label }} video's own real length, for importing alongside it in your editor (not the same as the ElevenLabs "Download SRT" above, which is timed to the narration voice instead).</p>
     {% endif %}
     {% if legible_reads %}
     <ul class="sign-reads">

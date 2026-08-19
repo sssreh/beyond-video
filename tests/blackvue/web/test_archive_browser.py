@@ -719,7 +719,7 @@ def test_scene_summary_ocr_only_pass_has_no_description_but_keeps_legible_reads(
     [(label, description, legible_reads)] = recording.scene_summary
     assert label == "Rear"
     assert description == ""
-    assert legible_reads == ["At 120 seconds, shop/storefront sign: MALL OF SCANDINAVIA"]
+    assert legible_reads == ["At 2 minutes, shop/storefront sign: MALL OF SCANDINAVIA"]
 
 
 def test_scene_summary_keeps_a_multi_line_sign_read_intact(tmp_path):
@@ -914,9 +914,164 @@ def test_extract_legible_sign_reads_uses_natural_language_timestamp(tmp_path):
 
     [(_label, _description, legible_reads)] = recording.scene_summary
     assert legible_reads == [
-        "At 60 seconds, sign: SPEED LIMIT 60",
+        "At 1 minute, sign: SPEED LIMIT 60",
         "At 1 second, sign: STOP",
     ]
+
+
+# ---------------------------------------------------------------------------
+# description_srt() / build_description_srt() / _chunk_description_text() -
+# a second downloadable .srt, this one for the main '## Description' text,
+# timed against the recording's own real video length rather than any TTS
+# narration. Christer, right after the scene.srt (sign-reads) feature above:
+# "Could i also get a srt file that is synced with the video of 3minutes"
+# (see WORKING_CONTEXT.md). Unlike sign reads, describe_scene()'s main pass
+# has no internal per-sentence timestamps at all, so the text is chunked and
+# spaced evenly across the recording's real duration instead.
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_description_text_keeps_short_text_as_a_single_chunk():
+    from blackvue.web.archive_browser import _chunk_description_text
+
+    text = "A quiet residential street. Light traffic."
+    chunks = _chunk_description_text(text)
+
+    # Short enough to fit in one 90-char chunk - no premature split.
+    assert chunks == [text]
+
+
+def test_chunk_description_text_prefers_sentence_break_past_20_chars():
+    from blackvue.web.archive_browser import _chunk_description_text
+
+    # First sentence ends well past the 20-char minimum but before the
+    # 90-char window closes - the chunk should end there rather than
+    # spilling into the next sentence or cutting mid-word.
+    text = (
+        "A grey sedan is parked on the left side of the road near a driveway. "
+        "Further ahead a cyclist is visible."
+    )
+    chunks = _chunk_description_text(text)
+
+    assert chunks[0] == (
+        "A grey sedan is parked on the left side of the road near a driveway."
+    )
+    assert chunks[1] == "Further ahead a cyclist is visible."
+
+
+def test_chunk_description_text_falls_back_to_word_boundary():
+    from blackvue.web.archive_browser import _chunk_description_text
+
+    # No sentence-ending punctuation anywhere - must fall back to the
+    # last space within the window rather than cutting mid-word.
+    text = "one two three four five six seven eight nine ten " * 4
+    chunks = _chunk_description_text(text)
+
+    assert all(len(c) <= 90 for c in chunks)
+    assert all(not c.endswith(" ") for c in chunks)
+    # rejoining every chunk with a space must reproduce every original
+    # word - no word lost or split across a chunk boundary.
+    rejoined_words = " ".join(chunks).split()
+    assert rejoined_words == text.split()
+
+
+def test_chunk_description_text_empty_or_blank_returns_no_chunks():
+    from blackvue.web.archive_browser import _chunk_description_text
+
+    assert _chunk_description_text("") == []
+    assert _chunk_description_text("   ") == []
+
+
+def test_build_description_srt_spaces_chunks_evenly_across_duration():
+    from blackvue.web.archive_browser import build_description_srt
+
+    text = (
+        "A grey sedan is parked on the left side of the road near a driveway. "
+        "Further ahead a cyclist is visible."
+    )
+    srt = build_description_srt(text, 60.0)
+
+    assert srt is not None
+    assert "1\n00:00:00,000 --> 00:00:30,000\n" in srt
+    assert "2\n00:00:30,000 --> 00:01:00,000\n" in srt
+
+
+def test_build_description_srt_none_for_empty_description():
+    from blackvue.web.archive_browser import build_description_srt
+
+    assert build_description_srt("", 60.0) is None
+    assert build_description_srt("   ", 60.0) is None
+
+
+def test_build_description_srt_none_for_non_positive_duration():
+    from blackvue.web.archive_browser import build_description_srt
+
+    assert build_description_srt("Some description text.", 0) is None
+    assert build_description_srt("Some description text.", -5) is None
+
+
+def test_description_srt_builds_from_scene_text_and_cached_duration(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+    # Pre-seed the self-healing .duration.txt cache so this test stays
+    # ffmpeg-free - load_or_compute_duration() reads this straight off
+    # disk rather than probing the (fake, 1-byte) video file.
+    _write(archive, "20260715_140212_N.duration.txt", content=b"180")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.description_srt("front")
+    assert srt is not None
+    assert "A quiet residential street, clear weather, light traffic." in srt
+    assert "00:00:00,000 -->" in srt
+
+
+def test_description_srt_matches_direction_case_insensitively(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"180")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.description_srt("Front") == recording.description_srt("front")
+
+
+def test_description_srt_none_when_direction_has_no_description(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_OCR_ONLY_SCENE_TEXT.encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"180")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.description_srt("rear") is None
+
+
+def test_description_srt_none_when_no_duration_available(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+    # No .duration.txt cache and the "video" is a fake 1-byte file, so
+    # get_span()'s ffprobe/box-reader fallback will fail too - this must
+    # come back None (turned into a 404 by app.py), not raise.
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.description_srt("front") is None
 
 
 # ---------------------------------------------------------------------------
