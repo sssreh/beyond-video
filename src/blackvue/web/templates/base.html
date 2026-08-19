@@ -15,6 +15,17 @@
        canvas backgrounds, which stay dark regardless of theme - they
        hold photographic/video content, not page chrome) reads from
        one of these instead of a bare hex value. */
+    /* CSS gotcha guard: any element's `hidden` attribute must always
+       win, even if some other rule in this stylesheet later sets
+       `display` on the same element (very easy to do by accident -
+       e.g. .tts-controls/.tts-download both set `display` for their
+       normal layout and, without this rule, silently overrode the
+       [hidden] state entirely - Christer noticed the Download link
+       staying visible/clickable before any speech had ever been
+       generated). Author-origin rules beat the browser's own
+       `[hidden] { display: none }` default regardless of specificity,
+       so this needs !important to reliably win everywhere. */
+    [hidden] { display: none !important; }
     :root {
       color-scheme: light;
       --bg: #f6f7f9;

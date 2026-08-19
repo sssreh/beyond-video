@@ -15804,3 +15804,17 @@ While touching this, noticed and fixed a pre-existing quirk: `#tts-controls` (wh
 Verified with a real Jinja2 render of both templates (fake `Trip`/`ArchiveRecording`/`Request` objects), asserting `#tts-player`/`#tts-speed`/`#tts-voice-picker` each appear exactly once in the output. Extracted each template's `<script>` block and ran `node --check` on both - no syntax errors. No `jsdom` available in this sandbox (no network for `npm install`), so the play/pause/toggle logic itself was verified by code review rather than a live DOM test; no Python files changed, so no pytest run needed for this entry.
 
 Files changed: `src/blackvue/web/templates/archive_recording_detail.html`, `src/blackvue/web/templates/trip_detail.html`, `src/blackvue/web/templates/base.html`.
+
+## Fix: Download/tts-controls visible before any speech was ever generated (2026-08-19)
+
+Christer: "so if i press download first i will get an empty mp3 file?" - following up on the player entry above, he'd noticed the Download link was clickable even before ever pressing Read aloud.
+
+Root cause was a classic CSS gotcha, not a JS bug: `.tts-download` and `.tts-controls` (and the `#tts-voice-picker` sub-wrapper added in the previous entry) each set `display` unconditionally for their normal layout. Any plain author-origin CSS rule that sets `display` on an element beats the browser's own `[hidden] { display: none }` default, *regardless of selector specificity*, because origin ordering (user-agent vs. author) is checked before specificity in the cascade. So the `hidden` attribute on those elements was silently a no-op the whole time - the Download link (bare `href="#"`, no click handler of its own) and the voice/speed controls row were actually visible from page load, before the ElevenLabs config check even resolved.
+
+Clicking that stray link wouldn't have hit ElevenLabs (nothing wires a fetch to it - it only ever gets a real blob URL as a byproduct of the Read-aloud button's click handler), but with `href="#"` it also wouldn't have produced a real MP3 - just a same-page jump or, in some browsers, an attempt to download the current HTML page mislabeled `speech.mp3`.
+
+Fixed with one global rule near the top of `base.html`'s `<style>` block: `[hidden] { display: none !important; }`. This guarantees `hidden` always wins everywhere in the app, present and future, rather than patching the three offending selectors individually (and other templates use the `hidden` attribute too - `job_detail.html`, `welcome.html`, `login.html`, etc. - a global guard closes off the whole class of bug instead of one instance of it).
+
+Verified via Jinja2 render of `archive_recording_detail.html`, asserting the new `[hidden]` rule text appears in the rendered `<style>` block. Confirmed no other `!important` rule in `base.html` conflicts with it.
+
+Files changed: `src/blackvue/web/templates/base.html`.
