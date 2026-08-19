@@ -529,7 +529,32 @@
 
       var sampleRate = playable[0].buffer.sampleRate;
       var numChannels = playable.reduce(function (max, r) { return Math.max(max, r.buffer.numberOfChannels); }, 1);
-      var totalSeconds = playable.reduce(function (max, r) { return Math.max(max, r.cue.start + r.buffer.duration); }, 0);
+
+      // Serialize playback starts so two cues' speech never actually
+      // overlaps: each cue still starts at its own cue.start when
+      // there's enough of a gap since the previous cue's audio
+      // finished, but the .srt window a cue was trimmed to
+      // (_trim_cue_to_reading_time()'s _CUE_READING_CHARS_PER_SECOND
+      // estimate) is a *text-reading-speed* guess, not the real
+      // ElevenLabs *speaking* rate - when the actual synthesized clip
+      // runs longer than the gap to the next cue's start, the
+      // original per-cue-start-only scheduling let its tail play at
+      // the same time as the next cue's opening words (Christer: "the
+      // cues overlap"). Pushing a cue's start later, to right after
+      // the previous cue's real audio ends, means it's still read in
+      // full and in the right order, just slightly late relative to
+      // its ideal moment - a much better tradeoff than two cues
+      // talking over each other. `playable` is already in cue order
+      // (cues themselves come out of a chronologically-sorted .srt),
+      // so a single forward pass is enough to compute every actual
+      // start.
+      var nextAvailableStart = 0;
+      playable.forEach(function (item) {
+        item.actualStart = Math.max(item.cue.start, nextAvailableStart);
+        nextAvailableStart = item.actualStart + item.buffer.duration;
+      });
+      var totalSeconds = nextAvailableStart;
+
       var OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
       var offlineCtx = new OfflineCtx(numChannels, Math.max(1, Math.ceil(totalSeconds * sampleRate)), sampleRate);
 
@@ -537,7 +562,7 @@
         var source = offlineCtx.createBufferSource();
         source.buffer = item.buffer;
         source.connect(offlineCtx.destination);
-        source.start(item.cue.start);
+        source.start(item.actualStart);
       });
 
       offlineCtx.startRendering().then(function (renderedBuffer) {
