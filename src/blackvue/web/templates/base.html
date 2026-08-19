@@ -371,6 +371,15 @@
     }
     .voice-btn:hover { border-color: var(--link); color: var(--link); }
     .voice-btn.recording { border-color: var(--error); color: var(--error); }
+    /* Wraps the "Read aloud" button and its "Download" link together
+       so .scene-text-header's justify-content: space-between still
+       only ever sees two flex children (the label and this group) -
+       adding the download link as a third bare sibling would have
+       put it at its own space-between edge instead of next to the
+       button it belongs with (Christer: "can i get the audio output
+       from a text to speech in a file"). */
+    .tts-actions { display: flex; align-items: center; gap: 0.5rem; }
+    .tts-download { display: inline-block; text-decoration: none; text-align: center; }
     .voice-status { margin-top: 0.35rem; }
     button[type="submit"] {
       background: var(--link); color: white; border: none; padding: 0.55rem 1.25rem;

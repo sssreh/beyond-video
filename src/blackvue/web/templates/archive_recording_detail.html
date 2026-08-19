@@ -42,7 +42,10 @@
 <div class="scene-text">
   <div class="scene-text-header">
     <p class="hint">{{ label }}</p>
-    <button type="button" class="voice-btn speak-btn" title="Read this description aloud">Read aloud</button>
+    <div class="tts-actions">
+      <button type="button" class="voice-btn speak-btn" title="Read this description aloud">Read aloud</button>
+      <a class="voice-btn tts-download" href="#" download="speech.mp3" hidden>Download</a>
+    </div>
   </div>
   <div class="scene-text-content">
     {% if description %}
@@ -227,6 +230,21 @@
           btn.textContent = 'Stop';
           btn.disabled = false;
           btn.classList.add('recording');
+
+          // Same blob URL the <audio> element is already playing -
+          // just also exposed as a real download link (Christer:
+          // "can i get the audio output from a text to speech in a
+          // file"), rather than a second /api/tts/speak call for the
+          // same text/voice. Not revoked on stop()/navigation: these
+          // are small MP3 clips and the browser cleans up object URLs
+          // on page unload regardless, so an explicit revokeObjectURL
+          // would only risk breaking a download the user started but
+          // hasn't finished yet.
+          var downloadLink = btn.parentElement.querySelector('.tts-download');
+          if (downloadLink) {
+            downloadLink.href = audio.src;
+            downloadLink.hidden = false;
+          }
         })
         .catch(function (err) {
           showStatus(err.message || 'Could not generate speech.');

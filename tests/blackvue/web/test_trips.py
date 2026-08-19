@@ -278,6 +278,69 @@ def test_trip_summary_degrades_quietly_if_file_becomes_unreadable(tmp_path):
     assert trip.trip_summary == []
 
 
+def test_scan_trip_flags_trip_narrative(tmp_path):
+    # Christer asked whether ElevenLabs would help with speech-to-text
+    # (unrelated no), which surfaced that trip_summary.txt - the real
+    # AI-written trip narrative bv-export's --trip-summary writes
+    # (export/trip_export.py's `trip_summary=True` path) - was never
+    # tracked in TripAssets at all, unlike trip_info.txt above. Same
+    # is-file-present tracking pattern as trip_info.
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "trip_summary.txt").write_text(
+        "The drive was smooth with light traffic.\n", encoding="utf-8"
+    )
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_narrative is True
+    assert "trip_summary.txt" in trip.known_filenames
+
+
+def test_scan_trip_trip_narrative_false_when_file_absent(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_narrative is False
+    assert "trip_summary.txt" not in trip.known_filenames
+
+
+def test_trip_narrative_text_reads_the_file(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "trip_summary.txt").write_text(
+        "The drive was smooth with light traffic.\n", encoding="utf-8"
+    )
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_narrative_text == "The drive was smooth with light traffic."
+
+
+def test_trip_narrative_text_none_when_file_absent(tmp_path):
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+
+    trip = scan_trip(folder)
+
+    assert trip.trip_narrative_text is None
+
+
+def test_trip_narrative_text_degrades_quietly_if_file_becomes_unreadable(tmp_path):
+    # Same "don't 500 the page over a secondary file" convention as
+    # test_trip_summary_degrades_quietly_if_file_becomes_unreadable
+    # above.
+    folder = tmp_path / "trip_1"
+    _write_trip_log(folder)
+    (folder / "trip_summary.txt").write_text("Narrative text.\n", encoding="utf-8")
+    trip = scan_trip(folder)
+    (folder / "trip_summary.txt").unlink()
+
+    assert trip.trip_narrative_text is None
+
+
 def test_scan_trip_finds_a_track_up_map_alongside_a_plain_one(tmp_path):
     # Task #795, Christer: "I think we should have different names for
     # track up and not, then we always get the correct map." A trip
