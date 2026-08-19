@@ -318,63 +318,40 @@ class SceneOptions:
     see the standalone prototype's own argparse help text (preserved
     in docs/man/bv-scribe.md) for the reasoning behind each one.
 
-    2026-08-19 addendum: max_frames/video_total_pixels are a deliberate
-    exception to that inherited tuning. Christer: "The problem is that
-    i would like 64 frames per video so there is about 3 sec between
-    them, then we would come much closer to correct timing, our
-    problem was that there where a heavy performane penalty for use to
-    increase the number of frames." Raising max_frames alone (with
-    resized_width/resized_height still fixed) is exactly what caused
-    that earlier penalty - see describe_scene()'s video-branch comment
-    for why, and video_total_pixels below for the fix.
-
-    Same-day follow-up: 64 frames made the actual descriptions worse,
-    not just slower - Christer: "Text description, less informative and
-    fewer cues. I expected the oppsite, is it the cheaper model?" It
-    wasn't the model (still DEFAULT_MODEL, unchanged) - it was this
-    field. qwen_vl_utils' real per-frame cap is
-    `min(VIDEO_MAX_PIXELS, total_pixels/nframes*size_factor)`, and
-    VIDEO_MAX_PIXELS (768*28*28 = 602,112px) sits well below
-    video_total_pixels/16 (642,096px) - so at max_frames=16 the budget
-    below was already generous enough that VIDEO_MAX_PIXELS, not the
-    budget, was the binding cap on every frame. Above ~34 frames that
-    stops being true and the budget starts actually dividing, so at 64
-    frames each one only got ~296K px instead of the ~580K px every
-    frame gets when VIDEO_MAX_PIXELS is the binding constraint - roughly
-    half the resolution, which is exactly the "less informative, fewer
-    cues" Christer saw. Fix: pulled max_frames back to 32, comfortably
-    under that ~34-frame breakeven, so every frame is back to the same
-    VIDEO_MAX_PIXELS-capped resolution the original 16-frame tuning used
-    - video_total_pixels itself didn't need to change at all. Still
-    doubles temporal density over the original 16 (roughly halving the
-    gap between samples) for close to the same total token cost the
-    (broken) 64-frame version already had, since resolution-per-frame no
-    longer drops as frame count climbs in this range."""
+    2026-08-19: max_frames was briefly raised past this tuning, twice,
+    in the same day - both attempts reverted. First to 64 straight
+    (Christer: "The problem is that i would like 64 frames per video
+    so there is about 3 sec between them... our problem was that there
+    where a heavy performane penalty for use to increase the number of
+    frames"), which turned out to be a pure ~4x cost multiplier (the
+    video branch was setting a fixed resized_width/resized_height,
+    which bypasses qwen_vl_utils' own total_pixels budgeting) and, worse,
+    a real quality regression - Christer: "Text description, less
+    informative and fewer cues. I expected the oppsite, is it the
+    cheaper model?" (it wasn't the model; qwen_vl_utils' own
+    VIDEO_MAX_PIXELS ceiling, 768*28*28=602,112px/frame, no longer
+    covered every frame once a total_pixels budget was divided across
+    64 of them, so each frame's real resolution roughly halved). A
+    second attempt tried max_frames=32 with total_pixels budgeting
+    active, which mathematically reproduced the original 16-frame
+    per-frame resolution while doubling temporal density - but Christer
+    then asked to just go back to 16 outright rather than keep the
+    added budgeting complexity: "I want to go back to 16." Reverted in
+    full: max_frames back to 16, and the video branch back to the
+    original fixed resized_width/resized_height (no total_pixels
+    knob) - i.e. sampling behavior is now identical to what this
+    project was tuned against before any of this same-day experimentation
+    started. The DESCRIBE_PROMPT/DISCLAIMER hardening against phantom-
+    vehicle hallucination from the same day's work is unrelated and
+    was kept."""
 
     task: str = "both"  # "describe", "ocr", or "both"
     model: str = DEFAULT_MODEL
     fps: float = 1.0
-    max_frames: int = 32
+    max_frames: int = 16
     max_pixels: int = 360 * 420
     resized_width: int = 1092
     resized_height: int = 588
-    # The per-clip video-token budget this project's real-footage
-    # tuning had already converged on before max_frames grew from 16:
-    # 16 frames at the tuned 1092x588 resolution. Passed to
-    # qwen_vl_utils as "total_pixels" (see describe_scene()'s video
-    # branch) instead of a fixed resized_width/resized_height, so that
-    # max_frames trades per-frame resolution for temporal density
-    # within roughly this same total cost rather than multiplying it -
-    # a fixed resized_width/resized_height (the previous approach)
-    # doesn't do this automatically, since qwen_vl_utils only applies
-    # a total-pixel budget across all sampled frames when it isn't
-    # told an exact per-frame size to use instead. In practice this
-    # value stays generous enough that qwen_vl_utils' own VIDEO_MAX_PIXELS
-    # ceiling (768*28*28px/frame), not this budget, is what actually
-    # caps per-frame resolution as long as max_frames stays under ~34 -
-    # see SceneOptions' own 2026-08-19 follow-up addendum above for why
-    # that matters and how max_frames=64 found the edge of it.
-    video_total_pixels: int = 16 * 1092 * 588
     crop_top: float = 0.0378
     crop_bottom: float = 0.0344
     max_new_tokens: int = 768
@@ -1254,25 +1231,17 @@ def describe_scene(
             content_ele["resized_width"] = opts.resized_width
             content_ele["resized_height"] = opts.resized_height
     else:
-        # Deliberately NOT setting resized_width/resized_height here
-        # (unlike the photo branch above) - qwen_vl_utils' fetch_video()
-        # only spreads a total pixel budget across however many frames
-        # get sampled when it isn't told an exact per-frame size to use
-        # instead; if both resized_width and resized_height are present
-        # it resizes every frame to that fixed size regardless of frame
-        # count, so max_frames stops being a resolution/temporal-density
-        # tradeoff and becomes a pure cost multiplier - exactly the
-        # "heavy performance penalty" an earlier attempt at raising
-        # max_frames ran into (see SceneOptions' own 2026-08-19
-        # addendum). total_pixels is the knob that keeps this a
-        # tradeoff instead.
         content_ele = {
             "type": "video",
             "video": str(video_path.resolve()),
             "fps": opts.fps,
             "max_frames": opts.max_frames,
-            "total_pixels": opts.video_total_pixels,
         }
+        if opts.resized_width and opts.resized_height:
+            content_ele["resized_width"] = opts.resized_width
+            content_ele["resized_height"] = opts.resized_height
+        else:
+            content_ele["max_pixels"] = opts.max_pixels
 
     messages = [{"role": "user", "content": [content_ele, {"type": "text", "text": prompt}]}]
     text = loaded.processor.apply_chat_template(
@@ -1332,7 +1301,7 @@ def describe_scene(
             torch.cuda.empty_cache()
             raise MediaToolError(
                 f"out of VRAM describing {video_path.name} ({exc}) - try "
-                "a lower max_frames/fps or video_total_pixels"
+                "a lower max_frames/fps or resized_width/resized_height"
             ) from exc
         raise MediaToolError(f"scene description failed for {video_path.name}: {exc}") from exc
     finally:

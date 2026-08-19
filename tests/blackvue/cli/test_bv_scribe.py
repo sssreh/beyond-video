@@ -88,51 +88,38 @@ def test_parse_args_raw_explicit_crop_overrides_disabled_default():
     assert args.crop_bottom == 0.02
 
 
-def test_parse_args_max_frames_and_video_total_pixels_defaults():
-    """2026-08-19: Christer asked for 64 frames/video (~3s apart) without
-    re-triggering the earlier "heavy performance penalty" from raising
-    max_frames alone - see SceneOptions' own 2026-08-19 addendum in
-    scene.py. --max-frames's default moved 16->64, and --max-pixels/
-    --resized-width/--resized-height stopped applying to video at all
-    (photo-only now) in favor of the new --video-total-pixels, which is
-    the knob that actually keeps max_frames a resolution/frame-count
-    tradeoff instead of a pure cost multiplier.
-
-    Same-day follow-up: 64 pushed per-frame resolution below
-    qwen_vl_utils' own VIDEO_MAX_PIXELS ceiling and measurably hurt
-    description quality ("less informative, fewer cues" - Christer).
-    --max-frames's default moved again, 64->32 - still doubles temporal
-    density over the original 16 at effectively the same per-frame
-    resolution, since 32 stays under the ~34-frame point where that
-    ceiling stops being the binding cap. video_total_pixels itself did
-    not need to change - see SceneOptions' own docstring."""
+def test_parse_args_max_frames_and_max_pixels_defaults():
+    """max_frames/max_pixels/resized_width/resized_height briefly went
+    through a same-day 16->64->32 experiment (with a --video-total-
+    pixels budgeting scheme for the last two values), but Christer
+    asked to go back to 16 outright rather than keep that added
+    complexity - see SceneOptions' own docstring in scene.py for the
+    full history. This asserts the plain original defaults."""
 
     args = parse_args(["/some/archive"])
 
-    assert args.max_frames == 32
-    assert args.video_total_pixels == 16 * 1092 * 588
-    # Still present and still applied to photos - just no longer wired
-    # into video's SceneOptions kwargs (see test below).
+    assert args.max_frames == 16
     assert args.max_pixels == 360 * 420
     assert args.resized_width == 1092
     assert args.resized_height == 588
+    assert not hasattr(args, "video_total_pixels")
 
 
-def test_scene_kwargs_passes_video_total_pixels_not_just_photo_fields():
-    """_scene_kwargs() must forward video_total_pixels into
-    SceneOptions alongside (not instead of) max_pixels/resized_width/
-    resized_height - describe_scene()'s photo branch still reads the
-    latter three, only its video branch switched to total_pixels-style
-    budgeting (see scene.py's describe_scene() video-branch comment)."""
+def test_scene_kwargs_passes_max_pixels_and_resize_fields():
+    """_scene_kwargs() must forward max_pixels/resized_width/
+    resized_height into SceneOptions - describe_scene()'s video branch
+    reads these directly again now that total_pixels budgeting has
+    been reverted (see scene.py's describe_scene() video-branch
+    comment)."""
 
-    args = parse_args(["/some/archive", "--video-total-pixels", "12345"])
+    args = parse_args(["/some/archive", "--max-pixels", "12345"])
     kwargs = bv_scribe._scene_kwargs(args)
 
-    assert kwargs["video_total_pixels"] == 12345
-    assert kwargs["max_pixels"] == 360 * 420
+    assert kwargs["max_pixels"] == 12345
     assert kwargs["resized_width"] == 1092
     assert kwargs["resized_height"] == 588
-    assert kwargs["max_frames"] == 32
+    assert kwargs["max_frames"] == 16
+    assert "video_total_pixels" not in kwargs
 
 
 def _make_recording(recording_id: str, tmp_path: Path) -> Recording:

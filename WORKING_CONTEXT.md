@@ -16121,3 +16121,11 @@ Applies uniformly to both the merged-cue WAV playback path (`archive_recording_d
 Verified: `node --check` on both files' extracted `<script>` blocks (confirmed no Jinja2 tags inside them first), and a Jinja2 render sanity check on both templates (only error: expected `'request' is undefined`).
 
 Files changed: `src/blackvue/web/templates/archive_recording_detail.html`, `src/blackvue/web/templates/trip_detail.html`.
+
+## max_frames reverted 32->16, total_pixels budgeting dropped entirely (2026-08-19)
+
+Christer, after being walked through the 16->64->32 saga this same day: "I want to go back to 16." Rather than keep the total_pixels-budgeting machinery (which reproduced the original per-frame resolution at 32 frames but added real complexity - a new SceneOptions field, a new CLI flag, a second resize code path), reverted the whole experiment: `SceneOptions.max_frames` back to `16`, `describe_scene()`'s video branch back to passing a fixed `resized_width`/`resized_height` (with `max_pixels` fallback) instead of `total_pixels`, and `video_total_pixels` removed from `SceneOptions` entirely. `--max-frames`'s CLI default back to `16`; `--video-total-pixels` removed from `bv-scribe`; `--max-pixels`/`--resized-width`/`--resized-height` apply to video again, not just photos.
+
+Verified via the pytest-shim harness: `test_scene.py` 38/38, `test_bv_scribe.py` 25/28 (3 skips are pre-existing `capsys`-fixture shim gaps, unrelated), `test_jobs.py` 92/103 (same 9 pre-existing failures documented in the max_frames=64 regression fix earlier today - `monkeypatch.setenv`/`pytest.approx` shim gaps and background-thread timing races, none touching scribe/scene code).
+
+Files changed: `src/blackvue/generate/scene.py`, `src/blackvue/cli/bv_scribe.py`, `docs/man/bv-scribe.md`, `tests/blackvue/generate/test_scene.py`, `tests/blackvue/cli/test_bv_scribe.py`, `tests/blackvue/web/test_jobs.py`.

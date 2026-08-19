@@ -290,17 +290,21 @@ def test_scene_options_defaults_match_tuned_values():
     assert opts.task == "both"
     assert opts.model == scene.DEFAULT_MODEL
     assert opts.fps == 1.0
-    # 16 -> 64 -> 32 (2026-08-19): Christer wanted ~3s between sampled
-    # frames instead of ~11s, for closer description-event timing. 64
-    # briefly shipped the same day but pushed per-frame resolution below
-    # qwen_vl_utils' own VIDEO_MAX_PIXELS ceiling and measurably hurt
-    # description quality ("less informative, fewer cues") - 32 stays
-    # under that ~34-frame breakeven, so it doubles temporal density
-    # over the original 16 at effectively the same per-frame resolution.
-    # See video_total_pixels below (and describe_scene()'s video branch,
-    # and SceneOptions' own docstring) for the full explanation.
-    assert opts.max_frames == 32
-    assert opts.video_total_pixels == 16 * 1092 * 588
+    # 16 -> 64 -> 32 -> 16 (2026-08-19): Christer initially wanted ~3s
+    # between sampled frames instead of ~11s, for closer description-
+    # event timing. 64 briefly shipped the same day but pushed per-frame
+    # resolution below qwen_vl_utils' own VIDEO_MAX_PIXELS ceiling and
+    # measurably hurt description quality ("less informative, fewer
+    # cues"). 32 (via a total_pixels-budgeting scheme) fixed that, but
+    # Christer then asked to just go back to 16 outright rather than
+    # keep the added budgeting complexity ("I want to go back to 16").
+    # See SceneOptions' own docstring, and describe_scene()'s video
+    # branch, for the full explanation.
+    assert opts.max_frames == 16
+    assert opts.max_pixels == 360 * 420
+    assert opts.resized_width == 1092
+    assert opts.resized_height == 588
+    assert not hasattr(opts, "video_total_pixels")
     assert opts.zoom_signs is True
     assert opts.zoom_plate_confidence_check is True
     assert opts.force_cpu is False
@@ -627,22 +631,17 @@ def test_describe_scene_still_builds_a_video_content_element_for_a_real_video(
     video_ele = content[0]
     assert video_ele["type"] == "video"
     assert video_ele["video"] == str(video_path.resolve())
-    assert video_ele["max_frames"] == 32
+    assert video_ele["max_frames"] == 16
 
 
-def test_describe_scene_video_element_uses_total_pixels_not_fixed_resize(
-    monkeypatch, tmp_path
-):
-    """2026-08-19: the video branch must pass total_pixels instead of a
-    fixed resized_width/resized_height - qwen_vl_utils' fetch_video()
-    only spreads a total pixel budget across however many frames get
-    sampled when it isn't told an exact per-frame size to use instead
-    (confirmed by reading qwen_vl_utils/vision_process.py directly).
-    Setting both resized_width and resized_height would bypass that
-    budget entirely and turn max_frames back into a pure cost
-    multiplier - exactly the "heavy performance penalty" Christer hit
-    the first time max_frames was raised. The photo branch is
-    unaffected - see the sibling test above for that one."""
+def test_describe_scene_video_element_uses_fixed_resize(monkeypatch, tmp_path):
+    """2026-08-19: after briefly experimenting with total_pixels
+    budgeting (to trade resolution for higher max_frames) and then
+    reverting that entirely at Christer's request ("I want to go back
+    to 16"), the video branch is back to passing a fixed
+    resized_width/resized_height, same as the photo branch - see the
+    sibling test above for that one, and SceneOptions' own docstring
+    in scene.py for the full history."""
 
     video_path = tmp_path / "video.mp4"
     video_path.write_bytes(b"x")
@@ -659,9 +658,9 @@ def test_describe_scene_video_element_uses_total_pixels_not_fixed_resize(
     scene.describe_scene(video_path, zoom_signs=False)
 
     video_ele = captured_messages[0][0]["content"][0]
-    assert video_ele["total_pixels"] == 16 * 1092 * 588
-    assert "resized_width" not in video_ele
-    assert "resized_height" not in video_ele
+    assert video_ele["resized_width"] == 1092
+    assert video_ele["resized_height"] == 588
+    assert "total_pixels" not in video_ele
 
 
 # --- unload_scene_model() -------------------------------------------------
