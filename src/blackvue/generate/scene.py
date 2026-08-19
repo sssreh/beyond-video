@@ -326,28 +326,54 @@ class SceneOptions:
     increase the number of frames." Raising max_frames alone (with
     resized_width/resized_height still fixed) is exactly what caused
     that earlier penalty - see describe_scene()'s video-branch comment
-    for why, and video_total_pixels below for the fix."""
+    for why, and video_total_pixels below for the fix.
+
+    Same-day follow-up: 64 frames made the actual descriptions worse,
+    not just slower - Christer: "Text description, less informative and
+    fewer cues. I expected the oppsite, is it the cheaper model?" It
+    wasn't the model (still DEFAULT_MODEL, unchanged) - it was this
+    field. qwen_vl_utils' real per-frame cap is
+    `min(VIDEO_MAX_PIXELS, total_pixels/nframes*size_factor)`, and
+    VIDEO_MAX_PIXELS (768*28*28 = 602,112px) sits well below
+    video_total_pixels/16 (642,096px) - so at max_frames=16 the budget
+    below was already generous enough that VIDEO_MAX_PIXELS, not the
+    budget, was the binding cap on every frame. Above ~34 frames that
+    stops being true and the budget starts actually dividing, so at 64
+    frames each one only got ~296K px instead of the ~580K px every
+    frame gets when VIDEO_MAX_PIXELS is the binding constraint - roughly
+    half the resolution, which is exactly the "less informative, fewer
+    cues" Christer saw. Fix: pulled max_frames back to 32, comfortably
+    under that ~34-frame breakeven, so every frame is back to the same
+    VIDEO_MAX_PIXELS-capped resolution the original 16-frame tuning used
+    - video_total_pixels itself didn't need to change at all. Still
+    doubles temporal density over the original 16 (roughly halving the
+    gap between samples) for close to the same total token cost the
+    (broken) 64-frame version already had, since resolution-per-frame no
+    longer drops as frame count climbs in this range."""
 
     task: str = "both"  # "describe", "ocr", or "both"
     model: str = DEFAULT_MODEL
     fps: float = 1.0
-    max_frames: int = 64
+    max_frames: int = 32
     max_pixels: int = 360 * 420
     resized_width: int = 1092
     resized_height: int = 588
     # The per-clip video-token budget this project's real-footage
-    # tuning had already converged on before max_frames grew from 16
-    # to 64 above: 16 frames at the tuned 1092x588 resolution. Passed
-    # to qwen_vl_utils as "total_pixels" (see describe_scene()'s video
+    # tuning had already converged on before max_frames grew from 16:
+    # 16 frames at the tuned 1092x588 resolution. Passed to
+    # qwen_vl_utils as "total_pixels" (see describe_scene()'s video
     # branch) instead of a fixed resized_width/resized_height, so that
     # max_frames trades per-frame resolution for temporal density
     # within roughly this same total cost rather than multiplying it -
     # a fixed resized_width/resized_height (the previous approach)
     # doesn't do this automatically, since qwen_vl_utils only applies
     # a total-pixel budget across all sampled frames when it isn't
-    # told an exact per-frame size to use instead. Unverified against
-    # real GPU timing/VRAM numbers as of this change - Christer's next
-    # real run is what actually confirms whether this budget is right.
+    # told an exact per-frame size to use instead. In practice this
+    # value stays generous enough that qwen_vl_utils' own VIDEO_MAX_PIXELS
+    # ceiling (768*28*28px/frame), not this budget, is what actually
+    # caps per-frame resolution as long as max_frames stays under ~34 -
+    # see SceneOptions' own 2026-08-19 follow-up addendum above for why
+    # that matters and how max_frames=64 found the edge of it.
     video_total_pixels: int = 16 * 1092 * 588
     crop_top: float = 0.0378
     crop_bottom: float = 0.0344

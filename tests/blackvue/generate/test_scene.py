@@ -290,11 +290,16 @@ def test_scene_options_defaults_match_tuned_values():
     assert opts.task == "both"
     assert opts.model == scene.DEFAULT_MODEL
     assert opts.fps == 1.0
-    # 16 -> 64 (2026-08-19): Christer wanted ~3s between sampled frames
-    # instead of ~11s, for closer description-event timing. See
-    # video_total_pixels below (and describe_scene()'s video branch) for
-    # how this avoids just multiplying compute by 4x.
-    assert opts.max_frames == 64
+    # 16 -> 64 -> 32 (2026-08-19): Christer wanted ~3s between sampled
+    # frames instead of ~11s, for closer description-event timing. 64
+    # briefly shipped the same day but pushed per-frame resolution below
+    # qwen_vl_utils' own VIDEO_MAX_PIXELS ceiling and measurably hurt
+    # description quality ("less informative, fewer cues") - 32 stays
+    # under that ~34-frame breakeven, so it doubles temporal density
+    # over the original 16 at effectively the same per-frame resolution.
+    # See video_total_pixels below (and describe_scene()'s video branch,
+    # and SceneOptions' own docstring) for the full explanation.
+    assert opts.max_frames == 32
     assert opts.video_total_pixels == 16 * 1092 * 588
     assert opts.zoom_signs is True
     assert opts.zoom_plate_confidence_check is True
@@ -622,7 +627,7 @@ def test_describe_scene_still_builds_a_video_content_element_for_a_real_video(
     video_ele = content[0]
     assert video_ele["type"] == "video"
     assert video_ele["video"] == str(video_path.resolve())
-    assert video_ele["max_frames"] == 64
+    assert video_ele["max_frames"] == 32
 
 
 def test_describe_scene_video_element_uses_total_pixels_not_fixed_resize(

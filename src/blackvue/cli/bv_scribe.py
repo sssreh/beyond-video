@@ -170,8 +170,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=64,
-        help="Hard cap on sampled frames regardless of --fps (default: 64).",
+        default=32,
+        help=(
+            "Hard cap on sampled frames regardless of --fps (default: 32 "
+            "- doubles temporal density over this project's original "
+            "16-frame tuning at effectively the same per-frame "
+            "resolution, since qwen_vl_utils' own VIDEO_MAX_PIXELS "
+            "ceiling - not --video-total-pixels - is what actually caps "
+            "each frame as long as this stays under ~34; was briefly 64, "
+            "which pushed past that point and measurably hurt "
+            "description quality - see --video-total-pixels)."
+        ),
     )
     parser.add_argument(
         "--max-pixels",

@@ -96,11 +96,20 @@ def test_parse_args_max_frames_and_video_total_pixels_defaults():
     --resized-width/--resized-height stopped applying to video at all
     (photo-only now) in favor of the new --video-total-pixels, which is
     the knob that actually keeps max_frames a resolution/frame-count
-    tradeoff instead of a pure cost multiplier."""
+    tradeoff instead of a pure cost multiplier.
+
+    Same-day follow-up: 64 pushed per-frame resolution below
+    qwen_vl_utils' own VIDEO_MAX_PIXELS ceiling and measurably hurt
+    description quality ("less informative, fewer cues" - Christer).
+    --max-frames's default moved again, 64->32 - still doubles temporal
+    density over the original 16 at effectively the same per-frame
+    resolution, since 32 stays under the ~34-frame point where that
+    ceiling stops being the binding cap. video_total_pixels itself did
+    not need to change - see SceneOptions' own docstring."""
 
     args = parse_args(["/some/archive"])
 
-    assert args.max_frames == 64
+    assert args.max_frames == 32
     assert args.video_total_pixels == 16 * 1092 * 588
     # Still present and still applied to photos - just no longer wired
     # into video's SceneOptions kwargs (see test below).
@@ -123,7 +132,7 @@ def test_scene_kwargs_passes_video_total_pixels_not_just_photo_fields():
     assert kwargs["max_pixels"] == 360 * 420
     assert kwargs["resized_width"] == 1092
     assert kwargs["resized_height"] == 588
-    assert kwargs["max_frames"] == 64
+    assert kwargs["max_frames"] == 32
 
 
 def _make_recording(recording_id: str, tmp_path: Path) -> Recording:
