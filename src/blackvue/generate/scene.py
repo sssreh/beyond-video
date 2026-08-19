@@ -31,6 +31,31 @@ when reading it:
    especially specific/unusual place names, as unverified until
    checked against the source video.
 
+3. Instruction-following drift on formatting, once real-world tested.
+   After DESCRIBE_PROMPT was extended to ask for a bulleted,
+   per-event-timestamped "## Description" (see DescriptionEvent
+   below), the first real run against Christer's own footage - not a
+   synthetic test - came back as a single plain paragraph with no
+   bullets at all, despite the clip clearly containing multiple
+   distinct moments (confirmed by its own "## Zoomed sign reads"
+   section spanning t=0.0s to t=180.2s). The model wasn't confused
+   about the content, just didn't hold onto the format instruction
+   through the rest of COMBINED_PROMPT's competing OCR/structuring
+   asks. Fixed two ways: DESCRIBE_PROMPT's format paragraph now opens
+   with an explicit "REQUIRED FORMAT" / "never as a plain paragraph"
+   directive instead of burying the requirement mid-paragraph, and
+   COMBINED_PROMPT repeats a short reminder of it as the very last
+   thing before generation starts (the position an instruction-tuned
+   model tends to weight most heavily). The bulleted-timestamp
+   extraction code already treated "no bullets found" as a clean,
+   silent fallback to the old evenly-spaced-chunking description.srt
+   behavior (see extract_description_events()) - so this failure mode
+   never broke anything, it just meant the new real-timestamp feature
+   silently wasn't engaging. There's no guarantee this fixes
+   compliance every time; it's still a smaller (8B) instruction-tuned
+   model being asked to hold a non-trivial formatting constraint
+   across a long combined prompt.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -96,8 +121,9 @@ DESCRIBE_PROMPT = (
     "(for example 'this is not dashcam footage' or 'the request "
     "cannot be fulfilled'), and never refuse to describe an image just "
     "because it doesn't show a road.\n\n"
-    "If this is a video clip (not a single still photo), break your "
-    "description into a bulleted list of distinct moments, each one "
+    "REQUIRED FORMAT for any video clip (not a single still photo): "
+    "write the description ONLY as a bulleted list of distinct "
+    "moments - never as a plain paragraph. Each bullet must be "
     "prefixed with its approximate elapsed time from the start of the "
     "clip in seconds, in exactly this format: '- [t=12.4s] A red bus "
     "passes on the left, driving in the opposite direction.' Start a "
@@ -108,13 +134,14 @@ DESCRIBE_PROMPT = (
     "less often during a long uneventful stretch. Each bullet should "
     "be a complete, self-contained sentence ending in a period, since "
     "these will be read back individually. If nothing notable happens "
-    "for the whole clip, output a single bullet instead (for example: "
-    "'- [t=0.0s] Routine driving, nothing notable happened.') - don't "
-    "invent drama, and don't list off categories of incident that "
-    "didn't occur. If this is a single still photo instead of a video "
-    "clip, skip the timestamp/bullet format entirely - there is no "
-    "timeline to reference - and just describe it directly in a "
-    "sentence or two."
+    "for the whole clip, still output a single bullet in this same "
+    "format instead of a plain sentence (for example: '- [t=0.0s] "
+    "Routine driving, nothing notable happened.') - don't invent "
+    "drama, and don't list off categories of incident that didn't "
+    "occur. The only exception: if this is a single still photo "
+    "instead of a video clip, skip the timestamp/bullet format "
+    "entirely - there is no timeline to reference - and just describe "
+    "it directly in a sentence or two."
 )
 
 OCR_PROMPT = (
@@ -140,7 +167,10 @@ OCR_PROMPT = (
 COMBINED_PROMPT = (
     f"{DESCRIBE_PROMPT}\n\nSeparately, then do this:\n\n{OCR_PROMPT}\n\n"
     "Structure your answer as two sections with the headings "
-    "'## Description' and '## On-screen text'."
+    "'## Description' and '## On-screen text'. Reminder: if this is a "
+    "video clip, the '## Description' section itself must be written "
+    "as the bulleted '[t=Xs]' timestamp list described above - not a "
+    "plain paragraph."
 )
 
 GROUND_PROMPT = (
