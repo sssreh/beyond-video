@@ -1091,16 +1091,20 @@ def test_build_description_srt_from_events_uses_real_per_event_timestamps():
     # Real timestamps get rescaled (see _rescale_events_to_duration())
     # so the latest one lands at duration_seconds * n/(n+1) rather than
     # trusted verbatim - here n=3, duration=40.0, so 25.0 (the raw max)
-    # maps to 30.0, and 12.4 scales by the same 1.2x factor to 14.88,
-    # giving true intervals of [0, 14.88), [14.88, 30.0), [30.0, 40.0).
+    # maps to 30.0, and 12.4 scales by the same 1.2x factor to 14.88.
+    # _apply_frame_sampling_lag() then shifts every rescaled timestamp
+    # later by duration/16=2.5s (Christer: "put description 11 seconds
+    # later" - 2.5s here since this test's 40s clip is much shorter
+    # than the 3-minute clip that produced his own 11s observation),
+    # giving true intervals of [2.5, 17.38), [17.38, 32.5), [32.5, 40).
     # Christer then asked for cues to be "trimmed in the beginning and
     # the end, so more centered" rather than spanning the whole gap
     # (see _trim_cue_to_reading_time()) - each true interval above is
     # longer than its text's reading-time cap, so every displayed cue
     # here is a symmetric shrink of that interval, centered within it.
     assert srt is not None
-    assert "1\n00:00:05,973 --> 00:00:08,907\n" in srt
-    assert "2\n00:00:20,973 --> 00:00:23,907\n" in srt
+    assert "1\n00:00:08,473 --> 00:00:11,407\n" in srt
+    assert "2\n00:00:22,223 --> 00:00:25,157\n" in srt
     assert "3\n00:00:32,967 --> 00:00:37,033\n" in srt
     assert "red bus" in srt
 
@@ -1134,7 +1138,7 @@ def test_build_description_srt_from_events_rescales_an_overshoot_into_range():
     # caps, so _trim_cue_to_reading_time() centers a shorter displayed
     # cue within each one (see the trimming test above for the general
     # mechanic).
-    assert "1\n00:00:12,333 --> 00:00:14,333\nfirst\n" in srt
+    assert "1\n00:00:13,583 --> 00:00:15,583\nfirst\n" in srt
     assert "2\n00:00:32,100 --> 00:00:34,567\nsecond - past duration\n" in srt
 
 
@@ -1149,25 +1153,35 @@ def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forwar
     # overshoot-past-duration case (nothing after it to merge into), there
     # IS a following cue here, so the first event's text must be carried
     # forward onto it rather than silently dropped.
+    #
+    # The raw timestamps below are more negative than the collapse itself
+    # strictly requires, because _apply_frame_sampling_lag() now adds a
+    # positive offset (duration/16) AFTER rescaling but BEFORE this
+    # cursor clamp runs - so a barely-negative raw timestamp that used to
+    # clamp to 0.0 would land back above 0.0 post-offset and no longer
+    # collide with the next event. Starting further negative keeps both
+    # events at/below 0.0 even after the added offset, so the collapse
+    # this test exists to exercise still actually fires.
     events = [
-        DescriptionEvent(-0.3, "first"),
-        DescriptionEvent(0.0, "second"),
+        DescriptionEvent(-1.0, "first"),
+        DescriptionEvent(-0.9, "second"),
         DescriptionEvent(10.0, "third"),
     ]
 
     srt = build_description_srt_from_events(events, 30.0)
 
     # Rescaled first (n=3, duration=30.0 -> target_max=22.5, scale=2.25):
-    # -0.3*2.25=-0.675 (still clamps to cursor=0.0, still collides with
-    # the second event's own 0.0*2.25=0.0), 10.0*2.25=22.5. The
-    # collapse-and-merge-forward mechanic this test exists for still
-    # fires - just at the rescaled numbers - giving true intervals
-    # [0, 22.5) for the merged "first second" cue and [22.5, 30.0) for
-    # "third". _trim_cue_to_reading_time() then centers each displayed
-    # cue within its (untrimmed) true interval; note that the merge
-    # decision itself is keyed off the true interval's cursor tracking,
-    # not the trimmed display window, so this collapse behavior is
-    # unaffected by trimming.
+    # -1.0*2.25=-2.25 and -0.9*2.25=-2.025, then _apply_frame_sampling_lag()
+    # adds duration/16=1.875 to each - still <= 0.0, so both clamp to the
+    # same cursor=0.0 and still collide. 10.0*2.25=22.5, then +1.875 capped
+    # at target_max=22.5, so it stays at 22.5. The collapse-and-merge-
+    # forward mechanic this test exists for still fires - just at the
+    # rescaled-and-offset numbers - giving true intervals [0, 22.5) for
+    # the merged "first second" cue and [22.5, 30.0) for "third".
+    # _trim_cue_to_reading_time() then centers each displayed cue within
+    # its (untrimmed) true interval; note that the merge decision itself
+    # is keyed off the true interval's cursor tracking, not the trimmed
+    # display window, so this collapse behavior is unaffected by trimming.
     assert srt is not None
     assert "first" in srt
     assert "second" in srt
@@ -1192,7 +1206,7 @@ def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
     # _trim_cue_to_reading_time() centers a shorter displayed cue
     # within each.
     assert srt.index("earlier thing") < srt.index("later thing")
-    assert "1\n00:00:10,567 --> 00:00:13,433\n" in srt
+    assert "1\n00:00:11,504 --> 00:00:14,371\n" in srt
     assert "2\n00:00:23,667 --> 00:00:26,333\n" in srt
 
 
@@ -1276,11 +1290,16 @@ def test_build_description_srt_from_events_merges_signs_without_rescaling_them()
 
     srt = build_description_srt_from_events(events, 40.0, signs=signs)
 
+    # _apply_frame_sampling_lag() (duration/16=2.5s, capped at target_max)
+    # runs after the rescale, but only on the description events - the
+    # sign read's 5.0s timestamp is completely unaffected by either step,
+    # landing at its real, real per-frame position both before and after
+    # this lag layer was added.
     assert srt is not None
     # Chronological order: first (0), the sign (5.0, unscaled), then
     # the rescaled second event (26.667) - not the original list order.
     assert srt.index("first") < srt.index("STOP sign") < srt.index("second")
-    assert "1\n00:00:01,500 --> 00:00:03,500\nfirst\n" in srt
+    assert "1\n00:00:02,750 --> 00:00:04,750\nfirst\n" in srt
     assert "2\n00:00:14,767 --> 00:00:16,900\nSTOP sign visible\n" in srt
     assert "3\n00:00:32,100 --> 00:00:34,567\nsecond - past duration\n" in srt
 
@@ -1334,7 +1353,10 @@ def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
     # _trim_cue_to_reading_time() centers a shorter displayed cue
     # within that true interval, per Christer's "trimmed in the
     # beginning and the end, so more centered" request.
-    assert "00:00:20,973 --> 00:00:23,907" in srt
+    # _apply_frame_sampling_lag() then nudges the rescaled timestamp
+    # later still, by roughly one frame-sampling interval (Christer:
+    # "put description 11 seconds later").
+    assert "00:00:22,223 --> 00:00:25,157" in srt
     assert "red bus" in srt
 
     # scene_summary's description text stays clean prose, with no
@@ -1380,8 +1402,12 @@ def test_description_srt_merges_sign_reads_from_a_real_scene_txt(tmp_path):
     # 0.0, then the sign read, then the description event at 25.0 -
     # the sign uses SignRead.text (no "At N seconds" prefix), since the
     # cue's own timestamp already conveys "when" for the .srt.
+    # _apply_frame_sampling_lag() (Christer: "put description 11 seconds
+    # later") nudges the description cues later still, but leaves the
+    # sign read - already at its real, unscaled per-frame timestamp -
+    # completely untouched, same as the unit tests above.
     assert srt.index("Clear weather") < srt.index("STOP sign") < srt.index("vehicle continues")
-    assert "1\n00:00:04,733 --> 00:00:07,667\nClear weather, light traffic.\n" in srt
+    assert "1\n00:00:05,983 --> 00:00:08,917\nClear weather, light traffic.\n" in srt
     assert "2\n00:00:18,467 --> 00:00:20,600\nSTOP sign visible\n" in srt
     assert "3\n00:00:31,300 --> 00:00:35,367\nThe vehicle continues through an intersection.\n" in srt
 

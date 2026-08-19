@@ -47,6 +47,7 @@ from ..generate.media import MediaToolError
 from ..generate.media import extract_video_thumbnail
 from ..generate.media import load_or_compute_duration
 from ..generate.scene import DescriptionEvent
+from ..generate.scene import SceneOptions
 from ..generate.scene import extract_description_events
 from ..generate.scene import extract_description_section
 from ..generate.speech import SpeechSegment
@@ -499,6 +500,64 @@ def _rescale_events_to_duration(
     ]
 
 
+def _apply_frame_sampling_lag(
+    events: list[DescriptionEvent], duration_seconds: float
+) -> list[DescriptionEvent]:
+    """Shift every (already-rescaled) description event later by roughly
+    one frame-sampling interval, to correct a systematic early bias
+    _rescale_events_to_duration() alone can't fix.
+
+    Christer, testing the rescaled timestamps against a real clip: "put
+    description 11 seconds later." Root cause is the same frame
+    sampling _rescale_events_to_duration()'s own docstring already
+    explains: describe_scene() only ever shows the model
+    SceneOptions.max_frames (16 by default) frames spread evenly across
+    the whole clip, so for a ~3-minute recording those frames sit
+    roughly `duration / 16` ~= 11 seconds apart - which is exactly the
+    11 seconds Christer observed. The model describes what it sees in a
+    given sampled frame, but that frame is itself already partway
+    through the interval it represents - proportional rescaling alone
+    corrects the *spread* of timestamps across the clip, not this
+    per-frame lag, since every event ends up anchored slightly earlier
+    than the real moment it describes, by about the same amount.
+
+    Nudging every rescaled timestamp forward by one average
+    frame-sampling interval (`duration_seconds / max_frames`)
+    compensates for that systematic lag - it generalizes to clips of
+    any length rather than hardcoding the literal "11" Christer's own
+    3-minute test clip happened to produce, since a much shorter or
+    longer recording would have a proportionally smaller or larger
+    frame interval. bv-web has no record of what SceneOptions were
+    actually used to generate a given scene.txt (that's a
+    generation-time-only parameter, not persisted anywhere), so this
+    assumes the default max_frames - the same approximation-not-exact-
+    fix spirit as the rescale itself.
+
+    Capped at _rescale_events_to_duration()'s own `target_max` (the
+    `duration_seconds * n / (n+1)` reserved-trailing-room ceiling) so
+    the shift can never push the last event's timestamp far enough to
+    collapse its own cue to zero length and drop its text - the exact
+    failure mode two earlier fixes in this same feature already went
+    out of their way to prevent, for different root causes. Only
+    description events get this treatment; sign reads keep their real,
+    already-accurate per-frame timestamps untouched (see
+    build_description_srt_from_events()'s own docstring)."""
+
+    if not events or duration_seconds <= 0:
+        return events
+
+    max_frames = SceneOptions().max_frames
+    if max_frames <= 0:
+        return events
+
+    offset = duration_seconds / max_frames
+    cap = duration_seconds * len(events) / (len(events) + 1)
+    return [
+        DescriptionEvent(min(event.timestamp_seconds + offset, cap), event.text)
+        for event in events
+    ]
+
+
 # Reading-time cap for a real-timestamp description/sign cue - without
 # this, a cue spans the *entire* gap until the next event, which can
 # be a long, uneventful stretch once _rescale_events_to_duration()
@@ -638,6 +697,7 @@ def build_description_srt_from_events(
         return None
 
     events = _rescale_events_to_duration(events, duration_seconds)
+    events = _apply_frame_sampling_lag(events, duration_seconds)
     ordered = sorted(events + sign_events, key=lambda event: event.timestamp_seconds)
     segments: list[SpeechSegment] = []
     cursor = 0.0

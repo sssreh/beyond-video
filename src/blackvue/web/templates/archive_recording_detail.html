@@ -75,7 +75,7 @@
     </ul>
     {% endif %}
     </div>
-    <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/description.srt?direction={{ label|lower }}" download>Download {{ label }} description as .srt (video-synced)</a> - timed against the {{ label }} video's own real length, for importing alongside it in your editor, and includes any sign/plate reads alongside the description (not the same as the ElevenLabs "Download SRT" above, which is timed to the narration voice instead).</p>
+    <p class="hint"><a class="description-srt-link" href="/archive/{{ camera_id }}/{{ recording.id }}/description.srt?direction={{ label|lower }}" download>Download {{ label }} description as .srt (video-synced)</a> - timed against the {{ label }} video's own real length, for importing alongside it in your editor, and includes any sign/plate reads alongside the description (not the same as the ElevenLabs "Download SRT" above, which is timed to the narration voice instead). "Read aloud" above uses this same file's timestamps to pace the narration to match the video.</p>
     {% endif %}
     {% if legible_reads %}
     <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/scene.srt?direction={{ label|lower }}" download>Download {{ label }} sign reads only as .srt</a> - the same sign/plate reads on their own, without the description text mixed in.</p>
@@ -141,6 +141,36 @@
   // whatever the native bar is doing via the 'play'/'pause'/'ended'
   // listeners below, so clicking pause on the bar itself still flips
   // the button back to "Resume" correctly.
+  //
+  // Per-cue paced playback: Christer, after the video-synced
+  // description.srt existed: "I would also like the read aloud is
+  // synced with the srt file." Previously "Read aloud" sent the whole
+  // description+sign-reads paragraph as one ElevenLabs request and
+  // played it back as one continuous clip, so the narration's timing
+  // had nothing to do with when things actually happened in the
+  // video. Now, for any .scene-text block that has a description.srt
+  // download link (see the .description-srt-link anchor rendered
+  // above - only blocks with a real `description`, matching
+  // build_description_srt_from_events()'s own "description or signs"
+  // gating), Read aloud fetches that exact .srt, parses it into cues
+  // via parseSrtCues() below, synthesizes each cue's text as its own
+  // separate ElevenLabs request, and schedules each cue's audio to
+  // start at its own cue.start timestamp relative to the moment the
+  // button was clicked (see playCuedSequence()) - silence in between
+  // cues, same as watching the video with the description read out as
+  // it happens. Blocks with only legible sign reads and no
+  // description (no description.srt link at all - see the template's
+  // own "if description" gate, just above the .description-srt-link
+  // anchor further up this file) fall back to the original
+  // single-request whole-paragraph behavior unchanged, since there's
+  // no per-event timing to sync against there anyway.
+  //
+  // trip_detail.html's own copy of this script deliberately does NOT
+  // get this per-cue logic mirrored into it: trip_summary.txt is one
+  // continuous narrative with no per-event timestamps or accompanying
+  // .srt to sync against, so there's nothing for parseSrtCues() to
+  // find there and adding the dead code would just be unused
+  // maintenance surface.
   var VOICE_STORAGE_KEY = 'bv-tts-voice';
   var SPEED_STORAGE_KEY = 'bv-tts-speed';
   var voiceSelect = document.getElementById('tts-voice');
@@ -152,6 +182,7 @@
   var voices = [];
   var audio = document.getElementById('tts-player');
   var activeButton = null;
+  var activeCuedSession = null;
 
   function showStatus(message) {
     if (!ttsStatus) return;
@@ -176,7 +207,19 @@
     // rewind, so a genuine pause (via our button or the native bar)
     // can be resumed from where it left off; 'ended' below is the one
     // that rewinds to 0, since that's an actual finish.
+    //
+    // Also cancels a per-cue session (see playCuedSequence()) - both
+    // its remaining scheduled setTimeout()s (so a stale cue doesn't
+    // start playing seconds after Stop was clicked) and its own
+    // 'ended' listener, which would otherwise keep counting cues that
+    // never got a chance to play and eventually fire a stale reset.
     audio.pause();
+    if (activeCuedSession) {
+      activeCuedSession.cancelled = true;
+      activeCuedSession.timeoutIds.forEach(function (id) { clearTimeout(id); });
+      if (activeCuedSession.onCueEnded) audio.removeEventListener('ended', activeCuedSession.onCueEnded);
+      activeCuedSession = null;
+    }
     if (activeButton) {
       resetButton(activeButton);
       activeButton = null;
@@ -184,6 +227,10 @@
   }
 
   audio.addEventListener('play', function () {
+    // Per-cue sessions manage their own button text ("Stop" / "Playing
+    // cue N of M…" via playCuedSequence()) - this generic "Pause" label
+    // would otherwise stomp on that every time a new cue's audio starts.
+    if (activeCuedSession) return;
     if (activeButton) {
       activeButton.textContent = 'Pause';
       activeButton.classList.add('recording');
@@ -193,7 +240,10 @@
     // 'ended' also triggers a native 'pause' just before its own
     // event fires - let the 'ended' handler below own that case so
     // the button doesn't flash "Resume" for a moment before settling
-    // on "Read aloud".
+    // on "Read aloud". Skipped entirely for cued sessions - see the
+    // 'play' listener above and playCuedSequence()'s own docstring for
+    // why per-cue mode doesn't offer Pause/Resume.
+    if (activeCuedSession) return;
     if (activeButton && !audio.ended) {
       activeButton.textContent = 'Resume';
       activeButton.classList.remove('recording');
@@ -201,6 +251,11 @@
   });
   audio.addEventListener('ended', function () {
     audio.currentTime = 0;
+    // A cued session's own onCueEnded listener (added/removed by
+    // playCuedSequence()) owns resetting the button once every cue has
+    // played - this generic handler would otherwise reset it after
+    // just the first cue.
+    if (activeCuedSession) return;
     if (activeButton) resetButton(activeButton);
   });
   audio.addEventListener('error', function () {
@@ -314,6 +369,140 @@
       .join('\n');
   }
 
+  // The mirror image of formatSrt()/srtTimestamp() above - parses a
+  // real description.srt response (from build_description_srt_from_events()
+  // server-side) into {start, end, text} cues in seconds, for the
+  // per-cue paced Read-aloud feature below (Christer: "I would also
+  // like the read aloud is synced with the srt file"). Tolerant of
+  // either the standard 3-line "index\ntime\ntext" cue block or a bare
+  // "time\ntext" block (no index line), and of \r\n line endings,
+  // rather than assuming the exact shape build_description_srt_from_events()
+  // happens to emit today.
+  function parseSrtCues(text) {
+    var TIME_RE = /(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/;
+    function toSeconds(h, m, s, ms) {
+      return (parseInt(h, 10) * 3600) + (parseInt(m, 10) * 60) + parseInt(s, 10) + (parseInt(ms, 10) / 1000);
+    }
+    var blocks = text.replace(/\r\n/g, '\n').split(/\n\s*\n/);
+    var cues = [];
+    blocks.forEach(function (block) {
+      var lines = block.split('\n').filter(function (l) { return l.length; });
+      if (lines.length < 2) return;
+      var timeLineIndex = TIME_RE.test(lines[0]) ? 0 : (TIME_RE.test(lines[1]) ? 1 : -1);
+      if (timeLineIndex === -1) return;
+      var match = TIME_RE.exec(lines[timeLineIndex]);
+      if (!match) return;
+      var cueText = lines.slice(timeLineIndex + 1).join(' ').trim();
+      if (!cueText) return;
+      cues.push({
+        start: toSeconds(match[1], match[2], match[3], match[4]),
+        end: toSeconds(match[5], match[6], match[7], match[8]),
+        text: cueText,
+      });
+    });
+    return cues;
+  }
+
+  // Shared by both the single-blob and per-cue paced playback paths -
+  // one ElevenLabs request for a given piece of text/voice.
+  function fetchCueSpeech(text, voiceId) {
+    var body = new FormData();
+    body.append('text', text);
+    body.append('voice_id', voiceId);
+    return fetch('/api/tts/speak', { method: 'POST', body: body })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) {
+            throw new Error(data.error || 'ElevenLabs request failed');
+          }
+          return data;
+        });
+      });
+  }
+
+  // Per-cue paced playback: synthesizes every cue's text in parallel
+  // (scene descriptions are typically a handful to a few dozen short
+  // cues, so this stays well within a reasonable number of concurrent
+  // ElevenLabs requests), then schedules each cue's audio to start at
+  // its own cue.start timestamp measured from `clickTime` - the moment
+  // the Read-aloud button was pressed - so playback lines up with the
+  // video's own timeline (silence in between cues) rather than reading
+  // straight through. If synthesis for a cue is still in flight when
+  // its scheduled moment arrives, it's simply played as soon as it's
+  // ready rather than holding up earlier cues; if a cue's synthesis
+  // fails outright, that one cue is skipped and the rest still play at
+  // their correct times (Christer never asked for all-or-nothing
+  // narration, and a single transient ElevenLabs error shouldn't
+  // silence an otherwise-working description).
+  //
+  // Deliberately offers only Stop, not Pause/Resume, while a cued
+  // session is active - see the click handler below for why: pausing
+  // mid-cue leaves the remaining scheduled cues' timers still running,
+  // and "resume" has no single well-defined position to resume from
+  // once several independently-timed clips are involved.
+  function playCuedSequence(btn, cues, voiceId) {
+    var session = { cancelled: false, timeoutIds: [], onCueEnded: null };
+    activeCuedSession = session;
+    activeButton = btn;
+
+    showStatus('Loading ' + cues.length + ' cue' + (cues.length === 1 ? '' : 's') + '…');
+    btn.textContent = 'Loading…';
+    btn.disabled = true;
+
+    var clickTime = performance.now();
+
+    Promise.all(cues.map(function (cue) {
+      return fetchCueSpeech(cue.text, voiceId)
+        .then(function (data) {
+          return { cue: cue, blob: base64ToBlob(data.audio_base64, 'audio/mpeg') };
+        })
+        .catch(function () {
+          return { cue: cue, blob: null };
+        });
+    })).then(function (results) {
+      if (session.cancelled || session !== activeCuedSession) return; // stopped while loading
+
+      var playable = results.filter(function (r) { return r.blob; });
+      if (!playable.length) {
+        showStatus('Could not generate speech for any cue.');
+        stop();
+        return;
+      }
+
+      btn.disabled = false;
+      btn.textContent = 'Stop';
+      btn.classList.add('recording');
+      showStatus('');
+
+      var endedCount = 0;
+      function onCueEnded() {
+        endedCount++;
+        if (endedCount >= playable.length && session === activeCuedSession) {
+          resetButton(btn);
+          activeCuedSession = null;
+          audio.removeEventListener('ended', onCueEnded);
+        }
+      }
+      audio.addEventListener('ended', onCueEnded);
+      session.onCueEnded = onCueEnded;
+
+      playable.forEach(function (item, order) {
+        var url = URL.createObjectURL(item.blob);
+        var delay = Math.max(0, item.cue.start * 1000 - (performance.now() - clickTime));
+        var timeoutId = setTimeout(function () {
+          if (session.cancelled || session !== activeCuedSession) return;
+          audio.src = url;
+          audio.currentTime = 0;
+          audio.playbackRate = currentSpeed();
+          audio.hidden = false;
+          audio.play();
+          showStatus('Playing cue ' + (order + 1) + ' of ' + playable.length + '…');
+        }, delay);
+        session.timeoutIds.push(timeoutId);
+      });
+    });
+  }
+
   function populateVoiceSelect() {
     if (!voiceSelect) return;
     voiceSelect.innerHTML = '';
@@ -388,6 +577,13 @@
 
   speakButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
+      if (btn === activeButton && activeCuedSession) {
+        // Per-cue sessions offer Stop only - see playCuedSequence()'s
+        // own docstring for why Pause/Resume isn't offered here.
+        stop();
+        return;
+      }
+
       if (btn === activeButton && audio.src) {
         // Already this button's clip - toggle play/pause on the
         // existing player instead of re-fetching from ElevenLabs, so
@@ -406,6 +602,41 @@
       var voiceId = selectedVoiceId();
       if (!voiceId) return;
 
+      // Blocks that have a real description.srt (see the
+      // .description-srt-link anchor rendered above, only present
+      // when `description` is truthy) get per-cue paced playback
+      // instead of one continuous clip (Christer: "I would also like
+      // the read aloud is synced with the srt file") - see
+      // playCuedSequence()'s own docstring for the full design.
+      var srtLink = btn.closest('.scene-text').querySelector('.description-srt-link');
+      if (srtLink) {
+        activeButton = btn; // set early so a fetch failure below can stop() cleanly
+        showStatus('Loading description.srt…');
+        btn.textContent = 'Loading…';
+        btn.disabled = true;
+        fetch(srtLink.href)
+          .then(function (response) {
+            if (!response.ok) throw new Error('Could not load description.srt');
+            return response.text();
+          })
+          .then(function (srtText) {
+            if (btn !== activeButton) return; // stopped/superseded while loading
+            var cues = parseSrtCues(srtText);
+            if (!cues.length) throw new Error('description.srt had no cues to read');
+            playCuedSequence(btn, cues, voiceId);
+          })
+          .catch(function (err) {
+            showStatus(err.message || 'Could not load description.srt.');
+            stop();
+          });
+        return;
+      }
+
+      // Fallback for blocks with only legible sign reads and no
+      // description (no description.srt link at all) - the original
+      // single-request whole-paragraph behavior, unchanged since
+      // there's no per-event timing to sync against there.
+      //
       // The description and any sign/plate reads should be spoken -
       // not the surrounding "Download .srt" hint links, which live
       // outside .tts-text (Christer: "1 funny thing is now that the
@@ -424,19 +655,7 @@
       btn.textContent = 'Loading…';
       btn.disabled = true;
 
-      var body = new FormData();
-      body.append('text', text);
-      body.append('voice_id', voiceId);
-
-      fetch('/api/tts/speak', { method: 'POST', body: body })
-        .then(function (response) {
-          return response.json().then(function (data) {
-            if (!response.ok) {
-              throw new Error(data.error || 'ElevenLabs request failed');
-            }
-            return data;
-          });
-        })
+      fetchCueSpeech(text, voiceId)
         .then(function (data) {
           if (btn !== activeButton) return; // stopped/superseded while loading
           audio.src = URL.createObjectURL(base64ToBlob(data.audio_base64, 'audio/mpeg'));
