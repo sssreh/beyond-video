@@ -417,6 +417,88 @@ def build_description_srt(description: str, duration_seconds: float) -> str | No
     return format_srt(segments)
 
 
+def _rescale_events_to_duration(
+    events: list[DescriptionEvent], duration_seconds: float
+) -> list[DescriptionEvent]:
+    """Stretch/compress every event's timestamp so the latest one lands
+    at (or right up against) the recording's real end, preserving each
+    event's relative position in the sequence rather than its raw
+    number.
+
+    Why this exists: Christer, after the bullet-parsing fix, pasted a
+    real .srt where every cue but the last sat inside the clip's first
+    six seconds and the final cue then stretched all the way to
+    00:03:00 to cover the rest - "Look at the timestamps, they are not
+    synced with video, the are synced when the where detected." He was
+    right. Traced to describe_scene()'s frame sampling: fps=1.0 capped
+    at max_frames=16 means a 3-minute clip is shown to the model as
+    only 16 frames spread ~11 seconds apart, and DESCRIBE_PROMPT never
+    tells the model the clip's real duration or that spacing. The
+    "- [t=X.Ys]" values it writes aren't measurements of real elapsed
+    video time at all - they're the model's own narrative pacing
+    between the frames it was shown, in the order it saw them, which
+    is why they came back small and monotonically increasing instead
+    of spanning the actual clip.
+
+    What IS reliable is the *order* the events were reported in - the
+    model does see the frames in chronological sequence, it just has
+    no grounding for how much real time separates them. So rather than
+    trust the raw numbers (which produces exactly the bunched-up-then-
+    one-giant-cue result Christer saw) or discard them (losing the
+    real-timestamp feature's whole point), this maps them onto the
+    real timeline by simple proportion: multiply every timestamp by a
+    scale factor chosen so the largest timestamp in the batch lands at
+    `duration_seconds * n / (n + 1)` (n = event count), not at
+    `duration_seconds` itself. If the model's last event was already
+    close to the real end, this is close to a no-op; if everything was
+    compressed into the first few seconds like Christer's example,
+    this spreads the same relative spacing back out across the whole
+    clip. It's a proportional approximation, not a real fix for the
+    model's lack of temporal grounding - two events that were actually
+    5 seconds apart and two that were actually 50 seconds apart will
+    get the same treatment if the model reported them with similar-
+    looking gaps - but it turns an unusable result (everything crammed
+    at the start, nothing synced at all after the first few seconds)
+    into a usable approximation (spread proportionally across the real
+    timeline), which is what was asked for.
+
+    The n/(n+1) target (rather than duration_seconds outright) exists
+    for a specific reason: build_description_srt_from_events() (the
+    caller) always extends the *last* event's cue all the way to
+    duration_seconds regardless of where that event's own timestamp
+    falls - that's how a real, accurately-timed last event already
+    gets its caption held through to the end of the clip. If this
+    function mapped the largest timestamp exactly onto
+    duration_seconds, that final cue's start and end would land on the
+    same instant, collapse to zero length, and silently drop its text
+    (the exact bug the previous fix in this same feature went out of
+    its way to stop happening for a different cause). Reserving
+    roughly one event's worth of trailing room leaves that final cue
+    real, visible screen time to extend into, the same as it would for
+    already-accurate input.
+
+    Left unchanged (returned as-is) when there's nothing to scale by:
+    zero events, or every timestamp at or below 0.0 (nothing positive
+    to anchor the proportion on - rescaling would require dividing by
+    a non-positive number). build_description_srt_from_events()'s own
+    clamp/merge logic still runs afterward either way, so a degenerate
+    case here doesn't produce a broken .srt, just an unscaled one."""
+
+    if not events:
+        return events
+
+    max_timestamp = max(event.timestamp_seconds for event in events)
+    if max_timestamp <= 0:
+        return events
+
+    target_max = duration_seconds * len(events) / (len(events) + 1)
+    scale = target_max / max_timestamp
+    return [
+        DescriptionEvent(event.timestamp_seconds * scale, event.text)
+        for event in events
+    ]
+
+
 def build_description_srt_from_events(
     events: list[DescriptionEvent], duration_seconds: float
 ) -> str | None:
@@ -433,16 +515,23 @@ def build_description_srt_from_events(
     deliver that, since it has no idea when in the clip anything
     actually happens; real per-event timestamps do.
 
-    Each event's cue starts at its own timestamp and runs until the
-    next event's timestamp (or `duration_seconds` for the last one),
-    so a caption stays on screen for exactly the span of video it
-    describes. Both the start and the next event's timestamp are
-    clamped to `[cursor, duration_seconds]` - `cursor` (the previous
-    cue's own end) guards against out-of-order or duplicate timestamps
-    the same way build_sign_read_srt()'s cursor does, and the
-    `duration_seconds` cap guards against a model timestamp that
-    overshoots the recording's real length (a plausible estimation
-    error, not something worth trusting blindly).
+    Before anything else, every event's timestamp is rescaled by
+    _rescale_events_to_duration() so the latest one lines up with the
+    recording's real end - see that function's own docstring for why:
+    the model's raw timestamps reflect its own narrative pacing
+    between the handful of frames it was actually shown, not real
+    elapsed video time, so used verbatim they come back bunched into
+    the first few seconds of a much longer clip.
+
+    Each (now-rescaled) event's cue starts at its own timestamp and
+    runs until the next event's timestamp (or `duration_seconds` for
+    the last one), so a caption stays on screen for exactly the span
+    of video it describes. Both the start and the next event's
+    timestamp are clamped to `[cursor, duration_seconds]` - `cursor`
+    (the previous cue's own end) guards against out-of-order or
+    duplicate timestamps the same way build_sign_read_srt()'s cursor
+    does, and the `duration_seconds` cap guards against any remaining
+    rounding overshoot past the recording's real length.
 
     A cue that collapses to zero or negative length after clamping
     doesn't just lose its text: Christer, after the first real-world
@@ -471,6 +560,7 @@ def build_description_srt_from_events(
     if not events or duration_seconds <= 0:
         return None
 
+    events = _rescale_events_to_duration(events, duration_seconds)
     ordered = sorted(events, key=lambda event: event.timestamp_seconds)
     segments: list[SpeechSegment] = []
     cursor = 0.0

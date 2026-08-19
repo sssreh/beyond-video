@@ -1023,6 +1023,59 @@ def test_build_description_srt_none_for_non_positive_duration():
     assert build_description_srt("Some description text.", -5) is None
 
 
+def test_rescale_events_to_duration_spreads_compressed_timestamps_out():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import _rescale_events_to_duration
+
+    # This is Christer's real-world report, trimmed: describe_scene()
+    # only ever shows the model 16 frames spread across the whole
+    # clip, so its "- [t=X.Ys]" values are the model's own narrative
+    # pacing between those frames, not real elapsed video time - here
+    # everything came back inside the first 6 seconds of an actual
+    # 180-second (3-minute) recording. n=4, duration=180.0 ->
+    # target_max = 180*4/5 = 144.0, scale = 144.0/6.0 = 24.0.
+    events = [
+        DescriptionEvent(0.0, "first"),
+        DescriptionEvent(0.6, "second"),
+        DescriptionEvent(1.7, "third"),
+        DescriptionEvent(6.0, "fourth"),
+    ]
+
+    rescaled = _rescale_events_to_duration(events, 180.0)
+
+    # round() to sidestep ordinary floating-point multiplication noise
+    # (0.6 * 24.0 lands on 14.399999999999999, not 14.4) - not a
+    # rounding rule the function itself applies.
+    assert [round(event.timestamp_seconds, 6) for event in rescaled] == [
+        0.0,
+        14.4,
+        40.8,
+        144.0,
+    ]
+    assert [event.text for event in rescaled] == ["first", "second", "third", "fourth"]
+
+
+def test_rescale_events_to_duration_leaves_a_single_zero_timestamp_alone():
+    from blackvue.generate.scene import DescriptionEvent
+    from blackvue.web.archive_browser import _rescale_events_to_duration
+
+    # Nothing positive to anchor a proportion on - dividing by a
+    # non-positive max would be meaningless, so this is a no-op. This
+    # is exactly the DESCRIBE_PROMPT "nothing notable happened"
+    # fallback case: a single bullet at t=0.0 for the whole clip.
+    events = [DescriptionEvent(0.0, "Routine driving, nothing notable happened.")]
+
+    rescaled = _rescale_events_to_duration(events, 180.0)
+
+    assert rescaled == events
+
+
+def test_rescale_events_to_duration_empty_list_is_a_noop():
+    from blackvue.web.archive_browser import _rescale_events_to_duration
+
+    assert _rescale_events_to_duration([], 60.0) == []
+
+
 def test_build_description_srt_from_events_uses_real_per_event_timestamps():
     from blackvue.generate.scene import DescriptionEvent
     from blackvue.web.archive_browser import build_description_srt_from_events
@@ -1035,21 +1088,30 @@ def test_build_description_srt_from_events_uses_real_per_event_timestamps():
 
     srt = build_description_srt_from_events(events, 40.0)
 
+    # Real timestamps get rescaled (see _rescale_events_to_duration())
+    # so the latest one lands at duration_seconds * n/(n+1) rather than
+    # trusted verbatim - here n=3, duration=40.0, so 25.0 (the raw max)
+    # maps to 30.0, and 12.4 scales by the same 1.2x factor to 14.88.
     assert srt is not None
-    assert "1\n00:00:00,000 --> 00:00:12,400\n" in srt
-    assert "2\n00:00:12,400 --> 00:00:25,000\n" in srt
-    assert "3\n00:00:25,000 --> 00:00:40,000\n" in srt
+    assert "1\n00:00:00,000 --> 00:00:14,880\n" in srt
+    assert "2\n00:00:14,880 --> 00:00:30,000\n" in srt
+    assert "3\n00:00:30,000 --> 00:00:40,000\n" in srt
     assert "red bus" in srt
 
 
-def test_build_description_srt_from_events_clamps_overshoot_and_drops_dead_cue():
+def test_build_description_srt_from_events_rescales_an_overshoot_into_range():
     from blackvue.generate.scene import DescriptionEvent
     from blackvue.web.archive_browser import build_description_srt_from_events
 
-    # A timestamp past the recording's real duration (plausible model
-    # estimation error) must never produce a cue that starts after the
-    # video actually ends - clamped to duration_seconds, and dropped
-    # entirely if that clamp collapses it to zero length.
+    # Before _rescale_events_to_duration() existed, a timestamp past
+    # the recording's real duration (a plausible model estimation
+    # error) got clamped to duration_seconds and, if that clamp
+    # collapsed its cue to zero length, silently dropped. Now every
+    # event is rescaled onto the real timeline first (see that
+    # function's docstring for why - raw model timestamps aren't real
+    # elapsed video time to begin with), so an overshoot no longer
+    # needs dropping - it lands inside the real duration instead and
+    # keeps its text, same as every other event.
     events = [
         DescriptionEvent(0.0, "first"),
         DescriptionEvent(50.0, "second - past duration"),
@@ -1058,8 +1120,12 @@ def test_build_description_srt_from_events_clamps_overshoot_and_drops_dead_cue()
     srt = build_description_srt_from_events(events, 40.0)
 
     assert srt is not None
-    assert "second" not in srt
-    assert "00:00:00,000 --> 00:00:40,000" in srt
+    assert "second" in srt
+    # n=2, duration=40.0 -> target_max = 40 * 2/3 = 26.6667, scale =
+    # 26.6667/50 = 0.5333; second's rescaled start is 26.6667s, well
+    # inside the clip, and its cue runs through to the real end.
+    assert "1\n00:00:00,000 --> 00:00:26,667\nfirst\n" in srt
+    assert "2\n00:00:26,667 --> 00:00:40,000\nsecond - past duration\n" in srt
 
 
 def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forward():
@@ -1081,11 +1147,16 @@ def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forwar
 
     srt = build_description_srt_from_events(events, 30.0)
 
+    # Rescaled first (n=3, duration=30.0 -> target_max=22.5, scale=2.25):
+    # -0.3*2.25=-0.675 (still clamps to cursor=0.0, still collides with
+    # the second event's own 0.0*2.25=0.0), 10.0*2.25=22.5. The
+    # collapse-and-merge-forward mechanic this test exists for still
+    # fires - just at the rescaled numbers.
     assert srt is not None
     assert "first" in srt
     assert "second" in srt
-    assert "1\n00:00:00,000 --> 00:00:10,000\nfirst second\n" in srt
-    assert "2\n00:00:10,000 --> 00:00:30,000\nthird\n" in srt
+    assert "1\n00:00:00,000 --> 00:00:22,500\nfirst second\n" in srt
+    assert "2\n00:00:22,500 --> 00:00:30,000\nthird\n" in srt
 
 
 def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
@@ -1099,9 +1170,11 @@ def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
 
     srt = build_description_srt_from_events(events, 30.0)
 
+    # n=2, duration=30.0 -> target_max=20.0, scale=2.0: 2.0*2=4.0,
+    # 10.0*2=20.0.
     assert srt.index("earlier thing") < srt.index("later thing")
-    assert "1\n00:00:02,000 --> 00:00:10,000\n" in srt
-    assert "2\n00:00:10,000 --> 00:00:30,000\n" in srt
+    assert "1\n00:00:04,000 --> 00:00:20,000\n" in srt
+    assert "2\n00:00:20,000 --> 00:00:30,000\n" in srt
 
 
 def test_build_description_srt_from_events_none_for_no_events_or_duration():
@@ -1132,7 +1205,11 @@ def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
 
     srt = recording.description_srt("front")
     assert srt is not None
-    assert "00:00:12,400 --> 00:00:25,000" in srt
+    # Same rescale as the unit-test version above: n=3, duration=40.0
+    # -> target_max=30.0, scale=1.2, so the 12.4s "red bus" event
+    # lands at 14.88s and its cue runs to the (also rescaled) 30.0s
+    # start of the third event.
+    assert "00:00:14,880 --> 00:00:30,000" in srt
     assert "red bus" in srt
 
     # scene_summary's description text stays clean prose, with no
