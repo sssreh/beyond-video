@@ -16129,3 +16129,41 @@ Christer, after being walked through the 16->64->32 saga this same day: "I want 
 Verified via the pytest-shim harness: `test_scene.py` 38/38, `test_bv_scribe.py` 25/28 (3 skips are pre-existing `capsys`-fixture shim gaps, unrelated), `test_jobs.py` 92/103 (same 9 pre-existing failures documented in the max_frames=64 regression fix earlier today - `monkeypatch.setenv`/`pytest.approx` shim gaps and background-thread timing races, none touching scribe/scene code).
 
 Files changed: `src/blackvue/generate/scene.py`, `src/blackvue/cli/bv_scribe.py`, `docs/man/bv-scribe.md`, `tests/blackvue/generate/test_scene.py`, `tests/blackvue/cli/test_bv_scribe.py`, `tests/blackvue/web/test_jobs.py`.
+
+## Loosen phantom-vehicle prompt hardening: single-frame visibility, not motion continuity (2026-08-19)
+
+Christer, same day as the max_frames 16->64->32->16 saga (see prior section): "I AM MISSING MY RED BUS."
+
+The red bus is Christer's calibration anchor for scene-description quality - a bus passing in his
+~3-minute reference clip that he uses as "my most correct point" to judge whether descriptions are
+working. It stopped appearing in generated output.
+
+Diagnostic process: initially hypothesized frame-sampling density (offered via AskUserQuestion,
+since max_frames=16 means samples ~11.25s apart on his clip, vs ~5.6s at 32 - either could plausibly
+miss a brief passing-vehicle event). Christer falsified this: "I didnt find the bus at 32 frames
+either" - both tests were run after today's earlier phantom-vehicle prompt hardening (commit
+6f8123a) landed, so density wasn't the variable. Pivoted to a second hypothesis: that hardening's
+wording required the model see a vehicle "appear, move through, or exit the frame" before describing
+it as passing/overtaking. Given this pipeline samples discrete, evenly-spaced single-frame snapshots
+(not continuous video), the model essentially never observes multi-frame motion of an object entering
+and exiting a scene - that bar is architecturally close to unsatisfiable, not just a hallucination
+guard. Christer agreed: "I probably disapeared due to phantom-vehicle prompt hardening."
+
+Fix: loosened DESCRIBE_PROMPT's vehicle-visibility instruction in scene.py. Old wording demanded
+seeing a vehicle "appear, move through, or exit the frame in the footage itself." New wording only
+requires the vehicle be "actually visible in a frame you're shown" - explicitly stating a single-frame
+sighting is enough, and explaining why (frames are individual snapshots sampled seconds apart, not
+continuous video, so multi-frame motion will rarely be observable). The original hallucination guard
+is kept intact and restated more plainly ("Never invent a vehicle passing, overtaking, or approaching
+that you cannot actually see in any frame"), as is the separate, unrelated mirror/cross-camera
+reflection guard from the same original hardening pass - neither of those was implicated in the bus
+regression, so neither was touched.
+
+Verified: ast.parse() on scene.py passes. Standalone import+assertion script confirmed the old
+"appear, move" phrase is gone and the new "a frame you" / "Never invent a vehicle" wording is present
+in the rendered DESCRIBE_PROMPT constant. Full pytest-shim run: test_scene.py 38/38 passed,
+test_bv_scribe.py 25/28 (3 pre-existing capsys-fixture skips, unrelated), test_jobs.py 92/103
+(9 pre-existing pytest.approx-shim failures, unrelated) - all matching the same baseline seen after
+the max_frames revert in the prior section, confirming no regressions from this wording change.
+
+Files changed: src/blackvue/generate/scene.py (DESCRIBE_PROMPT wording + docstring history note).

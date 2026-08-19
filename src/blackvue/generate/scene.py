@@ -132,6 +132,27 @@ when reading it:
    content presented as plain fact - regardless of which reading of
    this one ambiguous word turns out to be correct.
 
+   Second follow-up, same day: the guard above overcorrected. Christer,
+   testing against his own reference clip (its red bus event is his
+   calibration anchor - "the bus is my most correct point," see
+   WORKING_CONTEXT.md): "I AM MISSING MY RED BUS" - gone from the
+   description at both max_frames=16 and 32, ruling out frame-sampling
+   density as the cause (confirmed via AskUserQuestion: both tests ran
+   after this same prompt-hardening change landed). The wording "unless
+   you can see it appear, move through, or exit the frame in the
+   footage itself" demanded motion continuity across frames - but this
+   pipeline's frames are individual snapshots sampled seconds apart,
+   never continuous video, so a real vehicle sighting almost never
+   satisfies "appear, move through, and exit" even when it's genuinely
+   visible in one of the sampled frames. The model, following that
+   instruction literally, appears to have started suppressing real
+   sightings like the bus, not just inventing ones. Loosened to require
+   only that the vehicle is visible in at least one shown frame - drops
+   the impossible-given-this-architecture motion-continuity bar while
+   keeping the actual hallucination guard (don't invent a vehicle you
+   can't see in any frame at all) and the separate mirror/cross-camera
+   guard from the first follow-up above, both untouched.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -201,11 +222,14 @@ DESCRIBE_PROMPT = (
     "cannot be fulfilled'), and never refuse to describe an image just "
     "because it doesn't show a road. Only describe a vehicle, sign, or "
     "other object as being in the scene if it is actually visible in "
-    "this footage - never describe another vehicle as passing, "
-    "overtaking, or approaching unless you can see it appear, move "
-    "through, or exit the frame in the footage itself, and don't "
-    "describe something that would only be visible in a mirror "
-    "reflection as if it were in the camera's own direct view. This "
+    "a frame you're shown - a real sighting in even a single frame is "
+    "enough, you do not need to see it enter, move through, and exit "
+    "(the frames you're given are individual snapshots sampled seconds "
+    "apart, not continuous video, so you will rarely see that much of "
+    "it). Never invent a vehicle passing, overtaking, or approaching "
+    "that you cannot actually see in any frame, and don't describe "
+    "something that would only be visible in a mirror reflection as "
+    "if it were in the camera's own direct view. This "
     "footage is from one single fixed camera (front-facing or "
     "rear-facing, whichever this clip actually is) - describe only "
     "what that one camera's own view actually shows, not what a "
