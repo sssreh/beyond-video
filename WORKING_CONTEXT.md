@@ -16109,3 +16109,15 @@ Updated `SceneOptions.max_frames` (64->32) and rewrote its docstring addendum pl
 Verified: `ast.parse()` on all edited Python files. Ran the pytest-shim harness: `test_scene.py` 38/38 pass, `test_bv_scribe.py` 25/25 runnable pass (3 skipped - shim limitation, pre-existing), `test_jobs.py` 92/103 pass with the same 9 pre-existing/unrelated failures documented in the entry above (monkeypatch.setenv/pytest.approx gaps in the shim, background-thread timing races) - no new regressions.
 
 Files changed: `src/blackvue/generate/scene.py`, `src/blackvue/cli/bv_scribe.py`, `tests/blackvue/generate/test_scene.py`, `tests/blackvue/cli/test_bv_scribe.py`, `tests/blackvue/web/test_jobs.py`, `docs/man/bv-scribe.md`.
+
+## Cancel button next to Resume for Read-aloud playback (2026-08-19)
+
+Christer: "i want a cancel option next to resume for wav playback." The Read-aloud toggle button only ever offered two states while a clip existed - "Pause" while playing, "Resume" while paused - with no way to abandon a paused clip and get back to a clean "Read aloud" state short of clicking a different block's button (which calls `stop()` as a side effect) or letting it play to the end.
+
+Added a sibling `.speak-cancel-btn` button next to each `.speak-btn` in both `archive_recording_detail.html` and `trip_detail.html`, hidden by default and shown only while its button reads "Resume" (toggled in the shared `'play'`/`'pause'` audio-element listeners and in `resetButton()`, via a new `cancelButtonFor(btn)` lookup mirroring the existing `.tts-download` sibling-lookup pattern). Clicking it rewinds `audio.currentTime` to 0 and calls the existing `stop()` - unlike a plain pause (which deliberately preserves position so Resume picks up where it left off), Cancel is an explicit "start over": the next "Read aloud" click on that block re-synthesizes/replays from the beginning rather than resuming mid-clip.
+
+Applies uniformly to both the merged-cue WAV playback path (`archive_recording_detail.html`'s `playMergedCues()`, what Christer was actually testing when he asked) and the simpler single-request MP3 path used by blocks without a description.srt and by `trip_detail.html`'s trip-narrative reading - both funnel through the same shared `#tts-player` element and `activeButton`/`stop()` machinery, so one Cancel implementation covers all of it.
+
+Verified: `node --check` on both files' extracted `<script>` blocks (confirmed no Jinja2 tags inside them first), and a Jinja2 render sanity check on both templates (only error: expected `'request' is undefined`).
+
+Files changed: `src/blackvue/web/templates/archive_recording_detail.html`, `src/blackvue/web/templates/trip_detail.html`.

@@ -56,6 +56,7 @@
     {% if description or legible_reads %}
     <div class="tts-actions">
       <button type="button" class="voice-btn speak-btn" title="Read this description and any sign/plate reads aloud">Read aloud</button>
+      <button type="button" class="voice-btn speak-cancel-btn" title="Cancel and reset" hidden>Cancel</button>
       <a class="voice-btn tts-download" href="#" download="speech.mp3" hidden>Download</a>
       <a class="voice-btn tts-download-srt" href="#" download="speech.srt" hidden>Download SRT</a>
     </div>
@@ -225,10 +226,25 @@
     speakButtons.forEach(function (btn) { btn.hidden = true; });
   }
 
+  // Christer: "i want a cancel option next to resume for wav
+  // playback" - the toggle button alone only ever offered Pause while
+  // playing and Resume while paused, with no way to abandon a paused
+  // clip and get back to a clean "Read aloud" state short of clicking
+  // a different block's button (which calls stop() as a side effect).
+  // A sibling .speak-cancel-btn per block (see the template markup
+  // above), shown only while its button reads "Resume" and hidden the
+  // rest of the time, gives that explicit reset without cluttering the
+  // toggle button itself with a third state.
+  function cancelButtonFor(btn) {
+    return btn ? btn.parentElement.querySelector('.speak-cancel-btn') : null;
+  }
+
   function resetButton(btn) {
     btn.textContent = 'Read aloud';
     btn.classList.remove('recording');
     btn.disabled = false;
+    var cancelBtn = cancelButtonFor(btn);
+    if (cancelBtn) cancelBtn.hidden = true;
   }
 
   function stop() {
@@ -257,6 +273,8 @@
     if (activeButton) {
       activeButton.textContent = 'Pause';
       activeButton.classList.add('recording');
+      var cancelBtn = cancelButtonFor(activeButton);
+      if (cancelBtn) cancelBtn.hidden = true;
     }
   });
   audio.addEventListener('pause', function () {
@@ -267,6 +285,8 @@
     if (activeButton && !audio.ended) {
       activeButton.textContent = 'Resume';
       activeButton.classList.remove('recording');
+      var cancelBtn = cancelButtonFor(activeButton);
+      if (cancelBtn) cancelBtn.hidden = false;
     }
   });
   audio.addEventListener('ended', function () {
@@ -690,6 +710,18 @@
       showStatus('Could not reach the server to load voices.');
       hideButtons();
     });
+
+  document.querySelectorAll('.speak-cancel-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      // Unlike stop() alone (which deliberately preserves playback
+      // position so a genuine pause/resume works), Cancel is an
+      // explicit "start over" - rewind to 0 too, so the next "Read
+      // aloud" click on this block starts the clip from the beginning
+      // rather than wherever it was paused.
+      audio.currentTime = 0;
+      stop();
+    });
+  });
 
   speakButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
