@@ -1978,10 +1978,22 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         action, not a multi-minute run" precedent
         archive_recording_thumbnail()/archive_recording_file()'s HEVC-
         preview branch already set: a few-second spoken query
-        transcribes in well under a second to a few seconds on
-        model_size="base", nowhere near needing the Job/polling/
-        history machinery built for bv-generate/bv-export's multi-
-        minute runs.
+        transcribes in a few seconds on model_size="small", nowhere
+        near needing the Job/polling/history machinery built for
+        bv-generate/bv-export's multi-minute runs.
+
+        Was model_size="base" (Whisper's smallest/fastest tier)
+        originally, for the quickest possible turnaround on this
+        synchronous request. Bumped to "small": this transcript feeds
+        parse_spoken_query()/parse_spoken_timerange() below, which
+        pattern-match on exact words, so a misheard word here doesn't
+        just look wrong - it can silently break the place/date parse.
+        "base" mangled the kind of proper noun this route sees a lot
+        of (Swedish place names) more than the modest extra latency
+        of "small" is worth avoiding. If turnaround becomes
+        noticeable, try GPU acceleration (already automatic - see
+        generate/speech.py's gpu_available()) before dropping back
+        down a model size.
 
         Whisper transcribes the audio accurately, but the raw
         transcript is not itself a bv-search query - a sentence like
@@ -2017,7 +2029,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             tmp.write(await audio.read())
 
         try:
-            result = transcribe(tmp_path, model_size="base")
+            result = transcribe(tmp_path, model_size="small")
         except MediaToolError as exc:
             return JSONResponse(
                 {"error": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
