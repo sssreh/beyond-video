@@ -290,7 +290,12 @@ def test_scene_options_defaults_match_tuned_values():
     assert opts.task == "both"
     assert opts.model == scene.DEFAULT_MODEL
     assert opts.fps == 1.0
-    assert opts.max_frames == 16
+    # 16 -> 64 (2026-08-19): Christer wanted ~3s between sampled frames
+    # instead of ~11s, for closer description-event timing. See
+    # video_total_pixels below (and describe_scene()'s video branch) for
+    # how this avoids just multiplying compute by 4x.
+    assert opts.max_frames == 64
+    assert opts.video_total_pixels == 16 * 1092 * 588
     assert opts.zoom_signs is True
     assert opts.zoom_plate_confidence_check is True
     assert opts.force_cpu is False
@@ -617,6 +622,41 @@ def test_describe_scene_still_builds_a_video_content_element_for_a_real_video(
     video_ele = content[0]
     assert video_ele["type"] == "video"
     assert video_ele["video"] == str(video_path.resolve())
+    assert video_ele["max_frames"] == 64
+
+
+def test_describe_scene_video_element_uses_total_pixels_not_fixed_resize(
+    monkeypatch, tmp_path
+):
+    """2026-08-19: the video branch must pass total_pixels instead of a
+    fixed resized_width/resized_height - qwen_vl_utils' fetch_video()
+    only spreads a total pixel budget across however many frames get
+    sampled when it isn't told an exact per-frame size to use instead
+    (confirmed by reading qwen_vl_utils/vision_process.py directly).
+    Setting both resized_width and resized_height would bypass that
+    budget entirely and turn max_frames back into a pure cost
+    multiplier - exactly the "heavy performance penalty" Christer hit
+    the first time max_frames was raised. The photo branch is
+    unaffected - see the sibling test above for that one."""
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_messages = []
+
+    def fake_process_vision_info(messages, **kwargs):
+        captured_messages.append(messages)
+        return [], [], {}
+
+    loaded = _fake_loaded_scene_model(fake_process_vision_info)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu: loaded)
+
+    scene.describe_scene(video_path, zoom_signs=False)
+
+    video_ele = captured_messages[0][0]["content"][0]
+    assert video_ele["total_pixels"] == 16 * 1092 * 588
+    assert "resized_width" not in video_ele
+    assert "resized_height" not in video_ele
 
 
 # --- unload_scene_model() -------------------------------------------------

@@ -13,6 +13,7 @@ bv-scribe [--raw]
           [--task {describe,ocr,both}] [--model MODEL]
           [--fps N] [--max-frames N] [--max-pixels N]
           [--resized-width N] [--resized-height N]
+          [--video-total-pixels N]
           [--crop-top FRAC] [--crop-bottom FRAC]
           [--max-new-tokens N] [--repetition-penalty N] [--no-repeat-ngram-size N]
           [--do-sample] [--temperature N] [--top-p N] [--top-k N]
@@ -84,10 +85,11 @@ Check [PyTorch's "Get Started" page](https://pytorch.org/get-started/locally/) f
 | Option | Description |
 |---|---|
 | `--fps N` | Frames per second of video to sample. Default: `1.0`. |
-| `--max-frames N` | Hard cap on sampled frames regardless of `--fps`. Default: `16`. Lower this first if generation is too slow. |
-| `--max-pixels N` | Resolution cap per sampled frame, in total pixels. Default: `151200` (~420x360). Only used when `--resized-width`/`--resized-height` are both `0`. |
-| `--resized-width N` | Force an exact frame width, bypassing `--max-pixels` - the actual resolution knob in practice. Default: `1092`. Pass `0` (with `--resized-height 0`) to fall back to `--max-pixels` instead. |
-| `--resized-height N` | Force an exact frame height. Default: `588`. See `--resized-width`. |
+| `--max-frames N` | Hard cap on sampled frames regardless of `--fps`. Default: `64` (~3s apart on a typical clip - was `16` before 2026-08-19, when `--video-total-pixels` below was added so a higher frame count trades resolution instead of just multiplying compute). Lower this first if generation is too slow. |
+| `--max-pixels N` | **Photo mode only** - resolution cap per image, in total pixels. Default: `151200` (~420x360). Only used when `--resized-width`/`--resized-height` are both `0`. Has no effect on video - see `--video-total-pixels`. |
+| `--resized-width N` | **Photo mode only** - force an exact frame width, bypassing `--max-pixels`. Default: `1092`. Pass `0` (with `--resized-height 0`) to fall back to `--max-pixels` instead. Has no effect on video. |
+| `--resized-height N` | **Photo mode only** - force an exact frame height. Default: `588`. See `--resized-width`. Has no effect on video. |
+| `--video-total-pixels N` | **Video mode's** resolution/frame-count tradeoff knob - total pixels summed across every sampled frame. Default: `10273536` (16 frames at `1092x588`, this project's real-footage-tuned per-clip budget). `qwen_vl_utils` divides this by the number of sampled frames to get each frame's own resolution cap, so raising `--max-frames` costs resolution per frame instead of multiplying total compute. |
 | `--crop-top FRAC` | Fraction of frame height to crop off the top before the model sees it, to cut out BlackVue's burned-in overlay text (timestamp/speed/camera name). Default: `0.0378`, or `0` (disabled) with `--raw` - see "Raw video mode" below. Pass `0` explicitly to disable in archive mode too. |
 | `--crop-bottom FRAC` | Fraction of frame height to crop off the bottom. Default: `0.0344`, or `0` with `--raw`. See `--crop-top`. |
 

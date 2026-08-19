@@ -170,17 +170,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=16,
-        help="Hard cap on sampled frames regardless of --fps (default: 16).",
+        default=64,
+        help="Hard cap on sampled frames regardless of --fps (default: 64).",
     )
     parser.add_argument(
         "--max-pixels",
         type=int,
         default=360 * 420,
         help=(
-            "Resolution cap per sampled frame, in total pixels "
+            "Photo-mode resolution cap per image, in total pixels "
             "(default: 151200) - only used when --resized-width/"
-            "--resized-height are both 0."
+            "--resized-height are both 0. Video sampling ignores this "
+            "entirely - see --video-total-pixels."
         ),
     )
     parser.add_argument(
@@ -188,18 +189,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=1092,
         help=(
-            "Force an exact frame width, bypassing --max-pixels "
-            "(default: 1092 - the actual resolution knob; --max-pixels "
-            "was found to be a no-op against the pinned qwen-vl-utils). "
-            "Pass 0 (with --resized-height 0) to fall back to "
-            "--max-pixels instead."
+            "Photo mode only: force an exact frame width, bypassing "
+            "--max-pixels (default: 1092 - the actual resolution knob "
+            "for photos; --max-pixels was found to be a no-op against "
+            "the pinned qwen-vl-utils whenever an exact resize was also "
+            "set - the same reason video sampling stopped setting this "
+            "at all, see --video-total-pixels). Pass 0 (with "
+            "--resized-height 0) to fall back to --max-pixels instead. "
+            "Has no effect on video."
         ),
     )
     parser.add_argument(
         "--resized-height",
         type=int,
         default=588,
-        help="Force an exact frame height - see --resized-width.",
+        help="Photo mode only - see --resized-width. Has no effect on video.",
+    )
+    parser.add_argument(
+        "--video-total-pixels",
+        type=int,
+        default=16 * 1092 * 588,
+        help=(
+            "Video mode's resolution/frame-count tradeoff knob, in "
+            "total pixels summed across every sampled frame (default: "
+            "%(default)s - 16 frames at 1092x588, this project's "
+            "real-footage-tuned per-clip budget). qwen_vl_utils divides "
+            "this by the number of sampled frames (--max-frames/--fps) "
+            "to get each frame's own resolution cap, so raising "
+            "--max-frames for closer-together samples costs resolution "
+            "per frame rather than multiplying total compute the way a "
+            "fixed --resized-width/--resized-height would. Video never "
+            "reads --max-pixels/--resized-width/--resized-height (those "
+            "are photo-only) - this is the one knob for video."
+        ),
     )
     parser.add_argument(
         "--crop-top",
@@ -398,6 +420,7 @@ def _scene_kwargs(args: argparse.Namespace) -> dict:
         max_pixels=args.max_pixels,
         resized_width=args.resized_width,
         resized_height=args.resized_height,
+        video_total_pixels=args.video_total_pixels,
         crop_top=args.crop_top,
         crop_bottom=args.crop_bottom,
         max_new_tokens=args.max_new_tokens,

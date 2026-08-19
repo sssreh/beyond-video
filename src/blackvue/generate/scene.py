@@ -84,6 +84,35 @@ when reading it:
    cue instead of silently dropping it, which this negative-timestamp
    case triggers.
 
+5. Confident invented vehicle motion, not just static content. Christer,
+   reviewing a real front-camera clip's description: "The white van
+   that overtakes me on the right side dont exist, unless it in my
+   rear camera." No such vehicle appears anywhere in that clip's actual
+   footage - the same "confident invented content" failure as finding
+   #2 above (Palm Jumeirah), just applied to a moving object's
+   relationship to the camera instead of a place name. A separate cue
+   from the same real clip, originally read as the model inventing a
+   rear-camera place name ("BIELEŃ" - see WORKING_CONTEXT.md's
+   2026-08-19 curve-correction entry, where it was flagged as
+   rear-camera/mirror bleed alongside the white van), turned out on
+   closer look to likely be a garbled OCR-style reading of "BILEN"
+   (Swedish for "the car") rather than actual evidence of this failure
+   mode - noted here as a correction to that earlier entry, not as a
+   second data point for it. DESCRIBE_PROMPT now includes an explicit,
+   narrowly-scoped instruction: don't describe a vehicle as passing,
+   overtaking, or approaching unless it's actually visible doing so in
+   the frame itself, and don't describe rear-facing footage as if it
+   were the forward view (or vice versa). Deliberately narrower than
+   the general "don't infer from outside knowledge" prompt finding #2
+   already tried and reverted for OCR - this targets spatial/motion
+   grounding specifically (is this object visible in this camera's own
+   frame right now) rather than semantic inference (is this a place I
+   recognize), a different enough failure class that the same
+   regression isn't a given, but also not something this change has
+   verified against real footage yet. DISCLAIMER now also flags claims
+   about another vehicle's movement relative to the camera as
+   unverified, alongside plate/sign/place-name reads.
+
 Copyright (C) 2026 Christer R. (sssreh)
 
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -130,9 +159,12 @@ DISCLAIMER = (
     "signs, and place names) are automated vision-model OCR output, "
     "not verified fact. This model has been observed to confidently "
     "report a wrong plate/sign read (not just say \"not legible\"), "
-    "and to occasionally invent plausible-sounding but unrelated "
-    "place names on scenes it finds ambiguous. Treat every read here "
-    "as unverified until checked against the source video."
+    "to occasionally invent plausible-sounding but unrelated "
+    "place names on scenes it finds ambiguous, and to occasionally "
+    "describe another vehicle passing or overtaking that isn't "
+    "actually visible anywhere in the footage. Treat every read here, "
+    "and any claim about another vehicle's movement relative to the "
+    "camera, as unverified until checked against the source video."
 )
 
 DESCRIBE_PROMPT = (
@@ -148,7 +180,17 @@ DESCRIBE_PROMPT = (
     "what IS in the frame - never answer by saying what it is not "
     "(for example 'this is not dashcam footage' or 'the request "
     "cannot be fulfilled'), and never refuse to describe an image just "
-    "because it doesn't show a road.\n\n"
+    "because it doesn't show a road. Only describe a vehicle, sign, or "
+    "other object as being in the scene if it is actually visible in "
+    "this footage - never describe another vehicle as passing, "
+    "overtaking, or approaching unless you can see it appear, move "
+    "through, or exit the frame in the footage itself, and don't "
+    "describe something that would only be visible in a mirror "
+    "reflection as if it were in the camera's own direct view. This "
+    "footage is from one single fixed camera (front-facing or "
+    "rear-facing, whichever this clip actually is) - describe only "
+    "what that one camera's own view actually shows, not what a "
+    "different camera on the same vehicle might show.\n\n"
     "REQUIRED FORMAT for any video clip (not a single still photo): "
     "write the description ONLY as a bulleted list of distinct "
     "moments - never as a plain paragraph. Each bullet must be "
@@ -255,15 +297,39 @@ class SceneOptions:
     """Tuning knobs for describe_scene()/summarize_trip(). Defaults
     match the values scene-scribe's real-footage tuning converged on -
     see the standalone prototype's own argparse help text (preserved
-    in docs/man/bv-scribe.md) for the reasoning behind each one."""
+    in docs/man/bv-scribe.md) for the reasoning behind each one.
+
+    2026-08-19 addendum: max_frames/video_total_pixels are a deliberate
+    exception to that inherited tuning. Christer: "The problem is that
+    i would like 64 frames per video so there is about 3 sec between
+    them, then we would come much closer to correct timing, our
+    problem was that there where a heavy performane penalty for use to
+    increase the number of frames." Raising max_frames alone (with
+    resized_width/resized_height still fixed) is exactly what caused
+    that earlier penalty - see describe_scene()'s video-branch comment
+    for why, and video_total_pixels below for the fix."""
 
     task: str = "both"  # "describe", "ocr", or "both"
     model: str = DEFAULT_MODEL
     fps: float = 1.0
-    max_frames: int = 16
+    max_frames: int = 64
     max_pixels: int = 360 * 420
     resized_width: int = 1092
     resized_height: int = 588
+    # The per-clip video-token budget this project's real-footage
+    # tuning had already converged on before max_frames grew from 16
+    # to 64 above: 16 frames at the tuned 1092x588 resolution. Passed
+    # to qwen_vl_utils as "total_pixels" (see describe_scene()'s video
+    # branch) instead of a fixed resized_width/resized_height, so that
+    # max_frames trades per-frame resolution for temporal density
+    # within roughly this same total cost rather than multiplying it -
+    # a fixed resized_width/resized_height (the previous approach)
+    # doesn't do this automatically, since qwen_vl_utils only applies
+    # a total-pixel budget across all sampled frames when it isn't
+    # told an exact per-frame size to use instead. Unverified against
+    # real GPU timing/VRAM numbers as of this change - Christer's next
+    # real run is what actually confirms whether this budget is right.
+    video_total_pixels: int = 16 * 1092 * 588
     crop_top: float = 0.0378
     crop_bottom: float = 0.0344
     max_new_tokens: int = 768
@@ -1143,17 +1209,25 @@ def describe_scene(
             content_ele["resized_width"] = opts.resized_width
             content_ele["resized_height"] = opts.resized_height
     else:
+        # Deliberately NOT setting resized_width/resized_height here
+        # (unlike the photo branch above) - qwen_vl_utils' fetch_video()
+        # only spreads a total pixel budget across however many frames
+        # get sampled when it isn't told an exact per-frame size to use
+        # instead; if both resized_width and resized_height are present
+        # it resizes every frame to that fixed size regardless of frame
+        # count, so max_frames stops being a resolution/temporal-density
+        # tradeoff and becomes a pure cost multiplier - exactly the
+        # "heavy performance penalty" an earlier attempt at raising
+        # max_frames ran into (see SceneOptions' own 2026-08-19
+        # addendum). total_pixels is the knob that keeps this a
+        # tradeoff instead.
         content_ele = {
             "type": "video",
             "video": str(video_path.resolve()),
             "fps": opts.fps,
             "max_frames": opts.max_frames,
+            "total_pixels": opts.video_total_pixels,
         }
-        if opts.resized_width and opts.resized_height:
-            content_ele["resized_width"] = opts.resized_width
-            content_ele["resized_height"] = opts.resized_height
-        else:
-            content_ele["max_pixels"] = opts.max_pixels
 
     messages = [{"role": "user", "content": [content_ele, {"type": "text", "text": prompt}]}]
     text = loaded.processor.apply_chat_template(
@@ -1213,7 +1287,7 @@ def describe_scene(
             torch.cuda.empty_cache()
             raise MediaToolError(
                 f"out of VRAM describing {video_path.name} ({exc}) - try "
-                "a lower max_frames/fps or resized_width/resized_height"
+                "a lower max_frames/fps or video_total_pixels"
             ) from exc
         raise MediaToolError(f"scene description failed for {video_path.name}: {exc}") from exc
     finally:

@@ -88,6 +88,44 @@ def test_parse_args_raw_explicit_crop_overrides_disabled_default():
     assert args.crop_bottom == 0.02
 
 
+def test_parse_args_max_frames_and_video_total_pixels_defaults():
+    """2026-08-19: Christer asked for 64 frames/video (~3s apart) without
+    re-triggering the earlier "heavy performance penalty" from raising
+    max_frames alone - see SceneOptions' own 2026-08-19 addendum in
+    scene.py. --max-frames's default moved 16->64, and --max-pixels/
+    --resized-width/--resized-height stopped applying to video at all
+    (photo-only now) in favor of the new --video-total-pixels, which is
+    the knob that actually keeps max_frames a resolution/frame-count
+    tradeoff instead of a pure cost multiplier."""
+
+    args = parse_args(["/some/archive"])
+
+    assert args.max_frames == 64
+    assert args.video_total_pixels == 16 * 1092 * 588
+    # Still present and still applied to photos - just no longer wired
+    # into video's SceneOptions kwargs (see test below).
+    assert args.max_pixels == 360 * 420
+    assert args.resized_width == 1092
+    assert args.resized_height == 588
+
+
+def test_scene_kwargs_passes_video_total_pixels_not_just_photo_fields():
+    """_scene_kwargs() must forward video_total_pixels into
+    SceneOptions alongside (not instead of) max_pixels/resized_width/
+    resized_height - describe_scene()'s photo branch still reads the
+    latter three, only its video branch switched to total_pixels-style
+    budgeting (see scene.py's describe_scene() video-branch comment)."""
+
+    args = parse_args(["/some/archive", "--video-total-pixels", "12345"])
+    kwargs = bv_scribe._scene_kwargs(args)
+
+    assert kwargs["video_total_pixels"] == 12345
+    assert kwargs["max_pixels"] == 360 * 420
+    assert kwargs["resized_width"] == 1092
+    assert kwargs["resized_height"] == 588
+    assert kwargs["max_frames"] == 64
+
+
 def _make_recording(recording_id: str, tmp_path: Path) -> Recording:
     recording = Recording(id=RecordingId(recording_id))
     video = tmp_path / f"{recording_id}F.mp4"

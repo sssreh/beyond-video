@@ -1957,7 +1957,10 @@ def test_start_bv_scribe_defaults_reach_parsed_args(monkeypatch):
     # Every advanced field left at None means "don't pass the flag" -
     # bv-scribe's own parse_args() defaults come through untouched.
     assert args.fps == 1.0
-    assert args.max_frames == 16
+    # 2026-08-19: bv-scribe's own --max-frames default moved 16->64
+    # (see SceneOptions' own 2026-08-19 addendum) - this test just
+    # confirms bv-web doesn't override it, so it tracks that default.
+    assert args.max_frames == 64
     assert args.do_sample is False
     assert args.zoom_signs is True
     assert args.zoom_plate_confidence_check is True
