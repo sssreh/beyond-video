@@ -15766,3 +15766,11 @@ ElevenLabs Scribe remains on the table as a next step for this one route specifi
 No existing test covers this route directly (no `fastapi`/`TestClient` in this sandbox, matching the rest of this app's routes - see the ElevenLabs TTS entry above for the same limitation). Verified via `ast.parse` on `app.py` and confirmed no test file or doc references the old `model_size="base"` value that would need updating alongside it.
 
 Files changed: `src/blackvue/web/app.py`.
+
+## Note: ElevenLabs audio isolation / other products - no real need right now (future improvement)
+
+Followed up on "is ElevenLabs better for speech-to-text than what we have" (see the entry above bumping voice-search transcription from "base" to "small") by asking Christer if any other ElevenLabs product (audio isolation, dubbing, voice changer, sound effects, music generation) had a real fit in bv. Audio isolation (stripping road/wind/engine noise from dashcam audio before transcription) was the one candidate worth naming - could plausibly improve Whisper accuracy on both the bulk `bv-generate --transcribe` path and the voice-search route. The rest don't fit an archive tool for real recordings.
+
+Christer: "i dont se any real need right now. If i want any single speech to text i can do it directly in elevenlabs since i have access to the audio file." For a one-off transcription he doesn't need it wired into bv at all - he can just feed the audio file straight into ElevenLabs himself outside this codebase.
+
+**Not implemented.** No audio-isolation wiring, no other ElevenLabs product beyond the existing TTS ("Read aloud") integration. Noted here so the idea isn't lost if the noisy-audio problem becomes a recurring annoyance later - no action taken for now.
