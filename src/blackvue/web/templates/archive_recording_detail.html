@@ -36,6 +36,7 @@
 <div class="tts-controls" id="tts-controls" hidden>
   <label class="field-label" for="tts-voice">Read-aloud voice</label>
   <select id="tts-voice"></select>
+  <p class="hint" id="tts-status" hidden></p>
 </div>
 {% for label, description, legible_reads in recording.scene_summary %}
 <div class="scene-text">
@@ -76,133 +77,161 @@
 
 <script>
 (function () {
-  // "Read aloud" - a first, small test of voice *output* to go with
-  // the existing voice *input* on the bv-search form (Christer: "Is
-  // it possible to lev bv to speak" / "lets try nr 3" - scene
-  // descriptions). Uses the browser's built-in Web Speech API
-  // (SpeechSynthesis) - no server round-trip, no new dependency,
-  // unlike the Whisper-based voice-search feature, since going text
-  // -> speech is something the browser/OS can already do on its own.
-  if (!window.speechSynthesis) {
-    // No TTS support in this browser - hide every button rather than
-    // offering something that will just fail.
-    document.querySelectorAll('.speak-btn').forEach(function (btn) {
-      btn.hidden = true;
-    });
-    return;
-  }
-
-  // Christer's follow-up after trying this: "it works, but with a
-  // very robotic voice" - the default voice SpeechSynthesis picks is
-  // often the OS's oldest/lowest-quality one (e.g. an offline
-  // espeak-style voice), while the same browser usually also lists
-  // one or more much more natural options (Windows Edge's "Online
-  // (Natural)" voices, Chrome's networked "Google ..." voices, macOS
-  // Safari's "Enhanced"/"Premium" voices) buried further down the
-  // list. _scoreVoice() below picks the best-sounding one available
-  // by default; the "Read-aloud voice" dropdown lets Christer
-  // override that choice, remembered across visits via localStorage.
+  // "Read aloud" - originally the browser's built-in Web Speech API
+  // (SpeechSynthesis), now ElevenLabs instead (Christer, after trying
+  // the browser voices: "The voices of Susan and hazel where better,
+  // but i woild probably le elevenlabs do the work if i implement it
+  // in full", then later: "implement elevenlabs text to speech, i
+  // have an api key. I want to be able to select speaker among all
+  // speakers including my own voices" - replacing the picker
+  // entirely, not adding ElevenLabs alongside it, per his own choice
+  // when asked). See elevenlabs_tts.py's docstring for the server
+  // side of this - /api/tts/voices lists every voice the configured
+  // account can use (premade + Christer's own cloned ones);
+  // /api/tts/speak returns MP3 bytes for a given voice_id/text pair.
   var VOICE_STORAGE_KEY = 'bv-tts-voice';
   var voiceSelect = document.getElementById('tts-voice');
   var ttsControls = document.getElementById('tts-controls');
+  var ttsStatus = document.getElementById('tts-status');
+  var speakButtons = document.querySelectorAll('.speak-btn');
   var voices = [];
-  var selectedVoice = null;
+  var audio = new Audio();
+  var activeButton = null;
 
-  function voiceKey(voice) {
-    return voice.name + '|' + voice.lang;
+  function showStatus(message) {
+    if (!ttsStatus) return;
+    ttsStatus.textContent = message;
+    ttsStatus.hidden = !message;
   }
 
-  function scoreVoice(voice) {
-    var score = 0;
-    if (/natural|neural|online|enhanced|premium/i.test(voice.name)) score += 100;
-    if (!voice.localService) score += 20; // networked voices are usually higher quality
-    if (voice.lang && navigator.language && voice.lang.slice(0, 2) === navigator.language.slice(0, 2)) score += 10;
-    if (voice.default) score += 5;
-    return score;
+  function hideButtons() {
+    speakButtons.forEach(function (btn) { btn.hidden = true; });
   }
 
-  function bestVoice() {
-    var best = null;
-    var bestScore = -1;
-    voices.forEach(function (voice) {
-      var score = scoreVoice(voice);
-      if (score > bestScore) {
-        bestScore = score;
-        best = voice;
-      }
-    });
-    return best;
+  function stop() {
+    audio.pause();
+    audio.currentTime = 0;
+    if (activeButton) {
+      activeButton.textContent = 'Read aloud';
+      activeButton.classList.remove('recording');
+      activeButton.disabled = false;
+      activeButton = null;
+    }
   }
+  audio.addEventListener('ended', stop);
+  audio.addEventListener('error', function () {
+    showStatus('Playback failed.');
+    stop();
+  });
 
-  function populateVoiceList() {
-    voices = window.speechSynthesis.getVoices();
-    if (!voices.length) return;
+  function populateVoiceSelect() {
+    if (!voiceSelect) return;
+    voiceSelect.innerHTML = '';
 
     var stored = null;
-    try {
-      var storedKey = localStorage.getItem(VOICE_STORAGE_KEY);
-      if (storedKey) stored = voices.find(function (v) { return voiceKey(v) === storedKey; });
-    } catch (err) { /* localStorage unavailable - fall through to auto-pick */ }
+    try { stored = localStorage.getItem(VOICE_STORAGE_KEY); } catch (err) { /* ignore */ }
 
-    selectedVoice = stored || bestVoice();
+    var groups = { cloned: null, other: null };
+    voices.forEach(function (voice) {
+      var isCloned = voice.category === 'cloned';
+      var groupKey = isCloned ? 'cloned' : 'other';
+      if (!groups[groupKey]) {
+        groups[groupKey] = document.createElement('optgroup');
+        groups[groupKey].label = isCloned ? 'My voices' : 'Voices';
+      }
+      var option = document.createElement('option');
+      option.value = voice.id;
+      option.textContent = voice.name;
+      groups[groupKey].appendChild(option);
+    });
+    if (groups.cloned) voiceSelect.appendChild(groups.cloned);
+    if (groups.other) voiceSelect.appendChild(groups.other);
 
-    if (voiceSelect) {
-      voiceSelect.innerHTML = '';
-      voices.forEach(function (voice) {
-        var option = document.createElement('option');
-        option.value = voiceKey(voice);
-        option.textContent = voice.name + ' (' + voice.lang + ')';
-        if (selectedVoice && voiceKey(voice) === voiceKey(selectedVoice)) option.selected = true;
-        voiceSelect.appendChild(option);
-      });
-      // Only worth showing a picker if there's an actual choice to make.
-      if (ttsControls) ttsControls.hidden = voices.length < 2;
+    if (stored && voices.some(function (v) { return v.id === stored; })) {
+      voiceSelect.value = stored;
     }
+  }
+
+  function selectedVoiceId() {
+    return voiceSelect ? voiceSelect.value : null;
   }
 
   if (voiceSelect) {
     voiceSelect.addEventListener('change', function () {
-      selectedVoice = voices.find(function (v) { return voiceKey(v) === voiceSelect.value; }) || null;
       try { localStorage.setItem(VOICE_STORAGE_KEY, voiceSelect.value); } catch (err) { /* ignore */ }
     });
   }
 
-  populateVoiceList();
-  // Chrome/Edge load the voice list asynchronously - it's frequently
-  // empty on the first call above and only populated once this event
-  // fires, sometimes more than once as more voices become available.
-  window.speechSynthesis.addEventListener('voiceschanged', populateVoiceList);
+  fetch('/api/tts/voices')
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      if (!data.configured) {
+        // No ELEVENLABS_API_KEY set on the server - this isn't an
+        // error state, just a feature that hasn't been set up yet.
+        hideButtons();
+        return;
+      }
+      if (data.error) {
+        showStatus('Could not load voices: ' + data.error);
+        hideButtons();
+        return;
+      }
+      voices = data.voices || [];
+      if (!voices.length) {
+        hideButtons();
+        return;
+      }
+      populateVoiceSelect();
+      if (ttsControls) ttsControls.hidden = voices.length < 2;
+    })
+    .catch(function () {
+      showStatus('Could not reach the server to load voices.');
+      hideButtons();
+    });
 
-  var activeButton = null;
-
-  function stop() {
-    window.speechSynthesis.cancel();
-    if (activeButton) {
-      activeButton.textContent = 'Read aloud';
-      activeButton.classList.remove('recording');
-      activeButton = null;
-    }
-  }
-
-  document.querySelectorAll('.speak-btn').forEach(function (btn) {
+  speakButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
       var wasActive = btn === activeButton;
       stop();
       if (wasActive) return; // clicking the same button again just stops it
 
+      var voiceId = selectedVoiceId();
+      if (!voiceId) return;
+
       var content = btn.closest('.scene-text').querySelector('.scene-text-content');
       var text = (content ? content.textContent : '').replace(/\s+/g, ' ').trim();
       if (!text) return;
 
-      var utterance = new SpeechSynthesisUtterance(text);
-      if (selectedVoice) utterance.voice = selectedVoice;
-      utterance.addEventListener('end', stop);
-      utterance.addEventListener('error', stop);
-      window.speechSynthesis.speak(utterance);
-
+      showStatus('');
       activeButton = btn;
-      btn.textContent = 'Stop';
-      btn.classList.add('recording');
+      btn.textContent = 'Loading…';
+      btn.disabled = true;
+
+      var body = new FormData();
+      body.append('text', text);
+      body.append('voice_id', voiceId);
+
+      fetch('/api/tts/speak', { method: 'POST', body: body })
+        .then(function (response) {
+          if (!response.ok) {
+            return response.json().then(function (data) {
+              throw new Error(data.error || 'ElevenLabs request failed');
+            });
+          }
+          return response.blob();
+        })
+        .then(function (blob) {
+          if (btn !== activeButton) return; // stopped/superseded while loading
+          audio.src = URL.createObjectURL(blob);
+          audio.play();
+          btn.textContent = 'Stop';
+          btn.disabled = false;
+          btn.classList.add('recording');
+        })
+        .catch(function (err) {
+          showStatus(err.message || 'Could not generate speech.');
+          stop();
+        });
     });
   });
 })();

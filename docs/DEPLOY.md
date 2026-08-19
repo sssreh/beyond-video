@@ -72,6 +72,8 @@ All six start empty. `data/argos-translate` holds argostranslate's downloaded la
 
 `data/archive` is *also* mounted into `bv-web`'s container (read-write - its own job runner writes here too when it triggers `bv-download`/`bv-generate`, not just the archive browser reading from it), separately from `data/camera-config` above - a camera's `.cfg` `archive` field points into `data/archive` (see step 6's "Archive (download path)" answer), and `bv-web`'s archive-browser feature (`/archive` routes) reads recordings straight from that path, not from `data/trips`. Without this mount, the camera picker and camera-config work fine but every camera's archive page says "No recordings found in this camera's archive yet." even once `bv-download` has actually written files there.
 
+One environment variable in `docker-compose.yml` has no matching data folder: `ELEVENLABS_API_KEY`, for the archive recording detail page's "Read aloud" button (see `web/elevenlabs_tts.py`). It's left blank in the committed file on purpose - a real API key is a secret, not something to check into git - so fill it in on the NAS itself, either by editing `docker-compose.yml` directly after cloning (not before pushing any changes back) or with a local `docker-compose.override.yml` Compose merges in automatically. Leaving it blank is also fine: the button just hides itself with no error until a key is set.
+
 ## 4. Build and start bv-web
 
 Either through Container Manager's GUI (**Project** -> **Create** -> pick `/volume1/beyond-video` as the path; it auto-detects `docker-compose.yml`) or over SSH:

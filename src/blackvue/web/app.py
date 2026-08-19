@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import time
 from argparse import ArgumentTypeError
 from datetime import datetime
 from pathlib import Path
@@ -67,6 +68,10 @@ from .auth import SessionStore
 from .auth import require_login
 from .auth import require_owner
 from .auth import require_viewer_or_owner
+from .elevenlabs_tts import ElevenLabsError
+from .elevenlabs_tts import api_key as elevenlabs_api_key
+from .elevenlabs_tts import list_voices as elevenlabs_list_voices
+from .elevenlabs_tts import synthesize as elevenlabs_synthesize
 from ..history import HistoryFilter
 from ..history import NumberedEntry
 from ..history import all_entries
@@ -140,6 +145,10 @@ RECORDING_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z]$")
 # the growing-payload problem this feature exists to solve.
 TAIL_LINE_COUNT = 30
 
+# How long tts_voices() trusts its in-memory copy of the ElevenLabs
+# voice list before re-fetching - see that route's own docstring.
+TTS_VOICE_CACHE_SECONDS = 300
+
 
 def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     """Build the bv-web FastAPI app.
@@ -184,6 +193,11 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # redone from scratch (a fresh file read + TOML parse) on every
     # single request.
     app.state.camera_config_cache = CameraConfigCache()
+
+    # See tts_voices()'s own docstring - a tiny process-lifetime cache
+    # so the "Read aloud" voice picker doesn't hit the ElevenLabs API
+    # on every single archive recording detail page view.
+    app.state.tts_voice_cache = {"voices": None, "fetched_at": 0.0}
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     # Display-only capitalization for usernames shown in the UI (header
@@ -599,6 +613,77 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "gps_available": gps_available,
             },
         )
+
+    @app.get("/api/tts/voices")
+    async def tts_voices(user: User = Depends(require_login)):
+        """The voice picker for archive_recording_detail.html's "Read
+        aloud" feature (see elevenlabs_tts.py's own docstring for the
+        full backstory - this replaced a browser-native
+        speechSynthesis picker entirely). Returns every voice
+        ElevenLabs' account API key can use - premade plus any
+        Christer has cloned himself ("select speaker among all
+        speakers including my own voices") - with `configured: false`
+        and an empty list if no ELEVENLABS_API_KEY is set at all,
+        rather than an error: an unconfigured key is an expected,
+        normal state for anyone running bv-web without ever having
+        set one up, not a failure.
+
+        Cached for TTS_VOICE_CACHE_SECONDS per process - the voice
+        list rarely changes and this route fires on every archive
+        recording detail page load, not just when the picker is
+        actually opened, so an uncached call would mean one ElevenLabs
+        API round-trip per page view for data that's realistically
+        static for days at a time.
+        """
+
+        key = elevenlabs_api_key()
+        if key is None:
+            return JSONResponse({"configured": False, "voices": []})
+
+        cache = app.state.tts_voice_cache
+        now = time.monotonic()
+        if cache["voices"] is None or now - cache["fetched_at"] > TTS_VOICE_CACHE_SECONDS:
+            try:
+                voices = elevenlabs_list_voices(api_key=key)
+            except ElevenLabsError as exc:
+                return JSONResponse(
+                    {"configured": True, "voices": [], "error": str(exc)},
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                )
+            cache["voices"] = voices
+            cache["fetched_at"] = now
+
+        return JSONResponse(
+            {
+                "configured": True,
+                "voices": [
+                    {"id": v.voice_id, "name": v.name, "category": v.category}
+                    for v in cache["voices"]
+                ],
+            }
+        )
+
+    @app.post("/api/tts/speak")
+    async def tts_speak(
+        text: str = Form(...),
+        voice_id: str = Form(...),
+        user: User = Depends(require_login),
+    ):
+        key = elevenlabs_api_key()
+        if key is None:
+            return JSONResponse(
+                {"error": "ELEVENLABS_API_KEY is not configured on this server"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            audio = elevenlabs_synthesize(text, voice_id, api_key=key)
+        except ElevenLabsError as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=status.HTTP_502_BAD_GATEWAY
+            )
+
+        return Response(content=audio, media_type="audio/mpeg")
 
     @app.get(
         "/archive/{camera_id}/{recording_id}/location", response_class=HTMLResponse
