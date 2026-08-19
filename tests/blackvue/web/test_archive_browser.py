@@ -1093,29 +1093,22 @@ def test_build_description_srt_from_events_uses_real_per_event_timestamps():
     # trusted verbatim - here n=3, duration=40.0, so 25.0 (the raw max)
     # maps to 30.0, and 12.4 scales by the same 1.2x factor to 14.88.
     # _apply_frame_sampling_lag() then adds a flat
-    # duration/16*_FRAME_SAMPLING_LAG_MULTIPLIER offset plus
-    # _LAG_CORRECTION_CURVE's own position-dependent (and deliberately
-    # non-monotonic - see that curve's own comment) correction, keyed
-    # on each event's index-fraction among these 3 events (0.0, 0.5,
-    # 1.0) - not a flat, hand-derivable number any more. Finally
-    # _apply_lead_time() shifts every merged cue _DESCRIPTION_LEAD_TIME_
-    # SECONDS (1.5s) earlier, a separate readability choice layered on
-    # top (see its own docstring). Between the curve and the lead-time
-    # shift, "A red bus..." (index-fraction 0.5, deep in the curve's
-    # steep -10.60/-24.72 dip) actually ends up landing *before*
-    # "Clear weather..." (index-fraction 0.0) in the final .srt -
-    # display order follows the corrected timestamp, not the original
-    # list order, same as the out-of-order-timestamps test below
-    # already covers for a simpler case. These exact numbers come from
-    # actually calling build_description_srt_from_events() and reading
-    # its real output, per this whole feature's own "never hand-derive
-    # SRT timestamps" testing convention - the curve interpolation
-    # makes hand math impractical here anyway.
+    # duration/16*_FRAME_SAMPLING_LAG_MULTIPLIER offset -
+    # _LAG_CORRECTION_CURVE's own position-dependent term is currently
+    # flat/zero (reset 2026-08-19 - see that constant's own comment),
+    # so it contributes nothing here. Each cue's *display* window is
+    # then computed by _cue_display_window() from that real timestamp:
+    # _CUE_LEAD_SECONDS (2.0s) before, at least _CUE_TRAIL_SECONDS
+    # (2.0s) after, capped at the next real cue's start. These exact
+    # numbers come from actually calling
+    # build_description_srt_from_events() and reading its real output,
+    # per this whole feature's own "never hand-derive SRT timestamps"
+    # testing convention.
     assert srt is not None
-    assert "1\n00:00:00,000 --> 00:00:02,250\nA red bus passes on the left.\n" in srt
-    assert "2\n00:00:13,908 --> 00:00:16,842\nClear weather, light traffic.\n" in srt
+    assert "1\n00:00:01,750 --> 00:00:05,750\nClear weather, light traffic.\n" in srt
+    assert "2\n00:00:16,630 --> 00:00:20,630\nA red bus passes on the left.\n" in srt
     assert (
-        "3\n00:00:32,217 --> 00:00:36,283\n"
+        "3\n00:00:28,000 --> 00:00:32,833\n"
         "The vehicle continues through an intersection.\n"
     ) in srt
 
@@ -1144,15 +1137,12 @@ def test_build_description_srt_from_events_rescales_an_overshoot_into_range():
     assert "second" in srt
     # n=2, duration=40.0 -> target_max = 40 * 2/3 = 26.6667, scale =
     # 26.6667/50 = 0.5333; second's rescaled start is 26.6667s, well
-    # inside the clip. _apply_frame_sampling_lag()'s flat offset plus
-    # _LAG_CORRECTION_CURVE's position-dependent correction (index-
-    # fractions 0.0 and 1.0 for these 2 events), then _apply_lead_time()'s
-    # 1.5s-earlier shift, land the two cues here - values from actually
-    # calling build_description_srt_from_events(), not hand-derived (see
-    # the per-event-timestamps test above for why hand math isn't
-    # practical once a curve, not a flat number, is involved).
-    assert "1\n00:00:12,708 --> 00:00:14,708\nfirst\n" in srt
-    assert "2\n00:00:31,350 --> 00:00:33,817\nsecond - past duration\n" in srt
+    # inside the clip. _apply_frame_sampling_lag()'s flat offset lands
+    # the two cues here (the curve's own term is flat/zero); values
+    # from actually calling build_description_srt_from_events(), not
+    # hand-derived.
+    assert "1\n00:00:01,750 --> 00:00:05,750\nfirst\n" in srt
+    assert "2\n00:00:24,667 --> 00:00:28,667\nsecond - past duration\n" in srt
 
 
 def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forward():
@@ -1170,10 +1160,9 @@ def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forwar
     # The raw timestamps below are more negative than the collapse itself
     # strictly requires, keeping both "first" and "second" clamped to the
     # same cursor=0.0 (and so still colliding into one merged cue) even
-    # after _apply_frame_sampling_lag()'s flat offset and
-    # _LAG_CORRECTION_CURVE's own position-dependent correction are added
-    # on top of the rescale. See build_description_srt_from_events()'s
-    # own docstring for why a collapsed leading cue merges forward instead
+    # after _apply_frame_sampling_lag()'s flat offset is added on top of
+    # the rescale. See build_description_srt_from_events()'s own
+    # docstring for why a collapsed leading cue merges forward instead
     # of dropping.
     events = [
         DescriptionEvent(-1.5, "first"),
@@ -1184,21 +1173,17 @@ def test_build_description_srt_from_events_merges_a_collapsed_leading_cue_forwar
     srt = build_description_srt_from_events(events, 30.0)
 
     # The collapse-and-merge-forward mechanic this test exists for still
-    # fires. Note the merged text comes out as "second first", not "first
-    # second": _LAG_CORRECTION_CURVE's position-dependent correction (plus
-    # _apply_lead_time()'s later 1.5s-earlier shift) is applied AFTER
-    # events are merged onto one sorted timeline, and can reorder events
-    # that started in list order but land at the same clamped cursor
-    # position - "second" (index-fraction 0.5) sorts ahead of "first"
-    # (index-fraction 0.0) once both correction curves are applied,
-    # so pending_text collects them in that order. Values below come from
-    # actually calling build_description_srt_from_events(), not
-    # hand-derived - see the per-event-timestamps test above for why.
+    # fires. With _LAG_CORRECTION_CURVE flat/zero, both events collapse
+    # at cursor=0.0 in their original list order, so the merged text is
+    # "first second" (not reordered - contrast with this same scenario
+    # under the old non-flat curve, which could and did reorder them).
+    # Values below come from actually calling
+    # build_description_srt_from_events(), not hand-derived.
     assert srt is not None
     assert "first" in srt
     assert "second" in srt
-    assert "1\n00:00:09,500 --> 00:00:11,500\nsecond first\n" in srt
-    assert "2\n00:00:24,500 --> 00:00:26,500\nthird\n" in srt
+    assert "1\n00:00:00,000 --> 00:00:02,000\nfirst second\n" in srt
+    assert "2\n00:00:20,500 --> 00:00:24,500\nthird\n" in srt
 
 
 def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
@@ -1213,14 +1198,13 @@ def test_build_description_srt_from_events_sorts_out_of_order_timestamps():
     srt = build_description_srt_from_events(events, 30.0)
 
     # n=2, duration=30.0 -> target_max=20.0, scale=2.0: 2.0*2=4.0,
-    # 10.0*2=20.0. _apply_frame_sampling_lag()'s flat offset,
-    # _LAG_CORRECTION_CURVE's position-dependent correction, and
-    # _apply_lead_time()'s 1.5s-earlier shift then all apply on top -
-    # values below come from actually calling
-    # build_description_srt_from_events(), not hand-derived.
+    # 10.0*2=20.0. _apply_frame_sampling_lag()'s flat offset, then
+    # _cue_display_window()'s lead/trail, apply on top - values below
+    # come from actually calling build_description_srt_from_events(),
+    # not hand-derived.
     assert srt.index("earlier thing") < srt.index("later thing")
-    assert "1\n00:00:10,993 --> 00:00:13,860\n" in srt
-    assert "2\n00:00:22,917 --> 00:00:25,583\n" in srt
+    assert "1\n00:00:04,812 --> 00:00:08,812\n" in srt
+    assert "2\n00:00:18,000 --> 00:00:22,000\n" in srt
 
 
 def test_build_description_srt_from_events_none_for_no_events_or_duration():
@@ -1234,44 +1218,58 @@ def test_build_description_srt_from_events_none_for_no_events_or_duration():
 
 
 # ---------------------------------------------------------------------------
-# _trim_cue_to_reading_time() - Christer, right after the real-per-event-
-# timestamp rescale fix landed: "The timstamps are better, the should
-# probably be trimmed in the begining and and the end, so more centered at
-# not that long." A cue that spans the whole (possibly long, uneventful)
-# gap between two events reads as sluggish; this shrinks the *displayed*
-# window down to roughly how long the text actually takes to read,
-# trimming evenly off both ends so the caption sits centered in its
-# original window rather than glued to the start of it.
+# _cue_display_window() - replaces the earlier lead-time-shift +
+# reading-time-trim design (2026-08-19). Christer, after using the
+# frame-viewer to compare real frames against their shown cues: "I want
+# the description to pop up a couple of seconds before the video then
+# last a couple of seconds after, unless there is something more
+# happening. And yes we also need to consider how long time each aloud
+# takes." Pop up _CUE_LEAD_SECONDS before the real moment, stay at
+# least _CUE_TRAIL_SECONDS after it, longer if the text needs more time
+# to actually say - capped at the next real cue's own moment either way.
 # ---------------------------------------------------------------------------
 
 
-def test_trim_cue_to_reading_time_is_a_noop_when_span_is_already_short():
-    from blackvue.web.archive_browser import _trim_cue_to_reading_time
+def test_cue_display_window_pops_up_early_and_holds_the_trail_floor():
+    from blackvue.web.archive_browser import _cue_display_window
 
-    # "Hi." needs nowhere near 1.5s to read, but the window itself is
-    # already under the reading-time cap - nothing to trim.
-    assert _trim_cue_to_reading_time(5.0, 6.5, "Hi.") == (5.0, 6.5)
-
-
-def test_trim_cue_to_reading_time_centers_a_shorter_window_for_long_spans():
-    from blackvue.web.archive_browser import _trim_cue_to_reading_time
-
-    # text is 29 chars -> max_duration = 29/15 + 1 = 2.9333s. Original
-    # window is 20s wide; trim = (20 - 2.9333) / 2 = 8.5333s off each
-    # end, leaving a ~2.9333s window centered inside [0, 20).
-    start, end = _trim_cue_to_reading_time(0.0, 20.0, "A red bus passes on the left.")
-    assert round(start, 3) == 8.533
-    assert round(end, 3) == 11.467
-    assert round(end - start, 3) == 2.933
+    # Short text ("Hi.") needs nowhere near the 2s trail floor to say,
+    # so the trail floor (not the speaking-duration estimate) decides
+    # the end: real_start=10.0 -> lead_start=8.0, natural_end=12.0.
+    # Plenty of real span (real_end=30.0) and no previous cue
+    # (prev_display_end=0.0) to interact with.
+    assert _cue_display_window(10.0, 30.0, 0.0, "Hi.") == (8.0, 12.0)
 
 
-def test_trim_cue_to_reading_time_never_shrinks_below_the_minimum_floor():
-    from blackvue.web.archive_browser import _trim_cue_to_reading_time
+def test_cue_display_window_floors_lead_start_at_zero():
+    from blackvue.web.archive_browser import _cue_display_window
 
-    # Even near-empty text still gets at least _CUE_READING_MIN_SECONDS
-    # (2.0s) of display time - here the window (1.0s) is already under
-    # that floor, so it's left alone rather than trimmed to nothing.
-    assert _trim_cue_to_reading_time(0.0, 1.0, "x") == (0.0, 1.0)
+    # A cue right at the clip's start has nowhere earlier to lead into
+    # - lead_start = max(0.0, 0.0 - 2.0) clamps to 0.0, not -2.0.
+    assert _cue_display_window(0.0, 5.0, 0.0, "Hi.") == (0.0, 2.0)
+
+
+def test_cue_display_window_extends_the_trail_for_longer_text():
+    from blackvue.web.archive_browser import _cue_display_window
+
+    # A long cue needs more than the 2s trail floor to say -
+    # _CUE_SPEAKING_CHARS_PER_SECOND (12.0) estimates its speaking
+    # duration and extends the trail to fit, but real_end=12.0 (a
+    # tight real gap to whatever's next) still wins as the hard cap -
+    # Christer's own "unless there is something more happening" caveat
+    # is a floor being extended, not a license to overrun the next cue.
+    text = "A much longer piece of text that needs real time to say aloud, quite a bit of it."
+    assert _cue_display_window(10.0, 12.0, 0.0, text) == (8.0, 12.0)
+
+
+def test_cue_display_window_never_overlaps_the_previous_cues_display():
+    from blackvue.web.archive_browser import _cue_display_window
+
+    # The previous cue's own display window ran until 9.0 - later than
+    # this cue's lead-back-to-8.0 would otherwise start - so this cue's
+    # display_start is pulled forward to 9.0 instead, guaranteeing the
+    # two cues' display windows never visually overlap.
+    assert _cue_display_window(10.0, 30.0, 9.0, "Hi.") == (9.0, 12.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1303,22 +1301,21 @@ def test_build_description_srt_from_events_merges_signs_without_rescaling_them()
 
     srt = build_description_srt_from_events(events, 40.0, signs=signs)
 
-    # _apply_frame_sampling_lag()/_LAG_CORRECTION_CURVE run only on the
-    # description events, after the rescale. With only one sign read,
-    # _apply_sign_lag() leaves it unchanged (see that function's own
-    # docstring - a single point has no meaningful "position" to
-    # interpolate from) - so the sign's 5.0s timestamp is untouched by
-    # every correction except the final, shared _apply_lead_time() shift
-    # applied to the whole merged timeline.
+    # _apply_frame_sampling_lag() runs only on the description events,
+    # after the rescale. With only one sign read, _apply_sign_lag()
+    # leaves it unchanged (see that function's own docstring - a single
+    # point has no meaningful "position" to interpolate from) - so the
+    # sign's 5.0s timestamp only ever goes through _cue_display_window()'s
+    # own lead/trail, applied per-cue to the whole merged timeline.
     assert srt is not None
-    # Chronological order: first (0), the sign (5.0, lead-time-shifted),
-    # then the rescaled second event (26.667) - not the original list
-    # order. Values below come from actually calling
-    # build_description_srt_from_events(), not hand-derived.
+    # Chronological order: first (0), the sign (5.0), then the rescaled
+    # second event (26.667) - not the original list order. Values below
+    # come from actually calling build_description_srt_from_events(),
+    # not hand-derived.
     assert srt.index("first") < srt.index("STOP sign") < srt.index("second")
-    assert "1\n00:00:02,250 --> 00:00:03,500\nfirst\n" in srt
-    assert "2\n00:00:13,267 --> 00:00:15,400\nSTOP sign visible\n" in srt
-    assert "3\n00:00:31,350 --> 00:00:33,817\nsecond - past duration\n" in srt
+    assert "1\n00:00:01,750 --> 00:00:05,000\nfirst\n" in srt
+    assert "2\n00:00:05,000 --> 00:00:07,417\nSTOP sign visible\n" in srt
+    assert "3\n00:00:24,667 --> 00:00:28,667\nsecond - past duration\n" in srt
 
 
 def test_build_description_srt_from_events_signs_only_with_no_description_events():
@@ -1364,13 +1361,12 @@ def test_description_srt_prefers_real_event_timestamps_when_available(tmp_path):
     srt = recording.description_srt("front")
     assert srt is not None
     # End-to-end version of the per-event-timestamps unit test above:
-    # rescale, _apply_frame_sampling_lag()'s flat offset,
-    # _LAG_CORRECTION_CURVE's position-dependent correction, and
-    # _apply_lead_time()'s 1.5s-earlier shift all apply, same as there -
-    # including the same reordering (the "red bus" cue, at index-fraction
-    # 0.5, lands ahead of the "Clear weather" cue at index-fraction 0.0).
+    # rescale, _apply_frame_sampling_lag()'s flat offset, and
+    # _cue_display_window()'s lead/trail all apply, same as there -
+    # in original list order, since _LAG_CORRECTION_CURVE's own
+    # position-dependent term is currently flat/zero (no reordering).
     # Value from actually calling description_srt(), not hand-derived.
-    assert "1\n00:00:00,000 --> 00:00:02,250\nA red bus passes on the left.\n" in srt
+    assert "2\n00:00:16,630 --> 00:00:20,630\nA red bus passes on the left.\n" in srt
     assert "red bus" in srt
 
     # scene_summary's description text stays clean prose, with no
@@ -1416,17 +1412,17 @@ def test_description_srt_merges_sign_reads_from_a_real_scene_txt(tmp_path):
     # 0.0, then the sign read, then the description event at 25.0 -
     # the sign uses SignRead.text (no "At N seconds" prefix), since the
     # cue's own timestamp already conveys "when" for the .srt.
-    # _apply_frame_sampling_lag()'s flat offset plus
-    # _LAG_CORRECTION_CURVE's position-dependent correction nudge the
-    # description cues; the sign read (only one in this recording) is
-    # left alone by _apply_sign_lag() (a single point has no "position"
-    # to interpolate from); _apply_lead_time()'s 1.5s-earlier shift then
-    # applies to the whole merged timeline, sign included. Values from
-    # actually calling description_srt(), not hand-derived.
+    # _apply_frame_sampling_lag()'s flat offset nudges the description
+    # cues (the curve's own term is flat/zero); the sign read (only one
+    # in this recording) is left alone by _apply_sign_lag() (a single
+    # point has no "position" to interpolate from); each cue's own
+    # _cue_display_window() lead/trail then applies across the whole
+    # merged timeline, sign included. Values from actually calling
+    # description_srt(), not hand-derived.
     assert srt.index("Clear weather") < srt.index("STOP sign") < srt.index("vehicle continues")
-    assert "1\n00:00:05,108 --> 00:00:08,042\nClear weather, light traffic.\n" in srt
-    assert "2\n00:00:16,967 --> 00:00:19,100\nSTOP sign visible\n" in srt
-    assert "3\n00:00:30,550 --> 00:00:34,617\nThe vehicle continues through an intersection.\n" in srt
+    assert "1\n00:00:01,750 --> 00:00:05,750\nClear weather, light traffic.\n" in srt
+    assert "2\n00:00:10,400 --> 00:00:14,400\nSTOP sign visible\n" in srt
+    assert "3\n00:00:24,667 --> 00:00:29,500\nThe vehicle continues through an intersection.\n" in srt
 
     # The on-page sign-reads list still uses the natural-language
     # display_text ("At 12 seconds, ...") since scene_summary has no
@@ -1457,6 +1453,55 @@ def test_description_srt_builds_signs_only_srt_when_no_description_section(tmp_p
     srt = recording.description_srt("front")
     assert srt is not None
     assert "YIELD sign visible" in srt
+
+
+# ---------------------------------------------------------------------------
+# _label_rear_view() / rear-camera "Rear view:" prefix - Christer, on the
+# frame-viewer report above ("frame 6 in srt talks about the bus but in
+# zoomed frames it talk about the license plate" / "I dont se any red
+# bus"), in the same message as the curve-reset and display-window
+# requests: "If its rear camera frames, it would be nice if the
+# description sad 'behind is/are' 'rear view'." The recording detail page
+# only ever shows one video (normally front), so rear-camera text needs
+# to say it's rear text on its own.
+# ---------------------------------------------------------------------------
+
+
+def test_label_rear_view_prefixes_only_the_rear_direction():
+    from blackvue.web.archive_browser import _label_rear_view
+
+    assert _label_rear_view("A red bus passes.", "rear") == "Rear view: A red bus passes."
+    assert _label_rear_view("A red bus passes.", "Rear") == "Rear view: A red bus passes."
+    assert _label_rear_view("A red bus passes.", "front") == "A red bus passes."
+    assert _label_rear_view("", "rear") == ""
+
+
+def test_description_srt_prefixes_rear_camera_description_and_signs(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=(
+            "## Description\n"
+            "- [t=0.0s] A red car follows at a distance.\n"
+            "## Zoomed sign reads\n"
+            "- [t=5.0s] STOP sign visible\n"
+        ).encode("utf-8"),
+    )
+    _write(archive, "20260715_140212_N.duration.txt", content=b"30")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.description_srt("rear")
+    assert srt is not None
+    assert "Rear view: A red car follows at a distance." in srt
+    assert "Rear view: STOP sign visible" in srt
+
+    # scene_summary's on-page description is prefixed the same way;
+    # the front direction (none exists here) would be unaffected.
+    [(label, description, _reads)] = recording.scene_summary
+    assert label == "Rear"
+    assert description == "Rear view: A red car follows at a distance."
 
 
 def test_description_srt_builds_from_scene_text_and_cached_duration(tmp_path):

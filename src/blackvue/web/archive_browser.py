@@ -157,6 +157,41 @@ class SignRead:
         return f"At {time_phrase}, {self.text}"
 
 
+# Prefix applied to rear-camera description/sign text by
+# _label_rear_view() below - see that function's own docstring for
+# why.
+_REAR_VIEW_PREFIX = "Rear view: "
+
+
+def _label_rear_view(text: str, direction: str) -> str:
+    """Prefix `text` with "Rear view: " when `direction` is the rear
+    camera, so a rear-facing description or sign read reads as
+    describing what's behind the vehicle rather than blending in with
+    front-camera narration - relevant because the recording detail
+    page only ever shows one video player (normally the front one; see
+    that template's own "No Front video ... showing X instead" hint),
+    so a viewer reading or listening to the *rear* camera's own
+    description/Read-aloud has no video of what's actually behind them
+    to anchor the text against.
+
+    Christer, after flagging a probable front/rear content mix-up
+    earlier in this file's lag-correction work ("I gues Bielen is the
+    rear camera, maybe it should be mentioned in that case"): "If its
+    rear camera frames, it would be nice if the description sad
+    'behind is/are' 'rear view'." A short, sentence-leading tag reads
+    naturally before any sentence structure ("Rear view: A red car
+    approaches."), unlike "Behind is/are ..." which only grammatically
+    fits some of them.
+
+    A no-op for any direction other than "rear" (case-insensitive, the
+    same lowercase matching description_srt()/sign_read_srt() already
+    use) and for empty text - nothing to label."""
+
+    if not text or direction.lower() != "rear":
+        return text
+    return f"{_REAR_VIEW_PREFIX}{text}"
+
+
 def _parse_sign_reads(text: str) -> list[SignRead]:
     """Pull the '## Zoomed sign reads' bullet lines (see
     generate/scene.py's zoom_into_signs()) out of a scene.txt/
@@ -514,106 +549,52 @@ _FRAME_SAMPLING_LAG_MULTIPLIER = 1.5
 
 # Position-dependent correction added on top of the flat
 # duration/max_frames*_FRAME_SAMPLING_LAG_MULTIPLIER offset above, by
-# _apply_frame_sampling_lag() below - see that function's own
-# docstring for the full story. Calibrated from a single real clip
-# (~3 minutes, recording 20220927_132155_E front) where Christer
-# manually re-timed every description cue against the actual video
-# and sent back the corrected .srt alongside the one bv-web generated.
-# Matching his corrected cues back to ours by content, in order, gave
-# the (position, extra-seconds-needed-beyond-the-flat-offset) pairs
-# below - position is a description event's own index among this
-# clip's raw description events, normalized to 0.0 (first) - 1.0
-# (last), not clip duration or absolute time, so the same curve stays
-# meaningful regardless of a future clip's length or event count.
+# _apply_frame_sampling_lag() below. RESET to flat/no-op (2026-08-19).
 #
-# Two of the clip's real events aren't included as calibration points.
-# Christer, on the discarded pair: "I gues Bielen is the rear camera,
-# maybe it should be mentioned in that case" (the "BIELEŃ" sign
-# mention, ~1/3 through the clip - probably content from the rear
-# camera bleeding into this front description, not really front-camera
-# content at all) and "There is no white van overtakes the viewer's
-# vehicle, baybe in rear mirror" (~2/3 through - likely a rearview
-# mirror reflection the model mistook for something in front). Neither
-# is real front-camera content, so neither is real timing ground truth
-# either, whatever timestamp a since-removed cue might have had.
+# This used to hold an 8-knot curve fit to a single real clip
+# (recording 20220927_132155_E front), zigzagging from -24.72s to
+# +9.16s across that one clip's events - see this file's git history
+# (and WORKING_CONTEXT.md's "Curve-based lag correction" entry) for
+# the full derivation if it's ever needed again. Christer, introducing
+# the frame-viewer that made it possible to check that curve against
+# real extracted frames: "frame 6 in srt talks about the bus but in
+# zoomed frames it talk about the license plate" / "I dont se any red
+# bus" - a real frame plainly not matching its shown cue. Rather than
+# patch one more knot onto a curve already known to be a single, noisy
+# clip's shape, Christer's call: "otherwise we scratch every trim
+# except red bus which is very accurate and start from zero" - keep
+# only the one point he's fully confident in (the bus event, real
+# correction -10.60s, "The red bus was my focus and are most correct
+# of them all"), discard the rest, and rebuild from scratch using the
+# frame-viewer's own calibration log (frame_calibration.jsonl, see
+# app.py's archive_recording_frames route) as real data accumulates -
+# a faster, per-frame way to gather trustworthy corrections than
+# hand-retiming a whole .srt file.
 #
-# Christer, on the remaining eight points, asked which to trust most:
-# "The red bus was my focus and are most correct of them all, also
-# shureguard is close." The bus cue (position 4/9, -10.60s) is his
-# highest-confidence point; SHURGARD is also fairly trustworthy, but
-# is a *sign* read (see below), not a description event, so it isn't
-# one of this curve's knots at all.
-#
-# This is deliberately NOT monotonic and NOT small - it swings from
-# -24.72s to +9.16s within one clip, confirming what
-# _apply_frame_sampling_lag()'s own docstring already suspected: the
-# flat "one interval" model is approximating the description model's
-# own narrative pacing, which genuinely varies non-linearly per event
-# within a single generation, not a smooth function of position.
-# Christer, asked whether to keep chasing a single flat number instead
-# of this: "Yes do your best to find a formula, even if i zig zag" -
-# so this curve is fit through the real per-event data as-is, zigzag
-# and all, rather than smoothed into something tidier. It's still just
-# one clip's shape, calibrated from a single generation of a model
-# whose narrative pacing "varies per generation" by this same
-# docstring's own earlier admission - expect this table to need more
-# real per-clip data points before its shape firms up, the same way
-# _FRAME_SAMPLING_LAG_MULTIPLIER itself needed a second data point
-# before its value did.
-#
-# Originally left un-applied to sign reads, on the assumption that
-# their real per-frame source timestamps (see
-# build_description_srt_from_events()'s own docstring) needed no
-# correction the way the description model's narrative pacing does.
-# The same real corrected .srt that calibrated the curve above showed
-# that assumption doesn't fully hold: all three of this clip's sign
-# reads needed correcting too, and Christer confirmed both as
-# trustworthy data points ("shureguard is close", "plate BRH547 (sign)
-# is also good") rather than noise from imprecise manual retiming -
-# see _SIGN_LAG_CORRECTION_CURVE below, applied via _apply_sign_lag().
+# The bus point itself isn't re-encoded here: its clip-relative
+# position (was 4/9 - fourth of nine events in that one clip) doesn't
+# transfer to a future clip with a different event count, the same
+# structural gap this curve's own history already flagged ("expect
+# this table to need more real per-clip data points before its shape
+# firms up"). Flat/zero until enough new calibration-log data exists
+# to fit a curve that isn't extrapolated from a single clip's shape.
 _LAG_CORRECTION_CURVE: tuple[tuple[float, float], ...] = (
-    (0 / 9, 0.00),  # "the view is from inside a moving car..."
-    (1 / 9, -3.20),  # "several cars are visible ahead..."
-    (2 / 9, 0.00),  # "the perspective shifts slightly..."
-    (4 / 9, -10.60),  # "a red public transport bus enters..." (most-trusted point)
-    (5 / 9, -24.72),  # "traffic flows smoothly ahead..."
-    (7 / 9, 9.16),  # "trees continue to flank the roadway..."
-    (8 / 9, 2.08),  # "the road stretches ahead..."
-    (9 / 9, 1.04),  # "no major events occur..."
+    (0.0, 0.0),
+    (1.0, 0.0),
 )
 
 # Position-dependent correction for sign/plate reads - mirrors
-# _LAG_CORRECTION_CURVE above but calibrated from the same real clip's
-# matched sign reads rather than its description events, via
-# _apply_sign_lag() below. Sign reads were assumed to carry real,
-# already-accurate per-frame timestamps (zoom_into_signs() samples
-# real frames at known seconds, unlike the description model's own
-# narrative-paced guesses) - but Christer's manually-retimed .srt
-# showed all three of this clip's sign reads needed correcting too:
-# "BESIKTA..." (first, position 0/2, three merged reads) needed none,
-# "vehicle license plate: BRH 547..." (position 1/2) needed -3.44s,
-# and "SHURGARD" (position 2/2, last, a single un-merged read) needed
-# -6.16s. Christer confirmed both non-zero points as trustworthy:
-# "shureguard is close", then separately "plate BRH547 (sign) is also
-# good."
-#
-# Unlike _LAG_CORRECTION_CURVE above, this one is close to linear (0,
-# -3.44, -6.16 - roughly -3.4s per half-clip step), which points to a
-# different, likely real, root cause than the description model's own
-# uneven narrative pacing: real per-frame timestamps that drift by a
-# roughly constant amount per unit of elapsed video, e.g. a small
-# frame-rate/timestamp-conversion mismatch somewhere in
-# zoom_into_signs()'s own frame-to-second mapping. That's a genuine
-# open question, not yet root-caused - this curve treats the symptom
-# the same data-driven way _LAG_CORRECTION_CURVE does, without yet
-# knowing whether a cleaner fix exists further upstream. Only three
-# knots (this clip had only three sign reads total), so a future clip
-# with more sign reads - or a real root-cause fix - should replace
-# this outright rather than trying to extend it.
+# _LAG_CORRECTION_CURVE above, applied via _apply_sign_lag(). RESET to
+# flat/no-op alongside it (2026-08-19) - none of its three knots
+# (BESIKTA/plate/SHURGARD) was the one point Christer named as
+# "very accurate" (that was the bus, a description event, not a sign
+# read), so none of them survives the "scratch every trim except red
+# bus" reset either. See git history / WORKING_CONTEXT.md's
+# "Curve-based lag correction" entry for the discarded values if
+# useful context for a future recalibration.
 _SIGN_LAG_CORRECTION_CURVE: tuple[tuple[float, float], ...] = (
-    (0 / 2, 0.00),  # "BESIKTA BILEN HÄR!..." (merged with two more reads)
-    (1 / 2, -3.44),  # "vehicle license plate: BRH 547..."
-    (2 / 2, -6.16),  # "SHURGARD"
+    (0.0, 0.0),
+    (1.0, 0.0),
 )
 
 
@@ -786,7 +767,14 @@ def _apply_frame_sampling_lag(
     _SIGN_LAG_CORRECTION_CURVE above) - the original assumption that
     sign reads' real per-frame timestamps needed no correction at all
     turned out not to fully hold either, once real corrected data
-    existed to check it against."""
+    existed to check it against.
+
+    `_LAG_CORRECTION_CURVE` itself was reset to flat/zero on
+    2026-08-19 - see that constant's own comment for why - so this
+    function's position-dependent term is currently a no-op; only
+    `base_offset` (the flat multiplier) still applies. The zigzag
+    history above is kept as a record of what didn't generalize past
+    one clip, not a description of the curve's current shape."""
 
     if not events or duration_seconds <= 0:
         return events
@@ -811,95 +799,88 @@ def _apply_frame_sampling_lag(
     return shifted_events
 
 
-# Reading-time cap for a real-timestamp description/sign cue - without
-# this, a cue spans the *entire* gap until the next event, which can
-# be a long, uneventful stretch once _rescale_events_to_duration()
-# starts spreading events across a multi-minute clip. Christer, after
-# the rescale fix landed: "The timstamps are better, the should
-# probably be trimmed in the begining and and the end, so more
-# centered at not that long" - a cue was staying on screen for the
-# whole gap to the next event rather than just long enough to read it.
-# CHARS_PER_SECOND is a plain, round approximation of comfortable
-# on-screen caption reading speed (roughly the low end of what
-# broadcast captioning guidelines use - erring slow rather than fast,
-# since these are read while also watching driving footage, not a
-# dedicated subtitle track); PADDING_SECONDS adds a little breathing
-# room beyond the raw reading-time estimate; MIN_SECONDS is a floor so
-# a very short bullet ("A bus passes.") still gets a comfortable
-# minimum, not a cue that blinks by in under a second.
-_CUE_READING_CHARS_PER_SECOND = 15.0
+# How a description/sign cue's on-screen/spoken *display* window is
+# derived from its own (already lag-corrected) real event timestamp -
+# replaces the earlier separate lead-time-shift + reading-time-trim
+# design (2026-08-19). Christer, after using the frame-viewer this
+# lead/trim design fed into to compare real frames against their
+# shown cues: "I want the description to pop up a couple of seconds
+# before the video then last a couple of seconds after, unless there
+# is something more happening. And yes we also need to consider how
+# long time each aloud takes."
+#
+# _CUE_LEAD_SECONDS/_CUE_TRAIL_SECONDS are that "couple of seconds"
+# before and after, read literally as 2.0 each - replacing the old
+# _DESCRIPTION_LEAD_TIME_SECONDS (1.5, lead-only, picked from a
+# "1 to 2 seconds" range) and the old _trim_cue_to_reading_time()'s
+# symmetric-centering behavior (which had no guaranteed minimum trail
+# at all - a cue could shrink to well under the real event's moment if
+# the gap to the next cue was short). "Unless there is something more
+# happening" is the speaking-duration extension below: the couple-of-
+# seconds trail is a floor, not a ceiling, extended further whenever
+# the cue's own text needs more time to actually say.
+#
+# _CUE_SPEAKING_CHARS_PER_SECOND estimates how long ElevenLabs will
+# actually take to speak the cue's text - lowered from the old
+# _CUE_READING_CHARS_PER_SECOND's 15.0 (a silent on-screen-caption
+# *reading*-speed guess) to a more conservative 12.0, since the
+# overlapping-Read-aloud-audio bug fixed earlier in this project
+# (see WORKING_CONTEXT.md's "Fixed overlapping Read-aloud cue audio")
+# already showed real ElevenLabs clips can run longer than a
+# reading-pace estimate implies. PADDING_SECONDS/MIN_SECONDS carry
+# over unchanged from the old constants (small breathing room beyond
+# the raw estimate; a floor so a very short bullet still gets a
+# comfortable minimum).
+_CUE_LEAD_SECONDS = 2.0
+_CUE_TRAIL_SECONDS = 2.0
+_CUE_SPEAKING_CHARS_PER_SECOND = 12.0
 _CUE_READING_PADDING_SECONDS = 1.0
 _CUE_READING_MIN_SECONDS = 2.0
 
 
-def _trim_cue_to_reading_time(start: float, end: float, text: str) -> tuple[float, float]:
-    """Shrink a cue's [start, end) window down to roughly how long
-    `text` actually takes to read, trimming evenly off both ends so
-    the caption is centered within its original window rather than
-    glued to the window's start - see the reading-speed constants
-    above for where the cap comes from. A no-op if the cue is already
-    shorter than the cap (the common case for a short bullet with a
-    naturally short gap before the next one)."""
+def _cue_display_window(
+    real_start: float, real_end: float, prev_display_end: float, text: str
+) -> tuple[float, float]:
+    """The actual on-screen/spoken window for one cue, given its real
+    (already lag-corrected) [real_start, real_end) span - real_start is
+    this event's own timestamp after cursor-clamping, real_end is the
+    next real event's start (or duration_seconds for the last cue) -
+    same untrimmed values build_description_srt_from_events()'s own
+    overlap/collapse-detection cursor already tracks, so this is purely
+    a display-time decision layered on top, not a second source of
+    truth about when things "really" happen.
 
-    max_duration = max(
+    Starts _CUE_LEAD_SECONDS before real_start (Christer: "pop up a
+    couple of seconds before"), floored at 0.0 (nothing earlier than
+    the clip's own start) and never before `prev_display_end` - the
+    previous cue's own display window, tracked by the caller across
+    iterations - so a lead-time pull-back can never make two cues'
+    display windows visually overlap.
+
+    Ends at least _CUE_TRAIL_SECONDS after real_start (Christer: "then
+    last a couple of seconds after"), extended further when the text
+    needs more than that to actually say - Christer's immediate
+    follow-up, "unless there is something more happening... we also
+    need to consider how long time each aloud takes": a longer cue
+    gets a longer trail rather than being cut off at a fixed couple of
+    seconds. Capped at `real_end` either way - the trail can make a
+    cue linger, but never into the next cue's own real moment, the
+    same non-overlap guarantee the old design's next-event cap
+    provided."""
+
+    lead_start = max(0.0, real_start - _CUE_LEAD_SECONDS)
+    display_start = max(lead_start, prev_display_end)
+
+    speaking_duration = max(
         _CUE_READING_MIN_SECONDS,
-        len(text) / _CUE_READING_CHARS_PER_SECOND + _CUE_READING_PADDING_SECONDS,
+        len(text) / _CUE_SPEAKING_CHARS_PER_SECOND + _CUE_READING_PADDING_SECONDS,
     )
-    span = end - start
-    if span <= max_duration:
-        return start, end
-    trim = (span - max_duration) / 2
-    return start + trim, end - trim
+    natural_end = real_start + _CUE_TRAIL_SECONDS
+    speaking_end = display_start + speaking_duration
+    display_end = min(max(natural_end, speaking_end), real_end)
+    display_end = max(display_end, display_start)
 
-
-# How much earlier than its own (already lag-corrected) timestamp a
-# description/sign cue starts showing - a deliberate readability
-# choice, not part of the timing-accuracy fix above (see
-# _apply_lead_time()'s own docstring for the distinction). Christer,
-# after confirming the curve-based correction approach: "and i want
-# text to show up 1 to 2 seconds before it happen." Picked the middle
-# of his stated 1-2s range rather than either end.
-_DESCRIPTION_LEAD_TIME_SECONDS = 1.5
-
-
-def _apply_lead_time(events: list[DescriptionEvent]) -> list[DescriptionEvent]:
-    """Shift every already lag-corrected, already-merged event earlier
-    by _DESCRIPTION_LEAD_TIME_SECONDS, so its caption/narration starts
-    slightly before the moment it describes rather than exactly on it.
-
-    Deliberately separate from _LAG_CORRECTION_CURVE/
-    _SIGN_LAG_CORRECTION_CURVE and _apply_frame_sampling_lag()/
-    _apply_sign_lag() above: those correct a *bug* (the model's own
-    narrative-pacing error, or the sign-read timestamp drift) to land
-    on the real event time as accurately as the available data
-    allows. This is a distinct, intentional UX choice layered on top
-    of an already-as-accurate-as-possible timestamp - Christer: "and i
-    want text to show up 1 to 2 seconds before it happen," the same
-    reasoning ordinary subtitling conventions use (give the
-    reader/listener a moment to register the text before the
-    described moment is actually on screen).
-
-    Applied once, after events and signs are already merged onto one
-    timeline (see build_description_srt_from_events()'s `ordered`
-    list) - shifting both kinds of cue by the same fixed amount rather
-    than baking it into either correction curve, so a future
-    recalibration of either curve doesn't need to account for this
-    separately, and this constant can be tuned (or turned off, at
-    0.0) independently of both.
-
-    Floored at 0.0 - an event already at or near the very start of the
-    clip has nowhere earlier to go; downstream cursor-based clamping
-    in build_description_srt_from_events() already handles two events
-    landing at the same or an out-of-order timestamp after this shift,
-    same as it does for any other source of out-of-order timestamps."""
-
-    return [
-        DescriptionEvent(
-            max(0.0, event.timestamp_seconds - _DESCRIPTION_LEAD_TIME_SECONDS),
-            event.text,
-        )
-        for event in events
-    ]
+    return display_start, display_end
 
 
 def build_description_srt_from_events(
@@ -954,19 +935,26 @@ def build_description_srt_from_events(
     shown, not real elapsed video time, so used verbatim they come
     back bunched into the first few seconds of a much longer clip.
 
-    Each (now-rescaled) event's cue starts at its own timestamp and
-    runs until the next event's timestamp (or `duration_seconds` for
-    the last one), then gets trimmed down to roughly how long its own
-    text takes to read (_trim_cue_to_reading_time()) rather than
-    staying on screen for the entire gap - Christer, right after the
-    rescale fix spread events out across the whole clip: "The
-    timstamps are better, the should probably be trimmed in the
-    begining and and the end, so more centered at not that long." The
-    untrimmed window is still what `cursor` and the overlap/collapse
-    guards below track - only the segment actually written to the
-    .srt is shortened, so an out-of-order or duplicate timestamp is
-    still detected exactly as before; trimming happens purely as a
-    last step, after a cue is confirmed to be real.
+    Each (now-rescaled) event's real [start, end) span still runs from
+    its own timestamp to the next event's (or `duration_seconds` for
+    the last one) - `cursor` and the overlap/collapse guards below
+    track this real span exactly as before. What's actually written to
+    the .srt is a separate *display* window computed by
+    _cue_display_window() from that real span: pop up a couple of
+    seconds before the real moment, stay at least a couple of seconds
+    after it, longer if the text needs more time to say (see that
+    function's own docstring) - not the real span's entire, possibly
+    long and uneventful, duration. Christer, right after the rescale
+    fix first spread events out across the whole clip: "The timstamps
+    are better, the should probably be trimmed in the begining and and
+    the end, so more centered at not that long"; later, after using
+    the frame-viewer this fed into to spot-check real cues against real
+    frames: "I want the description to pop up a couple of seconds
+    before the video then last a couple of seconds after, unless there
+    is something more happening... we also need to consider how long
+    time each aloud takes" - the current lead/trail/speaking-duration
+    design directly implements that second request, superseding the
+    original center-trim.
 
     Both the start and the next event's timestamp are clamped to
     `[cursor, duration_seconds]` - `cursor` (the previous cue's own
@@ -996,12 +984,12 @@ def build_description_srt_from_events(
     build_description_srt()'s evenly-spaced chunking instead of
     downloading something broken.
 
-    After events and signs are merged onto one timeline (`ordered`
-    below), every cue is also shifted _DESCRIPTION_LEAD_TIME_SECONDS
-    earlier via _apply_lead_time() - a separate, intentional
-    readability choice (show the text just before its moment, not
-    exactly on it), not part of the timing-accuracy corrections above;
-    see that function's own docstring.
+    Each real, non-collapsed cue's *display* window is computed by
+    _cue_display_window() from its own real [start, end) span, tracked
+    across iterations via `display_cursor` so one cue's lead-time
+    pull-back can never visually overlap the previous cue's own
+    display window - see that function's own docstring for the
+    lead/trail/speaking-duration design.
 
     None if there are no events (and no signs) or no usable duration -
     same contract as build_description_srt()."""
@@ -1016,9 +1004,9 @@ def build_description_srt_from_events(
     events = _rescale_events_to_duration(events, duration_seconds)
     events = _apply_frame_sampling_lag(events, duration_seconds)
     ordered = sorted(events + sign_events, key=lambda event: event.timestamp_seconds)
-    ordered = _apply_lead_time(ordered)
     segments: list[SpeechSegment] = []
     cursor = 0.0
+    display_cursor = 0.0
     pending_text: list[str] = []
     for index, event in enumerate(ordered):
         start = max(min(event.timestamp_seconds, duration_seconds), cursor)
@@ -1029,9 +1017,10 @@ def build_description_srt_from_events(
         end = max(next_start, start)
         text = " ".join([*pending_text, event.text]) if pending_text else event.text
         if end > start:
-            display_start, display_end = _trim_cue_to_reading_time(start, end, text)
+            display_start, display_end = _cue_display_window(start, end, display_cursor, text)
             segments.append(SpeechSegment(start=display_start, end=display_end, text=text))
             cursor = end
+            display_cursor = display_end
             pending_text = []
         else:
             # Collapsed - carry the text forward instead of dropping
@@ -1295,11 +1284,21 @@ class ArchiveRecording:
         alongside --camera both, whose forced OCR-only pass has no
         '## Description' section at all and may have nothing legible
         in it either, so there'd be nothing worth showing.
+
+        A rear-camera description is prefixed via _label_rear_view()
+        the same way description_srt() labels its own rear cues - see
+        that function's own docstring for why (this page shows only
+        one video, so rear text needs to say it's rear text on its
+        own). The per-item sign-read list is left unprefixed: it's
+        already grouped under this same direction's own "Rear" section
+        header just above it, so repeating the label on every bullet
+        would just be noise.
         """
 
         result = []
         for label, text in self.scene_texts:
             description = extract_description_section(text)
+            description = _label_rear_view(description, label)
             legible_reads = _extract_legible_sign_reads(text)
             if description or legible_reads:
                 result.append((label, description, legible_reads))
@@ -1415,6 +1414,14 @@ class ArchiveRecording:
         events = extract_description_events(raw_text)
         signs = _parse_sign_reads(raw_text)
         if events or signs:
+            events = [
+                DescriptionEvent(event.timestamp_seconds, _label_rear_view(event.text, direction))
+                for event in events
+            ]
+            signs = [
+                SignRead(sign.timestamp_seconds, _label_rear_view(sign.text, direction))
+                for sign in signs
+            ]
             srt = build_description_srt_from_events(events, duration_seconds, signs=signs)
             if srt is not None:
                 return srt
@@ -1423,7 +1430,7 @@ class ArchiveRecording:
         if not description:
             return None
 
-        return build_description_srt(description, duration_seconds)
+        return build_description_srt(_label_rear_view(description, direction), duration_seconds)
 
     @property
     def known_filenames(self) -> frozenset[str]:
