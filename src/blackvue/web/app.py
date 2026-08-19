@@ -993,13 +993,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         cues = _parse_srt_cues(recording.description_srt(direction) or "")
         frames = []
         for index, nominal_seconds in enumerate(timestamps):
-            nearest_text = _nearest_cue_text(cues, nominal_seconds)
+            nearest_text, nearest_gap_seconds = _nearest_cue_text(cues, nominal_seconds)
             frames.append(
                 {
                     "index": index,
                     "nominal_seconds": nominal_seconds,
                     "nominal_label": _format_seconds_label(nominal_seconds),
                     "nearest_text": nearest_text,
+                    "nearest_gap_seconds": nearest_gap_seconds,
                 }
             )
 
@@ -2974,17 +2975,38 @@ def _parse_srt_cues(srt_text: str) -> list[tuple[float, str]]:
     return cues
 
 
-def _nearest_cue_text(cues: list[tuple[float, str]], nominal_seconds: float) -> str:
+def _nearest_cue_text(
+    cues: list[tuple[float, str]], nominal_seconds: float
+) -> tuple[str, float | None]:
     """The text of whichever cue in `cues` starts closest (in either
-    direction) to `nominal_seconds` - the description/sign-read line
-    Christer should compare this extracted frame against while
-    calibrating. Empty string if there are no cues at all (e.g. a
-    recording with a video but no generated description.srt yet)."""
+    direction) to `nominal_seconds`, plus how far away it actually is
+    in seconds - the description/sign-read line Christer should
+    compare this extracted frame against while calibrating, alongside
+    the honesty check of knowing whether "nearest" still means
+    "close."
+
+    ("", None) if there are no cues at all (e.g. a recording with a
+    video but no generated description.srt yet).
+
+    The gap is deliberately surfaced rather than silently hidden or
+    thresholded away: Christer, looking at a real frame that visibly
+    didn't match its shown cue ("frame 6 ... talks about the bus" /
+    "I dont se any red bus"): the *closest* cue by timestamp can still
+    be many seconds away from a frame's own (approximate - see
+    _nominal_frame_timestamps()'s own docstring) sample time, once a
+    clip only has a handful of cues or a cue's own timestamp was
+    pulled far from its neighbors by _LAG_CORRECTION_CURVE's
+    non-monotonic correction. Silently showing that cue with no
+    indication of the gap makes it look like a confident match when
+    it may not be one; silently hiding it below some threshold would
+    throw away real information Christer might still want to see and
+    judge for himself, the same "the user still reviews and picks
+    knots by hand" principle the calibration log itself is built on."""
 
     if not cues:
-        return ""
+        return "", None
     nearest = min(cues, key=lambda cue: abs(cue[0] - nominal_seconds))
-    return nearest[1]
+    return nearest[1], abs(nearest[0] - nominal_seconds)
 
 
 def _format_seconds_label(seconds: float) -> str:

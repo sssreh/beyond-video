@@ -23,6 +23,9 @@
   <div class="frame-card-body">
     <p class="frame-card-time">Frame {{ frame.index }} &middot; ~{{ frame.nominal_label }}</p>
     <p class="frame-card-cue">{{ frame.nearest_text or "(no nearby cue)" }}</p>
+    {% if frame.nearest_gap_seconds is not none %}
+    <p class="frame-card-gap">nearest cue is {{ "%.1f"|format(frame.nearest_gap_seconds) }}s away{% if frame.nearest_gap_seconds >= 5 %} &mdash; may not match this frame{% endif %}</p>
+    {% endif %}
     <form class="frame-card-form" method="post"
           action="/archive/{{ camera_id }}/{{ recording.id }}/frames/{{ direction }}/calibrate">
       <input type="hidden" name="index" value="{{ frame.index }}">
