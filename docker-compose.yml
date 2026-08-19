@@ -71,14 +71,20 @@ services:
       # ElevenLabs text-to-speech for the archive recording detail
       # page's "Read aloud" button (see web/elevenlabs_tts.py's own
       # docstring) - unlike every other variable above, this isn't a
-      # persistence path, it's Christer's actual ElevenLabs account
-      # API key, so it has no volume mount to go with it. Left blank
-      # here on purpose: this file is checked into git, so a real key
-      # belongs only in Christer's own local copy (or a docker-compose
-      # override file), never committed. Leaving it unset entirely is
-      # also fine - the "Read aloud" feature just hides itself with no
-      # error (see tts_voices() in web/app.py) rather than failing.
-      - ELEVENLABS_API_KEY=
+      # persistence path, it's Christer's actual ElevenLabs account API
+      # key, so it has no volume mount to go with it. `${ELEVENLABS_API_KEY}`
+      # here means docker-compose substitutes it from the shell
+      # environment it's invoked in - not from a value written into
+      # this file - so the real key lives only in Christer's own shell
+      # profile (~/.bashrc/~/.profile on the NAS) or a docker-compose
+      # .env file next to this one, never committed to git. `sudo`
+      # over SSH doesn't inherit the calling user's environment by
+      # default, so this needs either `sudo -E docker-compose ...` or
+      # the key set in root's own profile too - see docs/DEPLOY.md.
+      # docker-compose substitutes an unset variable as empty, which
+      # is also fine: the "Read aloud" feature just hides itself with
+      # no error (see tts_voices() in web/app.py) rather than failing.
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
     volumes:
       # The trip archive bv-export writes into (--target). Read-write:
       # bv-web's own job runner can trigger bv-export directly (its
