@@ -71,7 +71,7 @@ from .auth import require_viewer_or_owner
 from .elevenlabs_tts import ElevenLabsError
 from .elevenlabs_tts import api_key as elevenlabs_api_key
 from .elevenlabs_tts import list_voices as elevenlabs_list_voices
-from .elevenlabs_tts import synthesize as elevenlabs_synthesize
+from .elevenlabs_tts import synthesize_with_timestamps as elevenlabs_synthesize
 from ..history import HistoryFilter
 from ..history import NumberedEntry
 from ..history import all_entries
@@ -669,6 +669,20 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         voice_id: str = Form(...),
         user: User = Depends(require_login),
     ):
+        """Returns JSON (not raw audio bytes, since task #1042) so the
+        response can carry ElevenLabs' character-level `alignment`
+        alongside the base64-encoded MP3 - one request now serves
+        playback, the mp3 download link, and a synced .srt download,
+        instead of the SRT needing a second call that could drift out
+        of sync with the first (Christer: "could you also give me a
+        srt file matching the timestamps in the mp3"). The client
+        (archive_recording_detail.html/trip_detail.html's own JS)
+        decodes `audio_base64` itself via atob() and builds the SRT
+        from `alignment` client-side - see elevenlabs_tts.py's
+        synthesize_with_timestamps() docstring for the ElevenLabs API
+        details.
+        """
+
         key = elevenlabs_api_key()
         if key is None:
             return JSONResponse(
@@ -677,13 +691,24 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
 
         try:
-            audio = elevenlabs_synthesize(text, voice_id, api_key=key)
+            speech = elevenlabs_synthesize(text, voice_id, api_key=key)
         except ElevenLabsError as exc:
             return JSONResponse(
                 {"error": str(exc)}, status_code=status.HTTP_502_BAD_GATEWAY
             )
 
-        return Response(content=audio, media_type="audio/mpeg")
+        response: dict = {"audio_base64": speech.audio_base64}
+        if speech.alignment is not None:
+            response["alignment"] = {
+                "characters": speech.alignment.characters,
+                "character_start_times_seconds": (
+                    speech.alignment.character_start_times_seconds
+                ),
+                "character_end_times_seconds": (
+                    speech.alignment.character_end_times_seconds
+                ),
+            }
+        return JSONResponse(response)
 
     @app.get(
         "/archive/{camera_id}/{recording_id}/location", response_class=HTMLResponse

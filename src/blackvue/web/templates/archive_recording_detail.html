@@ -56,6 +56,7 @@
     <div class="tts-actions">
       <button type="button" class="voice-btn speak-btn" title="Read this description aloud">Read aloud</button>
       <a class="voice-btn tts-download" href="#" download="speech.mp3" hidden>Download</a>
+      <a class="voice-btn tts-download-srt" href="#" download="speech.srt" hidden>Download SRT</a>
     </div>
   </div>
   <div class="scene-text-content">
@@ -102,7 +103,23 @@
   // when asked). See elevenlabs_tts.py's docstring for the server
   // side of this - /api/tts/voices lists every voice the configured
   // account can use (premade + Christer's own cloned ones);
-  // /api/tts/speak returns MP3 bytes for a given voice_id/text pair.
+  // /api/tts/speak returns JSON (base64 audio + character-level
+  // alignment) for a given voice_id/text pair, not raw MP3 bytes -
+  // see below for why.
+  //
+  // SRT: Christer, after finding a stray Download link had given him
+  // a non-audio file: "With knowing the description and having the
+  // mp3, could you also give me a srt file matching the timestamps in
+  // the mp3". Rather than a second ElevenLabs call to re-derive
+  // timing (which could itself drift out of sync with the audio),
+  // /api/tts/speak now calls ElevenLabs' /with-timestamps endpoint,
+  // which returns the same audio plus per-character start/end times
+  // for the exact text sent - one request now backs playback, the
+  // mp3 download, and a synced .srt download. buildSrtCues() below
+  // chunks that per-character timing into sentence-ish subtitle cues
+  // (same HH:MM:SS,mmm format generate/subtitles.py's format_srt()
+  // uses for Whisper transcripts, just built client-side from
+  // ElevenLabs' alignment instead of Whisper segments).
   //
   // Player: a real <audio controls> element (#tts-player) rather than
   // a bare `new Audio()` - Christer asked about a popup mini-player
@@ -196,6 +213,95 @@
       audio.playbackRate = currentSpeed();
       try { localStorage.setItem(SPEED_STORAGE_KEY, speedSelect.value); } catch (err) { /* ignore */ }
     });
+  }
+
+  function base64ToBlob(base64, mimeType) {
+    var byteChars = atob(base64);
+    var byteNumbers = new Array(byteChars.length);
+    for (var i = 0; i < byteChars.length; i++) {
+      byteNumbers[i] = byteChars.charCodeAt(i);
+    }
+    return new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+  }
+
+  function srtTimestamp(seconds) {
+    var totalMs = Math.round(seconds * 1000);
+    var hours = Math.floor(totalMs / 3600000);
+    var minutes = Math.floor((totalMs % 3600000) / 60000);
+    var secs = Math.floor((totalMs % 60000) / 1000);
+    var ms = totalMs % 1000;
+    function pad(n, len) {
+      var s = String(n);
+      while (s.length < len) s = '0' + s;
+      return s;
+    }
+    return pad(hours, 2) + ':' + pad(minutes, 2) + ':' + pad(secs, 2) + ',' + pad(ms, 3);
+  }
+
+  // Groups ElevenLabs' per-character alignment into subtitle-sized
+  // cues - prefers breaking at the end of a sentence within a
+  // maxChars-sized window, falls back to the last word boundary if no
+  // sentence end is nearby, so cues read like a person would pause
+  // rather than being chopped at an arbitrary character count. Bails
+  // out (returns null) if the alignment's character count doesn't
+  // match the text 1:1, rather than guessing at timings that could be
+  // wrong - ElevenLabs documents `alignment` as tracking the
+  // *original* text exactly, so a mismatch means something
+  // unexpected happened server-side and cues shouldn't be trusted.
+  function buildSrtCues(text, alignment) {
+    if (!alignment || !alignment.characters) return null;
+    var chars = alignment.characters;
+    var starts = alignment.character_start_times_seconds;
+    var ends = alignment.character_end_times_seconds;
+    if (chars.length !== text.length) return null;
+
+    var maxChars = 90;
+    var cues = [];
+    var pos = 0;
+
+    while (pos < text.length) {
+      while (pos < text.length && /\s/.test(text[pos])) pos++;
+      if (pos >= text.length) break;
+
+      var windowEnd = Math.min(pos + maxChars, text.length);
+      var sentenceBreak = -1;
+      for (var i = pos; i < windowEnd; i++) {
+        var c = text[i];
+        if ((c === '.' || c === '!' || c === '?') && i - pos > 20) {
+          sentenceBreak = i + 1;
+        }
+      }
+      var breakAt = sentenceBreak > -1 ? sentenceBreak : windowEnd;
+      if (breakAt < text.length && !/\s/.test(text[breakAt])) {
+        var lastSpace = text.lastIndexOf(' ', breakAt);
+        if (lastSpace > pos) breakAt = lastSpace;
+      }
+      if (breakAt <= pos) breakAt = windowEnd; // safety net - always make forward progress
+
+      var chunkText = text.slice(pos, breakAt).trim();
+      if (chunkText) {
+        var firstIdx = pos;
+        while (firstIdx < breakAt && /\s/.test(text[firstIdx])) firstIdx++;
+        var lastIdx = breakAt - 1;
+        while (lastIdx > firstIdx && /\s/.test(text[lastIdx])) lastIdx--;
+        cues.push({ start: starts[firstIdx], end: ends[lastIdx], text: chunkText });
+      }
+      pos = breakAt;
+    }
+
+    return cues;
+  }
+
+  function formatSrt(cues) {
+    return cues
+      .map(function (cue, index) {
+        return (
+          (index + 1) + '\n' +
+          srtTimestamp(cue.start) + ' --> ' + srtTimestamp(cue.end) + '\n' +
+          cue.text + '\n'
+        );
+      })
+      .join('\n');
   }
 
   function populateVoiceSelect() {
@@ -305,16 +411,16 @@
 
       fetch('/api/tts/speak', { method: 'POST', body: body })
         .then(function (response) {
-          if (!response.ok) {
-            return response.json().then(function (data) {
+          return response.json().then(function (data) {
+            if (!response.ok) {
               throw new Error(data.error || 'ElevenLabs request failed');
-            });
-          }
-          return response.blob();
+            }
+            return data;
+          });
         })
-        .then(function (blob) {
+        .then(function (data) {
           if (btn !== activeButton) return; // stopped/superseded while loading
-          audio.src = URL.createObjectURL(blob);
+          audio.src = URL.createObjectURL(base64ToBlob(data.audio_base64, 'audio/mpeg'));
           audio.playbackRate = currentSpeed();
           audio.hidden = false;
           audio.play();
@@ -334,6 +440,25 @@
           if (downloadLink) {
             downloadLink.href = audio.src;
             downloadLink.hidden = false;
+          }
+
+          // Same request's alignment data, turned into a downloadable
+          // .srt - see buildSrtCues() above (Christer: "could you
+          // also give me a srt file matching the timestamps in the
+          // mp3"). Left hidden if ElevenLabs didn't return alignment
+          // for this clip (nullable per their docs) or it doesn't
+          // line up with the text 1:1 - audio/mp3-download still work
+          // fine either way, this is purely additive.
+          var srtLink = btn.parentElement.querySelector('.tts-download-srt');
+          if (srtLink) {
+            var cues = buildSrtCues(text, data.alignment);
+            if (cues && cues.length) {
+              var srtBlob = new Blob([formatSrt(cues)], { type: 'application/x-subrip' });
+              srtLink.href = URL.createObjectURL(srtBlob);
+              srtLink.hidden = false;
+            } else {
+              srtLink.hidden = true;
+            }
           }
         })
         .catch(function (err) {

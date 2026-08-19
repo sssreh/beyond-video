@@ -51,6 +51,7 @@
     <div class="tts-actions">
       <button type="button" class="voice-btn speak-btn" title="Read this narrative aloud">Read aloud</button>
       <a class="voice-btn tts-download" href="#" download="speech.mp3" hidden>Download</a>
+      <a class="voice-btn tts-download-srt" href="#" download="speech.srt" hidden>Download SRT</a>
     </div>
   </div>
   <div class="scene-text-content">
@@ -116,6 +117,15 @@
   // whatever the native bar is doing via the 'play'/'pause'/'ended'
   // listeners below, so clicking pause on the bar itself still flips
   // the button back to "Resume" correctly.
+  //
+  // SRT: Christer, after finding a stray Download link had given him
+  // a non-audio file: "With knowing the description and having the
+  // mp3, could you also give me a srt file matching the timestamps in
+  // the mp3". /api/tts/speak now calls ElevenLabs' /with-timestamps
+  // endpoint, returning the same audio plus per-character start/end
+  // times for the exact text sent - one request backs playback, the
+  // mp3 download, and a synced .srt download. buildSrtCues() below
+  // chunks that per-character timing into sentence-ish subtitle cues.
   var VOICE_STORAGE_KEY = 'bv-tts-voice';
   var SPEED_STORAGE_KEY = 'bv-tts-speed';
   var voiceSelect = document.getElementById('tts-voice');
@@ -198,6 +208,91 @@
       audio.playbackRate = currentSpeed();
       try { localStorage.setItem(SPEED_STORAGE_KEY, speedSelect.value); } catch (err) { /* ignore */ }
     });
+  }
+
+  function base64ToBlob(base64, mimeType) {
+    var byteChars = atob(base64);
+    var byteNumbers = new Array(byteChars.length);
+    for (var i = 0; i < byteChars.length; i++) {
+      byteNumbers[i] = byteChars.charCodeAt(i);
+    }
+    return new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+  }
+
+  function srtTimestamp(seconds) {
+    var totalMs = Math.round(seconds * 1000);
+    var hours = Math.floor(totalMs / 3600000);
+    var minutes = Math.floor((totalMs % 3600000) / 60000);
+    var secs = Math.floor((totalMs % 60000) / 1000);
+    var ms = totalMs % 1000;
+    function pad(n, len) {
+      var s = String(n);
+      while (s.length < len) s = '0' + s;
+      return s;
+    }
+    return pad(hours, 2) + ':' + pad(minutes, 2) + ':' + pad(secs, 2) + ',' + pad(ms, 3);
+  }
+
+  // Groups ElevenLabs' per-character alignment into subtitle-sized
+  // cues - prefers breaking at the end of a sentence within a
+  // maxChars-sized window, falls back to the last word boundary if no
+  // sentence end is nearby. Bails out (returns null) if the
+  // alignment's character count doesn't match the text 1:1, rather
+  // than guessing at timings that could be wrong.
+  function buildSrtCues(text, alignment) {
+    if (!alignment || !alignment.characters) return null;
+    var chars = alignment.characters;
+    var starts = alignment.character_start_times_seconds;
+    var ends = alignment.character_end_times_seconds;
+    if (chars.length !== text.length) return null;
+
+    var maxChars = 90;
+    var cues = [];
+    var pos = 0;
+
+    while (pos < text.length) {
+      while (pos < text.length && /\s/.test(text[pos])) pos++;
+      if (pos >= text.length) break;
+
+      var windowEnd = Math.min(pos + maxChars, text.length);
+      var sentenceBreak = -1;
+      for (var i = pos; i < windowEnd; i++) {
+        var c = text[i];
+        if ((c === '.' || c === '!' || c === '?') && i - pos > 20) {
+          sentenceBreak = i + 1;
+        }
+      }
+      var breakAt = sentenceBreak > -1 ? sentenceBreak : windowEnd;
+      if (breakAt < text.length && !/\s/.test(text[breakAt])) {
+        var lastSpace = text.lastIndexOf(' ', breakAt);
+        if (lastSpace > pos) breakAt = lastSpace;
+      }
+      if (breakAt <= pos) breakAt = windowEnd; // safety net - always make forward progress
+
+      var chunkText = text.slice(pos, breakAt).trim();
+      if (chunkText) {
+        var firstIdx = pos;
+        while (firstIdx < breakAt && /\s/.test(text[firstIdx])) firstIdx++;
+        var lastIdx = breakAt - 1;
+        while (lastIdx > firstIdx && /\s/.test(text[lastIdx])) lastIdx--;
+        cues.push({ start: starts[firstIdx], end: ends[lastIdx], text: chunkText });
+      }
+      pos = breakAt;
+    }
+
+    return cues;
+  }
+
+  function formatSrt(cues) {
+    return cues
+      .map(function (cue, index) {
+        return (
+          (index + 1) + '\n' +
+          srtTimestamp(cue.start) + ' --> ' + srtTimestamp(cue.end) + '\n' +
+          cue.text + '\n'
+        );
+      })
+      .join('\n');
   }
 
   function populateVoiceSelect() {
@@ -302,16 +397,16 @@
 
       fetch('/api/tts/speak', { method: 'POST', body: body })
         .then(function (response) {
-          if (!response.ok) {
-            return response.json().then(function (data) {
+          return response.json().then(function (data) {
+            if (!response.ok) {
               throw new Error(data.error || 'ElevenLabs request failed');
-            });
-          }
-          return response.blob();
+            }
+            return data;
+          });
         })
-        .then(function (blob) {
+        .then(function (data) {
           if (btn !== activeButton) return; // stopped/superseded while loading
-          audio.src = URL.createObjectURL(blob);
+          audio.src = URL.createObjectURL(base64ToBlob(data.audio_base64, 'audio/mpeg'));
           audio.playbackRate = currentSpeed();
           audio.hidden = false;
           audio.play();
@@ -322,6 +417,18 @@
           if (downloadLink) {
             downloadLink.href = audio.src;
             downloadLink.hidden = false;
+          }
+
+          var srtLink = btn.parentElement.querySelector('.tts-download-srt');
+          if (srtLink) {
+            var cues = buildSrtCues(text, data.alignment);
+            if (cues && cues.length) {
+              var srtBlob = new Blob([formatSrt(cues)], { type: 'application/x-subrip' });
+              srtLink.href = URL.createObjectURL(srtBlob);
+              srtLink.hidden = false;
+            } else {
+              srtLink.hidden = true;
+            }
           }
         })
         .catch(function (err) {

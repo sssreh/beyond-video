@@ -145,15 +145,58 @@ def list_voices(*, api_key: str, timeout: float = DEFAULT_TIMEOUT) -> list[Voice
     return voices
 
 
-def synthesize(
+@dataclass(frozen=True)
+class Alignment:
+    """Character-level timing for a synthesized clip, as returned by
+    ElevenLabs' `/with-timestamps` endpoint - one entry per character
+    of the *original* input text (not the "normalized" text ElevenLabs
+    may internally expand numbers/abbreviations into - that's a
+    separate `normalized_alignment` field this app has no use for and
+    doesn't parse), so index i here lines up directly with `text[i]`
+    for whatever string was passed to synthesize_with_timestamps().
+    Used client-side to build SRT subtitle cues without a second API
+    call - see app.py's /api/tts/speak route and
+    archive_recording_detail.html/trip_detail.html's own JS."""
+
+    characters: tuple[str, ...]
+    character_start_times_seconds: tuple[float, ...]
+    character_end_times_seconds: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class SpeechWithTimestamps:
+    """One synthesized clip plus its character alignment.
+    `audio_base64` is passed through as-is (not decoded to bytes) -
+    the only consumer is the browser, which decodes it client-side via
+    atob(), so decoding and re-encoding it here would just be wasted
+    work for a bv-web server that's often CPU-constrained already
+    (scene description / Whisper jobs running alongside it)."""
+
+    audio_base64: str
+    alignment: Alignment | None
+
+
+def synthesize_with_timestamps(
     text: str,
     voice_id: str,
     *,
     api_key: str,
     model_id: str = DEFAULT_MODEL_ID,
     timeout: float = DEFAULT_TIMEOUT,
-) -> bytes:
-    """MP3 audio bytes of `text` spoken by `voice_id`.
+) -> SpeechWithTimestamps:
+    """The same audio the old plain `synthesize()` used to return,
+    plus character-level timing alongside it in one call - added so
+    the "Download SRT" link (app.py's /api/tts/speak route) can build
+    subtitle cues from the exact same ElevenLabs request that already
+    generates the MP3 for playback/download, rather than a second
+    request that could itself drift out of sync with the first.
+    Christer, after finding out a stray Download link had given him a
+    non-audio file: "With knowing the description and having the mp3,
+    could you also give me a srt file matching the timestamps in the
+    mp3" - replaced the plain `synthesize()` entirely rather than
+    adding this alongside it, since the with-timestamps endpoint
+    returns identical audio at no extra cost, just wrapped in JSON
+    with alignment data attached.
 
     Raises ElevenLabsError on any network/API failure, or if `text`
     is empty/whitespace-only (ElevenLabs itself rejects that with a
@@ -166,15 +209,44 @@ def synthesize(
 
     body = json.dumps({"text": text, "model_id": model_id}).encode("utf-8")
     request = Request(
-        f"{API_BASE}/text-to-speech/{voice_id}",
+        f"{API_BASE}/text-to-speech/{voice_id}/with-timestamps",
         data=body,
         headers={
             "xi-api-key": api_key,
             "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
+            "Accept": "application/json",
         },
     )
-    return _open(request, timeout)
+    raw = _open(request, timeout)
+
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise ElevenLabsError(
+            f"could not parse ElevenLabs' speech response: {exc}"
+        ) from exc
+
+    audio_base64 = payload.get("audio_base64")
+    if not audio_base64:
+        raise ElevenLabsError("ElevenLabs response had no audio")
+
+    # `alignment` is documented as nullable - degrade gracefully (no
+    # SRT offered) rather than raise, since the audio itself is still
+    # perfectly usable without it.
+    alignment = None
+    alignment_payload = payload.get("alignment")
+    if alignment_payload:
+        alignment = Alignment(
+            characters=tuple(alignment_payload.get("characters") or ()),
+            character_start_times_seconds=tuple(
+                alignment_payload.get("character_start_times_seconds") or ()
+            ),
+            character_end_times_seconds=tuple(
+                alignment_payload.get("character_end_times_seconds") or ()
+            ),
+        )
+
+    return SpeechWithTimestamps(audio_base64=audio_base64, alignment=alignment)
 
 
 def _open(request: Request, timeout: float) -> bytes:

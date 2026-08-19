@@ -29,7 +29,7 @@ from blackvue.web.elevenlabs_tts import ElevenLabsError
 from blackvue.web.elevenlabs_tts import Voice
 from blackvue.web.elevenlabs_tts import api_key
 from blackvue.web.elevenlabs_tts import list_voices
-from blackvue.web.elevenlabs_tts import synthesize
+from blackvue.web.elevenlabs_tts import synthesize_with_timestamps
 
 
 class _FakeResponse:
@@ -207,57 +207,120 @@ def test_list_voices_raises_elevenlabs_error_with_detail_on_http_error(monkeypat
 
 
 # ---------------------------------------------------------------------------
-# synthesize()
+# synthesize_with_timestamps()
 # ---------------------------------------------------------------------------
 
 
-def test_synthesize_returns_audio_bytes(monkeypatch):
-    audio = b"\xff\xfb\x90fake-mp3-bytes"
-    monkeypatch.setattr(tts_module, "urlopen", _fake_urlopen(audio))
+def _timestamps_payload(
+    *, audio_base64: str = "ZmFrZS1tcDMtYnl0ZXM=", alignment: dict | None = "default"
+) -> dict:
+    if alignment == "default":
+        alignment = {
+            "characters": ["H", "i"],
+            "character_start_times_seconds": [0.0, 0.1],
+            "character_end_times_seconds": [0.1, 0.2],
+        }
+    payload = {"audio_base64": audio_base64}
+    if alignment is not None:
+        payload["alignment"] = alignment
+    return payload
 
-    result = synthesize("Hello there", "v1", api_key="sk-test")
 
-    assert result == audio
-
-
-def test_synthesize_posts_to_the_right_voice_id_with_headers_and_body(monkeypatch):
-    captured: list = []
+def test_synthesize_with_timestamps_returns_audio_and_alignment(monkeypatch):
     monkeypatch.setattr(
-        tts_module, "urlopen", _fake_urlopen(b"audio", captured=captured)
+        tts_module,
+        "urlopen",
+        _fake_urlopen(json.dumps(_timestamps_payload()).encode("utf-8")),
     )
 
-    synthesize("Hello there", "voice-abc", api_key="sk-test-789")
+    result = synthesize_with_timestamps("Hello there", "v1", api_key="sk-test")
+
+    assert result.audio_base64 == "ZmFrZS1tcDMtYnl0ZXM="
+    assert result.alignment.characters == ("H", "i")
+    assert result.alignment.character_start_times_seconds == (0.0, 0.1)
+    assert result.alignment.character_end_times_seconds == (0.1, 0.2)
+
+
+def test_synthesize_with_timestamps_posts_to_the_right_url_with_headers_and_body(
+    monkeypatch,
+):
+    captured: list = []
+    monkeypatch.setattr(
+        tts_module,
+        "urlopen",
+        _fake_urlopen(
+            json.dumps(_timestamps_payload()).encode("utf-8"), captured=captured
+        ),
+    )
+
+    synthesize_with_timestamps("Hello there", "voice-abc", api_key="sk-test-789")
 
     request = captured[0]
-    assert request.full_url == "https://api.elevenlabs.io/v1/text-to-speech/voice-abc"
+    assert (
+        request.full_url
+        == "https://api.elevenlabs.io/v1/text-to-speech/voice-abc/with-timestamps"
+    )
     assert request.get_header("Xi-api-key") == "sk-test-789"
     body = json.loads(request.data.decode("utf-8"))
     assert body["text"] == "Hello there"
     assert body["model_id"] == tts_module.DEFAULT_MODEL_ID
 
 
-def test_synthesize_raises_on_empty_text(monkeypatch):
-    monkeypatch.setattr(tts_module, "urlopen", _fake_urlopen(b"audio"))
+def test_synthesize_with_timestamps_handles_null_alignment(monkeypatch):
+    payload = _timestamps_payload(alignment=None)
+    monkeypatch.setattr(
+        tts_module, "urlopen", _fake_urlopen(json.dumps(payload).encode("utf-8"))
+    )
+
+    result = synthesize_with_timestamps("Hello", "v1", api_key="sk-test")
+
+    assert result.audio_base64 == "ZmFrZS1tcDMtYnl0ZXM="
+    assert result.alignment is None
+
+
+def test_synthesize_with_timestamps_raises_on_empty_text(monkeypatch):
+    monkeypatch.setattr(
+        tts_module,
+        "urlopen",
+        _fake_urlopen(json.dumps(_timestamps_payload()).encode("utf-8")),
+    )
 
     with pytest.raises(ElevenLabsError):
-        synthesize("   ", "v1", api_key="sk-test")
+        synthesize_with_timestamps("   ", "v1", api_key="sk-test")
 
 
-def test_synthesize_raises_on_http_error(monkeypatch):
+def test_synthesize_with_timestamps_raises_on_missing_audio(monkeypatch):
+    payload = {"alignment": None}
+    monkeypatch.setattr(
+        tts_module, "urlopen", _fake_urlopen(json.dumps(payload).encode("utf-8"))
+    )
+
+    with pytest.raises(ElevenLabsError):
+        synthesize_with_timestamps("Hello", "v1", api_key="sk-test")
+
+
+def test_synthesize_with_timestamps_raises_on_malformed_json(monkeypatch):
+    monkeypatch.setattr(tts_module, "urlopen", _fake_urlopen(b"not json"))
+
+    with pytest.raises(ElevenLabsError):
+        synthesize_with_timestamps("Hello", "v1", api_key="sk-test")
+
+
+def test_synthesize_with_timestamps_raises_on_http_error(monkeypatch):
     def urlopen(request, timeout=None):
         raise _http_error(422, b"not json body")
 
     monkeypatch.setattr(tts_module, "urlopen", urlopen)
 
     with pytest.raises(ElevenLabsError, match="not json body"):
-        synthesize("Hello", "v1", api_key="sk-test")
+        synthesize_with_timestamps("Hello", "v1", api_key="sk-test")
 
 
-def test_synthesize_raises_on_network_error(monkeypatch):
+def test_synthesize_with_timestamps_raises_on_network_error(monkeypatch):
     def urlopen(request, timeout=None):
         raise URLError("timed out")
 
     monkeypatch.setattr(tts_module, "urlopen", urlopen)
 
     with pytest.raises(ElevenLabsError):
-        synthesize("Hello", "v1", api_key="sk-test")
+        synthesize_with_timestamps("Hello", "v1", api_key="sk-test")
