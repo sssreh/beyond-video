@@ -672,6 +672,36 @@ def _apply_sign_lag(signs: list[DescriptionEvent]) -> list[DescriptionEvent]:
     return shifted_signs
 
 
+def _nominal_frame_timestamps(
+    duration_seconds: float, max_frames: int
+) -> list[float]:
+    """Approximate the real video timestamps describe_scene()'s own
+    video-sampling step looked at - max_frames frames spread evenly
+    across the clip, the same average-interval assumption
+    _apply_frame_sampling_lag()'s base_offset is itself built on (see
+    that function's own docstring). bv-web has no record of the real
+    sampled frame indices (that's a generation-time-only detail, not
+    persisted anywhere - describe_scene() hands the whole video to
+    qwen_vl_utils, which does its own internal frame selection), so
+    this is the same kind of necessary approximation the lag curves
+    already are, not an exact reconstruction.
+
+    Used to power the description-frame viewer (see app.py's
+    archive_recording_frames route) - Christer: "do you think i can
+    see the describe frames and help matching them," wanting to
+    visually compare a real extracted frame against the description
+    text near it, rather than reconstructing the moment from full
+    video playback. Frame 0 lands at t=0.0; frame i lands at
+    `duration * i / max_frames` for i in 0..max_frames-1 - close
+    enough for a human to recognize "yes, that's the moment," which is
+    all this needs to be useful, unlike the lag-correction curves that
+    need to be numerically precise."""
+
+    if duration_seconds <= 0 or max_frames <= 0:
+        return []
+    return [duration_seconds * i / max_frames for i in range(max_frames)]
+
+
 def _apply_frame_sampling_lag(
     events: list[DescriptionEvent], duration_seconds: float
 ) -> list[DescriptionEvent]:
@@ -1117,6 +1147,26 @@ class ArchiveRecording:
             if asset_file is not None:
                 result.append((label, asset_file.name))
         return result
+
+    def video_path(self, direction: str) -> Path | None:
+        """Resolve a direction name ("front"/"rear"/"interior") to its
+        real video file's path, or None if this recording has no video
+        for that direction. Used by the description-frame viewer (see
+        app.py's archive_recording_frames route and
+        _nominal_frame_timestamps() below) to extract the actual video
+        frames the description model was shown, at their approximate
+        sample times - Christer, on trying to fine-tune
+        _LAG_CORRECTION_CURVE's timing further by hand: "do you think i
+        can see the describe frames and help matching them" - letting
+        him compare a real frame against the description text next to
+        it, rather than reconstructing the moment from full video
+        playback."""
+
+        for label, video_asset, _ in _DIRECTIONS:
+            if label.lower() == direction.lower():
+                asset_file = self.recording.file(video_asset)
+                return asset_file.path if asset_file is not None else None
+        return None
 
     @property
     def source_filename(self) -> str | None:

@@ -76,6 +76,7 @@
     {% endif %}
     </div>
     <p class="hint"><a class="description-srt-link" href="/archive/{{ camera_id }}/{{ recording.id }}/description.srt?direction={{ label|lower }}" download>Download {{ label }} description as .srt (video-synced)</a> - timed against the {{ label }} video's own real length, for importing alongside it in your editor, and includes any sign/plate reads alongside the description (not the same as the ElevenLabs "Download SRT" above, which is timed to the narration voice instead). "Read aloud" above uses this same file's timestamps to pace the narration to match the video.</p>
+    <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/frames/{{ label|lower }}">See the real {{ label }} video frames these cues were timed against</a> - a frame-by-frame calibration view, for spotting and reporting a cue whose timing is still off.</p>
     {% endif %}
     {% if legible_reads %}
     <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/scene.srt?direction={{ label|lower }}" download>Download {{ label }} sign reads only as .srt</a> - the same sign/plate reads on their own, without the description text mixed in.</p>

@@ -26,6 +26,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 import time
@@ -57,6 +58,7 @@ from ..adapters.telemetry_bridge import recording_gps_available
 from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
+from .archive_browser import _nominal_frame_timestamps
 from .archive_browser import filter_recordings
 from .archive_browser import find_recording
 from .archive_browser import group_by_day
@@ -103,7 +105,10 @@ from ..telemetry.gps_reader import GpsFix
 from ..export.hevc_preview import open_hevc_preview_stream
 from ..export.kml_writer import gpx_to_kml
 from ..generate.media import MediaToolError
+from ..generate.media import extract_video_thumbnail
+from ..generate.media import load_or_compute_duration
 from ..generate.mp4_repair import load_or_repair_parking_video
+from ..generate.scene import SceneOptions
 from ..generate.speech import transcribe
 from ..lexicaltimeparser import LexicalTimeParser
 
@@ -929,6 +934,217 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     f'attachment; filename="{recording_id}.{direction}.description.srt"'
                 )
             },
+        )
+
+    @app.get(
+        "/archive/{camera_id}/{recording_id}/frames/{direction}",
+        response_class=HTMLResponse,
+    )
+    async def archive_recording_frames(
+        request: Request,
+        camera_id: str,
+        recording_id: str,
+        direction: str,
+        user: User = Depends(require_login),
+    ):
+        """A frame-by-frame calibration view: the actual video frames
+        describe_scene()'s own sampling step approximately looked at
+        (see _nominal_frame_timestamps()'s own docstring for why this
+        is an approximation, not an exact reconstruction), each next to
+        the description/sign-read cue nearest that moment in the
+        already lag-corrected description.srt, with a field to type in
+        the real timestamp if the shown frame doesn't match.
+
+        Christer, on trying to fine-tune the lag-correction curves
+        further by hand from a full video-playback comparison: "do you
+        think i can see the describe frames and help matching them" -
+        this is a much more direct way to build the next round of
+        calibration data than reconstructing a moment from full
+        playback and guessing at its second.
+
+        404s the same way the description.srt route does - no video
+        for this direction, or no usable duration - since there's
+        nothing to extract frames from either way."""
+
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
+        )
+        video_path = recording.video_path(direction)
+        if video_path is None or not video_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no video found for this recording/direction",
+            )
+
+        duration_seconds = load_or_compute_duration(recording.recording)
+        if not duration_seconds:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no usable video duration found for this recording",
+            )
+        duration_seconds = float(duration_seconds)
+
+        max_frames = SceneOptions().max_frames
+        timestamps = _nominal_frame_timestamps(duration_seconds, max_frames)
+
+        cues = _parse_srt_cues(recording.description_srt(direction) or "")
+        frames = []
+        for index, nominal_seconds in enumerate(timestamps):
+            nearest_text = _nearest_cue_text(cues, nominal_seconds)
+            frames.append(
+                {
+                    "index": index,
+                    "nominal_seconds": nominal_seconds,
+                    "nominal_label": _format_seconds_label(nominal_seconds),
+                    "nearest_text": nearest_text,
+                }
+            )
+
+        saved_param = request.query_params.get("saved")
+        saved_index = int(saved_param) if saved_param is not None and saved_param.lstrip("-").isdigit() else None
+
+        return templates.TemplateResponse(
+            request,
+            "archive_recording_frames.html",
+            {
+                "user": user,
+                "camera_id": camera_id,
+                "recording": recording,
+                "direction": direction,
+                "frames": frames,
+                "saved": saved_index,
+            },
+        )
+
+    @app.get("/archive/{camera_id}/{recording_id}/frames/{direction}/{index}.jpg")
+    async def archive_recording_frame_image(
+        camera_id: str,
+        recording_id: str,
+        direction: str,
+        index: int,
+        user: User = Depends(require_login),
+    ):
+        """Serves (generating and caching on first request) the single
+        real video frame at nominal frame `index`'s approximate
+        timestamp - see _nominal_frame_timestamps() and the route
+        above. Cached under a per-recording/direction subfolder of
+        default_config_dir()'s own ".description_frame_cache" (same
+        "app-level cache under default_config_dir(), not written into
+        the archive itself" convention as .hevc_preview_cache and
+        .parking_repair_cache above) - regenerating identical frames on
+        every page view would mean one ffmpeg seek+decode per frame per
+        visit."""
+
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
+        )
+        video_path = recording.video_path(direction)
+        if video_path is None or not video_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="video not found"
+            )
+
+        duration_seconds = load_or_compute_duration(recording.recording)
+        if not duration_seconds:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="no usable duration"
+            )
+        max_frames = SceneOptions().max_frames
+        timestamps = _nominal_frame_timestamps(float(duration_seconds), max_frames)
+        if index < 0 or index >= len(timestamps):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="frame index out of range"
+            )
+
+        cache_dir = (
+            default_config_dir()
+            / ".description_frame_cache"
+            / camera_id
+            / str(recording_id)
+            / direction.lower()
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"{index}.jpg"
+        if not cache_path.is_file():
+            try:
+                extract_video_thumbnail(
+                    video_path, cache_path, offset_seconds=timestamps[index]
+                )
+            except MediaToolError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"could not extract frame: {exc}",
+                ) from exc
+
+        return FileResponse(cache_path)
+
+    @app.post("/archive/{camera_id}/{recording_id}/frames/{direction}/calibrate")
+    async def archive_recording_frame_calibrate(
+        request: Request,
+        camera_id: str,
+        recording_id: str,
+        direction: str,
+        index: int = Form(...),
+        nominal_seconds: float = Form(...),
+        corrected_seconds: str = Form(""),
+        nearest_text: str = Form(""),
+        user: User = Depends(require_login),
+    ):
+        """Records one manually-confirmed frame timestamp to a shared
+        calibration log - raw data for the next round of
+        _LAG_CORRECTION_CURVE/_SIGN_LAG_CORRECTION_CURVE tuning in
+        archive_browser.py, the same way Christer's earlier hand-
+        retimed .srt files were used, but captured directly at the
+        frame instead of via a separate uploaded file. Deliberately
+        NOT auto-applied to either curve - a human (Christer, or
+        whoever revisits archive_browser.py next) still reviews and
+        picks knots by hand, the same trust-ranking judgment calls
+        ("the bus is my most correct point") a raw log can't make for
+        itself.
+
+        `corrected_seconds` is optional - a blank submission just means
+        "no correction needed, this frame's nominal timestamp already
+        looks right," still worth recording as a real (0.0-delta) data
+        point.
+
+        One JSON line per submission (JSON Lines, not one big JSON
+        array) - appending is then a single write with no
+        read-modify-write race between concurrent submissions, the
+        same reasoning core/history.py's own HistoryEntry log already
+        uses."""
+
+        corrected_value = None
+        if corrected_seconds.strip():
+            try:
+                corrected_value = float(corrected_seconds)
+            except ValueError:
+                corrected_value = None
+
+        entry = {
+            "recorded_at": datetime.now().isoformat(),
+            "camera_id": camera_id,
+            "recording_id": str(recording_id),
+            "direction": direction.lower(),
+            "frame_index": index,
+            "nominal_seconds": nominal_seconds,
+            "corrected_seconds": corrected_value,
+            "nearest_cue_text": nearest_text,
+        }
+        log_path = default_config_dir() / "frame_calibration.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        query = f"?saved={index}"
+        return RedirectResponse(
+            url=f"/archive/{camera_id}/{recording_id}/frames/{direction}{query}",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @app.get(
@@ -2723,6 +2939,66 @@ def _find_archive_recording(
             status_code=status.HTTP_404_NOT_FOUND, detail="recording not found"
         )
     return recording
+
+
+def _parse_srt_cues(srt_text: str) -> list[tuple[float, str]]:
+    """Parse an .srt document's own cues into a flat list of
+    (start_seconds, text) pairs, in file order.
+
+    Deliberately minimal - this is only used by the frame-viewer
+    (archive_recording_frames route) to find "the cue nearest this
+    frame's nominal timestamp" for display next to each extracted
+    frame, not to re-derive or validate the SRT's own timing. Only
+    the cue start time is kept; end times aren't needed for a
+    nearest-match lookup. Multi-line cue text is rejoined with a
+    single space so it displays on one line next to the frame."""
+
+    cues: list[tuple[float, str]] = []
+    blocks = re.split(r"\n\s*\n", srt_text.strip())
+    for block in blocks:
+        lines = [line for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        # lines[0] is the numeric cue index; lines[1] is the
+        # "HH:MM:SS,mmm --> HH:MM:SS,mmm" timing line.
+        timing_match = re.match(
+            r"(\d+):(\d+):(\d+),(\d+)\s*-->", lines[1]
+        )
+        if timing_match is None:
+            continue
+        hours, minutes, seconds, millis = (int(value) for value in timing_match.groups())
+        start_seconds = hours * 3600 + minutes * 60 + seconds + millis / 1000.0
+        text = " ".join(lines[2:]).strip()
+        if text:
+            cues.append((start_seconds, text))
+    return cues
+
+
+def _nearest_cue_text(cues: list[tuple[float, str]], nominal_seconds: float) -> str:
+    """The text of whichever cue in `cues` starts closest (in either
+    direction) to `nominal_seconds` - the description/sign-read line
+    Christer should compare this extracted frame against while
+    calibrating. Empty string if there are no cues at all (e.g. a
+    recording with a video but no generated description.srt yet)."""
+
+    if not cues:
+        return ""
+    nearest = min(cues, key=lambda cue: abs(cue[0] - nominal_seconds))
+    return nearest[1]
+
+
+def _format_seconds_label(seconds: float) -> str:
+    """Render a raw seconds value as an "M:SS" (or "H:MM:SS" past the
+    hour mark) label for the frame-viewer's per-frame captions -
+    matching the "minutes once >=60s" convention already used for
+    sign-read display_text (see task #1068)."""
+
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 def _video_label_for_filename(

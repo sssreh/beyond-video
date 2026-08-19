@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ direction|capitalize }} frames - {{ recording.id }} - Beyond Video{% endblock %}
+{% block content %}
+<p class="back-link"><a href="/archive/{{ camera_id }}/{{ recording.id }}">&larr; {{ recording.id }}</a></p>
+<div class="content-panel">
+<h2>{{ recording.id }} <span class="badge">{{ direction|capitalize }} frames</span></h2>
+<p class="hint">
+  The real video frames near each of describe_scene()'s own sampling points (see
+  each card's timestamp) - not an exact reconstruction of what the model actually
+  saw, just the closest real frame at the same approximate position in the clip.
+  Compare each frame against the nearest description/sign-read cue below it, and
+  if the cue clearly belongs at a different real timestamp, type the correct
+  second and save it - these corrections aren't applied automatically, they're
+  just captured for a future round of lag-correction tuning.
+</p>
+
+{% if frames %}
+<div class="frame-grid">
+{% for frame in frames %}
+<div class="frame-card">
+  <img src="/archive/{{ camera_id }}/{{ recording.id }}/frames/{{ direction }}/{{ frame.index }}.jpg"
+       loading="lazy" alt="Frame {{ frame.index }} at {{ frame.nominal_label }}">
+  <div class="frame-card-body">
+    <p class="frame-card-time">Frame {{ frame.index }} &middot; ~{{ frame.nominal_label }}</p>
+    <p class="frame-card-cue">{{ frame.nearest_text or "(no nearby cue)" }}</p>
+    <form class="frame-card-form" method="post"
+          action="/archive/{{ camera_id }}/{{ recording.id }}/frames/{{ direction }}/calibrate">
+      <input type="hidden" name="index" value="{{ frame.index }}">
+      <input type="hidden" name="nominal_seconds" value="{{ frame.nominal_seconds }}">
+      <input type="hidden" name="nearest_text" value="{{ frame.nearest_text }}">
+      <input type="text" name="corrected_seconds" placeholder="correct second (optional)">
+      <button type="submit">Save</button>
+    </form>
+    {% if saved == frame.index %}
+    <p class="frame-card-saved">Saved.</p>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<p class="empty">No frames to show - this recording's video has no usable duration.</p>
+{% endif %}
+</div>
+{% endblock %}

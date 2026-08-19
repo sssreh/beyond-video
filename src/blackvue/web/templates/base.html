@@ -766,6 +766,39 @@
       color: var(--muted); font-size: 0.8rem; text-transform: uppercase;
       letter-spacing: 0.06em; font-weight: 600; margin: 0 0 0.6rem;
     }
+    /* archive_recording_frames.html (task #1094) - the real video
+       frames describe_scene()'s own sampling step approximately
+       looked at, laid out as a grid of cards so Christer can compare
+       each frame against the nearest description/sign-read cue and
+       submit a corrected timestamp if it's off. Mirrors .thumb-grid's
+       own auto-fill layout, just wider cards since these need to show
+       readable frame content, not just a small thumbnail. */
+    .frame-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 1rem;
+    }
+    .frame-card {
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 6px; overflow: hidden;
+    }
+    .frame-card img {
+      width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block;
+      background: var(--canvas-bg);
+    }
+    .frame-card-body { padding: 0.6rem 0.75rem 0.75rem; }
+    .frame-card-time { font-size: 0.85rem; font-weight: 600; margin: 0 0 0.3rem; }
+    .frame-card-cue {
+      font-size: 0.82rem; color: var(--muted); margin: 0 0 0.6rem;
+      min-height: 1.2em;
+    }
+    .frame-card-form { display: flex; gap: 0.4rem; align-items: center; }
+    .frame-card-form input[type="text"] {
+      flex: 1; min-width: 0; margin: 0; padding: 0.3rem 0.4rem; font-size: 0.82rem;
+    }
+    .frame-card-form button[type="submit"] {
+      flex-shrink: 0; padding: 0.3rem 0.7rem; font-size: 0.8rem;
+    }
+    .frame-card-saved { color: var(--success, #3a8f5a); font-size: 0.78rem; margin: 0.35rem 0 0; }
   </style>
 </head>
 <body>
