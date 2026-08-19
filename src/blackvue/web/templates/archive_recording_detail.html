@@ -142,28 +142,48 @@
   // listeners below, so clicking pause on the bar itself still flips
   // the button back to "Resume" correctly.
   //
-  // Per-cue paced playback: Christer, after the video-synced
-  // description.srt existed: "I would also like the read aloud is
-  // synced with the srt file." Previously "Read aloud" sent the whole
-  // description+sign-reads paragraph as one ElevenLabs request and
-  // played it back as one continuous clip, so the narration's timing
-  // had nothing to do with when things actually happened in the
-  // video. Now, for any .scene-text block that has a description.srt
-  // download link (see the .description-srt-link anchor rendered
-  // above - only blocks with a real `description`, matching
+  // Per-cue paced playback, merged into one continuous file: Christer,
+  // after the video-synced description.srt existed: "I would also like
+  // the read aloud is synced with the srt file." That shipped first as
+  // N separately-synthesized clips scheduled via setTimeout() - correct
+  // timing, but N real audio elements' worth of start/stop bookkeeping.
+  // Christer then asked for the result to actually be one file: "the
+  // read alout should all 13 cue should be in the same mp3."
+  //
+  // For any .scene-text block that has a description.srt download link
+  // (see the .description-srt-link anchor rendered above - only blocks
+  // with a real `description`, matching
   // build_description_srt_from_events()'s own "description or signs"
-  // gating), Read aloud fetches that exact .srt, parses it into cues
-  // via parseSrtCues() below, synthesizes each cue's text as its own
-  // separate ElevenLabs request, and schedules each cue's audio to
-  // start at its own cue.start timestamp relative to the moment the
-  // button was clicked (see playCuedSequence()) - silence in between
-  // cues, same as watching the video with the description read out as
-  // it happens. Blocks with only legible sign reads and no
-  // description (no description.srt link at all - see the template's
-  // own "if description" gate, just above the .description-srt-link
-  // anchor further up this file) fall back to the original
-  // single-request whole-paragraph behavior unchanged, since there's
-  // no per-event timing to sync against there anyway.
+  // gating), Read aloud fetches that exact .srt, parses it into cues via
+  // parseSrtCues() below, synthesizes each cue's text as its own
+  // separate ElevenLabs request (ElevenLabs has no "speak this text
+  // starting at this timestamp, silence elsewhere" mode, so this part is
+  // unchanged), then decodes each cue's returned MP3 via the Web Audio
+  // API (`AudioContext.decodeAudioData()`) and mixes all of them into
+  // one real `AudioBuffer` with an `OfflineAudioContext`: each cue's
+  // decoded audio is scheduled to start at its own `cue.start` second
+  // inside the offline context, silence fills every other sample
+  // automatically, and `startRendering()` produces one continuous buffer
+  // spanning the whole clip (see playMergedCues() below). That buffer is
+  // encoded to a WAV blob client-side (`audioBufferToWav()` below - no
+  // MP3 encoder dependency added; this project has zero external/CDN JS
+  // dependencies anywhere, since it needs to keep working fully offline
+  // on a NAS with no guaranteed internet access) and played through the
+  // same shared `#tts-player` element as every other Read-aloud path -
+  // so it behaves like any other single audio file: native
+  // pause/resume/seek, one real Download link for the whole narration,
+  // and no per-cue session bookkeeping needed anymore (the previous
+  // setTimeout()-based design offered Stop only, no Pause/Resume,
+  // specifically because pausing/resuming N independently scheduled
+  // clips had no single well-defined position to resume from - that
+  // constraint no longer applies to one real file).
+  //
+  // Blocks with only legible sign reads and no description (no
+  // description.srt link at all - see the template's own "if
+  // description" gate, just above the .description-srt-link anchor
+  // further up this file) fall back to the original single-request
+  // whole-paragraph behavior unchanged, since there's no per-event
+  // timing to sync against there anyway.
   //
   // trip_detail.html's own copy of this script deliberately does NOT
   // get this per-cue logic mirrored into it: trip_summary.txt is one
@@ -182,7 +202,6 @@
   var voices = [];
   var audio = document.getElementById('tts-player');
   var activeButton = null;
-  var activeCuedSession = null;
 
   function showStatus(message) {
     if (!ttsStatus) return;
@@ -208,18 +227,13 @@
     // can be resumed from where it left off; 'ended' below is the one
     // that rewinds to 0, since that's an actual finish.
     //
-    // Also cancels a per-cue session (see playCuedSequence()) - both
-    // its remaining scheduled setTimeout()s (so a stale cue doesn't
-    // start playing seconds after Stop was clicked) and its own
-    // 'ended' listener, which would otherwise keep counting cues that
-    // never got a chance to play and eventually fire a stale reset.
+    // Merged per-cue playback (see playMergedCues() below) now produces
+    // one real audio file and plays it through this same element, so it
+    // needs no special-case cancellation here anymore - unlike the
+    // previous setTimeout()-per-cue design, there's no separate
+    // in-flight scheduling to tear down; pausing/reassigning `audio.src`
+    // is enough.
     audio.pause();
-    if (activeCuedSession) {
-      activeCuedSession.cancelled = true;
-      activeCuedSession.timeoutIds.forEach(function (id) { clearTimeout(id); });
-      if (activeCuedSession.onCueEnded) audio.removeEventListener('ended', activeCuedSession.onCueEnded);
-      activeCuedSession = null;
-    }
     if (activeButton) {
       resetButton(activeButton);
       activeButton = null;
@@ -227,10 +241,6 @@
   }
 
   audio.addEventListener('play', function () {
-    // Per-cue sessions manage their own button text ("Stop" / "Playing
-    // cue N of M…" via playCuedSequence()) - this generic "Pause" label
-    // would otherwise stomp on that every time a new cue's audio starts.
-    if (activeCuedSession) return;
     if (activeButton) {
       activeButton.textContent = 'Pause';
       activeButton.classList.add('recording');
@@ -240,10 +250,7 @@
     // 'ended' also triggers a native 'pause' just before its own
     // event fires - let the 'ended' handler below own that case so
     // the button doesn't flash "Resume" for a moment before settling
-    // on "Read aloud". Skipped entirely for cued sessions - see the
-    // 'play' listener above and playCuedSequence()'s own docstring for
-    // why per-cue mode doesn't offer Pause/Resume.
-    if (activeCuedSession) return;
+    // on "Read aloud".
     if (activeButton && !audio.ended) {
       activeButton.textContent = 'Resume';
       activeButton.classList.remove('recording');
@@ -251,11 +258,6 @@
   });
   audio.addEventListener('ended', function () {
     audio.currentTime = 0;
-    // A cued session's own onCueEnded listener (added/removed by
-    // playCuedSequence()) owns resetting the button once every cue has
-    // played - this generic handler would otherwise reset it after
-    // just the first cue.
-    if (activeCuedSession) return;
     if (activeButton) resetButton(activeButton);
   });
   audio.addEventListener('error', function () {
@@ -420,85 +422,161 @@
       });
   }
 
-  // Per-cue paced playback: synthesizes every cue's text in parallel
-  // (scene descriptions are typically a handful to a few dozen short
-  // cues, so this stays well within a reasonable number of concurrent
-  // ElevenLabs requests), then schedules each cue's audio to start at
-  // its own cue.start timestamp measured from `clickTime` - the moment
-  // the Read-aloud button was pressed - so playback lines up with the
-  // video's own timeline (silence in between cues) rather than reading
-  // straight through. If synthesis for a cue is still in flight when
-  // its scheduled moment arrives, it's simply played as soon as it's
-  // ready rather than holding up earlier cues; if a cue's synthesis
-  // fails outright, that one cue is skipped and the rest still play at
-  // their correct times (Christer never asked for all-or-nothing
-  // narration, and a single transient ElevenLabs error shouldn't
-  // silence an otherwise-working description).
-  //
-  // Deliberately offers only Stop, not Pause/Resume, while a cued
-  // session is active - see the click handler below for why: pausing
-  // mid-cue leaves the remaining scheduled cues' timers still running,
-  // and "resume" has no single well-defined position to resume from
-  // once several independently-timed clips are involved.
-  function playCuedSequence(btn, cues, voiceId) {
-    var session = { cancelled: false, timeoutIds: [], onCueEnded: null };
-    activeCuedSession = session;
+  // Shared AudioContext used only for decodeAudioData() calls below -
+  // created lazily (always from inside a click handler here, so a
+  // browser that starts contexts suspended until a user gesture isn't
+  // an issue) and reused across every merge rather than one per cue.
+  var decodeCtx = null;
+  function getDecodeContext() {
+    if (!decodeCtx) {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      decodeCtx = new Ctx();
+    }
+    return decodeCtx;
+  }
+
+  // Encodes an AudioBuffer as a 16-bit PCM WAV Blob by hand. No MP3
+  // encoder dependency needed for this - see playMergedCues()'s own
+  // comment above the click handler for why this project avoids adding
+  // one, and WAV's header is simple enough to write directly from raw
+  // PCM samples without a library.
+  function audioBufferToWav(buffer) {
+    var numChannels = buffer.numberOfChannels;
+    var sampleRate = buffer.sampleRate;
+    var numFrames = buffer.length;
+    var bytesPerSample = 2;
+    var blockAlign = numChannels * bytesPerSample;
+    var dataSize = numFrames * blockAlign;
+    var arrayBuffer = new ArrayBuffer(44 + dataSize);
+    var view = new DataView(arrayBuffer);
+
+    function writeString(offset, str) {
+      for (var i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true); // fmt chunk size
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bytesPerSample * 8, true); // bits per sample
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    var channelData = [];
+    for (var ch = 0; ch < numChannels; ch++) channelData.push(buffer.getChannelData(ch));
+
+    var offset = 44;
+    for (var frame = 0; frame < numFrames; frame++) {
+      for (var channel = 0; channel < numChannels; channel++) {
+        var sample = Math.max(-1, Math.min(1, channelData[channel][frame]));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += 2;
+      }
+    }
+
+    return new Blob([arrayBuffer], { type: 'audio/wav' });
+  }
+
+  // Synthesizes every cue's text (in parallel - scene descriptions are
+  // typically a handful to a few dozen short cues, well within a
+  // reasonable number of concurrent ElevenLabs requests), decodes each
+  // one into a real AudioBuffer via the Web Audio API, then mixes all of
+  // them into a single continuous buffer with an OfflineAudioContext:
+  // each cue's audio is scheduled to start at its own cue.start second,
+  // with real silence everywhere else, so the rendered result lines up
+  // with the video's own timeline exactly like the previous
+  // setTimeout()-scheduled version did - just as one real file this time
+  // (Christer: "the read alout should all 13 cue should be in the same
+  // mp3"), encoded to WAV via audioBufferToWav() above and played
+  // through the shared #tts-player element like any other clip. If a
+  // cue's synthesis or decode fails, that one cue is dropped from the
+  // mix and the rest still render at their correct positions - a single
+  // transient ElevenLabs error shouldn't silence an otherwise-working
+  // narration.
+  function playMergedCues(btn, cues, voiceId, srtText) {
     activeButton = btn;
 
     showStatus('Loading ' + cues.length + ' cue' + (cues.length === 1 ? '' : 's') + '…');
     btn.textContent = 'Loading…';
     btn.disabled = true;
 
-    var clickTime = performance.now();
+    var ctx = getDecodeContext();
 
     Promise.all(cues.map(function (cue) {
       return fetchCueSpeech(cue.text, voiceId)
-        .then(function (data) {
-          return { cue: cue, blob: base64ToBlob(data.audio_base64, 'audio/mpeg') };
-        })
-        .catch(function () {
-          return { cue: cue, blob: null };
-        });
+        .then(function (data) { return base64ToBlob(data.audio_base64, 'audio/mpeg').arrayBuffer(); })
+        .then(function (arrayBuffer) { return ctx.decodeAudioData(arrayBuffer); })
+        .then(function (audioBuffer) { return { cue: cue, buffer: audioBuffer }; })
+        .catch(function () { return { cue: cue, buffer: null }; });
     })).then(function (results) {
-      if (session.cancelled || session !== activeCuedSession) return; // stopped while loading
+      if (btn !== activeButton) return; // stopped/superseded while loading
 
-      var playable = results.filter(function (r) { return r.blob; });
+      var playable = results.filter(function (r) { return r.buffer; });
       if (!playable.length) {
         showStatus('Could not generate speech for any cue.');
         stop();
         return;
       }
 
-      btn.disabled = false;
-      btn.textContent = 'Stop';
-      btn.classList.add('recording');
-      showStatus('');
+      showStatus('Mixing ' + playable.length + ' cue' + (playable.length === 1 ? '' : 's') + '…');
 
-      var endedCount = 0;
-      function onCueEnded() {
-        endedCount++;
-        if (endedCount >= playable.length && session === activeCuedSession) {
-          resetButton(btn);
-          activeCuedSession = null;
-          audio.removeEventListener('ended', onCueEnded);
+      var sampleRate = playable[0].buffer.sampleRate;
+      var numChannels = playable.reduce(function (max, r) { return Math.max(max, r.buffer.numberOfChannels); }, 1);
+      var totalSeconds = playable.reduce(function (max, r) { return Math.max(max, r.cue.start + r.buffer.duration); }, 0);
+      var OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      var offlineCtx = new OfflineCtx(numChannels, Math.max(1, Math.ceil(totalSeconds * sampleRate)), sampleRate);
+
+      playable.forEach(function (item) {
+        var source = offlineCtx.createBufferSource();
+        source.buffer = item.buffer;
+        source.connect(offlineCtx.destination);
+        source.start(item.cue.start);
+      });
+
+      offlineCtx.startRendering().then(function (renderedBuffer) {
+        if (btn !== activeButton) return; // stopped/superseded while mixing
+
+        var url = URL.createObjectURL(audioBufferToWav(renderedBuffer));
+        audio.src = url;
+        audio.currentTime = 0;
+        audio.playbackRate = currentSpeed();
+        audio.hidden = false;
+        audio.play();
+        btn.disabled = false;
+        showStatus('');
+        // The 'play' listener above sets the button to "Pause".
+
+        // Same blob URL the player is already playing, exposed as a
+        // real single-file download - previously not possible here at
+        // all, since per-cue playback used to be N separate clips with
+        // nothing to download as one file (Christer: "the read alout
+        // should all 13 cue should be in the same mp3").
+        var downloadLink = btn.parentElement.querySelector('.tts-download');
+        if (downloadLink) {
+          downloadLink.href = url;
+          downloadLink.download = 'description.wav';
+          downloadLink.hidden = false;
         }
-      }
-      audio.addEventListener('ended', onCueEnded);
-      session.onCueEnded = onCueEnded;
 
-      playable.forEach(function (item, order) {
-        var url = URL.createObjectURL(item.blob);
-        var delay = Math.max(0, item.cue.start * 1000 - (performance.now() - clickTime));
-        var timeoutId = setTimeout(function () {
-          if (session.cancelled || session !== activeCuedSession) return;
-          audio.src = url;
-          audio.currentTime = 0;
-          audio.playbackRate = currentSpeed();
-          audio.hidden = false;
-          audio.play();
-          showStatus('Playing cue ' + (order + 1) + ' of ' + playable.length + '…');
-        }, delay);
-        session.timeoutIds.push(timeoutId);
+        // The exact description.srt already fetched to build these
+        // cues - its timestamps match this merged audio 1:1, so it's
+        // exposed here too, alongside the always-present
+        // .description-srt-link above.
+        var srtLink = btn.parentElement.querySelector('.tts-download-srt');
+        if (srtLink && srtText) {
+          srtLink.href = URL.createObjectURL(new Blob([srtText], { type: 'application/x-subrip' }));
+          srtLink.download = 'description.srt';
+          srtLink.hidden = false;
+        }
+      }).catch(function () {
+        showStatus('Could not mix cue audio.');
+        stop();
       });
     });
   }
@@ -577,13 +655,6 @@
 
   speakButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
-      if (btn === activeButton && activeCuedSession) {
-        // Per-cue sessions offer Stop only - see playCuedSequence()'s
-        // own docstring for why Pause/Resume isn't offered here.
-        stop();
-        return;
-      }
-
       if (btn === activeButton && audio.src) {
         // Already this button's clip - toggle play/pause on the
         // existing player instead of re-fetching from ElevenLabs, so
@@ -604,10 +675,12 @@
 
       // Blocks that have a real description.srt (see the
       // .description-srt-link anchor rendered above, only present
-      // when `description` is truthy) get per-cue paced playback
-      // instead of one continuous clip (Christer: "I would also like
-      // the read aloud is synced with the srt file") - see
-      // playCuedSequence()'s own docstring for the full design.
+      // when `description` is truthy) get per-cue paced playback,
+      // merged into one continuous file, instead of one continuous
+      // whole-paragraph clip (Christer: "I would also like the read
+      // aloud is synced with the srt file", then "the read alout
+      // should all 13 cue should be in the same mp3") - see
+      // playMergedCues()'s own docstring for the full design.
       var srtLink = btn.closest('.scene-text').querySelector('.description-srt-link');
       if (srtLink) {
         activeButton = btn; // set early so a fetch failure below can stop() cleanly
@@ -623,7 +696,7 @@
             if (btn !== activeButton) return; // stopped/superseded while loading
             var cues = parseSrtCues(srtText);
             if (!cues.length) throw new Error('description.srt had no cues to read');
-            playCuedSequence(btn, cues, voiceId);
+            playMergedCues(btn, cues, voiceId, srtText);
           })
           .catch(function (err) {
             showStatus(err.message || 'Could not load description.srt.');
