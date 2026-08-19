@@ -833,6 +833,55 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         )
 
     @app.get(
+        "/archive/{camera_id}/{recording_id}/scene.srt"
+    )
+    async def archive_recording_sign_read_srt(
+        camera_id: str,
+        recording_id: str,
+        direction: str = "front",
+        user: User = Depends(require_login),
+    ):
+        """A downloadable .srt built from this recording's zoomed-in
+        sign/plate reads - see ArchiveRecording.sign_read_srt()'s own
+        docstring for the full backstory (Christer: "Does the scene
+        detection ever have the timestamps for the description, then i
+        would like a scene.srt file to"). Follows the same
+        dynamic-generation-not-a-stored-file pattern as
+        /trips/{trip_id}/kml: no new asset is ever written to the
+        archive, this just reformats a file bv-scribe/bv-generate
+        already wrote, on every request.
+
+        404 (not the KML route's own wording, since the failure modes
+        differ) whenever there's nothing to build a cue from - no
+        scene text for this direction at all, or a scene text with no
+        legible sign reads left in it after "not legible" filtering -
+        rather than downloading an empty, cue-less .srt file.
+        """
+
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
+        )
+        srt = recording.sign_read_srt(direction)
+        if srt is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no legible sign/plate reads found for this recording/direction",
+            )
+
+        return Response(
+            content=srt,
+            media_type="application/x-subrip",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{recording_id}.{direction}.scene.srt"'
+                )
+            },
+        )
+
+    @app.get(
         "/archive/{camera_id}/{recording_id}/watch/{filename}",
         response_class=HTMLResponse,
     )

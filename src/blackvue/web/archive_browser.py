@@ -27,6 +27,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import itertools
+import re
 import time
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -45,6 +46,8 @@ from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..generate.media import MediaToolError
 from ..generate.media import extract_video_thumbnail
 from ..generate.scene import extract_description_section
+from ..generate.speech import SpeechSegment
+from ..generate.subtitles import format_srt
 from ..lexicaltimeparser import TimeInterval
 from ..telemetry.gps_reader import GpsFix
 
@@ -88,14 +91,56 @@ _SCENE_TEXTS = (
 # the raw file scene_texts still shows in full.
 _NOT_LEGIBLE = "not legible"
 
+# Matches the "[t=40.6s] " prefix zoom_into_signs() writes ahead of
+# every bullet's own label/read text (see generate/scene.py's own
+# f"- [t={timestamp:.1f}s] {det['label']}: {read_text...}" line) - a
+# real per-frame float second value, always with exactly one decimal
+# digit as written, but this pattern doesn't require that in case a
+# future writer changes the precision.
+_SIGN_READ_TIMESTAMP_RE = re.compile(r"^\[t=(?P<seconds>\d+(?:\.\d+)?)s\]\s*(?P<rest>.*)$")
 
-def _extract_legible_sign_reads(text: str) -> list[str]:
+
+@dataclass(frozen=True)
+class SignRead:
+    """One parsed '## Zoomed sign reads' bullet - see
+    _parse_sign_reads()'s own docstring for how these get built.
+    `timestamp_seconds` is the real per-frame float second value
+    zoom_into_signs() sampled this detection at (see generate/scene.py's
+    `_extract_full_res_frames()`); `text` is everything after the
+    "[t=...s] " prefix, e.g. "blue road sign with white text: 227
+    DALARO 259 HUDDINGE JORDBRO 500" - the label/read content only, no
+    raw bracket notation left in it."""
+
+    timestamp_seconds: float
+    text: str
+
+    @property
+    def display_text(self) -> str:
+        """The natural-language phrasing scene_summary's on-page list
+        and the Read-aloud TTS narration both use instead of the raw
+        "[t=60.1s]" bracket notation. Christer: "instead of trying to
+        say "[t=60.1s]" it would be much better to say "At 60 seconds"
+        rounded of to closest second" - saying a bracket/equals-sign
+        notation aloud came out as literal, awkward speech ("bracket t
+        equals sixty point one s bracket"), and nobody reading the page
+        needs sub-second precision on where a sign was noticed either.
+        round() here follows Python's banker's-rounding (round-half-
+        to-even), which is an acceptable trade-off since this is a
+        display convenience, not a precise timestamp."""
+
+        seconds = round(self.timestamp_seconds)
+        unit = "second" if seconds == 1 else "seconds"
+        return f"At {seconds} {unit}, {self.text}"
+
+
+def _parse_sign_reads(text: str) -> list[SignRead]:
     """Pull the '## Zoomed sign reads' bullet lines (see
     generate/scene.py's zoom_into_signs()) out of a scene.txt/
     rear.scene.txt body, keeping only the ones that actually read
     something - a "not legible" line means the detection pipeline
     found a real sign/plate but couldn't read it, which is exactly the
-    kind of line scene_summary wants to drop. Returns [] if the
+    kind of line both scene_summary and scene.srt (see app.py's
+    /archive/.../scene.srt route) want to drop. Returns [] if the
     section isn't present at all (task="ocr"-without-zoom-signs, or
     zoom_signs never found anything to crop).
 
@@ -124,11 +169,17 @@ def _extract_legible_sign_reads(text: str) -> list[str]:
     DISCLAIMER right after this section, and it doesn't start with '#'
     so a naive "stop at the next heading" scan would otherwise swallow
     it as if it were more bullet lines.
+
+    Each flushed bullet's "[t=X.Ys] " prefix is split off into its own
+    float via _SIGN_READ_TIMESTAMP_RE - if a line somehow lacks the
+    prefix (a hand-edited file, or a future writer that changes the
+    format), the whole content is kept as `text` with `timestamp_seconds`
+    defaulting to 0.0 rather than dropping the read entirely.
     """
 
     lines = text.splitlines()
     in_section = False
-    reads: list[str] = []
+    reads: list[SignRead] = []
     current: str | None = None
 
     def _flush() -> None:
@@ -136,7 +187,16 @@ def _extract_legible_sign_reads(text: str) -> list[str]:
         if current is not None:
             content = current.strip()
             if content and _NOT_LEGIBLE not in content.lower():
-                reads.append(content)
+                match = _SIGN_READ_TIMESTAMP_RE.match(content)
+                if match:
+                    reads.append(
+                        SignRead(
+                            timestamp_seconds=float(match.group("seconds")),
+                            text=match.group("rest").strip(),
+                        )
+                    )
+                else:
+                    reads.append(SignRead(timestamp_seconds=0.0, text=content))
             current = None
 
     for line in lines:
@@ -158,6 +218,70 @@ def _extract_legible_sign_reads(text: str) -> list[str]:
         _flush()
 
     return reads
+
+
+def _extract_legible_sign_reads(text: str) -> list[str]:
+    """scene_summary's own display-ready wrapper around
+    _parse_sign_reads() - same legible-reads list as before, just each
+    entry now reads as SignRead.display_text ("At 60 seconds, ...")
+    instead of the raw "[t=60.1s] ..." bracket notation. See
+    _parse_sign_reads() for the actual parsing/folding logic and
+    SignRead.display_text for the wording rationale."""
+
+    return [read.display_text for read in _parse_sign_reads(text)]
+
+
+# How long each sign-read cue stays on screen in the generated .srt.
+# A single detection is an instant, not a range - zoom_into_signs()
+# samples one frame per read, so there's no real "end" time to draw
+# on the way an actual transcript segment has one. 3 seconds is long
+# enough to read a short sign/plate string comfortably without
+# lingering awkwardly once the video has moved well past it.
+_SIGN_READ_CUE_SECONDS = 3.0
+
+
+def build_sign_read_srt(text: str) -> str | None:
+    """Build a downloadable .srt from a scene.txt/rear.scene.txt
+    body's '## Zoomed sign reads' section - see
+    ArchiveRecording.sign_read_srt()'s own docstring for the feature's
+    backstory and why this is the only part of scene description
+    generation with real per-frame timestamps to build cues from at
+    all.
+
+    Each SignRead.timestamp_seconds becomes a cue's start time;
+    SIGN_READ_CUE_SECONDS gives it a fixed on-screen duration rather
+    than guessing one. Cues never overlap even when two reads share
+    (or nearly share) the same source timestamp - each cue's start is
+    clamped to at least the previous cue's end via a running `cursor`,
+    the same non-overlapping-via-running-cursor approach
+    generate/subtitles.py's own transcript segments don't need (Whisper
+    segments already come with non-overlapping start/end pairs) but a
+    single-instant detection does.
+
+    Reuses generate/subtitles.py's own SpeechSegment/format_srt rather
+    than inventing a second SRT formatter - same HH:MM:SS,mmm/numbered-
+    cue convention bv-generate's own --srt output and the ElevenLabs
+    with-timestamps download already use, so any .srt this codebase
+    produces looks the same regardless of source.
+
+    None if there are no legible reads to build cues from at all (see
+    _parse_sign_reads()) - the caller turns that into a 404 rather
+    than downloading an empty, cue-less .srt file.
+    """
+
+    reads = _parse_sign_reads(text)
+    if not reads:
+        return None
+
+    segments = []
+    cursor = 0.0
+    for read in reads:
+        start = max(read.timestamp_seconds, cursor)
+        end = start + _SIGN_READ_CUE_SECONDS
+        segments.append(SpeechSegment(start=start, end=end, text=read.text))
+        cursor = end
+
+    return format_srt(tuple(segments))
 
 # RecordingId.kind's single-letter codes - see recording_id.py's own
 # docstring on "A" (observed on real hardware, meaning unconfirmed).
@@ -398,6 +522,40 @@ class ArchiveRecording:
             if description or legible_reads:
                 result.append((label, description, legible_reads))
         return result
+
+    def sign_read_srt(self, direction: str) -> str | None:
+        """A downloadable .srt built from this recording's '## Zoomed
+        sign reads' - the one part of scene description generation
+        that has real per-frame timestamps at all (describe_scene()'s
+        own main narrative pass feeds the whole video as one inference
+        call and has no internal timing whatsoever - only
+        zoom_into_signs() samples individual frames at known seconds).
+        Christer, right after getting the synced ElevenLabs .srt
+        working: "Does the scene detection ever have the timestamps
+        for the description, then i would like a scene.srt file to"
+        (see WORKING_CONTEXT.md) - meant to be imported alongside the
+        recording's own video in an editor (he uses Filmora) so a
+        sign-read caption pops up at the exact video moment it was
+        actually detected, the same way the ElevenLabs .srt already
+        does for read-aloud narration.
+
+        `direction` is "front" or "rear" (lowercase, matching the
+        thumbnail-route/_THUMBNAIL_ASSET_BY_DIRECTION convention
+        elsewhere in this module) - scene_texts' own labels are
+        capitalized ("Front"/"Rear"), so this does the same
+        .lower() comparison _resolve_camera_target() and friends use
+        rather than requiring an exact-case match from the URL.
+
+        None if this recording has no scene text for that direction
+        at all, or the section exists but has no legible reads left
+        after filtering "not legible" ones out - the route above turns
+        either case into a 404 rather than a link to an empty file.
+        """
+
+        for label, text in self.scene_texts:
+            if label.lower() == direction.lower():
+                return build_sign_read_srt(text)
+        return None
 
     @property
     def known_filenames(self) -> frozenset[str]:

@@ -69,6 +69,7 @@
       <li>{{ read }}</li>
       {% endfor %}
     </ul>
+    <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/scene.srt?direction={{ label|lower }}" download>Download {{ label }} sign reads as .srt</a> - import alongside the {{ label }} video in your editor so each sign/plate caption appears at the moment it was detected.</p>
     {% endif %}
   </div>
 </div>

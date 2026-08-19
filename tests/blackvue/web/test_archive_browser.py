@@ -683,7 +683,7 @@ def test_scene_summary_extracts_description_and_drops_not_legible_reads(tmp_path
         (
             "Front",
             "A quiet residential street, clear weather, light traffic.",
-            ["[t=0.0s] shop/storefront sign: SOLNA♥DENTAL"],
+            ["At 0 seconds, shop/storefront sign: SOLNA♥DENTAL"],
         )
     ]
 
@@ -719,7 +719,7 @@ def test_scene_summary_ocr_only_pass_has_no_description_but_keeps_legible_reads(
     [(label, description, legible_reads)] = recording.scene_summary
     assert label == "Rear"
     assert description == ""
-    assert legible_reads == ["[t=119.5s] shop/storefront sign: MALL OF SCANDINAVIA"]
+    assert legible_reads == ["At 120 seconds, shop/storefront sign: MALL OF SCANDINAVIA"]
 
 
 def test_scene_summary_keeps_a_multi_line_sign_read_intact(tmp_path):
@@ -751,7 +751,7 @@ def test_scene_summary_keeps_a_multi_line_sign_read_intact(tmp_path):
     assert label == "Front"
     assert description == ""
     assert legible_reads == [
-        "[t=40.6s] blue road sign with white text: 227 DALARÖ "
+        "At 41 seconds, blue road sign with white text: 227 DALARÖ "
         "259 HUDDINGE JORDBRÖ 500"
     ]
 
@@ -797,6 +797,126 @@ def test_scene_summary_skips_direction_on_read_error_placeholder(tmp_path, monke
     # a broken/empty entry.
     assert "could not read" in recording.scene_texts[0][1]
     assert recording.scene_summary == []
+
+
+# ---------------------------------------------------------------------------
+# sign_read_srt() / build_sign_read_srt() - a downloadable .srt built from
+# the same '## Zoomed sign reads' timestamps scene_summary's legible_reads
+# already parses, for importing alongside the recording's own video in an
+# editor. Christer, right after the ElevenLabs .srt feature: "Does the
+# scene detection ever have the timestamps for the description, then i
+# would like a scene.srt file to" (see WORKING_CONTEXT.md) - answered by
+# this feature, scoped to the sign-reads data since the main free-text
+# description has no internal timestamps at all.
+# ---------------------------------------------------------------------------
+
+
+def test_sign_read_srt_builds_cues_from_zoomed_sign_reads(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.sign_read_srt("front")
+    assert srt is not None
+    assert "1\n00:00:00,000 --> 00:00:03,000\n" in srt
+    assert "shop/storefront sign: SOLNA♥DENTAL" in srt
+    # the "not legible" reads dropped by scene_summary must also be
+    # absent here - same filtering, one shared parse.
+    assert "not legible" not in srt
+
+
+def test_sign_read_srt_matches_direction_case_insensitively(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.sign_read_srt("Front") == recording.sign_read_srt("front")
+
+
+def test_sign_read_srt_none_when_direction_has_no_scene_text(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.sign_read_srt("rear") is None
+
+
+def test_sign_read_srt_none_when_all_reads_not_legible(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_ALL_NOT_LEGIBLE_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.sign_read_srt("rear") is None
+
+
+def test_sign_read_srt_cues_never_overlap_even_with_out_of_order_timestamps(tmp_path):
+    # zoom_into_signs() timestamps come from sequential frame sampling
+    # in practice, but the cue-builder must stay safe even if two reads
+    # share (or go backwards from) a previous cue's timestamp - each
+    # cue's start is clamped to at least the previous cue's end.
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=(
+            "## Zoomed sign reads\n"
+            "- [t=40.1s] first sign: STOP\n"
+            "- [t=1.0s] second sign: YIELD\n"
+        ).encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    srt = recording.sign_read_srt("front")
+    assert "00:00:40,100 --> 00:00:43,100" in srt
+    assert "00:00:43,100 --> 00:00:46,100" in srt
+
+
+def test_extract_legible_sign_reads_uses_natural_language_timestamp(tmp_path):
+    # Christer: "instead of trying to say "[t=60.1s]" it would be much
+    # better to say "At 60 seconds"  rounded of to closest second" -
+    # this is the display/TTS-facing text scene_summary's legible_reads
+    # returns, distinct from sign_read_srt()'s own cues (which don't
+    # repeat the timestamp in words since the .srt's own timing already
+    # conveys it).
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=(
+            "## Zoomed sign reads\n"
+            "- [t=60.1s] sign: SPEED LIMIT 60\n"
+            "- [t=1.4s] sign: STOP\n"
+        ).encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    [(_label, _description, legible_reads)] = recording.scene_summary
+    assert legible_reads == [
+        "At 60 seconds, sign: SPEED LIMIT 60",
+        "At 1 second, sign: STOP",
+    ]
 
 
 # ---------------------------------------------------------------------------
