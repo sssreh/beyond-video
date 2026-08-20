@@ -16283,3 +16283,26 @@ really parse, and an unsupported `monkeypatch.setattr("builtins.input", ...)`
 string-target form - not real pytest, unrelated to this change).
 
 Files changed: src/blackvue/cli/bv_generate.py.
+
+### Follow-up: same crash, two more unguarded call sites
+
+Christer reran against the same corrupted `20230410_120033_NF.mp4` and hit
+the identical crash pattern one step further into the pipeline - this time
+from `_do_transcribe_with_optional_translate()`'s own no-audio-stream check
+(`--transcribe`/`--translate` path), after `_do_extract_audio()`'s fix above
+correctly warned and moved on. `probe_audio_codec()` turned out to have two
+more unguarded call sites in bv_generate.py doing the exact same
+"is this audio-less, yes/no" check: one inside `_do_translate_only()`
+(the cascade's fresh-extraction path), one inside
+`_do_transcribe_with_optional_translate()`. Both now wrapped in the same
+`try/except MediaToolError -> assume audio present` pattern as the
+extract-audio fix. Grepped the whole file afterward to confirm these were
+the only two remaining unguarded call sites.
+
+Verified: ast.parse() passes. Ran the no-audio-stream tests for both fixed
+functions (`test_transcribe_skips_recordings_with_no_audio_stream`,
+`test_translate_only_skips_recordings_with_no_audio_stream`) plus the same
+full manual-harness pass over test_bv_generate.py (106/114 passed, same 8
+pre-existing harness-only failures as before, nothing new).
+
+Files changed: src/blackvue/cli/bv_generate.py.

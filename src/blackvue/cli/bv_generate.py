@@ -1196,7 +1196,22 @@ def _do_translate_only(
             # with zero audio streams at all is a normal, non-error
             # skip, not a failure - matches the parking-mode/photo
             # skips already at the top of _do_transcribe_and_translate().
-            if probe_audio_codec(video_source.path) is None:
+            #
+            # Wrapped in try/except MediaToolError for the same reason
+            # as _do_extract_audio()'s own probe (see its comment): a
+            # corrupted/truncated source makes ffprobe itself fail
+            # (e.g. "moov atom not found"), which used to propagate
+            # straight out of here uncaught and crash the whole
+            # bv-generate run on this one bad recording. Assume audio
+            # is present and let extract_audio() just below (already
+            # try/except-guarded) attempt the real thing and report on
+            # whatever it actually runs into.
+            try:
+                has_audio_stream = probe_audio_codec(video_source.path) is not None
+            except MediaToolError:
+                has_audio_stream = True
+
+            if not has_audio_stream:
                 warn(f"bv-generate: {recording.id}: no audio stream, "
                     "skipping translation")
                 return False
@@ -1371,9 +1386,24 @@ def _do_transcribe_with_optional_translate(
     # the write-target/dry-run bookkeeping below, keeps this function
     # consistent with that precedent instead of only being "clean" in
     # its error message and not in its exit status.
-    if source_file is not None and probe_audio_codec(source_file.path) is None:
-        warn(f"bv-generate: {recording.id}: no audio stream, skipping transcription")
-        return False
+    if source_file is not None:
+        # Wrapped in try/except MediaToolError for the same reason as
+        # _do_extract_audio()'s own probe: a corrupted/truncated
+        # source makes ffprobe itself fail (e.g. "moov atom not
+        # found"), which used to propagate straight out of here
+        # uncaught and crash the whole bv-generate run on this one bad
+        # recording. Assume audio is present and let transcribe()
+        # below (which does its own probe_audio_codec() check inside
+        # speech.py and raises a clean MediaToolError that's already
+        # caught further down) attempt the real thing instead.
+        try:
+            has_audio_stream = probe_audio_codec(source_file.path) is not None
+        except MediaToolError:
+            has_audio_stream = True
+
+        if not has_audio_stream:
+            warn(f"bv-generate: {recording.id}: no audio stream, skipping transcription")
+            return False
 
     # The translation filename only depends on the (already known)
     # --translate target, so it can be checked without touching
