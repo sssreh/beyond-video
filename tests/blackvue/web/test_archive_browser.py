@@ -800,6 +800,60 @@ def test_scene_summary_skips_direction_on_read_error_placeholder(tmp_path, monke
 
 
 # ---------------------------------------------------------------------------
+# scene_raw_text() - the exact raw .scene.txt/.scene-rear.txt content for
+# one direction, used to prefill the "Edit" panel next to Read-aloud on
+# archive_recording_detail.html. Christer: "it would be nice to have an
+# edit option for the scene file, next to read aloud" - asked whether that
+# should cover just the description paragraph or the whole raw file, and
+# whether edits should persist to disk: "Full raw scene file" / "Overwrite
+# the file on disk" (see WORKING_CONTEXT.md). Same label.lower() lookup
+# sign_read_srt()/description_srt() below already do over scene_texts,
+# but returning the exact original text rather than a derived view.
+# ---------------------------------------------------------------------------
+
+
+def test_scene_raw_text_returns_exact_file_content_for_direction(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_raw_text("front") == _COMBINED_SCENE_TEXT
+
+
+def test_scene_raw_text_matches_direction_case_insensitively(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_OCR_ONLY_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert recording.scene_raw_text("Rear") == _OCR_ONLY_SCENE_TEXT
+    assert recording.scene_raw_text("REAR") == _OCR_ONLY_SCENE_TEXT
+
+
+def test_scene_raw_text_none_when_no_scene_file_for_direction(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    # front-only scene file - rear has none.
+    assert recording.scene_raw_text("rear") is None
+
+
+# ---------------------------------------------------------------------------
 # sign_read_srt() / build_sign_read_srt() - a downloadable .srt built from
 # the same '## Zoomed sign reads' timestamps scene_summary's legible_reads
 # already parses, for importing alongside the recording's own video in an

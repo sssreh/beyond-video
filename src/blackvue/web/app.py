@@ -58,6 +58,7 @@ from ..adapters.telemetry_bridge import recording_gps_available
 from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
+from .archive_browser import _SCENE_ASSET_BY_DIRECTION
 from .archive_browser import _nominal_frame_timestamps
 from .archive_browser import filter_recordings
 from .archive_browser import find_recording
@@ -618,6 +619,71 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "gps_available": gps_available,
             },
         )
+
+    @app.post("/archive/{camera_id}/{recording_id}/scene/{direction}/edit")
+    async def archive_recording_scene_edit(
+        camera_id: str,
+        recording_id: str,
+        direction: str,
+        text: str = Form(...),
+        user: User = Depends(require_login),
+    ):
+        """Saves an edited raw scene.txt/scene-rear.txt straight back to
+        disk. Christer: "it would be nice to have an edit option for
+        the scene file, next to read aloud." Asked for scope: "Full
+        raw scene file" (not just the cleaned description paragraph
+        scene_summary shows) and "Overwrite the file on disk" (not a
+        page-only edit) - see ArchiveRecording.scene_raw_text()'s own
+        docstring for the full exchange.
+
+        `require_login` (not require_owner) matches the other
+        write-from-the-detail-page action already on this page -
+        archive_recording_frame_calibrate() above, a viewer-writable
+        calibration log append - rather than gating this behind the
+        owner-only job-trigger routes, since correcting a scene
+        description is closer to that kind of in-place annotation than
+        to kicking off a new pipeline run.
+
+        Returns JSON (not a redirect) so the client-side fetch() in
+        archive_recording_detail.html can report success/failure
+        inline next to the edit panel without a full page reload
+        losing the user's place on a long page - the reload the panel
+        itself triggers on success is deliberate client-side, not
+        server-side, so a save failure never loses the in-progress
+        edit.
+        """
+
+        asset = _SCENE_ASSET_BY_DIRECTION.get(direction.lower())
+        if asset is None:
+            return JSONResponse(
+                {"error": f"Unknown scene direction: {direction!r}"},
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        recording = _find_archive_recording(
+            app.state.archive_recording_cache,
+            app.state.camera_config_cache,
+            camera_id,
+            recording_id,
+        )
+        asset_file = recording.recording.file(asset)
+        if asset_file is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"No {direction} scene file exists for this "
+                        "recording to edit."
+                    )
+                },
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            asset_file.path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            return JSONResponse(
+                {"error": f"Could not save: {exc}"},
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return JSONResponse({"ok": True})
 
     @app.get("/api/tts/voices")
     async def tts_voices(user: User = Depends(require_login)):

@@ -88,6 +88,15 @@ _SCENE_TEXTS = (
     ("Rear", Asset.SCENE_DESCRIPTION_REAR),
 )
 
+# Lowercase-direction lookup for the same two assets, matching
+# _THUMBNAIL_ASSET_BY_DIRECTION's own convention - used by app.py's
+# archive_recording_scene_edit route to resolve which file on disk a
+# raw-scene-text edit should be written back to.
+_SCENE_ASSET_BY_DIRECTION = {
+    "front": Asset.SCENE_DESCRIPTION,
+    "rear": Asset.SCENE_DESCRIPTION_REAR,
+}
+
 # Substring a "## Zoomed sign reads" bullet line's read text is
 # checked against (case-insensitively) to drop it from scene_summary
 # below - see that property's own docstring for why "not legible" is
@@ -1303,6 +1312,30 @@ class ArchiveRecording:
             if description or legible_reads:
                 result.append((label, description, legible_reads))
         return result
+
+    def scene_raw_text(self, direction: str) -> str | None:
+        """The exact raw .scene.txt/.scene-rear.txt content for one
+        direction ("front" or "rear", case-insensitive, matching the
+        thumbnail-route/_THUMBNAIL_ASSET_BY_DIRECTION convention) -
+        None if this recording has no scene file for that direction.
+        Prefills the "Edit raw scene file" panel next to Read-aloud on
+        archive_recording_detail.html (app.py's
+        archive_recording_scene_edit route writes an edited version of
+        this same text straight back to the file on disk). Christer:
+        "it would be nice to have an edit option for the scene file,
+        next to read aloud" - when asked whether that should cover
+        just the description paragraph or the whole raw file, and
+        whether edits should persist to disk: "Full raw scene file" /
+        "Overwrite the file on disk". Same label.lower() lookup
+        sign_read_srt()/description_srt() below already do over
+        scene_texts, factored out here since this one needs the exact
+        original text to prefill a textarea with, not a derived .srt.
+        """
+
+        for label, text in self.scene_texts:
+            if label.lower() == direction.lower():
+                return text
+        return None
 
     def sign_read_srt(self, direction: str) -> str | None:
         """A downloadable .srt built from this recording's '## Zoomed

@@ -16193,3 +16193,58 @@ GPU use.
 
 Logged as a note only - Christer said "put it in as a note", not asking for the
 flag to be implemented yet.
+
+## Add Edit option for scene description file
+
+Christer, right after the scene-summary/Read-aloud work: "it would be nice to have
+an edit option for the scene file, next to read aloud." Asked to scope it (two
+questions via AskUserQuestion): what should the Edit button let you change - "Full
+raw scene file" (not just the cleaned description paragraph scene_summary shows) -
+and should edits persist - "Overwrite the file on disk (Recommended)" (not a
+page-only edit).
+
+Implementation:
+
+- `ArchiveRecording.scene_raw_text(direction)` (archive_browser.py): returns the
+  exact raw `.scene.txt`/`.scene-rear.txt` content for one direction
+  ("front"/"rear", case-insensitive), `None` if that direction has no scene file.
+  Same `label.lower()` lookup over `scene_texts` that `sign_read_srt()`/
+  `description_srt()` already do, factored out since this one needs the exact
+  original text to prefill a textarea with, not a derived view.
+- New `_SCENE_ASSET_BY_DIRECTION` dict (archive_browser.py) mirrors the existing
+  `_THUMBNAIL_ASSET_BY_DIRECTION` convention, mapping "front"/"rear" to
+  `Asset.SCENE_DESCRIPTION`/`Asset.SCENE_DESCRIPTION_REAR` so the new route knows
+  which file on disk to write back to.
+- `POST /archive/{camera_id}/{recording_id}/scene/{direction}/edit` (app.py):
+  writes the posted text straight to `asset_file.path` via `write_text()`.
+  Guarded with `require_login` (not `require_owner`) - matches
+  `archive_recording_frame_calibrate()`, the other viewer-writable
+  write-from-the-detail-page action already on this page, on the reasoning that
+  correcting/annotating existing content is a different trust tier than
+  triggering a new pipeline job. Returns JSON so the client-side fetch() can
+  report success/failure inline without a full page reload losing place.
+- `archive_recording_detail.html`: new "Edit" button next to each direction's
+  Read-aloud controls, opening a `<textarea>` prefilled via
+  `recording.scene_raw_text(label)`, with Save/Cancel buttons. Save POSTs the
+  textarea content as FormData and reloads the page on success (or shows an
+  inline error) so the reused scene_summary/sign-read views reflect the edit
+  immediately.
+- `base.html`: CSS for `.scene-edit-panel`/`.scene-edit-textarea`/
+  `.scene-edit-actions`/`.scene-edit-status`, reusing `.scene-text-body`'s
+  monospace look but editable and full-width instead of capped at 40vh.
+
+Tests: `scene_raw_text()` (exact content, case-insensitive direction match,
+`None` for a missing direction) added to test_archive_browser.py, mirroring the
+`sign_read_srt()`/`description_srt()` test pattern. The route itself isn't
+directly tested, per this repo's established no-TestClient/httpx policy for
+app.py - `scene_raw_text()` is the pure/reusable logic the route delegates to,
+same precedent as `_authorize_job_view()`.
+
+Verified: ast.parse() on both changed .py files; a standalone Jinja2 render of
+archive_recording_detail.html confirmed the new button/textarea/edit-URL render
+correctly; full test_archive_browser.py run (108 tests) passes with no
+regressions.
+
+Files changed: src/blackvue/web/archive_browser.py, src/blackvue/web/app.py,
+src/blackvue/web/templates/archive_recording_detail.html,
+src/blackvue/web/templates/base.html, tests/blackvue/web/test_archive_browser.py.

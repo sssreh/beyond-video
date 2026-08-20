@@ -59,6 +59,7 @@
       <button type="button" class="voice-btn speak-cancel-btn" title="Cancel and reset" hidden>Cancel</button>
       <a class="voice-btn tts-download" href="#" download="speech.mp3" hidden>Download</a>
       <a class="voice-btn tts-download-srt" href="#" download="speech.srt" hidden>Download SRT</a>
+      <button type="button" class="voice-btn scene-edit-btn" data-direction="{{ label|lower }}" title="Edit the raw scene file this description and these reads come from">Edit</button>
     </div>
     {% endif %}
   </div>
@@ -75,6 +76,14 @@
       {% endfor %}
     </ul>
     {% endif %}
+    </div>
+    <div class="scene-edit-panel" hidden>
+      <textarea class="scene-edit-textarea" rows="14">{{ recording.scene_raw_text(label) }}</textarea>
+      <div class="scene-edit-actions">
+        <button type="button" class="voice-btn scene-edit-save">Save</button>
+        <button type="button" class="voice-btn scene-edit-cancel">Cancel</button>
+      </div>
+      <p class="hint scene-edit-status" hidden></p>
     </div>
     <p class="hint"><a class="description-srt-link" href="/archive/{{ camera_id }}/{{ recording.id }}/description.srt?direction={{ label|lower }}" download>Download {{ label }} description as .srt (video-synced)</a> - timed against the {{ label }} video's own real length, for importing alongside it in your editor, and includes any sign/plate reads alongside the description (not the same as the ElevenLabs "Download SRT" above, which is timed to the narration voice instead). "Read aloud" above uses this same file's timestamps to pace the narration to match the video.</p>
     <p class="hint"><a href="/archive/{{ camera_id }}/{{ recording.id }}/frames/{{ label|lower }}">See the real {{ label }} video frames these cues were timed against</a> - a frame-by-frame calibration view, for spotting and reporting a cue whose timing is still off.</p>
@@ -859,6 +868,70 @@
           stop();
         });
     });
+  });
+
+  // "Edit" - raw scene.txt/scene-rear.txt editor next to Read aloud.
+  // Christer: "it would be nice to have an edit option for the scene
+  // file, next to read aloud." Asked for scope: the full raw file
+  // (not just the cleaned description paragraph above), saved
+  // straight back to disk (not page-only) - see app.py's
+  // archive_recording_scene_edit route and ArchiveRecording.
+  // scene_raw_text()'s own docstring for the full exchange. Plain
+  // fetch()+POST, same pattern fetchCueSpeech() above already uses -
+  // on success the page reloads so the cleaned "Scene summary" view
+  // and the raw text below both reflect the edit; on failure the
+  // textarea is left exactly as typed so nothing is lost.
+  document.querySelectorAll('.scene-edit-btn').forEach(function (btn) {
+    var panel = btn.closest('.scene-text').querySelector('.scene-edit-panel');
+    if (!panel) return;
+    var textarea = panel.querySelector('.scene-edit-textarea');
+    var statusEl = panel.querySelector('.scene-edit-status');
+    var saveBtn = panel.querySelector('.scene-edit-save');
+    var cancelBtn = panel.querySelector('.scene-edit-cancel');
+    var originalText = textarea ? textarea.value : '';
+
+    btn.addEventListener('click', function () {
+      panel.hidden = !panel.hidden;
+    });
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () {
+        if (textarea) textarea.value = originalText;
+        if (statusEl) statusEl.hidden = true;
+        panel.hidden = true;
+      });
+    }
+
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function () {
+        var direction = btn.getAttribute('data-direction');
+        var body = new FormData();
+        body.append('text', textarea ? textarea.value : '');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
+        fetch('/archive/{{ camera_id }}/{{ recording.id }}/scene/' + direction + '/edit', {
+          method: 'POST',
+          body: body,
+        })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              if (!response.ok) throw new Error(data.error || 'Save failed');
+              return data;
+            });
+          })
+          .then(function () {
+            window.location.reload();
+          })
+          .catch(function (err) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+            if (statusEl) {
+              statusEl.textContent = err.message || 'Could not save.';
+              statusEl.hidden = false;
+            }
+          });
+      });
+    }
   });
 })();
 </script>
