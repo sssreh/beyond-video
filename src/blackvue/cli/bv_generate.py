@@ -714,7 +714,22 @@ def _do_extract_audio(
     # leaving it as the one action that still surfaces raw ffmpeg
     # noise and a spurious non-zero exit code for a perfectly ordinary
     # audio-less video.
-    if probe_audio_codec(source_file.path) is None:
+    try:
+        has_audio_stream = probe_audio_codec(source_file.path) is not None
+    except MediaToolError:
+        # A corrupted/truncated source (e.g. ffprobe's "moov atom not
+        # found" on a partially-downloaded file - a real report from
+        # Christer's archive) used to propagate straight out of here
+        # uncaught, crashing the whole bv-generate run instead of just
+        # this one recording. trip_export.py's own audio-extraction
+        # pass already treats a probe failure this same way: assume
+        # there's audio and let extract_audio() below (already
+        # try/except MediaToolError-guarded) attempt the real thing and
+        # report on whatever it actually runs into, rather than
+        # silently giving up - or crashing - on a probe-only failure.
+        has_audio_stream = True
+
+    if not has_audio_stream:
         warn(f"bv-generate: {recording.id}: no audio stream, skipping")
         return False
 

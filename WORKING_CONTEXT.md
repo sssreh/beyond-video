@@ -16248,3 +16248,38 @@ regressions.
 Files changed: src/blackvue/web/archive_browser.py, src/blackvue/web/app.py,
 src/blackvue/web/templates/archive_recording_detail.html,
 src/blackvue/web/templates/base.html, tests/blackvue/web/test_archive_browser.py.
+
+## Fix bv-generate crash on corrupted/truncated source video during audio extraction
+
+Christer hit a real crash: `bv-generate` ran for 620s, then died with an
+uncaught `MediaToolError` traceback -
+`ffprobe failed for 20230410_120033_NF.mp4: ... moov atom not found` - instead
+of finishing the batch and reporting a clean per-recording warning.
+
+Root cause: `_do_extract_audio()`'s no-audio-stream check (task #928,
+`if probe_audio_codec(source_file.path) is None: ...`) called
+`probe_audio_codec()` directly, unguarded. That's fine when the file merely
+has no audio stream (ffprobe succeeds, returns nothing) but not when ffprobe
+itself fails outright on a corrupted/truncated source - which raises
+`MediaToolError`, and nothing here caught it. The very next block down
+(`extract_audio()`) already has a `try/except MediaToolError` guard; this one
+didn't.
+
+`trip_export.py`'s own audio-extraction pass already handles exactly this
+case (see its `_export_missing_recording_audio` probe): a probe failure is
+treated as "assume there's audio, let the real extraction attempt below
+report on whatever it actually runs into" rather than crashing or silently
+giving up. `_do_extract_audio()` now follows the same pattern - wraps the
+`probe_audio_codec()` call in `try/except MediaToolError`, falls through to
+`extract_audio()` (already guarded, warns and returns True) on a probe
+failure instead of propagating the exception and killing the whole run.
+
+Verified: ast.parse() on bv_generate.py passes. Ran the file's
+extract-audio test group (6 tests, including
+`test_extract_audio_skips_recordings_with_no_audio_stream`) plus a full
+manual-harness pass over test_bv_generate.py (106/114 passed; the 8 failures
+are pre-existing test-harness limitations - a stub tomllib that doesn't
+really parse, and an unsupported `monkeypatch.setattr("builtins.input", ...)`
+string-target form - not real pytest, unrelated to this change).
+
+Files changed: src/blackvue/cli/bv_generate.py.
