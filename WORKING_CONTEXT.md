@@ -16167,3 +16167,29 @@ test_bv_scribe.py 25/28 (3 pre-existing capsys-fixture skips, unrelated), test_j
 the max_frames revert in the prior section, confirming no regressions from this wording change.
 
 Files changed: src/blackvue/generate/scene.py (DESCRIBE_PROMPT wording + docstring history note).
+
+## Note: cap scene model's VRAM to leave headroom for other GPU work (future improvement)
+
+Christer, after discussing GPU choice for `describe_scene()` (Qwen3-VL-8B-Instruct
+on his laptop RTX 5090 - 24GB GDDR7, GB203 die, 10,496 CUDA cores vs. desktop 5090's
+21,760): "Can you run Qwen3-VL-8B-Instruct with lower priority in order to spare the
+GPU, for other stuff."
+
+Answer given: there's no true per-process GPU compute priority knob on consumer
+NVIDIA/Windows drivers - that's an NVIDIA MPS priority-queue feature, effectively
+data-center/Linux only, not exposed on a GeForce laptop GPU. Setting the Python
+process to low CPU priority wouldn't touch GPU scheduling either, since the actual
+work happens in CUDA kernels, not on the CPU.
+
+The one real, implementable lever: `scene.py` currently lets `_get_scene_model()`
+claim whatever VRAM it needs (peaks ~19.3GB of 24GB, see the "scene model never
+unloads from GPU memory" note above). Could add an opt-in
+`torch.cuda.set_per_process_memory_fraction()` cap - a `--scene-gpu-memory-fraction`
+style flag on bv-generate/bv-scribe - so scene description is guaranteed to leave a
+chosen amount of VRAM free for something else running at the same time, rather than
+hoping the driver is polite. `unload_scene_model()` (see above) already helps
+serialize back-to-back jobs; this would be the complementary fix for *concurrent*
+GPU use.
+
+Logged as a note only - Christer said "put it in as a note", not asking for the
+flag to be implemented yet.
