@@ -102,6 +102,71 @@ function copyReplicateCommand(button) {
     var tailHint = document.getElementById("tail-hint");
     var tailHintCount = document.getElementById("tail-hint-count");
 
+    // Camera-click sound cue (Christer: "play a camera sound for
+    // every successful camera snap in bv-web"). bv-snap and bv-gps
+    // --snap both print one "<direction>: saved <path>" line per
+    // direction that actually captured (see bv_snap.py's/bv_gps.py's
+    // own _run()/_run_snap()) - <direction> is always one of
+    // SNAPSHOT_DIRECTIONS (F/R/I, core/blackvue_client.py). Grep-
+    // confirmed that exact "<letter>: saved " prefix is unique to
+    // those two commands' own output, so this can just watch every
+    // job page's output for the pattern rather than also needing to
+    // gate on job.command - it never matches anything else's lines
+    // (e.g. bv-snap's own "bv-snap: <endpoint>: no snapshot received"
+    // warnings don't match: the hyphen in "bv-snap" breaks the
+    // [FRI] match before it ever reaches a colon).
+    var SNAP_LINE_RE = /^[FRI]: saved /gm;
+    var snapSoundCount = (box.textContent.match(SNAP_LINE_RE) || []).length;
+
+    // Synthesized with the Web Audio API instead of shipping an audio
+    // file - this app has no other static audio assets, and a couple
+    // of oscillator blips is simpler than adding a fetchable file
+    // plus the static-asset wiring (pyproject.toml package-data,
+    // Docker image, etc.) just for a two-click shutter sound.
+    //
+    // Browsers refuse to play anything from an AudioContext until
+    // it's been unlocked by a real user gesture on the page
+    // (autoplay policy) - any click/keypress/tap anywhere on this
+    // page (including "Pause auto-refresh" or "Cancel job") unlocks
+    // it for every snap sound after that. If nothing's been clicked
+    // yet by the time the first snapshot lands, that first click can
+    // get silently dropped - no reliable way around that short of an
+    // explicit "enable sound" button, which felt like overkill for a
+    // nice-to-have cue.
+    var audioCtx = null;
+    function unlockAudio() {
+      if (audioCtx) return;
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      audioCtx = new Ctx();
+    }
+    document.addEventListener("click", unlockAudio, { once: true });
+    document.addEventListener("keydown", unlockAudio, { once: true });
+    document.addEventListener("touchstart", unlockAudio, { once: true });
+    unlockAudio();
+
+    function playShutterClick() {
+      if (!audioCtx) return;
+      var now = audioCtx.currentTime;
+      // Two quick square-wave blips (aperture open/close) rather than
+      // one - a single blip read as a generic beep in testing, two in
+      // fast succession reads more like an actual camera shutter.
+      [[0, 1800], [0.06, 1200]].forEach(function (part) {
+        var offset = part[0], freq = part[1];
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = "square";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.3, now + offset + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.03);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.04);
+      });
+    }
+
     function nearBottom() {
       return box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     }
@@ -126,6 +191,17 @@ function copyReplicateCommand(button) {
           }
           var stayAtBottom = nearBottom();
           box.innerHTML = data.output_html;
+
+          var newSnapCount = (box.textContent.match(SNAP_LINE_RE) || []).length;
+          var newSnaps = newSnapCount - snapSoundCount;
+          snapSoundCount = newSnapCount;
+          // Stagger multiple clicks landing in the same poll tick
+          // (e.g. F and R both saved between two 2s polls) instead of
+          // firing them all at once on top of each other.
+          for (var i = 0; i < newSnaps; i++) {
+            setTimeout(playShutterClick, i * 150);
+          }
+
           if (stayAtBottom) box.scrollTop = box.scrollHeight;
           if (tailHint) {
             if (data.tail_truncated_count > 0) {

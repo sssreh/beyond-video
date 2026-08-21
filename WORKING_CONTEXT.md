@@ -16625,3 +16625,59 @@ execute the real test bodies against the real module.
 
 Files changed: src/blackvue/core/blackvue_client.py,
 tests/blackvue/core/test_blackvue_client.py, docs/man/bv-snap.md.
+
+### Follow-up: camera-click sound on every successful snap in bv-web
+
+Christer: "play a camera sound for every successful camera snap in bv-web."
+
+bv-snap's own job page (job_detail.html) already has one deliberate,
+scoped exception to this app's otherwise JS-free templates: the
+poll() loop added for task #772-776 (see that block's own long
+comment) that patches #job-output in place every 2s while a job runs.
+That loop is now also the trigger for a synthesized camera-shutter
+sound: it watches every fresh poll's output for lines matching
+`/^[FRI]: saved /` - the exact prefix bv-snap's/bv-gps --snap's own
+`_run()`/`_run_snap()` print for each direction that actually
+captured (grep-confirmed unique to those two commands' own output -
+the hyphen in "bv-snap: <endpoint>: no snapshot received" breaks the
+match before it reaches a colon, so warn lines never trigger it) -
+and fires one click per newly-matched line since the previous poll,
+staggered 150ms apart if more than one direction saved between two
+polls.
+
+No gating on job.command was added on top of that regex - since the
+pattern is already unique to bv-snap/bv-gps --snap's own lines, it's
+harmless (never matches) on every other job type's output too, so
+there's no real need for a second check.
+
+The sound itself is synthesized with the Web Audio API (two short
+square-wave oscillator blips, offset ~60ms apart, envelope-shaped
+with a gain ramp) rather than shipping an actual audio file - this
+app has no other static audio assets, and a couple of oscillator
+blips is simpler than adding a fetchable file plus the static-asset
+wiring (pyproject.toml package-data, Docker image, etc.) for a
+two-click sound effect.
+
+Caveat that's inherent to browsers, not something fixable here:
+autoplay policy blocks any AudioContext from making sound until the
+page has seen a real user gesture (click/keypress/tap) - the poll
+loop unlocks the AudioContext on the first such gesture anywhere on
+the page (including "Pause auto-refresh"/"Cancel job"), but if
+nothing's been clicked yet by the time the very first snapshot lands,
+that first click can get silently dropped. No reliable way around
+that short of an explicit "enable sound" button, which felt like
+overkill for a nice-to-have cue - flagged this to Christer rather
+than claiming the sound is guaranteed on every load.
+
+Verified: rendered job_detail.html through Jinja2 directly (fake
+request/user/job context) to confirm the template still renders with
+no syntax errors, extracted the rendered <script> block and ran
+`node --check` against it, and wrote a standalone Node script
+exercising the exact SNAP_LINE_RE + delta-counting logic used in the
+poll handler (matches only genuine "<direction>: saved" lines, ignores
+bv-snap's own warn lines and other job types' output, and confirmed a
+tail-window-shrink producing a negative delta doesn't crash or run
+the sound loop). No template-content tests reference job_detail.html's
+script body, so nothing else needed updating.
+
+Files changed: src/blackvue/web/templates/job_detail.html.
