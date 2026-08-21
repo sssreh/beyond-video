@@ -91,6 +91,23 @@ function copyReplicateCommand(button) {
   // <noscript> meta-refresh above is the fallback for anyone running
   // with scripting disabled.
   (function () {
+    // Strip the poll loop's own "?auto=1" completion-reload marker
+    // (added just below, and read server-side by job_detail() - see
+    // its own comment) out of the address bar the instant this page
+    // has finished loading with it. This doesn't trigger another
+    // navigation, just edits the current history entry in place - so
+    // if Christer now presses a real F5, the browser reloads the
+    // clean URL, not one still carrying the marker. Without this, a
+    // manual refresh right after the auto-reload would still look
+    // like "the same automatic reload" to the server and skip
+    // deleting the snapshot files a second time in a row (Christer:
+    // "the files are not deleted after a page refresh").
+    if (window.location.search.indexOf("auto=1") !== -1) {
+      var cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("auto");
+      window.history.replaceState(null, "", cleanUrl.pathname + cleanUrl.search);
+    }
+
     var box = document.getElementById("job-output");
     if (!box) return;
     box.scrollTop = box.scrollHeight;
@@ -186,7 +203,14 @@ function copyReplicateCommand(button) {
           // page for that state, same as the old meta-refresh would
           // have eventually shown anyway.
           if (data.status !== "running") {
-            window.location.reload();
+            // Marked "?auto=1" so job_detail()'s own snapshot-deletion
+            // gating (Job.snapshot_shown_while_finished) can tell this
+            // apart from a real user-initiated refresh - see this
+            // function's own comment above and job_detail()'s "is_auto_reload"
+            // handling in app.py.
+            var reloadUrl = window.location.pathname + window.location.search;
+            reloadUrl += (window.location.search ? "&" : "?") + "auto=1";
+            window.location.replace(reloadUrl);
             return;
           }
           var stayAtBottom = nearBottom();

@@ -250,14 +250,22 @@ class Job:
     rendered with its snapshot images visible at least once. Christer:
     "i want to see the snapshot pictures on bv-web and then deleted
     after page refresh" - the first time a finished snap job's page
-    loads (typically the automatic reload job_detail.html's poll loop
-    triggers the moment the job stops running) shows the images and
-    flips this to True; the *next* full page load (a genuine user
-    refresh) deletes the actual files from disk before rendering
-    instead of showing them again - see app.py's job_detail() route.
-    Never touched while the job is still running, so images already
-    visible via live polling are never yanked out from under an
-    in-progress job."""
+    loads (often the automatic reload job_detail.html's poll loop
+    triggers the moment the job stops running, marked "?auto=1") shows
+    the images and flips this to True; the next full page load that
+    ISN'T that same automatic reload (a genuine user refresh) deletes
+    the actual files from disk before rendering instead of showing
+    them again - see app.py's job_detail() route (is_auto_reload).
+    Excluding the automatic reload from counting as that second load
+    matters on a fast job: if it finishes before the page's very first
+    load, no poll loop (and therefore no automatic reload) ever runs
+    at all, so a naive "any second load deletes" rule would need two
+    genuine manual refreshes instead of one - which is what actually
+    happened before this field's own automatic-reload exclusion was
+    added (Christer: "the files are not deleted after a page
+    refresh"). Never touched while the job is still running, so images
+    already visible via live polling are never yanked out from under
+    an in-progress job."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _answer_queue: "queue.Queue[str]" = field(
         default_factory=queue.Queue, repr=False

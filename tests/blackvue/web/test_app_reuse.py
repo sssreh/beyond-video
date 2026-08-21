@@ -27,6 +27,7 @@ import pytest
 from fastapi import HTTPException
 
 from blackvue.core import history
+from blackvue.web.app import _apply_snapshot_deletion_gating
 from blackvue.web.app import _archive_filter_flags
 from blackvue.web.app import _authorize_job_view
 from blackvue.web.app import _delete_job_snapshots
@@ -520,3 +521,104 @@ def test_delete_job_snapshots_tolerates_an_already_missing_file(tmp_path):
     job = _snap_job(tmp_path, [f"F: saved {already_gone}"])
 
     _delete_job_snapshots(job)  # must not raise (missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# _apply_snapshot_deletion_gating() - job_detail()'s show-once-then-delete
+# decision (task #1126, Christer: "running bv-gps inside bv-web, the files
+# are not deleted after a page refresh"). The bug: job_detail.html's own
+# automatic completion reload was silently counting as the "already shown
+# once" load, so a real refresh right after it was actually the *second*
+# finished load and should have deleted - but on a fast job (finished
+# before the very first page load, so no automatic reload ever ran) there
+# was no such reload to exclude, meaning TWO genuine manual refreshes were
+# needed before anything got deleted. These tests cover both timelines.
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_gating_does_nothing_while_the_job_is_still_running(tmp_path):
+    job = _snap_job(tmp_path, [])
+
+    _apply_snapshot_deletion_gating(job, JobStatus.RUNNING, is_auto_reload=False)
+
+    assert job.snapshot_shown_while_finished is False
+
+
+def test_snapshot_gating_shows_without_deleting_on_the_first_finished_load(tmp_path):
+    saved = tmp_path / "F_kirby.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"])
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=False)
+
+    assert job.snapshot_shown_while_finished is True
+    assert saved.exists()
+
+
+def test_snapshot_gating_shows_without_deleting_on_an_automatic_reload(tmp_path):
+    # job_detail.html's own poll loop marks its one completion reload
+    # "?auto=1" - the very first finished load must still just show
+    # the images regardless of that marker.
+    saved = tmp_path / "F_kirby.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"])
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=True)
+
+    assert job.snapshot_shown_while_finished is True
+    assert saved.exists()
+
+
+def test_snapshot_gating_deletes_on_a_manual_load_after_the_automatic_reload(tmp_path):
+    # The slow-job timeline: poll loop's own automatic "?auto=1" reload
+    # shows the images first, then Christer's real refresh (no marker,
+    # since job_detail.html strips it from the address bar) deletes.
+    saved = tmp_path / "F_kirby.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"])
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=True)
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=False)
+
+    assert not saved.exists()
+
+
+def test_snapshot_gating_deletes_on_a_single_manual_refresh_when_job_finished_fast(
+    tmp_path,
+):
+    # The fast-job timeline (this was the actual bug): the job finishes
+    # before the very first page load, so no poll loop - and therefore
+    # no automatic reload - ever runs. The first-ever load already
+    # shows (is_finished True from the start), so Christer's one
+    # subsequent manual refresh must be enough to delete, not two.
+    saved = tmp_path / "F_kirby.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"])
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=False)
+    assert saved.exists(), "first-ever finished load must show, not delete"
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=False)
+    assert not saved.exists(), "one manual refresh after that must delete"
+
+
+def test_snapshot_gating_repeated_auto_reload_never_deletes(tmp_path):
+    # Defensive: even if two "?auto=1" loads somehow landed back to
+    # back (a retry, a doubled reload), neither should ever delete -
+    # only a load without the marker does.
+    saved = tmp_path / "F_kirby.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"])
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=True)
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=True)
+
+    assert saved.exists()
+
+
+def test_snapshot_gating_is_a_no_op_without_a_snapshot_dir(tmp_path):
+    job = _snap_job(tmp_path, [], snapshot_dir=None)
+
+    _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=False)
+
+    assert job.snapshot_shown_while_finished is False

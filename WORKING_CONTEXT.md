@@ -16913,3 +16913,65 @@ src/blackvue/web/templates/_job_output_lines.html,
 src/blackvue/web/templates/base.html,
 src/blackvue/web/templates/job_new_bv_gps.html,
 tests/blackvue/web/test_app_reuse.py.
+
+### Follow-up: fix snapshot files not actually getting deleted after a refresh
+
+Christer, right after the above shipped: "running bv-gps inside
+bv-web, the files are not deleted after a page refresh." Root cause
+wasn't a path-resolution bug (my first suspicion, ruled out by
+re-reading `snap.py`'s `save_snapshots()` - it writes to and returns
+exactly `job.snapshot_dir / filename`, no symlinks or resolve()
+involved anywhere upstream) - it was a design gap in the "show once,
+then delete on the next load" gating from the previous entry.
+`job_detail.html`'s own poll loop does exactly one automatic
+`window.location.reload()` the instant it notices a job left
+"running", so the page can show the finished-state furniture - and
+that automatic reload was itself silently counting as "already shown
+once, so the *next* load deletes." On a slower job (bv-gps --snap
+usually takes several seconds - connect, GPS fetch, F/R/I capture
+with warm-up frames), that meant Christer's own manual refresh right
+after the automatic one was really the "delete" load and should have
+worked. But on a faster job, or one race between the automatic reload
+and a fast manual refresh, there was no reliable way to tell "the
+load that shows" from "the load that deletes" - both ended up needing
+a genuine extra manual refresh, so it looked like deletion just
+wasn't happening (which is exactly what he reported).
+
+Fix: `job_detail.html`'s poll loop now marks its own automatic reload
+with `?auto=1` (`window.location.replace(...)` instead of a bare
+`reload()`), and strips that marker back out of the address bar via
+`history.replaceState()` right after the page loads - so if Christer
+then presses a real F5, the browser reloads the clean URL, and the
+marker never leaks into a manual refresh. `app.py`'s `job_detail()`
+route reads that marker (`is_auto_reload`) and passes it into a new
+`_apply_snapshot_deletion_gating(job, job_status, is_auto_reload)`
+helper (extracted from the inline gating block so it's independently
+testable, mirroring `_sliced_job_output()`'s own precedent): the
+first-ever finished load always just shows the images and sets
+`Job.snapshot_shown_while_finished`, same as before; every load after
+that deletes, *unless* it's the automatic reload itself. That
+guarantees deletion always happens on whatever the next *real* page
+load is - one manual refresh, whether that's the first one ever (fast
+job, no automatic reload ran at all) or the one right after an
+automatic reload (slower job) - instead of silently needing two.
+
+Tests: added `_apply_snapshot_deletion_gating()` coverage to
+`tests/blackvue/web/test_app_reuse.py` - does nothing while running,
+shows-without-deleting on both a first finished load and a marked
+automatic reload, deletes on a manual load following an automatic
+one, deletes on a single manual refresh when the job finished before
+the very first page load (the actual reported bug), a repeated-marker
+defensive case that never deletes, and a no-op without a
+snapshot_dir. Same sandbox constraint as before (`fastapi`
+uninstallable, no network) - verified again via a standalone script
+running the exact gating logic against real files on disk, covering
+both the slow-job (auto-reload then manual refresh) and fast-job
+(single manual refresh) timelines. Also verified the updated
+`job_detail.html` renders through a standalone Jinja2 script and that
+its `<script>` block (with Jinja tags substituted) is valid JS via
+`node --check`.
+
+Files changed: src/blackvue/web/app.py,
+src/blackvue/web/templates/job_detail.html,
+src/blackvue/web/jobs.py (docstring only),
+tests/blackvue/web/test_app_reuse.py.

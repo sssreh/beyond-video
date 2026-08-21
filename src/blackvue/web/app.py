@@ -2546,19 +2546,12 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         job_status, output, prompt = job.snapshot()
         # Christer: "i want to see the snapshot pictures on bv-web and
         # then deleted after page refresh" - see
-        # Job.snapshot_shown_while_finished's own docstring for why
-        # this is gated on "already shown once while finished", not
-        # just "any second load": the very first finished-state load
-        # (typically poll's own automatic reload the moment the job
-        # stops running) needs to actually show the images, only the
-        # *next* one deletes them. Never touched while still running,
-        # so a still-running job's live-polled images are never
-        # yanked out from under it.
-        if job.snapshot_dir is not None and job_status.is_finished:
-            if job.snapshot_shown_while_finished:
-                _delete_job_snapshots(job)
-            else:
-                job.snapshot_shown_while_finished = True
+        # _apply_snapshot_deletion_gating()'s own docstring for the
+        # full show-once-then-delete design, including the "?auto=1"
+        # fix for Christer's follow-up report that the files weren't
+        # actually getting deleted.
+        is_auto_reload = request.query_params.get("auto") == "1"
+        _apply_snapshot_deletion_gating(job, job_status, is_auto_reload)
         # A "paused" query param lets the owner freeze the page on its
         # current snapshot - same server-rendered-link pattern the
         # archive browser's filters already use - and resume by
@@ -3344,6 +3337,55 @@ def _delete_job_snapshots(job: Job) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _apply_snapshot_deletion_gating(
+    job: Job, job_status: JobStatus, is_auto_reload: bool
+) -> None:
+    """Called by job_detail() on every load of a snap-capable job's
+    page - decides whether this particular finished-state load should
+    just show the already-captured images, or delete them first
+    (Christer: "i want to see the snapshot pictures on bv-web and
+    then deleted after page refresh").
+
+    Show-once-then-delete: the *first* time this job's page is ever
+    rendered while finished, Job.snapshot_shown_while_finished flips
+    True and nothing gets deleted - the images need to actually be
+    visible at least once. Every finished-state load after that
+    deletes the files first, UNLESS this specific load is
+    job_detail.html's own automatic completion reload (marked
+    "?auto=1" - see that template's own comment on why, and
+    job_detail()'s call site for where is_auto_reload comes from).
+
+    That exclusion is the actual fix for Christer's follow-up report
+    that the files weren't getting deleted: job_detail.html polls
+    while a job runs and, the instant it notices the job left
+    "running", does one automatic reload so the page can show the
+    finished-state furniture - and that reload was itself silently
+    counting as the "shown once" load. So Christer's own next manual
+    refresh was really the *second* finished load and should have
+    deleted... except on a fast job (finished before the very first
+    page load, so no poll loop and no automatic reload ever ran) or a
+    slower job where his manual refresh happened to race the automatic
+    one, there was effectively no distinction between "the load that
+    shows" and "the load that deletes" - both needed a genuine extra
+    manual refresh, which felt like deletion just wasn't happening.
+    Excluding the automatic reload from ever counting as "already
+    shown, so delete" fixes both: it's always exactly the *next real
+    page load* he does himself, whatever that URL happens to be, that
+    deletes.
+
+    Never touched while the job is still running, so images already
+    visible via live polling (see snapshot_job/job_id in
+    job_poll()/_job_output_lines.html) are never yanked out from under
+    an in-progress job."""
+
+    if job.snapshot_dir is None or not job_status.is_finished:
+        return
+    if not job.snapshot_shown_while_finished:
+        job.snapshot_shown_while_finished = True
+    elif not is_auto_reload:
+        _delete_job_snapshots(job)
 
 
 def _resolve_camera_target(cache: CameraConfigCache, camera_id: str) -> Path | None:
