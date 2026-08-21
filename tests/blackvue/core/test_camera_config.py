@@ -214,8 +214,9 @@ def test_default_target_dir_falls_back_to_sibling_trips_when_no_archive_componen
 
 
 # ---------------------------------------------------------------------------
-# default_snapshots_dir() - the bv-web start_bv_snap() default save location
-# for F/R/I snapshots, deliberately a sibling of default_logs_dir()'s own
+# default_snapshots_dir() - the bv-snap CLI's and bv-web's start_bv_gps()
+# (--snap) default save location for F/R/I snapshots, deliberately a
+# sibling of default_logs_dir()'s own
 # ~/beyond-video-data/logs rather than default_archive_dir()'s
 # ~/beyond-video/archive/<id> - Christer was explicit a snap's save location
 # should be kept separate from the recording archive.

@@ -17152,3 +17152,82 @@ extracted `<script>` block. `python3 -m py_compile` clean on app.py.
 
 Files changed: src/blackvue/web/app.py,
 src/blackvue/web/templates/job_detail.html.
+
+## Merge bv-snap's bv-web presence into bv-gps --snap, reorder nav tabs into pipeline order
+
+Christer, after the snapshot-deletion fixes above: "Is it overkill to
+have both bv-gps with snap and bv-snap inside bv-web. Next question,
+should the tabs in bv-web be in a certain order, like alphabetically
+or diagram order?" Two design questions, answered by reading the
+actual code rather than guessing: `bv-gps --snap` and standalone
+`bv-snap` both ultimately call the same `save_snapshots()` helper
+(`snap.py`) via `BlackVueClient.snapshot()`, but `bv-gps --snap` is a
+strict superset - it also reports the camera's live GPS fix
+(coordinates, Google Maps link, address) alongside the capture. So
+having both as separate bv-web job triggers meant one was
+functionally redundant with the other. For tab order, grepping
+`base.html`'s nav confirmed the existing sequence (Set up camera, GPS,
+Snapshot, Download, Generate, Lock, Export, List, Describe, History)
+was pure build-chronology - each tab bolted on wherever its own task
+happened to land in the session history - with no alphabetical or
+pipeline-diagram logic behind it despite looking deliberate. Christer:
+"yes on both."
+
+**Merge**: removed the standalone `/jobs/bv-snap` `GET`/`POST` routes
+from `app.py` (`new_bv_snap_form`/`new_bv_snap_submit`), deleted
+`JobRunner.start_bv_snap()` from `jobs.py` entirely, deleted
+`templates/job_new_bv_snap.html`, and removed the "Snapshot" nav tab
+from `base.html`. `bv-gps`'s own `--snap`/`--direction` checkboxes
+(added in the snapshot-preview feature above) are now the only way to
+trigger a snap from the browser. The standalone `bv-snap` CLI command
+itself, `snap.py`'s shared helper, its man page, and its own CLI/lib
+tests are all untouched - only the bv-web wiring on top of it is
+gone. Reworded the handful of code comments that used to cross-
+reference "bv-snap's own submit route above" (now nonexistent) to
+instead point at `bv-snap`'s own CLI `--direction` default convention
+directly, since that's still the real shared source of truth. Removed
+the now-dead `start_bv_snap()` test block from `test_jobs.py`
+(`_stub_snapshots_dir` helper + 5 tests + the now-unused `bv_snap`/
+`camera_config` imports that only that block needed) and reworded a
+comment in `test_camera_config.py` that referenced the deleted method
+by name.
+
+**Nav reorder**: rewrote `base.html`'s owner-only tab sequence to
+follow `docs/PIPELINE.md`'s real pipeline order instead of build
+chronology: Set up camera (bv-config) -> GPS Current loc (bv-gps,
+placed right after setup since it's a live connectivity check, not an
+archive-processing step) -> Download recordings (bv-download) -> List
+recordings (bv-ls, "optional, anytime" per PIPELINE.md, placed right
+after Download since that's when you'd first want to inspect what
+came in) -> Generate assets (bv-generate) -> Lock ranges (bv-lock,
+adjacent to Generate since it's purely a skip-ahead manifest for that
+step - PIPELINE.md/bv-lock.md are explicit that other commands don't
+read it) -> Describe scenes (bv-scribe, a sibling enrichment step to
+Generate) -> Export trips (bv-export, the terminal pipeline step) ->
+History (unchanged, last). Viewer-visible tabs (Home, Trips, Browse
+archive, Search) were left exactly where they were - already
+sensibly grouped and not part of this owner-only reorder.
+
+Verified: `python3 -m py_compile` clean on `app.py`, `jobs.py`, both
+touched test files. Standalone Jinja2 render of `base.html` across
+six different `request.url.path` values confirms `"bv-snap"` and
+`"Snapshot</a>"` never appear in the output, and that the rendered tab
+sequence is exactly `Home, Trips, Browse archive, Search, Set up
+camera, GPS Current loc, Download recordings, List recordings,
+Generate assets, Lock ranges, Describe scenes, Export trips, History`.
+Standalone render of `job_new_bv_gps.html` still succeeds with
+`snapshot_directions` in context. Grepped the full repo for
+`start_bv_snap`/`job_new_bv_snap`/`/jobs/bv-snap` afterward - the only
+remaining hits are this WORKING_CONTEXT.md entry, the descriptive
+"bv-snap vs. bv-gps --snap" paragraph added to
+`docs/WEB_ARCHITECTURE.md`, and the reworded `test_camera_config.py`
+comment, all intentional. Confirmed `cli/bv_snap.py`, `snap.py`,
+`docs/man/bv-snap.md`, `tests/blackvue/cli/test_bv_snap.py`,
+`tests/blackvue/test_snap.py`, and the `pyproject.toml` bv-snap script
+entry are all untouched.
+
+Files changed: src/blackvue/web/app.py, src/blackvue/web/jobs.py,
+src/blackvue/web/templates/base.html,
+src/blackvue/web/templates/job_new_bv_snap.html (deleted),
+docs/WEB_ARCHITECTURE.md, tests/blackvue/web/test_jobs.py,
+tests/blackvue/core/test_camera_config.py.
