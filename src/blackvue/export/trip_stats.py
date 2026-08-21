@@ -36,6 +36,20 @@ class TripStats:
     # at all" (None) means vs. a genuine zero.
     moving_seconds: float | None = None
     idle_seconds: float | None = None
+    # None whenever the trip's fixes have no altitude_meters data at
+    # all (see GpsFix.altitude_meters's own docstring - depends on the
+    # camera's .gps file having $GPGGA sentences, which BlackVue
+    # cameras emit every tick, but nothing guarantees that for every
+    # adapter/camera this project might support in the future).
+    # min/max are independent of elevation_gain_meters (each fix's own
+    # raw altitude reading, same "not carried-forward" convention
+    # average_speed_kmh/max_speed_kmh already use) - Christer wants
+    # this for a stitch-video/playback overlay later, so both "the
+    # range climbed" and "the total climbed" are worth keeping
+    # separately rather than picking just one.
+    min_altitude_meters: float | None = None
+    max_altitude_meters: float | None = None
+    elevation_gain_meters: float | None = None
 
 
 def _haversine_distance_meters(
@@ -106,6 +120,22 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     carried-forward - they're deliberately each fix's own raw,
     unfilled reading only, same as before this fix.)
 
+    `min_altitude_meters`/`max_altitude_meters` are the lowest/highest
+    single `altitude_meters` reading seen (each fix's own raw value,
+    not carried-forward - same convention as average_speed_kmh/
+    max_speed_kmh). `elevation_gain_meters` is the sum of every
+    positive altitude delta between consecutive fixes that both have
+    an altitude reading - i.e. total meters climbed, ignoring descents
+    (a common trip-computer convention: two trips covering the same
+    net elevation change but one climbing-then-descending repeatedly
+    should show more "gain" than one that climbed steadily). A gap
+    between two fixes where either lacks altitude_meters contributes
+    to neither min/max nor gain - same "skip what we don't have"
+    approach the speed-based fields already use for their own gaps.
+    All three are None under the same condition as each other: no
+    fix in the trip has an altitude_meters reading at all (see
+    GpsFix.altitude_meters's own docstring for when that's the case).
+
     Returns None if there are fewer than two valid, positioned fixes -
     not enough to measure any distance from, the same "nothing to
     work with" convention render_map_video() and write_gpx() already
@@ -163,10 +193,29 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     average_speed_kmh = sum(speeds) / len(speeds) if speeds else None
     max_speed_kmh = max(speeds) if speeds else None
 
+    altitudes = [
+        fix.altitude_meters for fix in positioned if fix.altitude_meters is not None
+    ]
+    min_altitude_meters = min(altitudes) if altitudes else None
+    max_altitude_meters = max(altitudes) if altitudes else None
+
+    elevation_gain_meters = 0.0
+    any_elevation_data = False
+    for previous, current in zip(positioned, positioned[1:]):
+        if previous.altitude_meters is None or current.altitude_meters is None:
+            continue
+        any_elevation_data = True
+        delta = current.altitude_meters - previous.altitude_meters
+        if delta > 0:
+            elevation_gain_meters += delta
+
     return TripStats(
         distance_km=total_meters / 1000,
         average_speed_kmh=average_speed_kmh,
         max_speed_kmh=max_speed_kmh,
         moving_seconds=moving_seconds if any_speed_data else None,
         idle_seconds=idle_seconds if any_speed_data else None,
+        min_altitude_meters=min_altitude_meters,
+        max_altitude_meters=max_altitude_meters,
+        elevation_gain_meters=elevation_gain_meters if any_elevation_data else None,
     )

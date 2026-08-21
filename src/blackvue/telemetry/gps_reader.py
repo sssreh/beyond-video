@@ -15,6 +15,17 @@ RMC, VTG). $GPRMC alone carries everything this reader needs in one
 sentence - fix validity, position, speed, and course - so only $GPRMC
 lines are parsed; the rest are ignored.
 
+Altitude: each capture tick also emits a $GPGGA sentence sharing the
+same bracket timestamp as its sibling $GPRMC (see "Each capture tick"
+below) - GGA is the NMEA sentence type that actually carries MSL
+altitude, which RMC has no field for at all. Christer, after asking
+whether height could be calculated from the GPS data at all: rather
+than building a second, separate GpsFix from GGA on its own, read_gps()
+below matches each GGA's altitude to its same-tick RMC fix by that
+shared bracket timestamp and carries it as GpsFix.altitude_meters -
+every other field on GpsFix stays exactly as it always was, sourced
+from RMC alone.
+
 Fix validity comes from the sentence's mode indicator (the last
 field), not its older status field (the one right after the time,
 'A'/'V') - see GpsFix.valid's own docstring for why. Confirmed on a
@@ -53,12 +64,14 @@ from pathlib import Path
 
 from ..generate.media import MediaToolError
 
-_SENTENCE_PATTERN = re.compile(r"\[(\d+)\](\$GPRMC,[^\[]*)", re.DOTALL)
+_RMC_PATTERN = re.compile(r"\[(\d+)\](\$GPRMC,[^\[]*)", re.DOTALL)
+_GGA_PATTERN = re.compile(r"\[(\d+)\](\$GPGGA,[^\[]*)", re.DOTALL)
 
 
 @dataclass(frozen=True)
 class GpsFix:
-    """One $GPRMC fix from a .gps file.
+    """One $GPRMC fix from a .gps file, with altitude enriched in from
+    that same tick's sibling $GPGGA sentence.
 
     `valid` reflects the sentence's mode indicator (its last field) -
     False only when the receiver has no position at all ('N', no
@@ -76,6 +89,14 @@ class GpsFix:
     longitude: float | None
     speed_kmh: float | None
     course: float | None
+    # None whenever no $GPGGA sentence shared this fix's exact bracket
+    # timestamp (see module docstring's "Altitude" paragraph) - has a
+    # default so every pre-existing GpsFix(...) call site across the
+    # codebase (tests, container_gps.py, exif.py, gpmf.py, ...) keeps
+    # working unchanged, same "optional field, default None" pattern
+    # trip_stats.TripStats's own moving_seconds/idle_seconds already
+    # use.
+    altitude_meters: float | None = None
 
 
 def _nmea_coordinate_to_decimal(value: str, hemisphere: str) -> float:
@@ -101,7 +122,41 @@ def _nmea_coordinate_to_decimal(value: str, hemisphere: str) -> float:
     return decimal
 
 
-def _parse_rmc(timestamp_ms: str, sentence: str) -> GpsFix | None:
+def _parse_gga_altitude(sentence: str) -> float | None:
+    """Extract the MSL altitude (meters) from one [ts]$GPGGA,...
+    match, or None if the sentence has the wrong field count or an
+    empty/non-numeric altitude field.
+
+    $GPGGA is the sentence type that actually carries altitude -
+    $GPRMC (this reader's primary sentence) has no altitude field at
+    all, see this module's own "Altitude" docstring paragraph above.
+    Deliberately not folded into a full GgaFix-style dataclass the way
+    _parse_rmc() builds a whole GpsFix: nothing else on GpsFix is
+    sourced from GGA, so the only thing worth pulling out of it here
+    is this one number - read_gps() below matches it back to its
+    sibling RMC fix by their shared bracket timestamp.
+    """
+
+    body = sentence.split("*", 1)[0].strip()
+    fields = body.split(",")
+
+    # $GPGGA + 14 fields: time, lat, N/S, lon, E/W, fix quality,
+    # numSats, HDOP, altitude, altitude-unit, geoid-sep,
+    # geoid-sep-unit, dgps-age, dgps-station-id.
+    if len(fields) != 15:
+        return None
+
+    altitude = fields[9]
+
+    try:
+        return float(altitude) if altitude else None
+    except ValueError:
+        return None
+
+
+def _parse_rmc(
+    timestamp_ms: str, sentence: str, altitude_meters: float | None
+) -> GpsFix | None:
     """Parse one [ts]$GPRMC,... match into a GpsFix, or None if the
     sentence is too malformed to use - either the wrong number of
     fields, or a field that doesn't parse as the number it's
@@ -119,6 +174,11 @@ def _parse_rmc(timestamp_ms: str, sentence: str) -> GpsFix | None:
     uncaught exception - a crashed export or a 500 page - rather than
     just skipping the one bad sentence the way a non-matching line
     already does.
+
+    `altitude_meters` is read_gps()'s own lookup of this same tick's
+    sibling $GPGGA sentence (see that function and GpsFix's own
+    docstring) - just passed through onto the resulting GpsFix, not
+    parsed here.
     """
 
     body = sentence.split("*", 1)[0].strip()
@@ -155,21 +215,39 @@ def _parse_rmc(timestamp_ms: str, sentence: str) -> GpsFix | None:
         longitude=longitude,
         speed_kmh=speed_kmh,
         course=course_value,
+        altitude_meters=altitude_meters,
     )
 
 
 def read_gps(path: Path) -> tuple[GpsFix, ...]:
-    """Read every $GPRMC fix from a raw BlackVue .gps file."""
+    """Read every $GPRMC fix from a raw BlackVue .gps file, with
+    altitude enriched in from each fix's sibling $GPGGA sentence (see
+    GpsFix's own docstring)."""
 
     try:
         text = path.read_text(encoding="ascii", errors="replace")
     except OSError as exc:
         raise MediaToolError(f"could not read {path.name}: {exc}") from exc
 
+    # Built up front, in one pass over every $GPGGA sentence in the
+    # file, rather than re-scanning per-RMC - a .gps file's sentences
+    # aren't in any guaranteed order (a GGA can appear before or after
+    # its same-tick RMC), so this has to be a lookup by shared bracket
+    # timestamp rather than "the most recently seen GGA".
+    altitudes_by_timestamp_ms: dict[str, float] = {}
+    for timestamp_ms, sentence in _GGA_PATTERN.findall(text):
+        altitude = _parse_gga_altitude(sentence)
+        if altitude is not None:
+            altitudes_by_timestamp_ms[timestamp_ms] = altitude
+
     fixes = []
 
-    for timestamp_ms, sentence in _SENTENCE_PATTERN.findall(text):
-        fix = _parse_rmc(timestamp_ms, sentence)
+    for timestamp_ms, sentence in _RMC_PATTERN.findall(text):
+        fix = _parse_rmc(
+            timestamp_ms,
+            sentence,
+            altitudes_by_timestamp_ms.get(timestamp_ms),
+        )
         if fix is not None:
             fixes.append(fix)
 

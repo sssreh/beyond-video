@@ -5,7 +5,7 @@ from blackvue.telemetry.gps_reader import GpsFix
 from blackvue.telemetry.movement import DEFAULT_SPEED_THRESHOLD_KMH
 
 
-def _fix(offset_seconds, lat, lon, speed_kmh=None, *, valid=True):
+def _fix(offset_seconds, lat, lon, speed_kmh=None, *, valid=True, altitude=None):
     return GpsFix(
         timestamp=datetime(2026, 7, 15, 13, 0, 0) + timedelta(seconds=offset_seconds),
         valid=valid,
@@ -13,6 +13,7 @@ def _fix(offset_seconds, lat, lon, speed_kmh=None, *, valid=True):
         longitude=lon,
         speed_kmh=speed_kmh,
         course=45.0,
+        altitude_meters=altitude,
     )
 
 
@@ -192,3 +193,69 @@ def test_compute_trip_stats_carry_forward_still_respects_a_later_speed_change():
     # reading forward and land below threshold.
     assert stats.moving_seconds == 10.0 + 10.0
     assert stats.idle_seconds == 10.0 + 10.0
+
+
+# ---------------------------------------------------------------------------
+# Elevation (altitude_meters, sourced from $GPGGA - see gps_reader.py) -
+# Christer asked whether height could be calculated from the GPS data at
+# all, with an eye toward a future stitch-video/playback overlay.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_trip_stats_elevation_fields_are_none_without_any_altitude_data():
+    fixes = (
+        _fix(0, 59.30, 18.000),
+        _fix(1, 59.31, 18.001),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters is None
+    assert stats.max_altitude_meters is None
+    assert stats.elevation_gain_meters is None
+
+
+def test_compute_trip_stats_min_max_altitude():
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=100.0),
+        _fix(1, 59.31, 18.001, altitude=150.0),
+        _fix(2, 59.32, 18.002, altitude=80.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 80.0
+    assert stats.max_altitude_meters == 150.0
+
+
+def test_compute_trip_stats_elevation_gain_sums_only_climbs():
+    # 100 -> 150 (+50 climb) -> 80 (-70 descent, not counted) -> 120
+    # (+40 climb). Total gain: 50 + 40 = 90, descents ignored.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=100.0),
+        _fix(1, 59.31, 18.001, altitude=150.0),
+        _fix(2, 59.32, 18.002, altitude=80.0),
+        _fix(3, 59.33, 18.003, altitude=120.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.elevation_gain_meters == 90.0
+
+
+def test_compute_trip_stats_elevation_skips_gaps_missing_either_endpoint():
+    # The middle fix has no altitude reading - the segments touching it
+    # (0->1 and 1->2) contribute nothing to elevation_gain_meters, but
+    # min/max still see every fix that *does* have a reading (offsets 0
+    # and 2), independent of the gap-based gain calculation.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=100.0),
+        _fix(1, 59.31, 18.001, altitude=None),
+        _fix(2, 59.32, 18.002, altitude=200.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 100.0
+    assert stats.max_altitude_meters == 200.0
+    assert stats.elevation_gain_meters is None

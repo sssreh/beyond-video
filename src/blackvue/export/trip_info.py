@@ -1,9 +1,11 @@
 """
 trip_info.txt writer for bv-export - a short, human-readable summary
 of one trip's real-world facts: when it happened, duration, distance,
-speed, moving/idle time, a place name/address for where it started and
-ended (when reverse geocoding succeeded), whether it includes any
-Parking-mode footage, and its total on-disk size.
+speed, moving/idle time, elevation range/gain (when the camera's .gps
+file had altitude data - see trip_stats.compute_trip_stats()'s own
+docstring), a place name/address for where it started and ended (when
+reverse geocoding succeeded), whether it includes any Parking-mode
+footage, and its total on-disk size.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -70,11 +72,14 @@ def write_trip_info(
 
     `stats` (trip_stats.compute_trip_stats()'s result) may be None if
     there wasn't enough GPS data to compute distance/speed from -
-    those lines (including moving/idle time) are simply omitted rather
-    than shown as zero, since "unknown" and "genuinely zero" are
-    different facts worth not conflating - same reasoning
+    those lines (including moving/idle time and elevation) are simply
+    omitted rather than shown as zero, since "unknown" and "genuinely
+    zero" are different facts worth not conflating - same reasoning
     average_speed_kmh/max_speed_kmh already use, extended to
-    moving_seconds/idle_seconds.
+    moving_seconds/idle_seconds and now to the elevation fields too
+    (which can be missing even when stats itself isn't, e.g. an older
+    recording whose .gps file predates altitude being read - see
+    GpsFix.altitude_meters's own docstring).
 
     `start_address`/`end_address` are each independently optional -
     reverse geocoding degrades one point at a time (see
@@ -107,6 +112,16 @@ def write_trip_info(
             lines.append(f"Moving time: {timedelta(seconds=round(stats.moving_seconds))}")
         if stats.idle_seconds is not None:
             lines.append(f"Idle time: {timedelta(seconds=round(stats.idle_seconds))}")
+        if (
+            stats.min_altitude_meters is not None
+            and stats.max_altitude_meters is not None
+        ):
+            lines.append(
+                f"Elevation: {stats.min_altitude_meters:.0f} m to "
+                f"{stats.max_altitude_meters:.0f} m"
+            )
+        if stats.elevation_gain_meters is not None:
+            lines.append(f"Elevation gain: {stats.elevation_gain_meters:.0f} m")
 
     if start_address:
         lines.append(f"Start location: {start_address}")

@@ -17258,3 +17258,70 @@ sequence is `Home, Trips, Browse archive, Search` (unchanged, since
 viewers never see the pipeline block).
 
 Files changed: src/blackvue/web/templates/base.html.
+
+## Elevation from GPS: parse $GPGGA altitude, surface min/max/gain in trip_info.txt (this session)
+
+Christer: "Are there anyway to calculate height from the gps info?"
+Checked both GPS sources this project has. `bv-gps`/`blackvue_livedata.cgi`
+(live) is a dead end - already confirmed earlier this project only ever
+streams `"GPS": {LATITUDE, LONGITUDE}` and `"3G"` g-sensor JSON, no
+altitude field exists in it at all. Recorded trips (`.gps` sidecar
+files) were the real answer: `gps_reader.py` only ever parsed
+`$GPRMC` sentences (no altitude field in NMEA RMC), but the same file
+also has a `$GPGGA` sentence every tick sharing the exact same bracket
+timestamp - and GGA does carry MSL altitude. It was just being thrown
+away unparsed.
+
+Christer confirmed he wants this eventually in a stitch video or as a
+live overlay during playback - out of scope for this pass (would mean
+a new render module, closer in shape to gsensor_graph_render.py/
+gsensor_graph_video.py than a one-line addition), but the underlying
+camera-sourced altitude data now exists to build that on top of.
+
+**This session's scope**: `gps_reader.py` - added `_GGA_PATTERN`
+alongside the existing `_RMC_PATTERN` (renamed from `_SENTENCE_
+PATTERN`), a `_parse_gga_altitude()` helper (GGA's field 9, after the
+`*`-stripped body is split on `,` - 15 fields total: time, lat, N/S,
+lon, E/W, quality, numSats, HDOP, altitude, altitude-unit, geoid-sep,
+geoid-sep-unit, dgps-age, dgps-station-id), and a new `GpsFix.
+altitude_meters: float | None = None` field (default so every existing
+call site across the codebase - tests, container_gps.py, exif.py,
+gpmf.py - keeps working unchanged). `read_gps()` builds a `{bracket
+timestamp: altitude}` lookup from every GGA sentence in one pass, then
+matches it onto each RMC-built fix by that shared timestamp - not "most
+recently seen GGA", since sentence order within a tick isn't
+guaranteed.
+
+`trip_stats.py`'s `TripStats` gained `min_altitude_meters`/
+`max_altitude_meters` (each fix's own raw reading, same "not carried-
+forward" convention as average_speed_kmh/max_speed_kmh) and
+`elevation_gain_meters` (sum of positive altitude deltas between
+consecutive fixes that both have a reading - descents ignored, the
+common trip-computer "total climbed" convention). All three are None
+under the same "no altitude data anywhere in the trip" condition,
+independently of whether distance/speed stats exist at all (e.g. an
+older recording whose .gps file predates this altitude read).
+
+`trip_info.py`'s `write_trip_info()` gained two lines, both
+conditionally omitted (not shown as zero) the same way every other
+optional stat already is:
+```
+Elevation: 80 m to 150 m
+Elevation gain: 90 m
+```
+
+Verified via a standalone script (pytest/pip unavailable in this
+sandbox - no route to PyPI) exercising `read_gps()` against a fixture
+with two RMC+GGA tick pairs at different timestamps (proving the match
+is by shared timestamp, not append-order), `compute_trip_stats()`
+against a synthetic climb/descend/climb altitude sequence, and
+`write_trip_info()` both with and without altitude data. Also added
+proper pytest tests to `test_gps_reader.py` (malformed GGA sentence
+handling, no-GGA-at-all case, timestamp-matching case) and
+`test_trip_stats.py` (min/max, gain-skips-descents, gap-with-missing-
+endpoint) for when CI can actually run them.
+
+Files changed: src/blackvue/telemetry/gps_reader.py,
+src/blackvue/export/trip_stats.py, src/blackvue/export/trip_info.py,
+tests/blackvue/telemetry/test_gps_reader.py,
+tests/blackvue/export/test_trip_stats.py.

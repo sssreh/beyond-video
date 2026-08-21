@@ -54,6 +54,10 @@ def test_read_gps_parses_a_valid_fix(tmp_path):
     # 10.00 knots -> km/h.
     assert round(fix.speed_kmh, 3) == round(10.00 * 1.852, 3)
     assert fix.course == 45.00
+    # From the sibling $GPGGA sentence sharing this fix's own bracket
+    # timestamp (see GpsFix.altitude_meters's own docstring) - the
+    # fixture's GGA line above has altitude field "31.2".
+    assert fix.altitude_meters == 31.2
 
 
 def test_read_gps_treats_no_fix_mode_as_invalid_with_no_position(
@@ -206,3 +210,69 @@ def test_read_gps_skips_a_sentence_with_a_non_numeric_speed(tmp_path):
     )
 
     assert read_gps(path) == ()
+
+
+# ---------------------------------------------------------------------------
+# Altitude ($GPGGA enrichment) - Christer asked whether height could be
+# calculated from the GPS data at all, for a future stitch-video/playback
+# overlay. See GpsFix.altitude_meters's and read_gps()'s own docstrings.
+# ---------------------------------------------------------------------------
+
+
+def test_read_gps_altitude_is_none_without_a_matching_gga_sentence(tmp_path):
+    # No $GPGGA at all in this file - a legitimate real-world shape
+    # (e.g. an older recording from before this reader parsed GGA),
+    # not something that should crash or silently invent a value.
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000001000]$GPRMC,120001.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    fixes = read_gps(path)
+
+    assert len(fixes) == 1
+    assert fixes[0].altitude_meters is None
+
+
+def test_read_gps_matches_gga_altitude_by_shared_bracket_timestamp_only(tmp_path):
+    # Two ticks, each with its own RMC+GGA pair at a different bracket
+    # timestamp - the second tick's altitude must not leak onto the
+    # first tick's fix (or vice versa), proving the match is by shared
+    # timestamp, not "whichever GGA appeared most recently in the
+    # file".
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000001000]$GPGGA,120001.00,4807.038,N,01131.000,E,1,"
+        "04,2.35,31.2,M,24.3,M,,*67\n"
+        "[1700000001000]$GPRMC,120001.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+        "[1700000002000]$GPGGA,120002.00,4807.038,N,01131.000,E,1,"
+        "04,2.35,99.9,M,24.3,M,,*68\n"
+        "[1700000002000]$GPRMC,120002.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6E\n"
+    )
+
+    fixes = read_gps(path)
+
+    assert len(fixes) == 2
+    assert fixes[0].altitude_meters == 31.2
+    assert fixes[1].altitude_meters == 99.9
+
+
+def test_read_gps_altitude_is_none_when_the_gga_sentence_is_malformed(tmp_path):
+    # A $GPGGA with the wrong field count (corrupted, same class of
+    # real-world damage _parse_rmc()'s own malformed-sentence tests
+    # cover) must not crash read_gps() or poison the RMC fix - just
+    # leave altitude_meters as None for that tick.
+    path = tmp_path / "sample.gps"
+    path.write_text(
+        "[1700000001000]$GPGGA,120001.00,4807.038,N,01131.000,E,1*67\n"
+        "[1700000001000]$GPRMC,120001.00,A,4807.038,N,01131.000,E,"
+        "10.00,45.00,010124,,,A*6D\n"
+    )
+
+    fixes = read_gps(path)
+
+    assert len(fixes) == 1
+    assert fixes[0].altitude_meters is None
