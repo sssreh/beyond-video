@@ -65,14 +65,19 @@ SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
 # - so the camera's shared video encoder apparently needs a moment to
 # actually reconfigure to the requested lens even on a brand new
 # connection, and the very first frame(s) served can still be whatever
-# direction was live immediately before this request. Discarding a
-# couple of frames before capturing costs a small amount of latency
-# per direction (bounded by real frame arrivals, not a fixed sleep)
-# but isn't provably enough on every camera/firmware - this can't be
-# verified without real hardware, so treat this default as a starting
-# point to confirm (and retune if needed) against real hardware, not a
-# guaranteed fix.
-SNAPSHOT_WARMUP_FRAMES = 2
+# direction was live immediately before this request. Discarding
+# frames before capturing costs a small amount of latency per
+# direction (bounded by real frame arrivals, not a fixed sleep).
+#
+# Started at 2 - Christer tried that and reported back: "i still get
+# duplicates, well almost duplicates, i can se a small difference"
+# - i.e. 2 frames' worth of encoder settle time wasn't enough; the
+# lens had visibly started to switch but hadn't finished. Raised to 8
+# on that report. Still a frame-count guess, not a verified fix: this
+# can't be tested against real camera hardware in this sandbox, so if
+# 8 still isn't enough (or the extra latency is annoying and it turns
+# out to have been plenty), this is the number to retune again.
+SNAPSHOT_WARMUP_FRAMES = 8
 
 
 class NoGpsDataError(RuntimeError):

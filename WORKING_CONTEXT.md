@@ -16681,3 +16681,38 @@ the sound loop). No template-content tests reference job_detail.html's
 script body, so nothing else needed updating.
 
 Files changed: src/blackvue/web/templates/job_detail.html.
+
+### Follow-up: raise SNAPSHOT_WARMUP_FRAMES 2 -> 8
+
+Christer, after trying the SNAPSHOT_WARMUP_FRAMES=2 fix above: "i
+still get duplicates, well almost duplicates, i can se a small
+difference." So 2 discarded frames wasn't enough settle time for the
+camera's encoder to fully switch lenses - the frame being kept had
+visibly started to change but hadn't finished. Raised the constant to
+8 in core/blackvue_client.py. Still an unverified guess, not a
+confirmed fix - this can't be tested against real camera hardware in
+this sandbox, so 8 is a starting point to retune again if it's still
+not enough (or if it turns out to have been overkill and adds
+noticeably more latency than needed per direction).
+
+Several existing tests in test_blackvue_client.py built their fake
+multipart streams with a hardcoded 2 warm-up frames tied to the old
+default, which would have silently gone stale (still "passing" while
+testing the wrong number) the moment the constant changed again.
+Replaced those with a new `_warmup_frames()` test helper that builds
+`SNAPSHOT_WARMUP_FRAMES` throwaway frames from the live constant
+itself, so a future retune doesn't require touching every affected
+test by hand again.
+
+Updated docs/man/bv-snap.md's wording too ("a couple of frames" ->
+"a handful of frames") and added a line explaining the discard count
+already got raised once from user feedback, in case Christer (or
+anyone else) still sees near-duplicates and wonders whether it's
+worth reporting again.
+
+Verified: all 27 tests in test_blackvue_client.py still pass (via the
+same pytest-shim script used throughout this feature's earlier fixes
+- no network access to install real pytest in this sandbox).
+
+Files changed: src/blackvue/core/blackvue_client.py,
+tests/blackvue/core/test_blackvue_client.py, docs/man/bv-snap.md.

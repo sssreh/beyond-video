@@ -6,6 +6,7 @@ from urllib.error import URLError
 import pytest
 
 from blackvue.core import blackvue_client as blackvue_client_module
+from blackvue.core.blackvue_client import SNAPSHOT_WARMUP_FRAMES
 from blackvue.core.blackvue_client import BlackVueClient
 from blackvue.core.blackvue_client import NoGpsDataError
 from blackvue.domain.vod_entry import VodEntry
@@ -297,6 +298,21 @@ def _mjpeg_stream(*frames: bytes) -> bytes:
     return b"".join(frames)
 
 
+def _warmup_frames() -> tuple[bytes, ...]:
+    """SNAPSHOT_WARMUP_FRAMES throwaway parts to prepend before the
+    "real" frame in a fake stream that goes through snapshot() itself
+    (as opposed to calling _read_one_mjpeg_frame() directly with an
+    explicit discard=). Built from the live constant rather than a
+    hardcoded count so these tests don't silently go stale the next
+    time Christer reports duplicates and the default gets retuned
+    again (it already went 2 -> 8 once - Christer: "i still get
+    duplicates, well almost duplicates, i can se a small difference")."""
+
+    return tuple(
+        _mjpeg_part(f"warmup-{i}".encode()) for i in range(SNAPSHOT_WARMUP_FRAMES)
+    )
+
+
 def test_snapshot_default_directions_is_f_r_i():
     from blackvue.core.blackvue_client import SNAPSHOT_DIRECTIONS
 
@@ -310,13 +326,12 @@ def test_snapshot_fetches_every_default_direction(monkeypatch):
         seen_urls.append(request_or_url)
         # Distinguish the three responses so per-direction dict keys
         # can be checked against genuinely different bytes, not just
-        # three copies of the same fake JPEG. Two throwaway warm-up
-        # frames ahead of the real one, matching the default
-        # SNAPSHOT_WARMUP_FRAMES discard.
+        # three copies of the same fake JPEG. SNAPSHOT_WARMUP_FRAMES
+        # throwaway warm-up frames ahead of the real one, matching the
+        # default discard.
         direction = request_or_url.rsplit("=", 1)[-1]
         stream = _mjpeg_stream(
-            _mjpeg_part(b"warmup-1"),
-            _mjpeg_part(b"warmup-2"),
+            *_warmup_frames(),
             _mjpeg_part(f"jpeg-bytes-{direction}".encode()),
         )
         return _FakeResponse(stream)
@@ -349,13 +364,12 @@ def test_snapshot_never_hangs_on_a_stream_that_keeps_sending_more_frames(
     stream to end."""
 
     kept_frame = _mjpeg_part(b"jpeg-bytes-F")
-    # Two warm-up frames (discarded, per SNAPSHOT_WARMUP_FRAMES) ahead
-    # of the one that's kept, then one more appended after it - a real
+    # SNAPSHOT_WARMUP_FRAMES warm-up frames (discarded) ahead of the
+    # one that's kept, then one more appended after it - a real
     # never-closing stream would keep going forever; snapshot() must
     # never read this far.
     stream = _mjpeg_stream(
-        _mjpeg_part(b"jpeg-bytes-F-warmup-1"),
-        _mjpeg_part(b"jpeg-bytes-F-warmup-2"),
+        *_warmup_frames(),
         kept_frame,
         _mjpeg_part(b"jpeg-bytes-F-extra"),
     )
@@ -372,13 +386,16 @@ def test_snapshot_discards_warmup_frames_before_capturing(monkeypatch):
     """Direct regression test for Christer's own report after trying
     the feature: "I know sometimes when you switch direction it shows
     the previous direction for a short while." A fake stream whose
-    first two frames are clearly the "wrong" (previous-direction)
-    image and whose third is the real one - snapshot() must return
-    the third, not the first."""
+    first SNAPSHOT_WARMUP_FRAMES frames are clearly the "wrong"
+    (previous-direction) image and whose last is the real one -
+    snapshot() must return the last, not the first."""
 
+    stale_frames = tuple(
+        _mjpeg_part(f"stale-previous-direction-frame-{i}".encode())
+        for i in range(SNAPSHOT_WARMUP_FRAMES)
+    )
     stream = _mjpeg_stream(
-        _mjpeg_part(b"stale-previous-direction-frame-1"),
-        _mjpeg_part(b"stale-previous-direction-frame-2"),
+        *stale_frames,
         _mjpeg_part(b"real-frame-for-this-direction"),
     )
 
@@ -391,11 +408,7 @@ def test_snapshot_discards_warmup_frames_before_capturing(monkeypatch):
 
 
 def test_snapshot_accepts_an_explicit_direction_subset(monkeypatch):
-    stream = _mjpeg_stream(
-        _mjpeg_part(b"warmup-1"),
-        _mjpeg_part(b"warmup-2"),
-        _mjpeg_part(b"jpeg-bytes"),
-    )
+    stream = _mjpeg_stream(*_warmup_frames(), _mjpeg_part(b"jpeg-bytes"))
     monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
 
     client = BlackVueClient("http://camera")
@@ -411,9 +424,7 @@ def test_snapshot_drops_a_direction_that_errors_rather_than_failing_the_call(
     # a "Valid" HTTP response but never actually displayed a real
     # image for it on his hardware - snapshot() has to tolerate a
     # direction erroring (here: I) without losing F/R.
-    stream = _mjpeg_stream(
-        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"jpeg-bytes")
-    )
+    stream = _mjpeg_stream(*_warmup_frames(), _mjpeg_part(b"jpeg-bytes"))
 
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
@@ -432,12 +443,8 @@ def test_snapshot_drops_a_direction_with_an_empty_body(monkeypatch):
     # I's own three-frame stream ends on an empty frame (still a
     # complete, parseable part - just zero image bytes); F/R end on
     # real data.
-    empty_stream = _mjpeg_stream(
-        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"")
-    )
-    real_stream = _mjpeg_stream(
-        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"jpeg-bytes")
-    )
+    empty_stream = _mjpeg_stream(*_warmup_frames(), _mjpeg_part(b""))
+    real_stream = _mjpeg_stream(*_warmup_frames(), _mjpeg_part(b"jpeg-bytes"))
 
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
@@ -459,9 +466,7 @@ def test_snapshot_drops_a_direction_that_never_sends_a_complete_frame(
     # cut off before delivering that many bytes) at all - simulates a
     # direction the camera doesn't really support answering with
     # something other than a real MJPEG part.
-    real_stream = _mjpeg_stream(
-        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"jpeg-bytes")
-    )
+    real_stream = _mjpeg_stream(*_warmup_frames(), _mjpeg_part(b"jpeg-bytes"))
 
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
