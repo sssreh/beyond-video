@@ -168,6 +168,20 @@ bv-snap = "blackvue.cli.bv_snap:main"
 # (see WORKING_CONTEXT.md); no .mp4 assets remain in this folder.
 "blackvue.export" = ["assets/*.png", "assets/*.ttf", "assets/*.txt"]
 
+# Camera-adapter manifest.json files (docs/CAMERA_ADAPTERS.md) -
+# adapters/registry.py reads these at runtime to describe each
+# adapter (blackvue/folder/gopro). Same "must be listed here too or
+# a real install drops it" lesson as every entry above - missing
+# this crash-looped a real deployment (bv-web) on startup with
+# "No such file or directory: .../adapters/blackvue/manifest.json"
+# the moment any camera lookup touched the adapter registry, since
+# `pip install .` had silently omitted all three manifest.json files
+# from the installed package even though `blackvue.adapters.blackvue`
+# etc. (the .py files) installed fine.
+"blackvue.adapters.blackvue" = ["manifest.json"]
+"blackvue.adapters.folder" = ["manifest.json"]
+"blackvue.adapters.gopro" = ["manifest.json"]
+
 # tests/ has no __init__.py anywhere, so more than one test file across
 # different directories can end up sharing a basename (e.g.
 # tests/blackvue/generate/test_subtitles.py and
