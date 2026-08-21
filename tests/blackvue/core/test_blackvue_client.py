@@ -259,7 +259,30 @@ def test_probe_does_not_swallow_network_level_errors(monkeypatch):
 # ---------------------------------------------------------------------------
 # snapshot() - Christer: "I would like to have a snap function that takes
 # 1 snapshot for camera F, R and I."
+#
+# blackvue_live.cgi is a never-closing multipart/x-mixed-replace MJPEG
+# stream (same shape as blackvue_livedata.cgi's own GPS feed - see
+# live_gps()'s tests above), so a realistic fake response here has to be
+# framed as one multipart part (boundary/Content-Type/Content-Length
+# headers, a blank line, then the image bytes) - a bare byte string with
+# no framing at all (what these tests originally used) doesn't exercise
+# _read_one_mjpeg_frame()'s actual parsing, and let a real hang (Christer:
+# "looks like both commands hang") ship undetected.
 # ---------------------------------------------------------------------------
+
+
+def _mjpeg_part(data: bytes) -> bytes:
+    """Build one multipart/x-mixed-replace part the way blackvue_live.cgi
+    itself does - boundary line, headers (including the Content-Length
+    _read_one_mjpeg_frame() parses to know where the frame ends), a blank
+    line, then the raw image bytes and a trailing CRLF."""
+
+    header = (
+        f"--bvcamboundary\r\n"
+        "Content-Type: image/jpeg\r\n"
+        f"Content-Length: {len(data)}\r\n\r\n"
+    ).encode("ascii")
+    return header + data + b"\r\n"
 
 
 def test_snapshot_default_directions_is_f_r_i():
@@ -277,7 +300,7 @@ def test_snapshot_fetches_every_default_direction(monkeypatch):
         # can be checked against genuinely different bytes, not just
         # three copies of the same fake JPEG.
         direction = request_or_url.rsplit("=", 1)[-1]
-        return _FakeResponse(f"jpeg-bytes-{direction}".encode())
+        return _FakeResponse(_mjpeg_part(f"jpeg-bytes-{direction}".encode()))
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 
@@ -295,9 +318,33 @@ def test_snapshot_fetches_every_default_direction(monkeypatch):
     ]
 
 
+def test_snapshot_never_hangs_on_a_stream_that_keeps_sending_more_frames(
+    monkeypatch,
+):
+    """Regression test for the actual bug shipped in the first cut of
+    this feature (Christer: "looks like both commands hang"):
+    blackvue_live.cgi never closes its connection, so a fake response
+    that keeps yielding data past the first frame (simulating the
+    camera moving on to frame 2, 3, ...) must still return after
+    exactly one frame, not block waiting for the stream to end."""
+
+    first_frame = _mjpeg_part(b"jpeg-bytes-F")
+    # A second part appended after the first - a real never-closing
+    # stream would keep going forever; snapshot() must never read
+    # this far.
+    stream = first_frame + _mjpeg_part(b"jpeg-bytes-F-2")
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot(("F",))
+
+    assert result["F"] == b"jpeg-bytes-F"
+
+
 def test_snapshot_accepts_an_explicit_direction_subset(monkeypatch):
     monkeypatch.setattr(
-        blackvue_client_module, "urlopen", _fake_urlopen(b"jpeg-bytes")
+        blackvue_client_module, "urlopen", _fake_urlopen(_mjpeg_part(b"jpeg-bytes"))
     )
 
     client = BlackVueClient("http://camera")
@@ -316,7 +363,7 @@ def test_snapshot_drops_a_direction_that_errors_rather_than_failing_the_call(
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
             raise HTTPError(request_or_url, 404, "Not Found", {}, None)
-        return _FakeResponse(b"jpeg-bytes")
+        return _FakeResponse(_mjpeg_part(b"jpeg-bytes"))
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 
@@ -329,8 +376,28 @@ def test_snapshot_drops_a_direction_that_errors_rather_than_failing_the_call(
 def test_snapshot_drops_a_direction_with_an_empty_body(monkeypatch):
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
-            return _FakeResponse(b"")
-        return _FakeResponse(b"jpeg-bytes")
+            return _FakeResponse(_mjpeg_part(b""))
+        return _FakeResponse(_mjpeg_part(b"jpeg-bytes"))
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot()
+
+    assert set(result.keys()) == {"F", "R"}
+
+
+def test_snapshot_drops_a_direction_that_never_sends_a_complete_frame(
+    monkeypatch,
+):
+    # A response that never includes a Content-Length header (or gets
+    # cut off before delivering that many bytes) at all - simulates a
+    # direction the camera doesn't really support answering with
+    # something other than a real MJPEG part.
+    def urlopen(request_or_url, timeout=None):
+        if request_or_url.endswith("direction=I"):
+            return _FakeResponse(b"not a real mjpeg part")
+        return _FakeResponse(_mjpeg_part(b"jpeg-bytes"))
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 

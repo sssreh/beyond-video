@@ -43,6 +43,17 @@ SNAPSHOT_DIRECTIONS: tuple[str, ...] = ("F", "R", "I")
 # unexpected, or is g-sensor-only for an implausibly long stretch).
 LIVE_GPS_MAX_BYTES = 65536
 
+# snapshot()'s own equivalent cap for blackvue_live.cgi - see
+# _read_one_mjpeg_frame()'s docstring for why this exists at all (the
+# short version: blackvue_live.cgi never closes either, same as
+# blackvue_livedata.cgi above, so an unbounded read hangs forever - a
+# real bug shipped in the first cut of this feature and confirmed by
+# Christer: "looks like both commands hang"). Generous headroom over a
+# realistic dashcam JPEG frame (typically well under 500KB) while
+# still bounding how much of a stream that never ends we'll read
+# before giving up on ever seeing one complete frame.
+SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
+
 
 class NoGpsDataError(RuntimeError):
     """Raised when blackvue_livedata.cgi's response never yielded a
@@ -88,11 +99,75 @@ class BlackVueClient:
 
         return self._get("/Config/config.ini").decode("utf-8")
 
+    def _read_one_mjpeg_frame(self, path: str) -> bytes:
+        """Read exactly one JPEG frame out of blackvue_live.cgi's own
+        multipart/x-mixed-replace MJPEG stream and return its raw
+        bytes.
+
+        blackvue_live.cgi never closes its own connection - it's a
+        never-ending multipart stream, the same shape as
+        blackvue_livedata.cgi's own GPS feed (see live_gps()'s own
+        docstring and LIVE_GPS_MAX_BYTES above). snapshot()'s first
+        cut called `_get()` here, which does a plain whole-response
+        `.read()` - that never returns on a stream that never closes,
+        which is exactly what made both bv-snap and bv-gps --snap
+        hang (Christer: "looks like both commands hang"). This reads
+        in bounded chunks instead, looks for the per-part
+        `Content-Length: N` header multipart/x-mixed-replace puts
+        before each frame's body, and returns as soon as that many
+        bytes of image data have arrived - one frame, not the rest of
+        the stream. The response is always closed before returning,
+        same as `_get()`'s own `with urlopen(...)` behavior.
+        """
+
+        url = f"{self._base_url}{path}"
+
+        try:
+            with urlopen(url, timeout=self._timeout) as response:
+                buffer = b""
+
+                while len(buffer) < SNAPSHOT_MAX_BYTES:
+                    chunk = response.read(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk
+
+                    header_end = buffer.find(b"\r\n\r\n")
+                    if header_end == -1:
+                        continue
+
+                    length = None
+                    header_text = buffer[:header_end].decode(
+                        "ascii", errors="replace"
+                    )
+                    for line in header_text.splitlines():
+                        if line.lower().startswith("content-length:"):
+                            length = int(line.split(":", 1)[1].strip())
+                            break
+
+                    if length is None:
+                        # No Content-Length seen yet in what's arrived
+                        # so far - keep reading rather than treating a
+                        # still-incomplete header block as fatal.
+                        continue
+
+                    body_start = header_end + 4
+                    if len(buffer) >= body_start + length:
+                        return buffer[body_start : body_start + length]
+
+        except HTTPError as exc:
+            raise RuntimeError(f"Unable to fetch {path}") from exc
+
+        raise RuntimeError(
+            f"no complete frame received from {path} within "
+            f"{SNAPSHOT_MAX_BYTES} bytes"
+        )
+
     def snapshot(
         self, directions: Sequence[str] = SNAPSHOT_DIRECTIONS
     ) -> dict[str, bytes]:
         """Grab one live JPEG frame per camera direction (F/R/I by
-        default) via a single bounded GET per direction - Christer:
+        default) via a single bounded read per direction - Christer:
         "I would like to have a snap function that takes 1 snapshot
         for camera F, R and I."
 
@@ -113,7 +188,9 @@ class BlackVueClient:
 
         for direction in directions:
             try:
-                data = self._get(f"/blackvue_live.cgi?direction={direction}")
+                data = self._read_one_mjpeg_frame(
+                    f"/blackvue_live.cgi?direction={direction}"
+                )
             except RuntimeError:
                 continue
 

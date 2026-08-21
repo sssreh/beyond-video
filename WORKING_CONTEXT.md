@@ -16472,3 +16472,61 @@ tests/blackvue/core/test_blackvue_client.py, tests/blackvue/test_snap.py
 (new), tests/blackvue/cli/test_bv_snap.py (new),
 tests/blackvue/cli/test_bv_gps.py, tests/blackvue/core/test_camera_config.py,
 tests/blackvue/web/test_jobs.py.
+
+### Follow-up: fix the hang Christer hit immediately on first real use
+
+Christer, right after the feature above was reported done: "looks like both
+commands hang."
+
+Root cause: `snapshot()`'s first cut called `_get()` per direction, and
+`_get()` does a plain whole-response `urlopen(...).read()`. `blackvue_live.cgi`
+never closes its own connection - it's a never-ending `multipart/x-mixed-
+replace` MJPEG stream, the same shape `blackvue_livedata.cgi` already has
+(see `live_gps()`/`LIVE_GPS_MAX_BYTES` above, which was specifically built to
+avoid this exact trap for that sibling endpoint). An unbounded `.read()`
+against a stream that never sends EOF just never returns - both `bv-snap` and
+`bv-gps --snap` hung forever on the first direction's request.
+
+Fix: added `BlackVueClient._read_one_mjpeg_frame(path)` (core/blackvue_client.py),
+mirroring `live_gps()`'s own bounded-chunk-read pattern instead of inventing a
+new one. Reads in 4096-byte chunks up to a new `SNAPSHOT_MAX_BYTES = 4 * 1024
+* 1024` cap, looks for the end of the current part's headers (`\r\n\r\n`),
+parses a `Content-Length:` header out of them (boundary-agnostic - the
+camera's own multipart boundary value isn't fixed/known in advance, see
+`relay_raw_stream()`'s docstring, so this doesn't try to track it), and
+returns as soon as that many body bytes have arrived - one frame, not the
+rest of the stream. HTTP-level failures and "gave up without ever seeing a
+complete frame" both raise `RuntimeError`, matching `_get()`'s own exception
+type so `snapshot()`'s existing per-direction `except RuntimeError: continue`
+still drops a failing direction without raising - no change to that contract,
+Christer's own "no working Interior lens still returns Front/Rear" behavior
+is untouched. `snapshot()`'s call site switched from `self._get(...)` to
+`self._read_one_mjpeg_frame(...)`; the response is always closed via the same
+`with urlopen(...)` pattern `_get()` already used.
+
+Rewrote the 5 `snapshot()`-related tests in `test_blackvue_client.py`: they'd
+been faking raw unframed bytes (e.g. `_FakeResponse(b"jpeg-bytes")`), which
+is exactly what the old buggy `_get()`-based implementation expected but not
+what a real `blackvue_live.cgi` response - or the new parser - looks like.
+Added a `_mjpeg_part(data) -> bytes` helper building a real
+`--boundary\r\nContent-Type: ...\r\nContent-Length: N\r\n\r\n<data>\r\n` part,
+used it in place of the bare byte strings, and added two new regression
+tests: one proving `snapshot()` returns after exactly one frame even when the
+fake stream keeps sending more data past it (the actual shape of the bug -
+a real camera stream never stops), and one for a response with no parseable
+`Content-Length:` header at all (dropped like any other per-direction
+failure). `test_snapshot_returns_an_empty_dict_when_every_direction_fails`
+needed no change - it only exercises the `HTTPError` path, never the framing
+parser.
+
+Verified: `ast.parse()` on `src/blackvue/core/blackvue_client.py` and
+`tests/blackvue/core/test_blackvue_client.py`. Confirmed the three other test
+files that stub `snapshot()` (`test_bv_snap.py`'s `_FakeClient`,
+`test_bv_gps.py`'s snap-mode fakes, `test_jobs.py`'s `start_bv_snap()` fakes)
+all fake `client.snapshot(directions) -> dict[str, bytes]` directly rather
+than the underlying HTTP layer, so none needed changes - the public method's
+signature and per-direction-drop contract didn't change, only the internal
+HTTP-reading mechanism did.
+
+Files changed: src/blackvue/core/blackvue_client.py,
+tests/blackvue/core/test_blackvue_client.py.
