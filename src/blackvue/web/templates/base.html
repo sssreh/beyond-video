@@ -853,9 +853,6 @@
   {% if user %}
   <nav class="tabs">
     <a class="tab{{ ' active' if request.url.path == '/' else '' }}" href="/">Home</a>
-    <a class="tab{{ ' active' if request.url.path == '/trips' or request.url.path.startswith('/trips/') else '' }}" href="/trips">Trips</a>
-    <a class="tab{{ ' active' if request.url.path.startswith('/archive') else '' }}" href="/archive">Browse archive</a>
-    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-search' else '' }}" href="/jobs/bv-search">Search</a>
     {% if user.role == "owner" %}
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-config' else '' }}" href="/jobs/bv-config">Set up camera</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-gps' else '' }}" href="/jobs/bv-gps">GPS Current loc</a>
@@ -867,6 +864,9 @@
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-export' else '' }}" href="/jobs/bv-export">Export trips</a>
     <a class="tab{{ ' active' if request.url.path.startswith('/history') else '' }}" href="/history">History</a>
     {% endif %}
+    <a class="tab{{ ' active' if request.url.path == '/trips' or request.url.path.startswith('/trips/') else '' }}" href="/trips">Trips</a>
+    <a class="tab{{ ' active' if request.url.path.startswith('/archive') else '' }}" href="/archive">Browse archive</a>
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-search' else '' }}" href="/jobs/bv-search">Search</a>
   </nav>
   {% endif %}
   {% block content %}{% endblock %}

@@ -17231,3 +17231,30 @@ src/blackvue/web/templates/base.html,
 src/blackvue/web/templates/job_new_bv_snap.html (deleted),
 docs/WEB_ARCHITECTURE.md, tests/blackvue/web/test_jobs.py,
 tests/blackvue/core/test_camera_config.py.
+
+## Follow-up: move viewer-facing tabs (Trips/Browse archive/Search) to the end
+
+Christer, right after the pipeline reorder above: "Shouldnt tabs:
+Browse archive, Search and Trips be the last 3." Correct - the first
+reorder only touched the owner-only pipeline block and left Trips/
+Browse archive/Search sitting between Home and the pipeline tabs,
+which meant an owner's day-to-day "run the pipeline" tabs were
+sandwiched behind the viewer-facing "consume the archive" ones rather
+than grouped together. Moved those three `<a>` tags in `base.html`
+out from between Home and the `{% if user.role == "owner" %}` block
+to after its `{% endif %}`, so they're unconditionally last for
+everyone regardless of role (a viewer sees Home, Trips, Browse
+archive, Search - unchanged relative order for them, just no longer
+ahead of anything else since they have no pipeline tabs anyway; an
+owner now sees Home, [full pipeline through History], Trips, Browse
+archive, Search).
+
+Verified via the same standalone Jinja2 render approach, rendered
+once with an owner user and once with a viewer user: owner tab
+sequence is `Home, Set up camera, GPS Current loc, Download
+recordings, List recordings, Generate assets, Lock ranges, Describe
+scenes, Export trips, History, Trips, Browse archive, Search`; viewer
+sequence is `Home, Trips, Browse archive, Search` (unchanged, since
+viewers never see the pipeline block).
+
+Files changed: src/blackvue/web/templates/base.html.
