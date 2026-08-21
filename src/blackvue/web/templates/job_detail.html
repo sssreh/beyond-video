@@ -108,6 +108,26 @@ function copyReplicateCommand(button) {
       window.history.replaceState(null, "", cleanUrl.pathname + cleanUrl.search);
     }
 
+    // Christer: pressing the browser's Back button after viewing a
+    // finished snap job didn't delete the files, even though a real
+    // refresh did. Back/Forward on most browsers restores this exact
+    // page - DOM, JS state, everything - straight out of the
+    // bfcache (back/forward cache) instead of asking the server for
+    // anything, so job_detail()'s snapshot-deletion gating (see
+    // app.py's own comment on _apply_snapshot_deletion_gating()) never
+    // runs for that navigation at all; it looks like nothing happened
+    // because, server-side, nothing did. The "pageshow" event fires on
+    // every page view including bfcache restores, and its own
+    // "persisted" flag is true only for the restored-from-cache case
+    // (not the normal first load this IIFE already runs on) - forcing
+    // a real reload there makes Back behave the same as a manual F5:
+    // a genuine request the server can gate on.
+    window.addEventListener("pageshow", function (event) {
+      if (event.persisted) {
+        window.location.reload();
+      }
+    });
+
     var box = document.getElementById("job-output");
     if (!box) return;
     box.scrollTop = box.scrollHeight;

@@ -17033,3 +17033,29 @@ touched source files plus the test file.
 Files changed: src/blackvue/live/mjpeg.py, src/blackvue/live/app.py,
 src/blackvue/core/blackvue_client.py (comment only),
 tests/blackvue/live/test_mjpeg.py.
+
+### Follow-up: fix snapshot deletion not firing on browser Back
+
+Christer: "If i do a refresh page the files get deleted, but not if i
+press previous page in the browser." Not the same gap as the
+`?auto=1` fix above - this is bfcache (back/forward cache). Most
+browsers serve the Back button by restoring the exact page - DOM, JS
+state, everything - straight out of memory instead of asking the
+server for anything, so `job_detail()`'s snapshot-deletion gating
+never runs for that navigation at all; nothing happened server-side,
+so nothing got deleted. Fix: `job_detail.html`'s script now listens
+for the `pageshow` event and checks `event.persisted` - true only when
+the page was just restored from bfcache, not on the normal first load
+- and forces `window.location.reload()` in that case, so Back behaves
+like a real F5 the server can actually gate on. Verified the extracted
+`<script>` block still checks out with `node --check` and the full
+template still renders via a standalone Jinja2 script.
+
+Also asked Christer about the snapshot save location
+(`~/beyond-video-data/snapshots/<id>`, not his camera's target/archive
+folder) - confirmed that's intentional (his own earlier request that a
+one-off snap grab stay separate from the recording archive - see
+`default_snapshots_dir()`'s own docstring in core/camera_config.py),
+so no change there.
+
+Files changed: src/blackvue/web/templates/job_detail.html.
