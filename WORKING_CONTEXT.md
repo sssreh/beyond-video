@@ -16530,3 +16530,38 @@ HTTP-reading mechanism did.
 
 Files changed: src/blackvue/core/blackvue_client.py,
 tests/blackvue/core/test_blackvue_client.py.
+
+### Follow-up: id/host in the saved filenames
+
+Christer: "i would also like the id or host be in the output name of the
+files."
+
+`save_snapshots()` (blackvue/snap.py) gained an optional `label` keyword,
+inserted into the filename right after the fixed `snap` prefix and before
+the timestamp: `snap_<label>_<timestamp>_<direction>.jpg` (or the old
+`snap_<timestamp>_<direction>.jpg` shape when no `label` is given - kept
+optional rather than required so the function itself doesn't force every
+caller to have one). A new `_sanitize_label()` helper (regex `[^A-Za-z0-9._-]+`
+collapsed to `_`, then stripped of leading/trailing `_`) makes the label
+filesystem-safe before use - camera ids are already documented as filename-
+safe ASCII, but `--host` is arbitrary user input and can include `:PORT`
+(not valid in a Windows filename), so both bv-snap and bv-gps --snap route
+through the same sanitizer regardless of which one was given.
+
+Both CLI `_run()`s (`cli/bv_snap.py`, `cli/bv_gps.py`'s `_run_snap()`) compute
+`label = args.id if args.id is not None else args.host` right before calling
+`save_snapshots()` - the same "id or host, whichever was actually given" the
+connection-setup block above it already branches on. bv-web's job trigger
+needed no changes: `JobRunner.start_bv_snap()` already builds its argv as
+`[id_, "--output", ...]`, so `args.id` is already populated by the time
+`bv_snap._run()` runs and the label is picked up automatically.
+
+Verified: `ast.parse()` on every changed file, plus a standalone script
+exercising `_sanitize_label()` and `save_snapshots()` directly (confirmed
+`"Kirby"` passes through unchanged, `"192.168.1.42:8080"` becomes
+`"192.168.1.42_8080"`, and the label segment is omitted entirely when none
+is given).
+
+Files changed: src/blackvue/snap.py, src/blackvue/cli/bv_snap.py,
+src/blackvue/cli/bv_gps.py, docs/man/bv-snap.md, tests/blackvue/test_snap.py,
+tests/blackvue/cli/test_bv_snap.py, tests/blackvue/cli/test_bv_gps.py.

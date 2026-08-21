@@ -17,7 +17,7 @@ bv-snap [--config-dir DIR] [--timeout SECONDS] --output DIR
 
 By default it requests every direction (Front, Rear, Interior). Each direction is independent: a request that errors, or that a camera model doesn't actually support, is silently dropped from the result rather than failing the whole run - `bv-snap` reports which directions it saved and warns (but still exits successfully) about any that came back empty. This matters in particular for Interior: some BlackVue firmware answers `direction=I` with a "Valid" HTTP response without ever serving a real image, so treating a missing Interior frame as a hard error would make `bv-snap` unusable on hardware where only Front/Rear actually work.
 
-Snapshots are saved as `snap_<timestamp>_<direction>.jpg` (one shared timestamp per run) into `--output`, a directory you choose - deliberately not the camera's own recording archive, since a snap is a one-off grab, not part of a recording.
+Snapshots are saved as `snap_<id-or-host>_<timestamp>_<direction>.jpg` (one shared timestamp per run, `id-or-host` sanitized for filesystem safety - e.g. a `--host`'s `:PORT` becomes `_PORT`) into `--output`, a directory you choose - deliberately not the camera's own recording archive, since a snap is a one-off grab, not part of a recording. Including the id/host in the filename means a single `--output` directory shared across more than one camera still produces files that say which camera they came from.
 
 `ID` and `--host` are mutually exclusive - exactly one is required, same as `bv-gps`. See `bv-gps(1)` for a `--snap` mode that does the same capture from within an existing `bv-gps` invocation, if you'd rather not have a second command.
 
@@ -54,8 +54,8 @@ bv-snap Kirby --output ~/snaps
 ```
 
 ```
-F: saved /home/christer/snaps/snap_20260821_180512_F.jpg
-R: saved /home/christer/snaps/snap_20260821_180512_R.jpg
+F: saved /home/christer/snaps/snap_Kirby_20260821_180512_F.jpg
+R: saved /home/christer/snaps/snap_Kirby_20260821_180512_R.jpg
 bv-snap: home: no snapshot received for direction I
 ```
 

@@ -184,6 +184,36 @@ def test_run_exits_unreachable_cleanly(monkeypatch, capsys, tmp_path):
     assert "10.99.77.1" in capsys.readouterr().err
 
 
+def test_run_includes_the_camera_id_in_saved_filenames(monkeypatch, capsys, tmp_path):
+    _stub_connection(monkeypatch, {"F": b"front-bytes"})
+
+    args = bv_snap_module.parse_args(["mycar", "--output", str(tmp_path)])
+    bv_snap_module._run(args)
+
+    assert len(list(tmp_path.glob("snap_mycar_*_F.jpg"))) == 1
+
+
+def test_run_includes_the_sanitized_host_in_saved_filenames(
+    monkeypatch, capsys, tmp_path
+):
+    # Christer: "I would also like the id or host be in the output
+    # name of the files" - --host mode has no camera id, so the bare
+    # host string (sanitized - ":PORT" isn't filename-safe) is used
+    # instead.
+    monkeypatch.setattr(
+        bv_snap_module,
+        "connect",
+        lambda endpoints, timeout: (endpoints[0], _FakeClient({"F": b"front-bytes"})),
+    )
+
+    args = bv_snap_module.parse_args(
+        ["--host", "192.168.1.42:8080", "--output", str(tmp_path)]
+    )
+    bv_snap_module._run(args)
+
+    assert len(list(tmp_path.glob("snap_192.168.1.42_8080_*_F.jpg"))) == 1
+
+
 def test_run_exits_config_error_when_no_endpoints_configured(
     monkeypatch, capsys, tmp_path
 ):

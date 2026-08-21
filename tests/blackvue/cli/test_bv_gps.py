@@ -439,3 +439,19 @@ def test_run_snap_mode_honors_an_explicit_direction_subset(
     assert "F: saved" in out
     assert "R: saved" not in out
     assert "I: saved" not in out
+
+
+def test_run_snap_mode_includes_the_camera_id_in_saved_filenames(
+    monkeypatch, capsys, tmp_path
+):
+    # Christer: "I would also like the id or host be in the output
+    # name of the files" - same behavior as bv-snap's own standalone
+    # _run(), since this is the shared save_snapshots() call.
+    _stub_snap_connection(monkeypatch, {"F": b"front-bytes"})
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    bv_gps_module._run(args)
+
+    assert len(list(tmp_path.glob("snap_mycar_*_F.jpg"))) == 1

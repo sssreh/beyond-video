@@ -276,7 +276,12 @@ def _run_snap(
         )
         return EXIT_NO_SNAPSHOTS
 
-    paths = save_snapshots(snapshots, args.output)
+    # id-or-host - whichever one was actually given, for the filename
+    # (Christer: "I would also like the id or host be in the output
+    # name of the files"). save_snapshots() sanitizes it before use.
+    label = args.id if args.id is not None else args.host
+
+    paths = save_snapshots(snapshots, args.output, label=label)
     for direction, path in paths.items():
         say(f"{direction}: saved {path}")
 

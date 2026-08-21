@@ -69,3 +69,37 @@ def test_save_snapshots_handles_an_empty_snapshots_dict(tmp_path):
     paths = save_snapshots({}, tmp_path, timestamp="20260821_180512")
 
     assert paths == {}
+
+
+def test_save_snapshots_includes_the_label_in_the_filename(tmp_path):
+    paths = save_snapshots(
+        {"F": b"data"}, tmp_path, timestamp="20260821_180512", label="Kirby"
+    )
+
+    assert paths["F"].name == "snap_Kirby_20260821_180512_F.jpg"
+
+
+def test_save_snapshots_omits_the_label_segment_when_none_given(tmp_path):
+    paths = save_snapshots({"F": b"data"}, tmp_path, timestamp="20260821_180512")
+
+    assert paths["F"].name == "snap_20260821_180512_F.jpg"
+
+
+def test_save_snapshots_sanitizes_an_unsafe_label(tmp_path):
+    # A bare --host can include ":PORT" - not filename-safe on Windows.
+    paths = save_snapshots(
+        {"F": b"data"},
+        tmp_path,
+        timestamp="20260821_180512",
+        label="192.168.1.42:8080",
+    )
+
+    assert paths["F"].name == "snap_192.168.1.42_8080_20260821_180512_F.jpg"
+
+
+def test_save_snapshots_treats_an_empty_label_the_same_as_none(tmp_path):
+    paths = save_snapshots(
+        {"F": b"data"}, tmp_path, timestamp="20260821_180512", label=""
+    )
+
+    assert paths["F"].name == "snap_20260821_180512_F.jpg"
