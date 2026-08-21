@@ -213,6 +213,39 @@ def test_default_target_dir_falls_back_to_sibling_trips_when_no_archive_componen
     assert default_target_dir(Path("/data/Kirby")) == Path("/data/trips")
 
 
+# ---------------------------------------------------------------------------
+# default_snapshots_dir() - the bv-web start_bv_snap() default save location
+# for F/R/I snapshots, deliberately a sibling of default_logs_dir()'s own
+# ~/beyond-video-data/logs rather than default_archive_dir()'s
+# ~/beyond-video/archive/<id> - Christer was explicit a snap's save location
+# should be kept separate from the recording archive.
+# ---------------------------------------------------------------------------
+
+
+def test_default_snapshots_dir_nests_under_beyond_video_data_by_camera_id():
+    from blackvue.core.camera_config import default_snapshots_dir
+
+    assert default_snapshots_dir("Kirby") == (
+        Path.home() / "beyond-video-data" / "snapshots" / "Kirby"
+    )
+
+
+def test_default_snapshots_dir_differs_per_camera_id():
+    from blackvue.core.camera_config import default_snapshots_dir
+
+    assert default_snapshots_dir("Kirby") != default_snapshots_dir("Wren")
+
+
+def test_default_snapshots_dir_is_not_under_the_archive_tree():
+    from blackvue.core.camera_config import default_snapshots_dir
+
+    snapshots_dir = default_snapshots_dir("Kirby")
+    archive_dir = default_archive_dir("Kirby")
+
+    assert snapshots_dir != archive_dir
+    assert "archive" not in snapshots_dir.parts
+
+
 @pytest.mark.parametrize(
     "id_",
     # Underscore/hyphen accepted specifically for per-year camera ids

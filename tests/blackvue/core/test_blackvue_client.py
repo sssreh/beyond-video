@@ -254,3 +254,99 @@ def test_probe_does_not_swallow_network_level_errors(monkeypatch):
 
     with pytest.raises(URLError):
         client.probe("/Record/20260101_000000_N.gps")
+
+
+# ---------------------------------------------------------------------------
+# snapshot() - Christer: "I would like to have a snap function that takes
+# 1 snapshot for camera F, R and I."
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_default_directions_is_f_r_i():
+    from blackvue.core.blackvue_client import SNAPSHOT_DIRECTIONS
+
+    assert SNAPSHOT_DIRECTIONS == ("F", "R", "I")
+
+
+def test_snapshot_fetches_every_default_direction(monkeypatch):
+    seen_urls = []
+
+    def urlopen(request_or_url, timeout=None):
+        seen_urls.append(request_or_url)
+        # Distinguish the three responses so per-direction dict keys
+        # can be checked against genuinely different bytes, not just
+        # three copies of the same fake JPEG.
+        direction = request_or_url.rsplit("=", 1)[-1]
+        return _FakeResponse(f"jpeg-bytes-{direction}".encode())
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot()
+
+    assert set(result.keys()) == {"F", "R", "I"}
+    assert result["F"] == b"jpeg-bytes-F"
+    assert result["R"] == b"jpeg-bytes-R"
+    assert result["I"] == b"jpeg-bytes-I"
+    assert seen_urls == [
+        "http://camera/blackvue_live.cgi?direction=F",
+        "http://camera/blackvue_live.cgi?direction=R",
+        "http://camera/blackvue_live.cgi?direction=I",
+    ]
+
+
+def test_snapshot_accepts_an_explicit_direction_subset(monkeypatch):
+    monkeypatch.setattr(
+        blackvue_client_module, "urlopen", _fake_urlopen(b"jpeg-bytes")
+    )
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot(("F",))
+
+    assert set(result.keys()) == {"F"}
+
+
+def test_snapshot_drops_a_direction_that_errors_rather_than_failing_the_call(
+    monkeypatch,
+):
+    # Christer's own firmware-endpoint scan found direction=I returns
+    # a "Valid" HTTP response but never actually displayed a real
+    # image for it on his hardware - snapshot() has to tolerate a
+    # direction erroring (here: I) without losing F/R.
+    def urlopen(request_or_url, timeout=None):
+        if request_or_url.endswith("direction=I"):
+            raise HTTPError(request_or_url, 404, "Not Found", {}, None)
+        return _FakeResponse(b"jpeg-bytes")
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot()
+
+    assert set(result.keys()) == {"F", "R"}
+
+
+def test_snapshot_drops_a_direction_with_an_empty_body(monkeypatch):
+    def urlopen(request_or_url, timeout=None):
+        if request_or_url.endswith("direction=I"):
+            return _FakeResponse(b"")
+        return _FakeResponse(b"jpeg-bytes")
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot()
+
+    assert set(result.keys()) == {"F", "R"}
+
+
+def test_snapshot_returns_an_empty_dict_when_every_direction_fails(monkeypatch):
+    def urlopen(request_or_url, timeout=None):
+        raise HTTPError(request_or_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot()
+
+    assert result == {}

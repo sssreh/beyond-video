@@ -8,20 +8,21 @@ One command doesn't fit the recording-selection model below at all: `bv-history`
 
 ## Camera system ID
 
-`bv-config`, `bv-download`, `bv-gps`, and `bv-live` take a camera system ID as their first argument:
+`bv-config`, `bv-download`, `bv-gps`, `bv-live`, and `bv-snap` take a camera system ID as their first argument:
 
 ```text
 bv-config Kirby
 bv-download Kirby
 bv-gps Kirby
 bv-live Kirby
+bv-snap Kirby --output ~/snaps
 ```
 
 The ID identifies the camera's configuration and, through it, the local archive directory downloads are saved into (see `docs/man/bv-config.md`). It's an ASCII string suitable for filenames and command lines - a separate, free-form display name (which may contain UTF-8/emoji) is set alongside it in the config wizard.
 
 `bv-download` alone also accepts `--host HOST --target DIR` instead of an ID - a direct one-off connection with no `bv-config` setup at all, for a quick download without committing to the rest of the toolkit. See `docs/man/bv-download.md`.
 
-`bv-gps` and `bv-live` are the odd ones out among these four: neither touches the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`/`docs/man/bv-live.md` - one prints a single GPS reading and exits, the other serves a persistent live dashboard) - they're listed here purely because they share the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because they take part in recording selection below.
+`bv-gps`, `bv-live`, and `bv-snap` are the odd ones out among these five: none touches the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`/`docs/man/bv-live.md`/`docs/man/bv-snap.md` - one prints a single GPS reading and exits, one serves a persistent live dashboard, and one grabs a live F/R/I snapshot and exits) - they're listed here purely because they share the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because they take part in recording selection below. (`bv-gps` also has its own `--snap` one-shot mode doing exactly what `bv-snap` does, for anyone who'd rather not reach for a second command - see `docs/man/bv-gps.md`.)
 
 `bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, `bv-search`, and `bv-lock` accept a camera system ID in the same `path` position a literal archive directory would go - `bv-ls Kirby` resolves `Kirby` to that camera's configured `archive` directory, same as `bv-download`/`bv-config` already do. Resolution only kicks in for a bare id: anything that looks like a real path (`.`/`..`, a `./`/`../` prefix, an absolute path, or anything containing a path separator) is always used literally, so a directory that happens to share a name with a configured camera still works via `./Kirby` or `.\Kirby` - the same escape hatch `git checkout ./file` uses for a same-named branch. A bare name that isn't a configured camera id falls back to being treated as a literal path too, so nothing about existing scripts using plain directory names changes. Each of these six commands also takes its own `--config-dir` to point at a non-default camera config directory, matching `bv-config`'s own flag.
 

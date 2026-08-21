@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 from .errors import run_cli
+from ..core.blackvue_client import SNAPSHOT_DIRECTIONS
+from ..core.blackvue_client import BlackVueClient
 from ..core.blackvue_client import NoGpsDataError
 from ..core.camera_config import CameraConfigError
 from ..core.camera_config import config_path
@@ -26,12 +28,14 @@ from ..core.joblog import wrap_warn
 from ..domain.live_gps_fix import LiveGpsFix
 from ..export.geocoding import reverse_geocode
 from ..generate.media import MediaToolError
+from ..snap import save_snapshots
 
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 1
 EXIT_UNREACHABLE = 2
 EXIT_NO_FIX = 3
 EXIT_PROTOCOL_ERROR = 4
+EXIT_NO_SNAPSHOTS = 5
 
 
 def coordinate_pair(fix: LiveGpsFix) -> str:
@@ -60,7 +64,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--host for a camera that hasn't been set up with "
             "bv-config yet. Prints the coordinates as a pasteable "
             "pair and a Google Maps link, plus a reverse-geocoded "
-            "address."
+            "address. With --snap, grabs a one-shot camera snapshot "
+            "instead (see --snap's own help) - the same one-off "
+            "action bv-snap(1) is a dedicated command for, offered "
+            "here too since this command already has a live camera "
+            "connection open."
         ),
         # See bv_export.py's own ArgumentParser for why: argparse's
         # default prefix-abbreviation matching silently breaks the
@@ -121,7 +129,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--snap",
+        action="store_true",
+        help=(
+            "One-shot mode: grab a camera snapshot instead of a GPS "
+            "reading (requires --output). See bv-snap(1) for a "
+            "dedicated standalone command doing the same thing."
+        ),
+    )
+
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Directory to save --snap's .jpg files into. Required with --snap.",
+    )
+
+    parser.add_argument(
+        "--direction",
+        choices=SNAPSHOT_DIRECTIONS,
+        action="append",
+        default=None,
+        help=(
+            "With --snap, only snap this direction - repeatable. "
+            f"Default: every direction ({', '.join(SNAPSHOT_DIRECTIONS)})."
+        ),
+    )
+
+    args = parser.parse_args(argv)
+
+    if args.snap and args.output is None:
+        parser.error("--snap requires --output")
+    if not args.snap and args.output is not None:
+        parser.error("--output only applies with --snap")
+    if not args.snap and args.direction is not None:
+        parser.error("--direction only applies with --snap")
+
+    return args
 
 
 def _default_warn(message: str) -> None:
@@ -171,6 +217,9 @@ def _run(
         warn(f"bv-gps: {exc}")
         return EXIT_UNREACHABLE
 
+    if args.snap:
+        return _run_snap(args, endpoint, client, say=say, warn=warn)
+
     try:
         fix = client.live_gps()
     except NoGpsDataError as exc:
@@ -197,6 +246,43 @@ def _run(
             say(f"Address: unavailable ({exc})")
         else:
             say(f"Address: {address or 'no address found for this location'}")
+
+    return EXIT_OK
+
+
+def _run_snap(
+    args: argparse.Namespace,
+    endpoint: Endpoint,
+    client: BlackVueClient,
+    *,
+    say=print,
+    warn=_default_warn,
+) -> int:
+    """Handle bv-gps --snap: grab F/R/I snapshots over an already-
+    connected client and save them to args.output - the --snap
+    counterpart to bv-snap.py's own standalone `_run()`, sharing its
+    exact capture/save/report logic (see save_snapshots() and
+    BlackVueClient.snapshot() for why per-direction failures are
+    dropped silently rather than failing the whole call)."""
+
+    directions = tuple(args.direction) if args.direction else SNAPSHOT_DIRECTIONS
+
+    snapshots = client.snapshot(directions)
+
+    if not snapshots:
+        warn(
+            f"bv-gps: {endpoint.name}: no snapshot received for any "
+            f"direction ({', '.join(directions)})"
+        )
+        return EXIT_NO_SNAPSHOTS
+
+    paths = save_snapshots(snapshots, args.output)
+    for direction, path in paths.items():
+        say(f"{direction}: saved {path}")
+
+    missing = [d for d in directions if d not in snapshots]
+    for direction in missing:
+        warn(f"bv-gps: {endpoint.name}: no snapshot received for direction {direction}")
 
     return EXIT_OK
 

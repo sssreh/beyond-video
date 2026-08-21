@@ -524,6 +524,60 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_snap(
+        self,
+        *,
+        id_: str,
+        timeout: int,
+        directions: list[str] | None,
+        username: str,
+    ) -> Job:
+        """Start bv-snap as a job against an already-configured camera
+        id only - same id-only curation as start_bv_gps() (no --host
+        escape hatch), for the same reason.
+
+        Unlike bv-snap's own CLI, which takes a user-supplied --output
+        path (Christer: "A dedicated --output path the user passes"),
+        there's no free-text arbitrary-path field anywhere in bv-web's
+        forms - every web-triggered job works off camera-id-scoped
+        defaults instead (see start_bv_ls()'s own archive_path,
+        resolved by the caller). Here that default is
+        default_snapshots_dir(id_) (core/camera_config.py) -
+        ~/beyond-video-data/snapshots/<id>, deliberately not the
+        camera's own Archive folder, same as the CLI's own default
+        design intent.
+
+        `directions` is None (every direction - F/R/I) or an explicit
+        subset the browser checked; the "best effort" per-direction
+        drop for an unreachable/unsupported lens (e.g. Interior on
+        unconfirmed hardware) happens inside BlackVueClient.snapshot()
+        itself and is reported via bv-snap's own warn() lines, not
+        anything special here."""
+
+        from ..cli import bv_snap as bv_snap_cli
+        from ..core.camera_config import default_snapshots_dir
+
+        output = default_snapshots_dir(id_)
+
+        argv: list[str] = [id_, "--output", str(output), "--timeout", str(timeout)]
+        if directions:
+            for direction in directions:
+                argv += ["--direction", direction]
+
+        args = bv_snap_cli.parse_args(argv)
+        job = self._new_job(
+            command=f"bv-snap {id_}",
+            replicate_command=_replicate_command_line("bv-snap", argv),
+            username=username,
+        )
+
+        def run() -> int:
+            say = job.append_output
+            return bv_snap_cli._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
     def start_bv_generate(
         self,
         *,

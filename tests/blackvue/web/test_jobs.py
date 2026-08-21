@@ -33,6 +33,8 @@ from blackvue.cli import bv_lock as bv_lock_module
 from blackvue.cli import bv_ls as bv_ls_module
 from blackvue.cli import bv_scribe as bv_scribe_module
 from blackvue.cli import bv_search as bv_search_module
+from blackvue.cli import bv_snap as bv_snap_module
+from blackvue.core import camera_config as camera_config_module
 from blackvue.web.jobs import BvExportArgError
 from blackvue.web.jobs import Job
 from blackvue.web.jobs import JobRunner
@@ -685,6 +687,127 @@ def test_start_bv_gps_timeout_reaches_parsed_args(monkeypatch):
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, _, _ = job.snapshot()
     assert status == JobStatus.SUCCEEDED
+
+
+# ---------------------------------------------------------------------------
+# JobRunner.start_bv_snap - real wiring, fake _run
+# ---------------------------------------------------------------------------
+
+
+def _stub_snapshots_dir(monkeypatch, tmp_path):
+    """Pin default_snapshots_dir() to a tmp_path-scoped folder so these
+    tests never touch a real ~/beyond-video-data/snapshots directory -
+    same isolation goal as bv-gps's own tests never touching the real
+    default_config_dir()."""
+
+    monkeypatch.setattr(
+        camera_config_module,
+        "default_snapshots_dir",
+        lambda id_: tmp_path / "snapshots" / id_,
+    )
+
+
+def test_start_bv_snap_wires_say_warn(monkeypatch, tmp_path):
+    _stub_snapshots_dir(monkeypatch, tmp_path)
+
+    def fake_run(args, *, say, warn):
+        assert args.id == "kirby"
+        assert args.host is None
+        say("F: saved /tmp/snap_20260821_180000_F.jpg")
+        return bv_snap_module.EXIT_OK
+
+    monkeypatch.setattr(bv_snap_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_snap(
+        id_="kirby", timeout=5, directions=None, username="christer"
+    )
+
+    assert job.command == "bv-snap kirby"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert any("F: saved" in line for line in output)
+
+
+def test_start_bv_snap_defaults_output_to_default_snapshots_dir(
+    monkeypatch, tmp_path
+):
+    _stub_snapshots_dir(monkeypatch, tmp_path)
+
+    def fake_run(args, *, say, warn):
+        assert args.output == tmp_path / "snapshots" / "kirby"
+        return bv_snap_module.EXIT_OK
+
+    monkeypatch.setattr(bv_snap_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_snap(
+        id_="kirby", timeout=5, directions=None, username="christer"
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+
+
+def test_start_bv_snap_no_directions_means_every_direction(monkeypatch, tmp_path):
+    _stub_snapshots_dir(monkeypatch, tmp_path)
+
+    def fake_run(args, *, say, warn):
+        assert args.direction is None
+        return bv_snap_module.EXIT_OK
+
+    monkeypatch.setattr(bv_snap_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_snap(
+        id_="kirby", timeout=5, directions=None, username="christer"
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+
+
+def test_start_bv_snap_explicit_directions_reach_parsed_args(monkeypatch, tmp_path):
+    _stub_snapshots_dir(monkeypatch, tmp_path)
+
+    def fake_run(args, *, say, warn):
+        assert args.direction == ["F", "R"]
+        return bv_snap_module.EXIT_OK
+
+    monkeypatch.setattr(bv_snap_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_snap(
+        id_="kirby", timeout=5, directions=["F", "R"], username="christer"
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+
+
+def test_start_bv_snap_job_fails_when_run_returns_nonzero(monkeypatch, tmp_path):
+    _stub_snapshots_dir(monkeypatch, tmp_path)
+
+    def fake_run(args, *, say, warn):
+        warn("bv-snap: kirby: no snapshot received for any direction (F, R, I)")
+        return bv_snap_module.EXIT_NO_SNAPSHOTS
+
+    monkeypatch.setattr(bv_snap_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_snap(
+        id_="kirby", timeout=5, directions=None, username="christer"
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.FAILED
+    assert any("no snapshot received" in line for line in output)
 
 
 # ---------------------------------------------------------------------------

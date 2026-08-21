@@ -274,3 +274,168 @@ def test_run_exits_config_error_when_no_endpoints_configured(monkeypatch, capsys
     code = bv_gps_module._run(args)
 
     assert code == bv_gps_module.EXIT_CONFIG_ERROR
+
+
+# ---------------------------------------------------------------------------
+# --snap one-shot mode - Christer: "I would like to have a snap function
+# that takes 1 snapshot for camera F, R and I." (both a standalone bv-snap
+# command - see test_bv_snap.py - and this --snap mode on bv-gps).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_snap_requires_output(capsys):
+    with pytest.raises(SystemExit):
+        bv_gps_module.parse_args(["mycar", "--snap"])
+
+    assert "--output" in capsys.readouterr().err
+
+
+def test_parse_args_output_requires_snap(capsys):
+    with pytest.raises(SystemExit):
+        bv_gps_module.parse_args(["mycar", "--output", "/tmp/snaps"])
+
+    assert "--snap" in capsys.readouterr().err
+
+
+def test_parse_args_direction_requires_snap(capsys):
+    with pytest.raises(SystemExit):
+        bv_gps_module.parse_args(["mycar", "--direction", "F"])
+
+    assert "--snap" in capsys.readouterr().err
+
+
+def test_parse_args_snap_with_output_succeeds():
+    args = bv_gps_module.parse_args(["mycar", "--snap", "--output", "/tmp/snaps"])
+
+    assert args.snap is True
+    assert args.output == Path("/tmp/snaps")
+    assert args.direction is None
+
+
+def test_parse_args_snap_direction_is_repeatable():
+    args = bv_gps_module.parse_args(
+        [
+            "mycar",
+            "--snap",
+            "--output",
+            "/tmp/snaps",
+            "--direction",
+            "F",
+            "--direction",
+            "R",
+        ]
+    )
+
+    assert args.direction == ["F", "R"]
+
+
+class _FakeSnapClient:
+    def __init__(self, snapshots):
+        self._snapshots = snapshots
+
+    def snapshot(self, directions):
+        return {d: self._snapshots[d] for d in directions if d in self._snapshots}
+
+
+def _stub_snap_connection(monkeypatch, snapshots):
+    monkeypatch.setattr(
+        bv_gps_module, "load_camera_config", lambda path: _FakeConfig()
+    )
+    monkeypatch.setattr(
+        bv_gps_module, "config_path", lambda config_dir, id_: Path("/tmp/fake.toml")
+    )
+    monkeypatch.setattr(
+        bv_gps_module,
+        "connect",
+        lambda endpoints, timeout: (endpoints[0], _FakeSnapClient(snapshots)),
+    )
+
+
+def test_run_snap_mode_saves_snapshots_and_reports_paths(
+    monkeypatch, capsys, tmp_path
+):
+    _stub_snap_connection(
+        monkeypatch, {"F": b"front-bytes", "R": b"rear-bytes", "I": b"interior-bytes"}
+    )
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    code = bv_gps_module._run(args)
+
+    out = capsys.readouterr().out
+    assert code == bv_gps_module.EXIT_OK
+    assert "F: saved" in out
+    assert "R: saved" in out
+    assert "I: saved" in out
+    assert len(list(tmp_path.glob("snap_*_F.jpg"))) == 1
+
+
+def test_run_snap_mode_never_touches_live_gps_or_reverse_geocode(
+    monkeypatch, capsys, tmp_path
+):
+    """Regression guard: --snap must return before _run() falls
+    through to the GPS-fetching code below it."""
+
+    _stub_snap_connection(monkeypatch, {"F": b"front-bytes"})
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("--snap must not touch reverse_geocode")
+
+    monkeypatch.setattr(bv_gps_module, "reverse_geocode", _unexpected)
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    code = bv_gps_module._run(args)
+
+    assert code == bv_gps_module.EXIT_OK
+
+
+def test_run_snap_mode_exits_no_snapshots_when_every_direction_fails(
+    monkeypatch, capsys, tmp_path
+):
+    _stub_snap_connection(monkeypatch, {})
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    code = bv_gps_module._run(args)
+
+    err = capsys.readouterr().err
+    assert code == bv_gps_module.EXIT_NO_SNAPSHOTS
+    assert "no snapshot received for any direction" in err
+
+
+def test_run_snap_mode_warns_for_a_partially_missing_direction(
+    monkeypatch, capsys, tmp_path
+):
+    _stub_snap_connection(monkeypatch, {"F": b"front-bytes", "R": b"rear-bytes"})
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    code = bv_gps_module._run(args)
+
+    err = capsys.readouterr().err
+    assert code == bv_gps_module.EXIT_OK
+    assert "no snapshot received for direction I" in err
+
+
+def test_run_snap_mode_honors_an_explicit_direction_subset(
+    monkeypatch, capsys, tmp_path
+):
+    _stub_snap_connection(
+        monkeypatch, {"F": b"front-bytes", "R": b"rear-bytes", "I": b"interior-bytes"}
+    )
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path), "--direction", "F"]
+    )
+    code = bv_gps_module._run(args)
+
+    out = capsys.readouterr().out
+    assert code == bv_gps_module.EXIT_OK
+    assert "F: saved" in out
+    assert "R: saved" not in out
+    assert "I: saved" not in out

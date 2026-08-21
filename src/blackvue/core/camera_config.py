@@ -203,6 +203,27 @@ def default_target_dir(archive: Path) -> Path:
     return archive.parent / "trips"
 
 
+def default_snapshots_dir(id_: str) -> Path:
+    """Return the default directory bv-web saves a camera's bv-snap
+    F/R/I snapshots into - `~/beyond-video-data/snapshots/<id>`, a
+    sibling of default_logs_dir()'s own `~/beyond-video-data/logs`
+    (not default_archive_dir()'s `~/beyond-video/archive/<id>` -
+    Christer was explicit that a snap's save location should be kept
+    separate from the recording archive, since a snap is a one-off
+    grab, not part of a recording).
+
+    Unlike bv-snap's own CLI, which takes a user-supplied --output
+    path directly (Christer: "A dedicated --output path the user
+    passes"), bv-web has no free-text arbitrary-path field anywhere
+    in its forms (see WEB_ARCHITECTURE.md) - every web-triggered job
+    works off camera-id-scoped defaults instead. This is that default
+    for the web trigger; nested by id like default_archive_dir() so
+    two cameras' snapshots never collide. Always created on demand by
+    save_snapshots() itself, same as bv-snap's own --output."""
+
+    return Path.home() / "beyond-video-data" / "snapshots" / id_
+
+
 def _looks_like_path(value: str) -> bool:
     """True if `value` should be treated as a literal filesystem path
     rather than a possible camera system id - the disambiguation

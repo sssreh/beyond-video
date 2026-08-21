@@ -8,6 +8,7 @@
 
 ```
 bv-gps [--config-dir DIR] [--timeout SECONDS] [--no-address]
+       [--snap --output DIR [--direction {F,R,I}]...]
        (ID | --host HOST[:PORT])
 ```
 
@@ -20,6 +21,8 @@ It prints the fix as a coordinate pair pasteable straight into Google Maps' own 
 `ID` and `--host` are mutually exclusive - exactly one is required. Endpoints configured in `bv-config` are tried in order; `--host` skips `bv-config` entirely and tries just that one address, no `--config-dir` lookup involved - handy for probing a list of candidate IPs (e.g. from `scan_blackvue_endpoints.py`) one at a time without setting each one up as a full camera first. Either way, the connection only works while the camera is actually reachable - typically while connected to its own WiFi AP - not after the fact and not remotely, since `blackvue_livedata.cgi` only reports the camera's *current* position, not a history.
 
 If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rather than anything meaningful - `bv-gps` treats that reading as "no fix" and says so, rather than printing a false location out in the Atlantic.
+
+`--snap` switches to a different one-shot mode entirely: instead of reading a GPS fix, it grabs a live camera snapshot per direction (Front/Rear/Interior by default) and saves each to `--output`, then exits - the GPS/address logic above never runs. This is the exact same capture `bv-snap(1)`'s own standalone command does; `--snap` here just saves reaching for a second command when you're already invoking `bv-gps`. See `bv-snap(1)` for the full behavior (per-direction drop-on-failure, filename format, etc.) - it's identical either way.
 
 ## ARGUMENTS
 
@@ -35,6 +38,9 @@ If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rat
 | `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. Ignored when `--host` is given. |
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--no-address` | Skip the reverse-geocoding lookup and print only the coordinates and Google Maps link. |
+| `--snap` | One-shot mode: grab a camera snapshot instead of a GPS reading (requires `--output`). See `bv-snap(1)`. |
+| `--output DIR`, `-o DIR` | Directory to save `--snap`'s `.jpg` files into. Required with `--snap`, invalid without it. |
+| `--direction {F,R,I}` | With `--snap`, only snap this direction - repeatable. Default: every direction. Invalid without `--snap`. |
 | `-h`, `--help` | Show help and exit. |
 
 ## EXIT STATUS
@@ -46,6 +52,7 @@ If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rat
 | 2 | Camera unreachable on every configured endpoint. |
 | 3 | Camera reachable, but currently has no GPS fix. |
 | 4 | Camera reachable, but `blackvue_livedata.cgi` never returned a readable GPS object. |
+| 5 | `--snap` mode: camera reachable, but no snapshot was received for any requested direction. |
 
 ## EXAMPLES
 
@@ -77,6 +84,12 @@ Check a whole list of candidate IPs, one per line in `ips.txt`:
 while read -r ip; do bv-gps --host "$ip" --no-address; done < ips.txt
 ```
 
+Grab F/R/I snapshots instead of a GPS reading:
+
+```
+bv-gps Kirby --snap --output ~/snaps
+```
+
 ## SEE ALSO
 
-`bv-config(1)` to set up the camera this connects to, `bv-download(1)` for downloading recordings from the same endpoints.
+`bv-config(1)` to set up the camera this connects to, `bv-download(1)` for downloading recordings from the same endpoints, `bv-snap(1)` for the standalone version of `--snap`'s snapshot capture.

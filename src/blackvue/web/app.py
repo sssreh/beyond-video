@@ -100,6 +100,7 @@ from ..core.camera_config import config_path
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import list_camera_ids
 from ..core.camera_config import load_camera_config
+from ..core.blackvue_client import SNAPSHOT_DIRECTIONS
 from ..core.lock import LOCKABLE_ASSETS
 from ..export.geocoding import load_or_reverse_geocode
 from ..telemetry.gps_reader import GpsFix
@@ -1400,6 +1401,43 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             id_=id,
             timeout=timeout,
             no_address=no_address,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-snap", response_class=HTMLResponse)
+    async def new_bv_snap_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_snap.html",
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                "snapshot_directions": SNAPSHOT_DIRECTIONS,
+            },
+        )
+
+    @app.post("/jobs/bv-snap")
+    async def new_bv_snap_submit(
+        request: Request,
+        id: str = Form(...),
+        timeout: int = Form(5, ge=1),
+        directions: list[str] = Form([]),
+        user: User = Depends(require_owner),
+    ):
+        # An empty directions list means "every direction" (bv-snap's
+        # own CLI --direction default), not "none" - same convention
+        # start_bv_snap()/bv_snap.py's parse_args() already use, so an
+        # unchecked-everything submission (the template's own default
+        # state) still snaps F/R/I rather than silently doing nothing.
+        job = app.state.job_runner.start_bv_snap(
+            id_=id,
+            timeout=timeout,
+            directions=directions or None,
             username=user.username,
         )
         return RedirectResponse(

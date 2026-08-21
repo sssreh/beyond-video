@@ -16306,3 +16306,169 @@ full manual-harness pass over test_bv_generate.py (106/114 passed, same 8
 pre-existing harness-only failures as before, nothing new).
 
 Files changed: src/blackvue/cli/bv_generate.py.
+
+## bv-snap: F/R/I camera snapshot feature (standalone CLI + bv-gps --snap + bv-web)
+
+Christer: "I would like to have a snap function that takes 1 snapshot for
+camera F, R and I." Clarified via AskUserQuestion before building:
+- Command shape: **both** - a standalone `bv-snap` command and a `--snap`
+  one-shot mode on `bv-gps`, sharing the same capture/save logic.
+- Save location: **a dedicated `--output` path the user passes**, explicitly
+  not the camera's own recording archive - a snap is a one-off grab, not
+  part of a recording.
+- Interior ("I") handling: **include it by default, best effort**. Christer's
+  own prior firmware-endpoint scan (see this file's earlier BlackVue
+  Elite 10/`scan_blackvue_endpoints.py` entries) found `direction=I` answers
+  with a "Valid" HTTP response but he's never actually seen a real image come
+  back from it on his hardware - so a direction that errors or returns an
+  empty body is silently dropped from the result rather than failing the
+  whole snap, and the caller is told which directions actually came back via
+  the returned dict's own keys.
+- Web wiring: **same PR**, not deferred - `JobRunner.start_bv_snap()` +
+  `/jobs/bv-snap` routes + template + nav link, alongside the CLI work.
+
+### Capture layer: `BlackVueClient.snapshot()`
+
+Added `SNAPSHOT_DIRECTIONS = ("F", "R", "I")` (core/blackvue_client.py) - the
+camera's own single-letter wire-protocol direction codes used literally in
+`blackvue_live.cgi?direction=X`, distinct from `archive_browser.py`'s own
+lowercase `"front"/"rear"/"interior"` convention for already-downloaded
+archive assets. "O" (a 4th-camera code also seen during endpoint scanning) is
+deliberately left out of the default set, matching Christer's literal
+request ("camera F, R and I").
+
+`snapshot(directions=SNAPSHOT_DIRECTIONS) -> dict[str, bytes]` does one
+bounded `_get()` per requested direction and returns whatever came back,
+keyed by direction letter. Each direction is independent: a `RuntimeError`
+from `_get()` or an empty response body drops that direction from the
+result rather than raising - callers diff `directions` against the returned
+dict's keys to see exactly what failed. `snapshot()` was dead code before
+this feature (confirmed via a whole-repo grep - only unrelated `Job.snapshot()`
+calls existed elsewhere), so its signature could change freely from the old
+`tuple[bytes, bytes]` to `dict[str, bytes]` with no compatibility concerns.
+
+### Save layer: `blackvue/snap.py`
+
+New module, one function: `save_snapshots(snapshots, output_dir, *,
+timestamp=None) -> dict[str, Path]`. Writes each direction's bytes to
+`output_dir/snap_<timestamp>_<direction>.jpg`, creating `output_dir` if
+needed. One shared timestamp across every file from the same capture event
+(so `snap_20260821_180512_F.jpg`/`_R.jpg`/`_I.jpg` visibly belong together) -
+generated via `datetime.now()` unless a caller supplies one (tests pass a
+fixed string). This is the shared "bytes to disk" half both `bv_snap.py` and
+`bv_gps.py --snap` call into, keeping the HTTP capture (`BlackVueClient.
+snapshot()`) and the filesystem write cleanly separated.
+
+### CLI: `bv-snap` (new, standalone)
+
+`src/blackvue/cli/bv_snap.py` mirrors `bv_gps.py`'s own connection-setup
+block almost verbatim (id/`--host` mutually exclusive, `--config-dir`,
+`--timeout`, same `connect()`/`load_camera_config()` flow). Adds
+`--output`/`-o` (required - Christer's own explicit design choice) and
+`--direction` (choices from `SNAPSHOT_DIRECTIONS`, repeatable, default None
+meaning "every direction"). `_run()` connects, computes the requested
+directions, calls `client.snapshot(directions)`, treats an empty result as
+`EXIT_NO_SNAPSHOTS` (3), otherwise calls `save_snapshots()` and reports
+`"<direction>: saved <path>"` per direction via `say()`, warning (but not
+failing) for any requested-but-missing direction. Wired into `main()` via
+`wrap_say("bv-snap")`/`wrap_warn("bv-snap", ...)` (core/joblog.py) from the
+start, since bv-web wiring was scoped into this same pass rather than a
+follow-up. Registered in pyproject.toml's `[project.scripts]`.
+
+### CLI: `bv-gps --snap`
+
+`bv_gps.py` gained `--snap` (store_true), `--output`/`-o`, and `--direction`,
+with three `parser.error()` cross-checks in `parse_args()`: `--snap` requires
+`--output`, `--output` is invalid without `--snap`, `--direction` is invalid
+without `--snap`. A new `_run_snap()` helper (placed right after `_run()`,
+since it's only ever called from within it) holds the exact same
+capture/save/report logic as `bv_snap.py`'s own `_run()` - `_run()` branches
+into it immediately after a successful `connect()`, before ever touching the
+GPS-fetching code below. New `EXIT_NO_SNAPSHOTS = 5` exit code (bv-gps's
+existing 0-4 were already taken by its GPS-mode exits).
+
+### bv-web wiring
+
+`core/camera_config.py` gained `default_snapshots_dir(id_) ->
+~/beyond-video-data/snapshots/<id>` - a sibling of `default_logs_dir()`'s own
+`~/beyond-video-data/logs`, deliberately *not* under `default_archive_dir()`'s
+`~/beyond-video/archive/<id>` tree, matching Christer's own "not the
+recording archive" answer. This is the web trigger's save-location default:
+unlike the CLI's own user-supplied `--output`, bv-web has no free-text
+arbitrary-path field anywhere in its forms (confirmed - no precedent exists
+in app.py), so the web trigger works off this camera-id-scoped default
+instead, same shape every other bv-web job trigger uses.
+
+`JobRunner.start_bv_snap(id_, timeout, directions, username)` (web/jobs.py,
+placed right after `start_bv_lock()`) mirrors `start_bv_gps()`'s own
+id-only curation (no `--host` escape hatch exposed to the browser), computes
+`output = default_snapshots_dir(id_)`, and calls `bv_snap.parse_args()`/
+`_run()` the same way every other job-runner method does.
+
+`GET`/`POST /jobs/bv-snap` (web/app.py, placed right after bv-gps's own
+routes) follow the bv-lock precedent for a checkbox-list field: `directions:
+list[str] = Form([])`, empty list means "every direction" (mapped to `None`
+before calling `start_bv_snap()`), matching bv-snap's own CLI default
+semantics rather than "snap nothing."
+
+`job_new_bv_snap.html` (new template) mirrors `job_new_bv_gps.html`'s
+Required/Defaults groups plus a Directions checkbox-row copied from
+`job_new_bv_lock.html`'s own asset-type checkboxes. Nav link added to
+`base.html` right after "GPS Current loc".
+
+### Tests
+
+`tests/blackvue/core/test_blackvue_client.py`: `snapshot()` - default
+F/R/I fetch, explicit direction subset, per-direction drop on error/empty
+body, all-fail returns `{}`.
+
+`tests/blackvue/test_snap.py` (new): `save_snapshots()` - one file per
+direction, dir auto-creation, shared timestamp, generated-vs-supplied
+timestamp, input-order preservation, empty-dict handling.
+
+`tests/blackvue/cli/test_bv_snap.py` (new): `parse_args()` validation
+(required `--output`, required id-or-host, repeatable `--direction`, invalid
+direction letter rejected) and `_run()` (full F/R/I save + report, partial
+result still succeeds with a warning, all-fail exits `EXIT_NO_SNAPSHOTS`,
+explicit direction subset, unreachable camera, no endpoints configured).
+
+`tests/blackvue/cli/test_bv_gps.py`: the three `parse_args()` cross-field
+validation errors, `--snap` mode's full save/report behavior, a regression
+guard that `--snap` never falls through to `reverse_geocode()`/GPS code,
+partial-result warning, `EXIT_NO_SNAPSHOTS`, explicit direction subset.
+
+`tests/blackvue/core/test_camera_config.py`: `default_snapshots_dir()` -
+per-id nesting under `~/beyond-video-data/snapshots`, differs per camera id,
+confirmed not nested under the archive tree.
+
+`tests/blackvue/web/test_jobs.py`: `start_bv_snap()` - say/warn wiring,
+`default_snapshots_dir()`-derived output path reaching parsed args, `None`
+directions meaning "every direction" reaching parsed args, explicit
+directions reaching parsed args, job failure on `EXIT_NO_SNAPSHOTS`.
+
+No FastAPI route-level test was added for `/jobs/bv-snap` - this repo has no
+existing TestClient/httpx-based route tests for any job-trigger form
+(confirmed: no `test_app.py` exists, and `bv-gps`/`bv-lock`'s own routes
+aren't route-tested either), so bv-snap follows the same precedent as those:
+the underlying logic (`start_bv_snap()`, `default_snapshots_dir()`) is
+tested directly, and the template was verified via a standalone Jinja2
+render (see Verified below).
+
+Verified: `ast.parse()` on every changed/new `.py` file (real `pytest`/
+`tomllib` unavailable in this sandbox, same pre-existing limitation as the
+bv-generate crash-fix entry above). `job_new_bv_snap.html` rendered
+standalone via Jinja2 (with `capitalize_first` filter registered, matching
+app.py's own setup) - confirmed all three F/R/I checkboxes render and the
+nav link is present.
+
+Files changed: src/blackvue/core/blackvue_client.py,
+src/blackvue/core/camera_config.py, src/blackvue/snap.py (new),
+src/blackvue/cli/bv_snap.py (new), src/blackvue/cli/bv_gps.py,
+src/blackvue/web/jobs.py, src/blackvue/web/app.py,
+src/blackvue/web/templates/job_new_bv_snap.html (new),
+src/blackvue/web/templates/base.html, pyproject.toml,
+docs/man/bv-snap.md (new), docs/man/bv-gps.md, docs/CLI.md,
+tests/blackvue/core/test_blackvue_client.py, tests/blackvue/test_snap.py
+(new), tests/blackvue/cli/test_bv_snap.py (new),
+tests/blackvue/cli/test_bv_gps.py, tests/blackvue/core/test_camera_config.py,
+tests/blackvue/web/test_jobs.py.

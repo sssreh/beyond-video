@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -17,6 +18,18 @@ from urllib.request import urlopen
 from ..domain.live_gps_fix import LiveGpsFix
 from ..domain.vod_entry import VodEntry
 from ..parser.livedata import parse_gps_fix
+
+# The camera's own single-letter direction codes, as used directly in
+# blackvue_live.cgi's ?direction= query string (Front/Rear/Interior) -
+# distinct from the lowercase "front"/"rear"/"interior" convention
+# archive_browser.py's own _THUMBNAIL_ASSET_BY_DIRECTION uses for
+# already-downloaded footage, since this one has to match the wire
+# protocol exactly, not this repo's own naming. "O" (Optional/a 4th
+# camera some models have) is a real code too, confirmed alongside F/
+# R/I in scan_blackvue_endpoints.py's probing, but left out of the
+# default set here - Christer's own request was specifically "camera
+# F, R and I".
+SNAPSHOT_DIRECTIONS: tuple[str, ...] = ("F", "R", "I")
 
 # blackvue_livedata.cgi never closes its own connection - it's a
 # never-ending multipart/x-mixed-replace stream, the same shape as
@@ -75,13 +88,39 @@ class BlackVueClient:
 
         return self._get("/Config/config.ini").decode("utf-8")
 
-    def snapshot(self) -> tuple[bytes, bytes]:
-        """Return front and rear snapshots."""
+    def snapshot(
+        self, directions: Sequence[str] = SNAPSHOT_DIRECTIONS
+    ) -> dict[str, bytes]:
+        """Grab one live JPEG frame per camera direction (F/R/I by
+        default) via a single bounded GET per direction - Christer:
+        "I would like to have a snap function that takes 1 snapshot
+        for camera F, R and I."
 
-        front = self._get("/blackvue_live.cgi?direction=F")
-        rear = self._get("/blackvue_live.cgi?direction=R")
+        Each direction is independent: a request that errors, or
+        that comes back with an empty body (this repo's own firmware-
+        endpoint scan - see scan_blackvue_endpoints.py and
+        WORKING_CONTEXT.md - confirmed a "Valid" HTTP response for
+        direction=I on Christer's hardware, but never actually
+        displayed a real image for it) is silently dropped from the
+        result rather than failing the whole call, so a camera model
+        without a working Interior lens still returns Front/Rear.
+        Callers can tell exactly which directions failed by comparing
+        `directions` against this dict's keys - nothing is lost by
+        not raising here.
+        """
 
-        return front, rear
+        results: dict[str, bytes] = {}
+
+        for direction in directions:
+            try:
+                data = self._get(f"/blackvue_live.cgi?direction={direction}")
+            except RuntimeError:
+                continue
+
+            if data:
+                results[direction] = data
+
+        return results
 
     def live_gps(self) -> LiveGpsFix:
         """Return the camera's current GPS reading, read live from
