@@ -2720,6 +2720,48 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             raise HTTPException(status_code=404, detail="Snapshot not found")
         return FileResponse(path)
 
+    @app.post("/jobs/{job_id}/snapshot/delete")
+    async def job_snapshot_delete(
+        job_id: str,
+        user: User = Depends(require_viewer_or_owner),
+    ):
+        """Christer, twice now, after the load-counting design above
+        ("?auto=1" exclusion, Cache-Control: no-store, the pageshow/
+        persisted bfcache reload) still wasn't enough: "files not
+        deleted on page back". The whole show-once-then-delete-on-the-
+        next-load design (_apply_snapshot_deletion_gating()) depends on
+        a *second real HTTP request* actually reaching this server -
+        and a browser's Back button has more ways to avoid that than
+        just bfcache (Brave, which Christer uses, doesn't even
+        participate in Chromium's 2025 "allow no-store into bfcache"
+        rollout the same way Chrome does, so no-store's own cache-
+        busting guarantee can't be assumed either). Rather than keep
+        chasing every browser's caching behavior, this route sidesteps
+        the problem: job_detail.html's own script now fires a
+        `navigator.sendBeacon()` here from a `pagehide` handler,
+        registered only on a load that actually rendered the finished-
+        state images. `pagehide` is the platform's own recommended
+        "the user is leaving this page" signal - it fires on a real
+        navigation, a Back/Forward, a tab close, *and* a bfcache
+        eviction, so deletion no longer depends on whatever the *next*
+        load of this URL happens to do. sendBeacon (not fetch) because
+        the browser guarantees it's sent even though the page is
+        already unloading - a normal fetch() started from a pagehide
+        handler can get cancelled mid-flight.
+
+        Deliberately unconditional (beyond auth) rather than re-
+        checking Job.snapshot_shown_while_finished - the client only
+        ever registers this beacon on a page load that already set
+        that flag server-side, and _delete_job_snapshots() is a no-op
+        (missing_ok=True) if the files are already gone, so there's no
+        real double-delete risk to guard against. 204 with an empty
+        body - sendBeacon doesn't inspect the response either way."""
+
+        job = _find_job(app.state.job_runner, job_id)
+        _authorize_job_view(job, user)
+        _delete_job_snapshots(job)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @app.post("/jobs/{job_id}/answer")
     async def job_answer(
         job_id: str,

@@ -128,6 +128,33 @@ function copyReplicateCommand(button) {
       }
     });
 
+    // Christer, after the above still didn't fix it in Brave: "files
+    // not deleted on page back". The pageshow/persisted trick above
+    // only helps if Brave actually restores this exact page from
+    // bfcache - and Brave (unlike stock Chrome as of its 2025 rollout)
+    // doesn't reliably put Cache-Control: no-store pages into bfcache
+    // in the first place, so there was no bfcache restore for
+    // "persisted" to ever catch; Back was just quietly *not* getting
+    // this page's own JS to run a second time in a way this script
+    // could detect. Rather than chase every browser's own caching
+    // behavior, this drops the whole "does a second request reach the
+    // server" dependency: `pagehide` is the platform's own "you are
+    // leaving this page" signal - it fires on every real navigation
+    // away, Back/Forward included, a tab close, *and* a bfcache
+    // eviction - so registering this only on a load that actually
+    // rendered the finished snapshot images means the files get
+    // cleaned up the moment Christer leaves having seen them, however
+    // he leaves, rather than depending on what the *next* visit to
+    // this URL happens to do. sendBeacon (not fetch) specifically
+    // because the browser guarantees it's sent even though the page
+    // is already unloading.
+    var hasFinishedSnapshots = {{ 'true' if (snapshot_job and is_finished) else 'false' }};
+    if (hasFinishedSnapshots && navigator.sendBeacon) {
+      window.addEventListener("pagehide", function () {
+        navigator.sendBeacon("/jobs/{{ job.id }}/snapshot/delete");
+      });
+    }
+
     var box = document.getElementById("job-output");
     if (!box) return;
     box.scrollTop = box.scrollHeight;

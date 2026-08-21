@@ -17090,3 +17090,65 @@ appears with the right target. `python3 -m py_compile` clean.
 
 Files changed: src/blackvue/web/app.py,
 src/blackvue/web/templates/_job_output_lines.html.
+
+### Follow-up: snapshot files still not deleted on Back in Brave - switch to a pagehide beacon
+
+Christer, after the bfcache/no-store fix above: "files not deleted on
+page back", still reproducing. Asked for exact repro steps: view a
+finished snap job, navigate away, press Back - in Brave. The whole
+previous design (`_apply_snapshot_deletion_gating()`, `?auto=1`,
+`Cache-Control: no-store`, the `pageshow`/`event.persisted` reload)
+all assumes a *second real HTTP request* eventually reaches this
+server - and Brave gives Back more ways to dodge that than Chrome
+does: research confirmed Chrome only finished rolling out "allow
+Cache-Control: no-store pages into bfcache" in March/April 2025, and
+Brave (a privacy-focused Chromium fork) doesn't necessarily mirror
+that specific rollout - so there may be no bfcache restore happening
+at all for `event.persisted` to ever catch, yet Back still isn't
+producing a request this server's gating logic can see.
+
+Rather than keep chasing individual browsers' caching behavior, this
+removes the dependency on a second request entirely. `pagehide` is the
+platform's own "the user is leaving this page" signal - guaranteed to
+fire on a real navigation, Back/Forward, a tab close, and a bfcache
+eviction alike. `job_detail.html` now registers a `pagehide` listener
+- only on a load that actually rendered the finished-state snapshot
+images (`snapshot_job and is_finished`, both already in the template
+context) - that fires `navigator.sendBeacon("/jobs/{id}/snapshot/
+delete")`. sendBeacon rather than fetch(), specifically because the
+browser guarantees delivery even though the page is mid-unload (a
+plain fetch() started from pagehide can get cancelled).
+
+New route: `POST /jobs/{job_id}/snapshot/delete` (app.py, right after
+`job_snapshot_image()`) - same auth as every other job route
+(`require_viewer_or_owner` + `_authorize_job_view()`), calls
+`_delete_job_snapshots(job)` unconditionally (beyond auth) and
+returns 204. No re-check of `Job.snapshot_shown_while_finished` -
+the client only ever registers the beacon on a load that already set
+that flag server-side, and `_delete_job_snapshots()` is a no-op
+(`unlink(missing_ok=True)`) if the files are already gone, so a
+double-delete (e.g. the old load-counting path and this beacon both
+firing for the same view) just costs nothing.
+
+Kept the old `_apply_snapshot_deletion_gating()`/`?auto=1`/no-store/
+pageshow machinery in place rather than ripping it out - it's still
+correct for a plain manual F5 refresh (which reliably hits the server
+regardless of any of this), and doesn't conflict with the new beacon
+since both funnel into the same idempotent `_delete_job_snapshots()`.
+The beacon is what actually closes the Back-button gap now: deletion
+no longer depends on what the *next* visit to this URL does, only on
+the fact that the user is *leaving* a page that already showed the
+images - true regardless of browser, caching policy, or bfcache
+support.
+
+Verified: `_delete_job_snapshots()`'s own logic against real files on
+disk (deletes exactly the files named in the job's own "<direction>:
+saved <path>" lines, second call is a clean no-op - same pattern used
+throughout this project since fastapi isn't installable in this
+sandbox), the new route's JS wiring via a standalone Jinja2 render
+(confirms `hasFinishedSnapshots = true` and the beacon URL appear when
+`snapshot_job`/`is_finished` are both true), and `node --check` on the
+extracted `<script>` block. `python3 -m py_compile` clean on app.py.
+
+Files changed: src/blackvue/web/app.py,
+src/blackvue/web/templates/job_detail.html.
