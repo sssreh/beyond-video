@@ -16822,3 +16822,94 @@ test_blackvue_client.py (28/28) to confirm nothing else regressed.
 
 Files changed: src/blackvue/cli/bv_gps.py,
 tests/blackvue/cli/test_bv_gps.py, docs/man/bv-gps.md.
+
+### Follow-up: inline snapshot preview in bv-web + bv-gps --snap web support
+
+Christer's next message: "Of course i want to see the snapshot
+pictures on bv-web and then deleted after page refresh. Also i want
+to be able to get the snapshot for bv-gps in bv-web and the adress."
+- confirms/expands the ambiguous "I guess the output pictures get
+discarded on new page refresh" line from the previous follow-up, plus
+a second ask: bv-gps's web job trigger should support `--snap`
+alongside the GPS reading it already prints.
+
+**Inline preview + deferred deletion (jobs.py, app.py,
+_job_output_lines.html, base.html).** `Job` gained two fields:
+`snapshot_dir: Path | None` (set by `start_bv_snap()` and
+`start_bv_gps(snap=True)` to `default_snapshots_dir(id_)`) and
+`snapshot_shown_while_finished: bool = False`. app.py added
+`SNAP_SAVED_RE = re.compile(r"^([FRI]): saved (.+)$")` matching the
+exact output line bv-snap/bv-gps print per direction (same prefix the
+existing camera-click-sound JS already watches for), plus two Jinja
+globals (`is_snapshot_saved_line`, `snapshot_direction`) and two
+helpers: `_job_snapshot_path(job, direction)` (parses the job's own
+output for that direction's saved path, defensively verifying it's
+actually inside `job.snapshot_dir` before trusting it) and
+`_delete_job_snapshots(job)` (deletes every file the job's own output
+lines point at - not a directory wipe, since `default_snapshots_dir`
+is shared across every run against that camera, not scoped per job).
+
+`job_detail()` now gates on `job_status.is_finished`: the first
+finished-state page load (typically job_detail.html's own
+poll-triggered `window.location.reload()` the moment a job stops
+running) just sets `snapshot_shown_while_finished = True`; the *next*
+finished-state load (a genuine user refresh) calls
+`_delete_job_snapshots()` first. This split matters because the
+auto-reload-on-completion is itself a second GET - a naive "delete on
+any second full load" rule would wipe the images before Christer ever
+saw them. Nothing happens while the job is still running, so live-
+polled images already visible are never yanked mid-job. New route
+`GET /jobs/{job_id}/snapshot/{direction}` serves the file via
+`FileResponse`, 404s once deleted or if that direction was never
+captured. `_job_output_lines.html` (shared by job_detail()'s initial
+render and job_poll()'s AJAX partial - both now pass `snapshot_job`/
+`job_id` into their context) renders an inline `<img
+class="snapshot-thumb">` after each "saved" line, with
+`onerror="this.style.display='none'"` so it just disappears once its
+file is gone rather than showing a broken-image icon. New
+`.snapshot-thumb` CSS in base.html caps the inline image to
+320x240.
+
+**bv-gps --snap in bv-web (jobs.py, app.py,
+job_new_bv_gps.html).** `start_bv_gps()` gained `snap: bool = False`
+and `directions: list[str] | None = None` params - when `snap=True`
+it resolves `default_snapshots_dir(id_)`, builds `--snap --output
+<dir>` (plus `--direction` per entry) into bv-gps's argv, and sets
+`job.snapshot_dir` so the preview machinery above picks it up
+automatically. The `/jobs/bv-gps` GET route now passes
+`snapshot_directions` (same `SNAPSHOT_DIRECTIONS` list bv-snap's form
+already uses) into context; the POST route accepts `snap`/
+`directions` form fields with the same "empty directions list means
+every direction" convention bv-snap's own submit route uses.
+`job_new_bv_gps.html` gained a "Snapshot (--snap)" option group
+(checkbox + per-direction checkboxes, mirroring bv-snap's own
+"Directions" group) - Christer's "and the adress" is already covered
+since `--snap` runs alongside the existing GPS+address output, not
+instead of it (see the previous follow-up entry).
+
+Tests: extended `tests/blackvue/web/test_app_reuse.py` (the file that
+already tests app.py helpers directly, without a TestClient) with
+`_job_snapshot_path()`/`_delete_job_snapshots()` coverage - finds the
+right file per direction, returns None for an uncaptured direction or
+a missing snapshot_dir, rejects a path outside snapshot_dir
+(defense-in-depth), deletes only this job's own files (leaving a
+sibling run's files in the same shared directory alone), and
+tolerates a no-op call (no snapshot_dir) or an already-missing file
+(`missing_ok=True`). `tests/blackvue/web/test_jobs.py`'s existing
+`start_bv_gps`/`start_bv_snap` tests already passed unmodified against
+the new `snap`/`directions`/`snapshot_dir` wiring (98/108 passing via
+the pytest-shim harness; the 10 failures are pre-existing shim gaps -
+missing `pytest.approx`/`monkeypatch.setenv`/`exc_info.value` support
+and unrelated `bv-generate`/`bv-lock`/`bv-search` argparse edge cases -
+none touch bv-gps/bv-snap). `test_app_reuse.py` itself needs `fastapi`
+(not installable in this offline sandbox, same constraint the file's
+own docstring already documents), so `_job_snapshot_path()`/
+`_delete_job_snapshots()`'s logic was additionally sanity-checked via
+a standalone script running the identical code against real files on
+disk.
+
+Files changed: src/blackvue/web/jobs.py, src/blackvue/web/app.py,
+src/blackvue/web/templates/_job_output_lines.html,
+src/blackvue/web/templates/base.html,
+src/blackvue/web/templates/job_new_bv_gps.html,
+tests/blackvue/web/test_app_reuse.py.

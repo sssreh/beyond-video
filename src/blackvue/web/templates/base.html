@@ -403,6 +403,16 @@
       max-height: 60vh; overflow-y: auto; font-size: 0.9rem;
     }
     .job-output .echo { color: var(--link); }
+    /* Inline snapshot preview (task #1123, Christer: "Of course i want
+       to see the snapshot pictures on bv-web") - one per
+       "<direction>: saved <path>" output line for a snap-capable job.
+       Capped rather than full-size since these sit inline in the
+       scrolling output pane alongside plain text. */
+    .snapshot-thumb {
+      display: block; max-width: 320px; max-height: 240px;
+      margin: 0.35rem 0 0.75rem; border: 1px solid var(--panel-border);
+      border-radius: 4px;
+    }
     /* archive_recording_detail.html's scene/OCR text panel (task #681) -
        one .scene-text block per direction (Front/Rear) that has a
        .scene.txt sidecar, .scene-text-body styled like pre.job-output's

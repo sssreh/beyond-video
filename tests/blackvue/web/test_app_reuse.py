@@ -29,7 +29,9 @@ from fastapi import HTTPException
 from blackvue.core import history
 from blackvue.web.app import _archive_filter_flags
 from blackvue.web.app import _authorize_job_view
+from blackvue.web.app import _delete_job_snapshots
 from blackvue.web.app import _job_camera_id
+from blackvue.web.app import _job_snapshot_path
 from blackvue.web.app import _recent_web_runs
 from blackvue.web.app import _reuse_defaults
 from blackvue.web.app import _sliced_job_output
@@ -416,3 +418,105 @@ def test_video_label_for_filename_returns_none_for_a_non_video_sidecar(tmp_path)
     recording = scan_archive(archive, "kirby")[0]
 
     assert _video_label_for_filename(recording, "20260715_140212_N.gps") is None
+
+
+# ---------------------------------------------------------------------------
+# _job_snapshot_path() / _delete_job_snapshots() - back the inline snapshot
+# preview feature (task #1123, Christer: "Of course i want to see the
+# snapshot pictures on bv-web ... and then deleted after page refresh").
+# Both parse the job's own "<direction>: saved <path>" output lines (see
+# SNAP_SAVED_RE's comment in app.py) rather than trusting anything
+# client-supplied, so these tests build a Job with snapshot_dir set and
+# real files on disk under tmp_path, exactly like a real bv-snap/bv-gps
+# --snap job would leave behind.
+# ---------------------------------------------------------------------------
+
+
+def _snap_job(tmp_path, output, snapshot_dir=None):
+    job = Job(
+        id="snap-job",
+        command="bv-snap kirby",
+        username="christer",
+        created_at=datetime.now(timezone.utc),
+        snapshot_dir=snapshot_dir if snapshot_dir is not None else tmp_path,
+    )
+    job.output.extend(output)
+    return job
+
+
+def test_job_snapshot_path_finds_the_saved_file(tmp_path):
+    saved = tmp_path / "F_kirby_20260821.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"])
+
+    assert _job_snapshot_path(job, "F") == saved
+
+
+def test_job_snapshot_path_returns_none_for_a_direction_never_captured(tmp_path):
+    saved = tmp_path / "F_kirby_20260821.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}", "R: no snapshot received"])
+
+    assert _job_snapshot_path(job, "R") is None
+
+
+def test_job_snapshot_path_returns_none_when_job_has_no_snapshot_dir(tmp_path):
+    saved = tmp_path / "F_kirby_20260821.jpg"
+    saved.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {saved}"], snapshot_dir=None)
+
+    assert _job_snapshot_path(job, "F") is None
+
+
+def test_job_snapshot_path_rejects_a_path_outside_snapshot_dir(tmp_path):
+    # Defense-in-depth (see the function's own docstring) - a "saved"
+    # line pointing outside job.snapshot_dir should never actually
+    # happen from real output, but must not be trusted if it did.
+    outside = tmp_path.parent / "outside.jpg"
+    outside.write_bytes(b"jpeg-bytes")
+    job = _snap_job(tmp_path, [f"F: saved {outside}"])
+
+    assert _job_snapshot_path(job, "F") is None
+
+
+def test_delete_job_snapshots_removes_every_captured_direction(tmp_path):
+    front = tmp_path / "F_kirby.jpg"
+    rear = tmp_path / "R_kirby.jpg"
+    front.write_bytes(b"f")
+    rear.write_bytes(b"r")
+    job = _snap_job(tmp_path, [f"F: saved {front}", f"R: saved {rear}"])
+
+    _delete_job_snapshots(job)
+
+    assert not front.exists()
+    assert not rear.exists()
+
+
+def test_delete_job_snapshots_leaves_other_files_in_the_shared_dir_alone(tmp_path):
+    # default_snapshots_dir(id_) is shared across every run against a
+    # given camera (see Job.snapshot_dir's own docstring) - deletion
+    # must target only this job's own captured files, not wipe the
+    # directory.
+    mine = tmp_path / "F_mine.jpg"
+    someone_elses = tmp_path / "F_earlier_run.jpg"
+    mine.write_bytes(b"mine")
+    someone_elses.write_bytes(b"not mine")
+    job = _snap_job(tmp_path, [f"F: saved {mine}"])
+
+    _delete_job_snapshots(job)
+
+    assert not mine.exists()
+    assert someone_elses.exists()
+
+
+def test_delete_job_snapshots_is_a_no_op_without_a_snapshot_dir(tmp_path):
+    job = _snap_job(tmp_path, ["some line"], snapshot_dir=None)
+
+    _delete_job_snapshots(job)  # must not raise
+
+
+def test_delete_job_snapshots_tolerates_an_already_missing_file(tmp_path):
+    already_gone = tmp_path / "F_kirby.jpg"
+    job = _snap_job(tmp_path, [f"F: saved {already_gone}"])
+
+    _delete_job_snapshots(job)  # must not raise (missing_ok=True)

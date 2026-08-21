@@ -6,7 +6,9 @@
   <p>Fetches a camera's current GPS reading live over the network and
   prints a pasteable coordinate pair, a Google Maps link, and (unless
   skipped below) a reverse-geocoded address. Connects using whichever
-  endpoint from the camera's bv-config setup answers first.</p>
+  endpoint from the camera's bv-config setup answers first. Optionally
+  also grabs a camera snapshot (Front/Rear/Interior) alongside the GPS
+  reading - the same capture bv-snap does on its own.</p>
 </div>
 {% if cameras %}
 <div class="content-panel">
@@ -41,6 +43,25 @@
       Skip the reverse-geocoded address lookup
       <span class="help-tip" tabindex="0">?<span class="tooltip-text">Reverse-geocoding turns coordinates into a street address via an external lookup (Nominatim). Skip it for a faster, address-free result, or if that lookup isn't reachable from this network.</span></span>
     </label>
+  </div>
+
+  <div class="option-group">
+    <h3>Snapshot (--snap)</h3>
+    <label class="field-label" for="snap">
+      <input type="checkbox" id="snap" name="snap" value="true"
+             style="width: auto; margin: 0;">
+      Also grab a camera snapshot
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Alongside the GPS reading above, also captures a live still image per direction - the same one-shot capture bv-snap does on its own.</span></span>
+    </label>
+    <p class="field-hint">Leave every direction box unchecked to snap all of them (same as bv-snap's own default).</p>
+    <div class="checkbox-row">
+      {% for direction in snapshot_directions %}
+      <label class="filter-checkbox">
+        <input type="checkbox" name="directions" value="{{ direction }}" style="width: auto; margin: 0;">
+        {{ direction }}
+      </label>
+      {% endfor %}
+    </div>
   </div>
 
   <button type="submit">Start</button>

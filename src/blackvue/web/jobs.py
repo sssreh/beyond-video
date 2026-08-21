@@ -233,6 +233,31 @@ class Job:
     status: JobStatus = JobStatus.RUNNING
     output: list[str] = field(default_factory=list)
     prompt: str | None = None
+    snapshot_dir: Path | None = None
+    """Set by start_bv_snap() and start_bv_gps() (when snap=True) to
+    the directory their captured .jpg files were saved into
+    (default_snapshots_dir(id_), core/camera_config.py). Lets
+    job_detail.html show the actual images inline (Christer: "Of
+    course i want to see the snapshot pictures on bv-web") instead of
+    just the "<direction>: saved <path>" text line - see app.py's
+    job_snapshot_image() route and _job_snapshot_path() helper, which
+    parse that same output line rather than trusting anything
+    client-supplied. None for every other job type, so
+    _job_output_lines.html only ever renders images for a snap-
+    capable job."""
+    snapshot_shown_while_finished: bool = False
+    """Whether this job's finished-state page has already been
+    rendered with its snapshot images visible at least once. Christer:
+    "i want to see the snapshot pictures on bv-web and then deleted
+    after page refresh" - the first time a finished snap job's page
+    loads (typically the automatic reload job_detail.html's poll loop
+    triggers the moment the job stops running) shows the images and
+    flips this to True; the *next* full page load (a genuine user
+    refresh) deletes the actual files from disk before rendering
+    instead of showing them again - see app.py's job_detail() route.
+    Never touched while the job is still running, so images already
+    visible via live polling are never yanked out from under an
+    in-progress job."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _answer_queue: "queue.Queue[str]" = field(
         default_factory=queue.Queue, repr=False
@@ -349,6 +374,8 @@ class JobRunner:
         id_: str,
         timeout: int,
         no_address: bool,
+        snap: bool = False,
+        directions: list[str] | None = None,
         username: str,
     ) -> Job:
         """Start bv-gps as a job, against an already-configured camera
@@ -362,19 +389,40 @@ class JobRunner:
         timeout in seconds) - unlike --host/--config-dir this one is
         exposed, since it's just a number with a sensible default
         (job_new_bv_gps.html's own "Defaults" group), not an escape
-        hatch around the curated id-only design."""
+        hatch around the curated id-only design.
+
+        `snap`/`directions` mirror start_bv_snap()'s own --snap
+        support (Christer: "Also i want to be able to get the
+        snapshot for bv-gps in bv-web and the adress") - since
+        bv_gps.py's own --snap now also reports the GPS fix alongside
+        the snapshot (see cli/bv_gps.py's _report_gps_fix()), this one
+        job gets both. Same curated design as start_bv_snap(): no
+        free-text --output field, just default_snapshots_dir(id_)."""
 
         from ..cli import bv_gps
+        from ..core.camera_config import default_snapshots_dir
 
         argv: list[str] = [id_, "--timeout", str(timeout)]
         if no_address:
             argv.append("--no-address")
+
+        output = None
+        if snap:
+            output = default_snapshots_dir(id_)
+            argv += ["--snap", "--output", str(output)]
+            if directions:
+                for direction in directions:
+                    argv += ["--direction", direction]
+
         args = bv_gps.parse_args(argv)
         job = self._new_job(
             command=f"bv-gps {id_}",
             replicate_command=_replicate_command_line("bv-gps", argv),
             username=username,
         )
+        if output is not None:
+            # See Job.snapshot_dir's own docstring.
+            job.snapshot_dir = output
 
         def run() -> int:
             say = job.append_output
@@ -570,6 +618,9 @@ class JobRunner:
             replicate_command=_replicate_command_line("bv-snap", argv),
             username=username,
         )
+        # See Job.snapshot_dir's own docstring - lets job_detail.html
+        # show the captured images inline instead of just their paths.
+        job.snapshot_dir = output
 
         def run() -> int:
             say = job.append_output

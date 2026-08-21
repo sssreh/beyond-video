@@ -13,8 +13,18 @@
   RECORDING_ID_RE's own comment in app.py). `is_recording_id` is a
   Jinja env global, not a context variable - available here the same
   way it always was inline in job_detail.html.
+
+  `snapshot_job` (bool) and `job_id` (str) back the inline snapshot
+  preview (Christer: "Of course i want to see the snapshot pictures on
+  bv-web") - both job_detail() and job_poll() now pass them alongside
+  output/camera_id. The <img> below points at job_snapshot_image()
+  (app.py), which 404s once _delete_job_snapshots() has removed the
+  file (job_detail()'s second finished-state load) - onerror hides the
+  broken-image icon at that point instead of showing it.
 #}
 {% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
 {% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
+{% elif snapshot_job and is_snapshot_saved_line(line) %}{{ line }}
+<img class="snapshot-thumb" src="/jobs/{{ job_id }}/snapshot/{{ snapshot_direction(line) }}" alt="{{ snapshot_direction(line) }} snapshot" onerror="this.style.display='none';">
 {% else %}{{ line }}
 {% endif %}{% endfor %}

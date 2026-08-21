@@ -139,6 +139,17 @@ STATIC_DIR = Path(__file__).parent / "static"
 # of bv-search's own indented match/status lines.
 RECORDING_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z]$")
 
+# bv-snap and bv-gps --snap both print exactly one "<direction>: saved
+# <path>" line per direction that actually captured (see bv_snap.py's/
+# bv_gps.py's own _run()/_run_snap()) - same prefix job_detail.html's
+# own camera-click-sound JS already watches for (SNAP_LINE_RE there).
+# _job_output_lines.html uses this to render the actual image inline
+# for a snap-capable job (Christer: "Of course i want to see the
+# snapshot pictures on bv-web") instead of just the path as text -
+# see _job_snapshot_path()/job_snapshot_image() for how the path in
+# group(2) gets resolved back to a real file, safely.
+SNAP_SAVED_RE = re.compile(r"^([FRI]): saved (.+)$")
+
 # Quick-tail view (task #687 in WORKING_CONTEXT.md): job_detail()'s
 # ?tail=1 option renders only the most recent TAIL_LINE_COUNT output
 # lines of a still-running job, instead of the full (potentially
@@ -234,6 +245,17 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # rather than plain text.
     templates.env.globals["is_recording_id"] = (
         lambda s: RECORDING_ID_RE.match(s) is not None
+    )
+    # See SNAP_SAVED_RE's own comment above - _job_output_lines.html
+    # calls these per output line, only for a snap-capable job
+    # (snapshot_job=True in that partial's context), to render an
+    # inline <img> after the matching line rather than just the
+    # "<direction>: saved <path>" text on its own.
+    templates.env.globals["is_snapshot_saved_line"] = (
+        lambda s: SNAP_SAVED_RE.match(s) is not None
+    )
+    templates.env.globals["snapshot_direction"] = (
+        lambda s: SNAP_SAVED_RE.match(s).group(1)
     )
 
     # Unauthenticated on purpose: just the two theme background
@@ -1386,7 +1408,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "job_new_bv_gps.html",
-            {"user": user, "cameras": _camera_options()},
+            {
+                "user": user,
+                "cameras": _camera_options(),
+                # For the optional --snap direction checkboxes (Christer:
+                # "i want to be able to get the snapshot for bv-gps in
+                # bv-web") - same list bv-snap's own form already uses.
+                "snapshot_directions": SNAPSHOT_DIRECTIONS,
+            },
         )
 
     @app.post("/jobs/bv-gps")
@@ -1395,12 +1424,18 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         id: str = Form(...),
         timeout: int = Form(5, ge=1),
         no_address: bool = Form(False),
+        snap: bool = Form(False),
+        directions: list[str] = Form([]),
         user: User = Depends(require_owner),
     ):
         job = app.state.job_runner.start_bv_gps(
             id_=id,
             timeout=timeout,
             no_address=no_address,
+            snap=snap,
+            # Same "empty means every direction" convention as bv-snap's
+            # own submit route above - only meaningful when snap=True.
+            directions=directions or None,
             username=user.username,
         )
         return RedirectResponse(
@@ -2509,6 +2544,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         job = _find_job(app.state.job_runner, job_id)
         _authorize_job_view(job, user)
         job_status, output, prompt = job.snapshot()
+        # Christer: "i want to see the snapshot pictures on bv-web and
+        # then deleted after page refresh" - see
+        # Job.snapshot_shown_while_finished's own docstring for why
+        # this is gated on "already shown once while finished", not
+        # just "any second load": the very first finished-state load
+        # (typically poll's own automatic reload the moment the job
+        # stops running) needs to actually show the images, only the
+        # *next* one deletes them. Never touched while still running,
+        # so a still-running job's live-polled images are never
+        # yanked out from under it.
+        if job.snapshot_dir is not None and job_status.is_finished:
+            if job.snapshot_shown_while_finished:
+                _delete_job_snapshots(job)
+            else:
+                job.snapshot_shown_while_finished = True
         # A "paused" query param lets the owner freeze the page on its
         # current snapshot - same server-rendered-link pattern the
         # archive browser's filters already use - and resume by
@@ -2550,6 +2600,15 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "prompt": prompt,
                 "paused": paused,
                 "camera_id": camera_id,
+                # Whether _job_output_lines.html should try rendering an
+                # inline <img> after each "<direction>: saved <path>"
+                # line - see SNAP_SAVED_RE's own comment. Stays True
+                # even after _delete_job_snapshots() has run (below),
+                # since the text lines themselves are never rewritten -
+                # the <img> tags just 404-and-hide once their files are
+                # gone (see job_snapshot_image()).
+                "snapshot_job": job.snapshot_dir is not None,
+                "job_id": job.id,
                 "tail_active": tail_active,
                 "tail_truncated_count": tail_truncated_count,
                 "tail_line_count": TAIL_LINE_COUNT,
@@ -2606,7 +2665,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         )
         camera_id = _job_camera_id(job)
         output_html = templates.env.get_template("_job_output_lines.html").render(
-            output=displayed_output, camera_id=camera_id
+            output=displayed_output,
+            camera_id=camera_id,
+            snapshot_job=job.snapshot_dir is not None,
+            job_id=job.id,
         )
         response = JSONResponse(
             {
@@ -2620,6 +2682,30 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # forever since nothing re-triggers the fetch loop.
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.get("/jobs/{job_id}/snapshot/{direction}")
+    async def job_snapshot_image(
+        job_id: str,
+        direction: str,
+        user: User = Depends(require_viewer_or_owner),
+    ):
+        """Serve one of a snap-capable job's captured .jpg files, so
+        _job_output_lines.html can render it inline (Christer: "Of course
+        i want to see the snapshot pictures on bv-web"). 404s once
+        _delete_job_snapshots() has removed the file (job_detail()'s
+        second finished-state load) - the <img> tag just fails to load at
+        that point rather than the page erroring out; same 404 if the job
+        never captured that direction at all (e.g. R when only F/I came
+        back). Same auth as every other job route - a snapshot is exactly
+        as sensitive as the rest of that job's output.
+        """
+
+        job = _find_job(app.state.job_runner, job_id)
+        _authorize_job_view(job, user)
+        path = _job_snapshot_path(job, direction)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        return FileResponse(path)
 
     @app.post("/jobs/{job_id}/answer")
     async def job_answer(
@@ -3204,6 +3290,60 @@ def _job_camera_id(job: Job) -> str | None:
     if command_parts and command_parts[0] == "bv-search" and len(command_parts) == 2:
         return command_parts[1]
     return None
+
+
+def _job_snapshot_path(job: Job, direction: str) -> Path | None:
+    """Resolve a snap-capable job's saved path for one direction, from
+    its own "<direction>: saved <path>" output line (see
+    SNAP_SAVED_RE) - not from anything client-supplied, since this
+    backs job_snapshot_image()'s file-serving route. Returns None if
+    the job never captured that direction, or (defensively) if the
+    line's path somehow isn't inside job.snapshot_dir - every real
+    "saved" line comes from save_snapshots() writing into exactly that
+    directory, so this should never actually trigger outside a bug."""
+
+    if job.snapshot_dir is None:
+        return None
+    snapshot_dir = job.snapshot_dir.resolve()
+    _, output, _ = job.snapshot()
+    for line in output:
+        match = SNAP_SAVED_RE.match(line)
+        if match is None or match.group(1) != direction:
+            continue
+        path = Path(match.group(2)).resolve()
+        if not path.is_relative_to(snapshot_dir):
+            return None
+        return path
+    return None
+
+
+def _delete_job_snapshots(job: Job) -> None:
+    """Delete every .jpg file a snap-capable job actually saved
+    (Christer: "i want to see the snapshot pictures on bv-web and
+    then deleted after page refresh") - called by job_detail() the
+    *second* time a finished snap job's page is fully loaded (see
+    Job.snapshot_shown_while_finished's own docstring for why not the
+    first). Parses the same output lines _job_snapshot_path() does
+    and deletes exactly those files, rather than wiping
+    job.snapshot_dir wholesale - that directory
+    (default_snapshots_dir(id_)) is shared across every run against
+    that camera, not just this one job's."""
+
+    if job.snapshot_dir is None:
+        return
+    snapshot_dir = job.snapshot_dir.resolve()
+    _, output, _ = job.snapshot()
+    for line in output:
+        match = SNAP_SAVED_RE.match(line)
+        if match is None:
+            continue
+        path = Path(match.group(2)).resolve()
+        if not path.is_relative_to(snapshot_dir):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _resolve_camera_target(cache: CameraConfigCache, camera_id: str) -> Path | None:
