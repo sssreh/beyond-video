@@ -242,13 +242,38 @@ class BlackVueClient:
         except HTTPError as exc:
             raise RuntimeError(f"Unable to fetch {path}") from exc
 
+        except TimeoutError as exc:
+            # Christer: "the snapshot part times out even when i set
+            # it to 15 s" - `self._timeout` is a per-read allowance
+            # (urlopen's timeout= applies fresh to every blocking
+            # response.read() call, not once to the whole request), so
+            # a bare `TimeoutError` here means some individual read
+            # over the camera's remote/internet connection genuinely
+            # stalled with no data for that many seconds - raising the
+            # timeout value further is a real lever, not a no-op.
+            # Re-raised as RuntimeError (not left as a bare
+            # TimeoutError) specifically so snapshot()'s own `except
+            # RuntimeError: continue` below still catches this and
+            # drops just this one direction instead of crashing the
+            # whole --snap run - previously this propagated raw all
+            # the way up to bv-web's job runner as an opaque bare
+            # "Error: timed out" with no indication of which direction
+            # or how far the warm-up discard had gotten.
+            raise RuntimeError(
+                f"{path}: timed out after {frames_seen}/{frames_needed} "
+                f"frame(s) read (timeout={self._timeout}s)"
+            ) from exc
+
         raise RuntimeError(
             f"no complete frame received from {path} within "
             f"{SNAPSHOT_MAX_BYTES} bytes"
         )
 
     def snapshot(
-        self, directions: Sequence[str] = SNAPSHOT_DIRECTIONS
+        self,
+        directions: Sequence[str] = SNAPSHOT_DIRECTIONS,
+        *,
+        on_error: Callable[[str, str], None] | None = None,
     ) -> dict[str, bytes]:
         """Grab one live JPEG frame per camera direction (F/R/I by
         default) via a single bounded read per direction - Christer:
@@ -275,6 +300,17 @@ class BlackVueClient:
         SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER times as many -
         see that constant's own comment for why (Christer's own 2-
         camera setup kept landing a near-duplicate of "R" for "I").
+
+        `on_error`, if given, is called with `(direction, message)` for
+        each direction that fails - added after Christer reported "the
+        snapshot part times out even when i set it to 15 s" and the
+        only feedback bv-web's job output gave him was a bare "Error:
+        timed out" with no indication of which direction stalled or
+        how far the warm-up discard had gotten (the failure was being
+        swallowed here entirely, `except RuntimeError: continue`, with
+        no trace left anywhere). Optional and defaults to a no-op so
+        every existing caller/test keeps working unchanged; bv-gps and
+        bv-snap's own CLIs now pass their `warn()` here.
         """
 
         results: dict[str, bytes] = {}
@@ -289,7 +325,9 @@ class BlackVueClient:
                     f"/blackvue_live.cgi?direction={direction}",
                     discard=discard,
                 )
-            except RuntimeError:
+            except RuntimeError as exc:
+                if on_error is not None:
+                    on_error(direction, str(exc))
                 continue
 
             if data:
@@ -302,29 +340,50 @@ class BlackVueClient:
         blackvue_livedata.cgi.
 
         Raises NoGpsDataError if no GPS object appears within
-        LIVE_GPS_MAX_BYTES of the stream. A GPS object that does
-        appear but reads (0.0, 0.0) is returned normally as a
+        LIVE_GPS_MAX_BYTES of the stream, or if the connection stalls
+        (TimeoutError) before one does - see below. A GPS object that
+        does appear but reads (0.0, 0.0) is returned normally as a
         LiveGpsFix with has_fix False, not treated as an error - see
         LiveGpsFix.has_fix's own docstring for why.
+
+        A stall is folded into NoGpsDataError rather than left as a
+        bare TimeoutError: bv-gps's own _report_gps_fix() already
+        treats NoGpsDataError as best-effort ("a GPS hiccup should
+        never fail a --snap run", per that function's docstring) and
+        catches only that exception type. Before this, a timed-out
+        blackvue_livedata.cgi read (very plausibly the actual, more
+        common trigger of Christer's "the snapshot part times out even
+        when i set it to 15 s" report, since _report_gps_fix() always
+        runs before snapshot capture in --snap mode) propagated as a
+        raw, uncaught TimeoutError and crashed the whole --snap run
+        instead of just skipping the GPS line - the opposite of what
+        the "best-effort" docstring already promised.
         """
 
         url = f"{self._base_url}/blackvue_livedata.cgi"
 
-        with urlopen(url, timeout=self._timeout) as response:
-            buffer = b""
+        try:
+            with urlopen(url, timeout=self._timeout) as response:
+                buffer = b""
 
-            while len(buffer) < LIVE_GPS_MAX_BYTES:
-                chunk = response.read(4096)
+                while len(buffer) < LIVE_GPS_MAX_BYTES:
+                    chunk = response.read(4096)
 
-                if not chunk:
-                    break
+                    if not chunk:
+                        break
 
-                buffer += chunk
-                fix = parse_gps_fix(buffer.decode("utf-8", errors="replace"))
+                    buffer += chunk
+                    fix = parse_gps_fix(buffer.decode("utf-8", errors="replace"))
 
-                if fix is not None:
-                    latitude, longitude = fix
-                    return LiveGpsFix(latitude=latitude, longitude=longitude)
+                    if fix is not None:
+                        latitude, longitude = fix
+                        return LiveGpsFix(latitude=latitude, longitude=longitude)
+
+        except TimeoutError as exc:
+            raise NoGpsDataError(
+                "timed out reading blackvue_livedata.cgi before a GPS "
+                f"reading appeared (timeout={self._timeout}s)"
+            ) from exc
 
         raise NoGpsDataError(
             "no GPS reading found in blackvue_livedata.cgi's response "

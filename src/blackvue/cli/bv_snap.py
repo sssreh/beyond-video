@@ -158,7 +158,17 @@ def _run(
 
     directions = tuple(args.direction) if args.direction else SNAPSHOT_DIRECTIONS
 
-    snapshots = client.snapshot(directions)
+    # Christer: "the snapshot part times out even when i set it to
+    # 15 s" - see bv_gps.py's _run_snap() for the full explanation of
+    # why this exists (same shared BlackVueClient.snapshot() call this
+    # function was always a near-duplicate of).
+    failed_directions: set[str] = set()
+
+    def _on_snapshot_error(direction: str, message: str) -> None:
+        failed_directions.add(direction)
+        warn(f"bv-snap: {endpoint.name}: {direction}: {message}")
+
+    snapshots = client.snapshot(directions, on_error=_on_snapshot_error)
 
     if not snapshots:
         warn(
@@ -176,7 +186,9 @@ def _run(
     for direction, path in paths.items():
         say(f"{direction}: saved {path}")
 
-    missing = [d for d in directions if d not in snapshots]
+    missing = [
+        d for d in directions if d not in snapshots and d not in failed_directions
+    ]
     for direction in missing:
         warn(f"bv-snap: {endpoint.name}: no snapshot received for direction {direction}")
 

@@ -301,7 +301,23 @@ def _run_snap(
 
     directions = tuple(args.direction) if args.direction else SNAPSHOT_DIRECTIONS
 
-    snapshots = client.snapshot(directions)
+    # Christer: "the snapshot part times out even when i set it to
+    # 15 s" - previously a per-direction failure (most commonly a
+    # timeout - see BlackVueClient._read_one_mjpeg_frame()'s own
+    # comment) was swallowed entirely inside snapshot() and only
+    # showed up here as an indistinguishable "no snapshot received"
+    # below, with no hint of *why*. on_error reports the real message
+    # (e.g. "timed out after 3/8 frame(s) read (timeout=15s)") as soon
+    # as it happens; failed_directions tracks which ones already got a
+    # specific message so the generic "missing" loop below doesn't
+    # also report them a second time with less information.
+    failed_directions: set[str] = set()
+
+    def _on_snapshot_error(direction: str, message: str) -> None:
+        failed_directions.add(direction)
+        warn(f"bv-gps: {endpoint.name}: {direction}: {message}")
+
+    snapshots = client.snapshot(directions, on_error=_on_snapshot_error)
 
     if not snapshots:
         warn(
@@ -319,7 +335,9 @@ def _run_snap(
     for direction, path in paths.items():
         say(f"{direction}: saved {path}")
 
-    missing = [d for d in directions if d not in snapshots]
+    missing = [
+        d for d in directions if d not in snapshots and d not in failed_directions
+    ]
     for direction in missing:
         warn(f"bv-gps: {endpoint.name}: no snapshot received for direction {direction}")
 
