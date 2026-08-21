@@ -21,10 +21,17 @@
   (app.py), which 404s once _delete_job_snapshots() has removed the
   file (job_detail()'s second finished-state load) - onerror hides the
   broken-image icon at that point instead of showing it.
+
+  bv-gps's own "Google Maps: <url>" line (GOOGLE_MAPS_LINE_RE, app.py)
+  gets the same treatment - Christer: "bv-gps in bv-web does not
+  create a link for google maps" - the line used to render as plain
+  escaped text, so the URL wasn't clickable even though it's a real
+  link.
 #}
 {% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
 {% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
 {% elif snapshot_job and is_snapshot_saved_line(line) %}{{ line }}
 <img class="snapshot-thumb" src="/jobs/{{ job_id }}/snapshot/{{ snapshot_direction(line) }}" alt="{{ snapshot_direction(line) }} snapshot" onerror="this.style.display='none';">
+{% elif is_google_maps_line(line) %}Google Maps: <a href="{{ google_maps_link_url(line) }}" target="_blank" rel="noopener">{{ google_maps_link_url(line) }}</a>
 {% else %}{{ line }}
 {% endif %}{% endfor %}

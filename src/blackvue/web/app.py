@@ -150,6 +150,16 @@ RECORDING_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z]$")
 # group(2) gets resolved back to a real file, safely.
 SNAP_SAVED_RE = re.compile(r"^([FRI]): saved (.+)$")
 
+# bv-gps prints exactly one "Google Maps: <url>" line per successful
+# fix (see cli/bv_gps.py's google_maps_url()/_report_gps_fix()) -
+# job_detail.html used to render that whole line as plain escaped
+# text, so the URL itself wasn't clickable (Christer: "bv-gps in
+# bv-web does not create a link for google maps"). _job_output_lines.html
+# uses this the same way it already does for RECORDING_ID_RE/
+# SNAP_SAVED_RE above, to turn just the URL portion of a matching line
+# into a real <a href> instead of leaving the whole thing as text.
+GOOGLE_MAPS_LINE_RE = re.compile(r"^Google Maps: (https://\S+)$")
+
 # Quick-tail view (task #687 in WORKING_CONTEXT.md): job_detail()'s
 # ?tail=1 option renders only the most recent TAIL_LINE_COUNT output
 # lines of a still-running job, instead of the full (potentially
@@ -256,6 +266,16 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     )
     templates.env.globals["snapshot_direction"] = (
         lambda s: SNAP_SAVED_RE.match(s).group(1)
+    )
+    # See GOOGLE_MAPS_LINE_RE's own comment above -
+    # _job_output_lines.html calls these per output line to render a
+    # bv-gps "Google Maps: <url>" line with the URL itself as a real
+    # link rather than plain text.
+    templates.env.globals["is_google_maps_line"] = (
+        lambda s: GOOGLE_MAPS_LINE_RE.match(s) is not None
+    )
+    templates.env.globals["google_maps_link_url"] = (
+        lambda s: GOOGLE_MAPS_LINE_RE.match(s).group(1)
     )
 
     # Unauthenticated on purpose: just the two theme background

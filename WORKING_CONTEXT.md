@@ -17059,3 +17059,34 @@ one-off snap grab stay separate from the recording archive - see
 so no change there.
 
 Files changed: src/blackvue/web/templates/job_detail.html.
+
+### Follow-up: make bv-gps's Google Maps line a real link in bv-web
+
+Christer: "bv-gps in bv-web does not create a link for google maps."
+bv-gps's own `_report_gps_fix()` (cli/bv_gps.py) already prints a
+"Google Maps: <url>" line for every successful fix - that line was
+just rendered as plain, Jinja-escaped text in the job output pane, so
+the URL sat there unclickable even though it was a real link. Same
+class of gap `RECORDING_ID_RE` (bv-search recording ids) and
+`SNAP_SAVED_RE` (bv-snap/bv-gps --snap thumbnails) already solved for
+their own output patterns - job output is plain text by default, and
+each of those needed its own opt-in regex to turn specific lines into
+something richer.
+
+Fix: new `GOOGLE_MAPS_LINE_RE` in app.py matches
+"Google Maps: https://..." lines exactly, with two new Jinja globals
+(`is_google_maps_line`/`google_maps_link_url`, same shape as the
+existing snapshot pair) wired into `_job_output_lines.html` - a
+matching line now renders as "Google Maps: " followed by a real
+`<a href target="_blank" rel="noopener">` around the URL, everything
+else untouched.
+
+Verified the regex against real bv-gps output lines (matches, plus
+negative cases against the "Coordinates:"/"Address:" lines it sits
+between), and rendered both `_job_output_lines.html` directly and the
+full `job_detail.html` through standalone Jinja2 scripts (no pytest in
+this sandbox, same constraint as always) confirming the `<a href>`
+appears with the right target. `python3 -m py_compile` clean.
+
+Files changed: src/blackvue/web/app.py,
+src/blackvue/web/templates/_job_output_lines.html.
