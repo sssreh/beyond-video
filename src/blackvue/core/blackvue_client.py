@@ -79,6 +79,24 @@ SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
 # out to have been plenty), this is the number to retune again.
 SNAPSHOT_WARMUP_FRAMES = 8
 
+# Interior gets its own, longer warm-up. Christer's own report after
+# raising SNAPSHOT_WARMUP_FRAMES to 8: on his 2-camera (Front/Rear
+# only, no real Interior lens) setup, the "I" snapshot was still
+# landing as a near-duplicate of "R" - "R and I are almost identical,
+# just a little different since it differs a few seconds." That's
+# consistent with the same settle-time problem as SNAPSHOT_WARMUP_
+# FRAMES's own comment, just worse for a direction that (on hardware
+# without a real Interior lens) may never fully "arrive" the way F/R
+# do - so when Christer asked to try doubling the warm-up specifically
+# for I, that's the shape of fix here: SNAPSHOT_WARMUP_FRAMES stays
+# the shared default for F/R, direction "I" gets
+# SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER times as many discards
+# instead. Still unverified against real hardware - if I is still a
+# near-duplicate of R after this, the camera may simply not have a
+# real Interior stream to switch to at all, in which case no amount
+# of extra warm-up will produce a genuinely different frame.
+SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER = 2
+
 
 class NoGpsDataError(RuntimeError):
     """Raised when blackvue_livedata.cgi's response never yielded a
@@ -250,16 +268,23 @@ class BlackVueClient:
         before capturing - see that constant's own comment: the first
         frame(s) after a direction change can still be showing the
         previous direction for a short while (Christer, confirmed
-        from using the feature).
+        from using the feature). Direction "I" discards
+        SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER times as many -
+        see that constant's own comment for why (Christer's own 2-
+        camera setup kept landing a near-duplicate of "R" for "I").
         """
 
         results: dict[str, bytes] = {}
 
         for direction in directions:
+            discard = SNAPSHOT_WARMUP_FRAMES
+            if direction == "I":
+                discard *= SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
+
             try:
                 data = self._read_one_mjpeg_frame(
                     f"/blackvue_live.cgi?direction={direction}",
-                    discard=SNAPSHOT_WARMUP_FRAMES,
+                    discard=discard,
                 )
             except RuntimeError:
                 continue

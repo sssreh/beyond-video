@@ -7,6 +7,7 @@ import pytest
 
 from blackvue.core import blackvue_client as blackvue_client_module
 from blackvue.core.blackvue_client import SNAPSHOT_WARMUP_FRAMES
+from blackvue.core.blackvue_client import SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
 from blackvue.core.blackvue_client import BlackVueClient
 from blackvue.core.blackvue_client import NoGpsDataError
 from blackvue.domain.vod_entry import VodEntry
@@ -298,19 +299,32 @@ def _mjpeg_stream(*frames: bytes) -> bytes:
     return b"".join(frames)
 
 
-def _warmup_frames() -> tuple[bytes, ...]:
-    """SNAPSHOT_WARMUP_FRAMES throwaway parts to prepend before the
-    "real" frame in a fake stream that goes through snapshot() itself
-    (as opposed to calling _read_one_mjpeg_frame() directly with an
-    explicit discard=). Built from the live constant rather than a
-    hardcoded count so these tests don't silently go stale the next
-    time Christer reports duplicates and the default gets retuned
-    again (it already went 2 -> 8 once - Christer: "i still get
-    duplicates, well almost duplicates, i can se a small difference")."""
+def _warmup_frames(count: int = SNAPSHOT_WARMUP_FRAMES) -> tuple[bytes, ...]:
+    """`count` throwaway parts to prepend before the "real" frame in a
+    fake stream that goes through snapshot() itself (as opposed to
+    calling _read_one_mjpeg_frame() directly with an explicit
+    discard=). Defaults to SNAPSHOT_WARMUP_FRAMES - built from the
+    live constant rather than a hardcoded count so these tests don't
+    silently go stale the next time Christer reports duplicates and
+    the default gets retuned again (it already went 2 -> 8 once -
+    Christer: "i still get duplicates, well almost duplicates, i can
+    se a small difference"). Pass an explicit `count` for direction
+    "I", which discards SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
+    times as many (see that constant's own comment - Christer's own
+    2-camera setup kept landing a near-duplicate of "R" for "I" even
+    after the 2 -> 8 raise)."""
 
-    return tuple(
-        _mjpeg_part(f"warmup-{i}".encode()) for i in range(SNAPSHOT_WARMUP_FRAMES)
-    )
+    return tuple(_mjpeg_part(f"warmup-{i}".encode()) for i in range(count))
+
+
+def _warmup_frames_for(direction: str) -> tuple[bytes, ...]:
+    """Same discard-count logic snapshot() itself uses per direction -
+    see _warmup_frames()'s own docstring for why "I" needs more."""
+
+    count = SNAPSHOT_WARMUP_FRAMES
+    if direction == "I":
+        count *= SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
+    return _warmup_frames(count)
 
 
 def test_snapshot_default_directions_is_f_r_i():
@@ -326,12 +340,13 @@ def test_snapshot_fetches_every_default_direction(monkeypatch):
         seen_urls.append(request_or_url)
         # Distinguish the three responses so per-direction dict keys
         # can be checked against genuinely different bytes, not just
-        # three copies of the same fake JPEG. SNAPSHOT_WARMUP_FRAMES
-        # throwaway warm-up frames ahead of the real one, matching the
-        # default discard.
+        # three copies of the same fake JPEG. _warmup_frames_for()
+        # matches snapshot()'s own per-direction discard count ("I"
+        # needs more - see SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER's
+        # own comment).
         direction = request_or_url.rsplit("=", 1)[-1]
         stream = _mjpeg_stream(
-            *_warmup_frames(),
+            *_warmup_frames_for(direction),
             _mjpeg_part(f"jpeg-bytes-{direction}".encode()),
         )
         return _FakeResponse(stream)
@@ -516,6 +531,42 @@ def test_snapshot_uses_snapshot_warmup_frames_as_its_discard_count(monkeypatch):
     client.snapshot(("F",))
 
     assert seen_discard == [SNAPSHOT_WARMUP_FRAMES]
+
+
+def test_snapshot_doubles_warmup_frames_for_interior_direction(monkeypatch):
+    """Christer, after raising SNAPSHOT_WARMUP_FRAMES to 8 didn't fully
+    fix things on his 2-camera setup: "R and I are almost identical,
+    just a little different since it differs a few seconds" - and
+    asked to double the warm-up specifically before "I". Regression
+    test for that: "I" alone should discard
+    SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER times as many frames as
+    every other direction, not the shared default."""
+
+    seen_discard = []
+    real_read_one = BlackVueClient._read_one_mjpeg_frame
+
+    def spy(self, path, *, discard=0):
+        seen_discard.append(discard)
+        return real_read_one(self, path, discard=discard)
+
+    monkeypatch.setattr(BlackVueClient, "_read_one_mjpeg_frame", spy)
+    monkeypatch.setattr(
+        blackvue_client_module,
+        "urlopen",
+        _fake_urlopen(
+            _mjpeg_stream(
+                *[_mjpeg_part(b"x")]
+                * (SNAPSHOT_WARMUP_FRAMES * SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER + 1)
+            )
+        ),
+    )
+
+    client = BlackVueClient("http://camera")
+    client.snapshot(("I",))
+
+    assert seen_discard == [
+        SNAPSHOT_WARMUP_FRAMES * SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
+    ]
 
 
 # ---------------------------------------------------------------------------

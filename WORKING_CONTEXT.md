@@ -16716,3 +16716,48 @@ same pytest-shim script used throughout this feature's earlier fixes
 
 Files changed: src/blackvue/core/blackvue_client.py,
 tests/blackvue/core/test_blackvue_client.py, docs/man/bv-snap.md.
+
+### Follow-up: double the warm-up specifically for Interior
+
+Christer, trying bv-snap on his own 2-camera (Front/Rear only, no
+real Interior lens) setup after the 2 -> 8 raise: "This is funny i
+get F, R and I files on a 2 camera setup. R and I are almost
+identical, jut a ltlle different since it differ a few second."
+
+Asked him whether he wanted this changed (detect-and-drop the
+near-duplicate, just document it, or leave it) - his answer: "Have
+double SNAPSHOT_WARMUP_FRAME before I".
+
+Root cause is almost certainly hardware, not something the discard
+count alone can fully fix: without a real Interior lens to switch to,
+`direction=I` on this camera doesn't error or come back empty - it
+just keeps serving whatever's actually live (Rear), a few seconds
+later than the R request landed. No amount of extra warm-up can make
+a stream that doesn't exist appear; the ask here is a mitigation, not
+a promise it'll fully resolve on hardware with no working Interior
+feed at all.
+
+Implementation: new SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER = 2 in
+core/blackvue_client.py. snapshot() now computes discard =
+SNAPSHOT_WARMUP_FRAMES, doubled only when direction == "I", instead
+of using the same SNAPSHOT_WARMUP_FRAMES value for every direction.
+
+Updated docs/man/bv-snap.md to explain the doubled Interior discard
+*and* the underlying hardware behavior (so a near-duplicate I file on
+a 2-camera setup reads as expected, not as a fresh bug to report).
+
+Tests: added _warmup_frames_for(direction) test helper (mirrors
+snapshot()'s own per-direction discard logic) and rewired
+test_snapshot_fetches_every_default_direction's fake stream builder to
+use it instead of a flat SNAPSHOT_WARMUP_FRAMES count for every
+direction. Added test_snapshot_doubles_warmup_frames_for_interior_
+direction as a direct regression test (spies on _read_one_mjpeg_frame,
+asserts direction "I" alone gets SNAPSHOT_WARMUP_FRAMES *
+SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER as its discard count).
+
+Verified: all 28 tests in test_blackvue_client.py pass via the same
+pytest-shim script used throughout this feature (no network access to
+install real pytest in this sandbox).
+
+Files changed: src/blackvue/core/blackvue_client.py,
+tests/blackvue/core/test_blackvue_client.py, docs/man/bv-snap.md.
