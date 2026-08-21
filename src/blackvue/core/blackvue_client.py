@@ -60,14 +60,17 @@ SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
 # direction for a short while." That's a real behavior of
 # blackvue_live.cgi itself, not something this repo's HTTP layer
 # introduces: bv-live's own live view (live/app.py's stream_camera())
-# opens an equally fresh connection per direction change with no
-# warm-up of its own, and shows the same brief stale-frame transition
-# - so the camera's shared video encoder apparently needs a moment to
-# actually reconfigure to the requested lens even on a brand new
-# connection, and the very first frame(s) served can still be whatever
-# direction was live immediately before this request. Discarding
-# frames before capturing costs a small amount of latency per
-# direction (bounded by real frame arrivals, not a fixed sleep).
+# opens an equally fresh connection per direction change and showed
+# the same brief stale-frame transition until it got its own warm-up
+# fix too (live/mjpeg.py's relay_raw_stream(), discard_frames param -
+# Christer's separate follow-up report: "it sometimes can take more
+# than 2 seconds before it switch picture") - so the camera's shared
+# video encoder apparently needs a moment to actually reconfigure to
+# the requested lens even on a brand new connection, and the very
+# first frame(s) served can still be whatever direction was live
+# immediately before this request. Discarding frames before capturing
+# costs a small amount of latency per direction (bounded by real frame
+# arrivals, not a fixed sleep).
 #
 # Started at 2 - Christer tried that and reported back: "i still get
 # duplicates, well almost duplicates, i can se a small difference"

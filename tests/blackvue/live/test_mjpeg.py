@@ -154,3 +154,113 @@ def test_relay_raw_stream_stops_immediately_if_stop_event_already_set():
 
     assert chunks == []
     assert upstream.closed is True
+
+
+def _frame(body: bytes) -> bytes:
+    """Build one complete multipart frame in the same shape
+    encode_jpeg_part() produces (and the discard-phase parser in
+    relay_raw_stream() expects) - used to simulate the camera's own
+    MJPEG framing in the discard_frames tests below."""
+
+    header = (
+        "--fakeboundary\r\n"
+        "Content-Type: image/jpeg\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    ).encode("ascii")
+    return header + body + b"\r\n"
+
+
+def test_relay_raw_stream_discards_the_requested_frames_then_relays_the_rest():
+    # Regression test for Christer's report - "it sometimes can take
+    # more than 2 seconds before it switch picture" when changing
+    # ?direction= on bv-live's own camera feed. discard_frames=2 here
+    # stands in for SNAPSHOT_WARMUP_FRAMES worth of stale frames from
+    # the *previous* direction that a fresh connection can still be
+    # serving - relay_raw_stream() should drop exactly that many
+    # complete frames and then relay everything after byte-for-byte,
+    # untouched.
+    frames = [_frame(b"AAA"), _frame(b"BBB"), _frame(b"CCC")]
+    tail = b"TAILDATA-not-a-frame-at-all"
+    upstream = _FakeUpstream([b"".join(frames) + tail, b""])
+
+    chunks = list(relay_raw_stream(upstream, discard_frames=2))
+
+    # The discard parser cuts each dropped frame right after its body,
+    # leaving that frame's own trailing "\r\n" attached ahead of
+    # whatever comes next - harmless (multipart parts are
+    # conventionally CRLF-prefixed anyway, per RFC 2046), but part of
+    # the real observable output, so assert it explicitly rather than
+    # assuming it gets stripped.
+    assert b"".join(chunks) == b"\r\n" + _frame(b"CCC") + tail
+    assert upstream.closed is True
+
+
+def test_relay_raw_stream_discard_frames_zero_relays_everything_unchanged():
+    # discard_frames defaults to 0 for every pre-existing caller of
+    # relay_raw_stream() - confirms the new parameter is a true no-op
+    # in that case, even when the data looks like real frames.
+    frames = [_frame(b"AAA"), _frame(b"BBB")]
+    upstream = _FakeUpstream([b"".join(frames), b""])
+
+    chunks = list(relay_raw_stream(upstream, discard_frames=0))
+
+    assert b"".join(chunks) == b"".join(frames)
+    assert upstream.closed is True
+
+
+def test_relay_raw_stream_handles_frames_split_across_multiple_reads():
+    frame = _frame(b"split-me-across-two-chunks")
+    midpoint = len(frame) // 2
+    upstream = _FakeUpstream([frame[:midpoint], frame[midpoint:], b"AFTER", b""])
+
+    chunks = list(relay_raw_stream(upstream, discard_frames=1))
+
+    # Same leftover-CRLF behavior as above - the discarded frame's own
+    # trailing "\r\n" precedes "AFTER".
+    assert b"".join(chunks) == b"\r\nAFTER"
+    assert upstream.closed is True
+
+
+def test_relay_raw_stream_discard_gives_up_if_the_stream_ends_early():
+    # Camera closes the connection before ever completing
+    # discard_frames worth of frames - relay_raw_stream() should just
+    # end cleanly (no image, same as before this feature existed)
+    # rather than hanging.
+    upstream = _FakeUpstream([_frame(b"AAA"), b""])
+
+    chunks = list(relay_raw_stream(upstream, discard_frames=3))
+
+    assert chunks == []
+    assert upstream.closed is True
+
+
+def test_relay_raw_stream_discard_stops_immediately_if_stop_event_already_set():
+    upstream = _FakeUpstream([_frame(b"AAA"), b""])
+    stop_event = threading.Event()
+    stop_event.set()
+
+    chunks = list(
+        relay_raw_stream(upstream, discard_frames=2, stop_event=stop_event)
+    )
+
+    assert chunks == []
+    assert upstream.closed is True
+
+
+def test_relay_raw_stream_discard_gives_up_after_max_bytes_and_still_relays(
+    monkeypatch,
+):
+    # Safety bound for malformed/unexpected framing (see
+    # DISCARD_MAX_BYTES's own comment) - shrink the threshold so the
+    # test doesn't need to push multiple real megabytes through a fake
+    # stream. Garbage with no blank-line header terminator can never
+    # satisfy the discard parser, so this exercises the bound itself
+    # rather than a real camera response.
+    monkeypatch.setattr("blackvue.live.mjpeg.DISCARD_MAX_BYTES", 10)
+    garbage = b"no header terminator anywhere in here"
+    upstream = _FakeUpstream([garbage, b"more-after", b""])
+
+    chunks = list(relay_raw_stream(upstream, discard_frames=5))
+
+    assert b"".join(chunks) == garbage + b"more-after"
+    assert upstream.closed is True

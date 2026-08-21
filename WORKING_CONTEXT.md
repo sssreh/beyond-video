@@ -16975,3 +16975,61 @@ Files changed: src/blackvue/web/app.py,
 src/blackvue/web/templates/job_detail.html,
 src/blackvue/web/jobs.py (docstring only),
 tests/blackvue/web/test_app_reuse.py.
+
+### Follow-up: discard warm-up frames on bv-live camera direction switch
+
+Christer's second report from the same message, clarified via a
+follow-up question: "it sometimes can take more than 2 seconds before
+it switch picture" turned out to be about bv-live's own live camera
+view (`/stream/camera?direction=`), not bv-snap/bv-gps captures -
+"Me connecting directly to camera from web browser and changing
+?direction=". This is the exact same underlying camera behavior that
+`SNAPSHOT_WARMUP_FRAMES`/`SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER`
+(core/blackvue_client.py) already fixed for snapshot capture: a fresh
+connection to `blackvue_live.cgi` can keep serving the *previous*
+direction's frames for a moment while the camera's shared video
+encoder reconfigures to the newly requested lens. bv-snap/bv-gps
+already discards that many frames before *capturing* one; bv-live's
+own continuous feed relay had no equivalent warm-up of its own - that
+gap was already called out in `SNAPSHOT_WARMUP_FRAMES`'s own comment,
+just never acted on until now.
+
+Fix: `live/mjpeg.py`'s `relay_raw_stream()` gained a `discard_frames`
+parameter - parses and drops that many complete multipart frames from
+the very start of the stream (same `Content-Length:`-header technique
+as `BlackVueClient._read_one_mjpeg_frame()`), then falls back to pure
+byte-for-byte passthrough for the rest of the connection's lifetime.
+Bounded by a new `DISCARD_MAX_BYTES` (4MB, same reasoning/size as
+`SNAPSHOT_MAX_BYTES`) so a stream that never matches the expected
+framing degrades to "a few stale frames get through," not "no image
+ever appears." `live/app.py`'s `stream_camera()` route now passes
+`discard=SNAPSHOT_WARMUP_FRAMES` (doubled for direction "I", matching
+the snapshot path) into every `relay_raw_stream()` call, so switching
+Front/Rear/Interior in the browser gets the same warm-up treatment
+bv-snap already had. Updated the stale comment in
+`core/blackvue_client.py` that previously said bv-live "opens an
+equally fresh connection per direction change with no warm-up of its
+own" - it does now.
+
+Tests: extended `tests/blackvue/live/test_mjpeg.py` with
+`discard_frames` coverage - discards the requested number of frames
+and relays everything after byte-for-byte (including a case where a
+frame is split across multiple `.read()` calls), `discard_frames=0`
+stays a true no-op for every pre-existing caller, gives up cleanly if
+the stream ends before enough frames arrive, respects an
+already-set `stop_event` during the discard phase, and falls back to
+relaying whatever's buffered once `DISCARD_MAX_BYTES` is hit on
+malformed framing. One real behavior worth noting: the discard parser
+cuts each dropped frame right after its body, so the *next* frame (or
+trailing data) arrives with that frame's own trailing `\r\n` still
+attached ahead of it - harmless (multipart parts are conventionally
+CRLF-prefixed per RFC 2046) and asserted explicitly in the tests
+rather than assumed away. Verified via a standalone script (no
+`pytest` in this sandbox) exercising the exact same six scenarios
+against a fake upstream response object before copying the assertions
+into the real test file; `python3 -m py_compile` clean on all three
+touched source files plus the test file.
+
+Files changed: src/blackvue/live/mjpeg.py, src/blackvue/live/app.py,
+src/blackvue/core/blackvue_client.py (comment only),
+tests/blackvue/live/test_mjpeg.py.

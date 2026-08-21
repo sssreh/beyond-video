@@ -89,8 +89,27 @@ def rendered_frame_stream(
             time.sleep(remaining)
 
 
+# Bounds how many bytes relay_raw_stream() will read while trying to
+# discard `discard_frames` complete frames before giving up and just
+# relaying from wherever it's gotten to - same reasoning as
+# core/blackvue_client.py's own SNAPSHOT_MAX_BYTES: if the camera's
+# multipart framing ever doesn't look like what's expected (missing
+# Content-Length, corrupt boundary), this stays a startup hiccup - a
+# few stale frames still get through, same as before this feature
+# existed - rather than the whole feed sitting with no image at all
+# until a viewer gives up and reloads. Same 4MB size as
+# SNAPSHOT_MAX_BYTES; the discard phase should only ever need a small
+# fraction of that in practice (each JPEG frame is well under 4096
+# bytes per SNAPSHOT_WARMUP_FRAMES's own comment).
+DISCARD_MAX_BYTES = 4 * 1024 * 1024
+
+
 def relay_raw_stream(
-    response, *, chunk_size: int = 4096, stop_event: threading.Event | None = None
+    response,
+    *,
+    chunk_size: int = 4096,
+    stop_event: threading.Event | None = None,
+    discard_frames: int = 0,
 ) -> Iterator[bytes]:
     """Relay `response` (an already-open BlackVueClient.open_stream()
     result) chunk by chunk, unmodified, until it stops yielding data,
@@ -104,6 +123,31 @@ def relay_raw_stream(
     rendered_frame_stream() above, which is building brand new frames
     from scratch every time, this is pure passthrough.
 
+    `discard_frames`: drop this many complete multipart frames from
+    the very start of the stream before relaying anything to the
+    browser. bv-live's own camera feed opens a fresh connection per
+    direction switch (see live/app.py's stream_camera()) - and, per
+    core/blackvue_client.py's own SNAPSHOT_WARMUP_FRAMES comment, "the
+    camera's shared video encoder apparently needs a moment to
+    actually reconfigure to the requested lens even on a brand new
+    connection", so the first frame(s) served can still be showing
+    whatever direction was live just before this request. bv-snap/
+    bv-gps --snap already discard SNAPSHOT_WARMUP_FRAMES frames before
+    *capturing* one for exactly this reason (Christer, confirmed by
+    using the feature); this is the same fix for bv-live's own
+    continuous feed, which had no such warm-up of its own until
+    Christer separately reported "more than 2 seconds before it switch
+    picture" here too. Parses complete frames itself (same
+    Content-Length-header approach as
+    BlackVueClient._read_one_mjpeg_frame()) only during this discard
+    phase, then falls back to pure byte passthrough for the rest of
+    the stream's lifetime - unlike that bounded, single-frame capture,
+    this needs to keep the connection open afterward and relay
+    everything else unmodified, so it can't just delegate there.
+    Bounded by DISCARD_MAX_BYTES so a stream that never satisfies the
+    expected framing (see that constant's own comment) degrades to
+    "some stale frames get through", not "no image ever appears".
+
     `stop_event` is checked once per chunk read, not while blocked
     inside response.read() itself - under normal operation the camera
     keeps sending frames continuously, so in practice this still
@@ -113,6 +157,48 @@ def relay_raw_stream(
     """
 
     try:
+        buffer = b""
+        frames_discarded = 0
+        bytes_read_while_discarding = 0
+
+        while frames_discarded < discard_frames:
+            if stop_event is not None and stop_event.is_set():
+                return
+            chunk = response.read(chunk_size)
+            if not chunk:
+                return
+            buffer += chunk
+            bytes_read_while_discarding += len(chunk)
+            if bytes_read_while_discarding >= DISCARD_MAX_BYTES:
+                break
+
+            while frames_discarded < discard_frames:
+                header_end = buffer.find(b"\r\n\r\n")
+                if header_end == -1:
+                    break
+
+                length = None
+                header_text = buffer[:header_end].decode(
+                    "ascii", errors="replace"
+                )
+                for line in header_text.splitlines():
+                    if line.lower().startswith("content-length:"):
+                        length = int(line.split(":", 1)[1].strip())
+                        break
+
+                if length is None:
+                    break
+
+                frame_end = header_end + 4 + length
+                if len(buffer) < frame_end:
+                    break
+
+                buffer = buffer[frame_end:]
+                frames_discarded += 1
+
+        if buffer:
+            yield buffer
+
         while stop_event is None or not stop_event.is_set():
             chunk = response.read(chunk_size)
             if not chunk:

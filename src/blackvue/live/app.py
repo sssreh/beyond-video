@@ -67,6 +67,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import StreamingResponse
 
 from ..core.blackvue_client import BlackVueClient
+from ..core.blackvue_client import SNAPSHOT_WARMUP_FRAMES
+from ..core.blackvue_client import SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
 from .gsensor_stream import DEFAULT_WINDOW_SECONDS as DEFAULT_GSENSOR_WINDOW_SECONDS
 from .gsensor_stream import live_gsensor_frames
 from .map_stream import DEFAULT_ZOOM_METERS as DEFAULT_MAP_ZOOM_METERS
@@ -151,10 +153,27 @@ def create_live_app(
         # the button doesn't hide itself for that case, since there's
         # no reliable way from here to tell "no interior channel" apart
         # from "interior channel, just nothing to see right now."
+        #
+        # discard=SNAPSHOT_WARMUP_FRAMES: Christer, after using this
+        # feature - "it sometimes can take more than 2 seconds before
+        # it switch picture" when clicking Front/Rear/Interior. Same
+        # root cause bv-snap/bv-gps --snap already had a fix for (see
+        # that constant's own comment in core/blackvue_client.py): a
+        # fresh connection here can keep serving the *previous*
+        # direction's frames for a moment before the camera's encoder
+        # actually reconfigures. Reusing the exact same tuned frame
+        # counts (including the doubled Interior discard) rather than
+        # inventing a separate constant for the same underlying
+        # camera behavior.
+        discard = SNAPSHOT_WARMUP_FRAMES
+        if direction == "I":
+            discard *= SNAPSHOT_WARMUP_FRAMES_INTERIOR_MULTIPLIER
         upstream = client.open_stream(f"/blackvue_live.cgi?direction={direction}")
         content_type = upstream.headers.get("Content-Type") or CONTENT_TYPE
         return StreamingResponse(
-            relay_raw_stream(upstream, stop_event=shutdown_event),
+            relay_raw_stream(
+                upstream, stop_event=shutdown_event, discard_frames=discard
+            ),
             media_type=content_type,
         )
 
