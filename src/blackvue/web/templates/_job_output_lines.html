@@ -27,11 +27,20 @@
   create a link for google maps" - the line used to render as plain
   escaped text, so the URL wasn't clickable even though it's a real
   link.
+
+  The <a> wrapping the <img> (Christer: right-clicked a thumbnail and
+  opened it in a new tab, found the real file "almost twice the
+  size" of the 320x240-capped display) links to the exact same
+  job_snapshot_image() URL the <img> itself uses - same file, no
+  extra route - so a click opens the untouched original at whatever
+  resolution the camera's live-view stream actually produced,
+  independent of .snapshot-thumb's own CSS cap (now 960x720, see
+  base.html).
 #}
 {% for line in output %}{% if line.startswith("> ") %}<span class="echo">{{ line }}</span>
 {% elif camera_id and is_recording_id(line) %}<a href="/archive/{{ camera_id }}/{{ line }}">{{ line }}</a>
 {% elif snapshot_job and is_snapshot_saved_line(line) %}{{ line }}
-<img class="snapshot-thumb" src="/jobs/{{ job_id }}/snapshot/{{ snapshot_direction(line) }}" alt="{{ snapshot_direction(line) }} snapshot" onerror="this.style.display='none';">
+<a href="/jobs/{{ job_id }}/snapshot/{{ snapshot_direction(line) }}" target="_blank" rel="noopener"><img class="snapshot-thumb" src="/jobs/{{ job_id }}/snapshot/{{ snapshot_direction(line) }}" alt="{{ snapshot_direction(line) }} snapshot" onerror="this.style.display='none';"></a>
 {% elif is_google_maps_line(line) %}Google Maps: <a href="{{ google_maps_link_url(line) }}" target="_blank" rel="noopener">{{ google_maps_link_url(line) }}</a>
 {% else %}{{ line }}
 {% endif %}{% endfor %}

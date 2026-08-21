@@ -406,10 +406,19 @@
     /* Inline snapshot preview (task #1123, Christer: "Of course i want
        to see the snapshot pictures on bv-web") - one per
        "<direction>: saved <path>" output line for a snap-capable job.
-       Capped rather than full-size since these sit inline in the
-       scrolling output pane alongside plain text. */
+       Capped rather than unbounded since these sit inline in the
+       scrolling output pane alongside plain text - but Christer found
+       the original 320x240 cap was shrinking the display well below
+       the camera's actual live-view resolution (confirmed by opening
+       the raw file in a new tab: "it was almost twice the size").
+       960x720 comfortably covers that without needing to know the
+       exact source resolution up front; the <a> wrapper below (see
+       _job_output_lines.html) still opens the untouched original for
+       anyone who wants to inspect it at full size regardless of this
+       cap. */
     .snapshot-thumb {
-      display: block; max-width: 320px; max-height: 240px;
+      display: block; max-width: 960px; max-height: 720px;
+      width: 100%; height: auto;
       margin: 0.35rem 0 0.75rem; border: 1px solid var(--panel-border);
       border-radius: 4px;
     }
