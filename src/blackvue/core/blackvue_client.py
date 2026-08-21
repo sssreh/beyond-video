@@ -54,6 +54,26 @@ LIVE_GPS_MAX_BYTES = 65536
 # before giving up on ever seeing one complete frame.
 SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
 
+# How many frames _read_one_mjpeg_frame() throws away before capturing
+# the one it actually returns - Christer, after trying the feature:
+# "I know sometimes when you switch direction it shows the previous
+# direction for a short while." That's a real behavior of
+# blackvue_live.cgi itself, not something this repo's HTTP layer
+# introduces: bv-live's own live view (live/app.py's stream_camera())
+# opens an equally fresh connection per direction change with no
+# warm-up of its own, and shows the same brief stale-frame transition
+# - so the camera's shared video encoder apparently needs a moment to
+# actually reconfigure to the requested lens even on a brand new
+# connection, and the very first frame(s) served can still be whatever
+# direction was live immediately before this request. Discarding a
+# couple of frames before capturing costs a small amount of latency
+# per direction (bounded by real frame arrivals, not a fixed sleep)
+# but isn't provably enough on every camera/firmware - this can't be
+# verified without real hardware, so treat this default as a starting
+# point to confirm (and retune if needed) against real hardware, not a
+# guaranteed fix.
+SNAPSHOT_WARMUP_FRAMES = 2
+
 
 class NoGpsDataError(RuntimeError):
     """Raised when blackvue_livedata.cgi's response never yielded a
@@ -99,10 +119,11 @@ class BlackVueClient:
 
         return self._get("/Config/config.ini").decode("utf-8")
 
-    def _read_one_mjpeg_frame(self, path: str) -> bytes:
-        """Read exactly one JPEG frame out of blackvue_live.cgi's own
+    def _read_one_mjpeg_frame(self, path: str, *, discard: int = 0) -> bytes:
+        """Read one JPEG frame out of blackvue_live.cgi's own
         multipart/x-mixed-replace MJPEG stream and return its raw
-        bytes.
+        bytes - throwing away `discard` complete frames first before
+        capturing the one that's actually returned.
 
         blackvue_live.cgi never closes its own connection - it's a
         never-ending multipart stream, the same shape as
@@ -115,45 +136,82 @@ class BlackVueClient:
         in bounded chunks instead, looks for the per-part
         `Content-Length: N` header multipart/x-mixed-replace puts
         before each frame's body, and returns as soon as that many
-        bytes of image data have arrived - one frame, not the rest of
-        the stream. The response is always closed before returning,
-        same as `_get()`'s own `with urlopen(...)` behavior.
+        bytes of image data have arrived for the frame it's keeping -
+        the rest of the stream is never read. The response is always
+        closed before returning, same as `_get()`'s own `with
+        urlopen(...)` behavior.
+
+        `discard` exists for SNAPSHOT_WARMUP_FRAMES - see that
+        constant's own comment for why: the first frame(s) served
+        right after a direction change can still be showing whatever
+        direction was live before this request.
         """
 
         url = f"{self._base_url}{path}"
+        frames_needed = discard + 1
+        frames_seen = 0
 
         try:
             with urlopen(url, timeout=self._timeout) as response:
                 buffer = b""
+                total_read = 0
 
-                while len(buffer) < SNAPSHOT_MAX_BYTES:
+                while total_read < SNAPSHOT_MAX_BYTES:
                     chunk = response.read(4096)
                     if not chunk:
                         break
                     buffer += chunk
+                    total_read += len(chunk)
 
-                    header_end = buffer.find(b"\r\n\r\n")
-                    if header_end == -1:
-                        continue
-
-                    length = None
-                    header_text = buffer[:header_end].decode(
-                        "ascii", errors="replace"
-                    )
-                    for line in header_text.splitlines():
-                        if line.lower().startswith("content-length:"):
-                            length = int(line.split(":", 1)[1].strip())
+                    # Drain every complete frame already sitting in
+                    # the buffer before reading more off the network -
+                    # a single chunk is often bigger than one frame
+                    # (frames are typically well under 4096 bytes), so
+                    # with discard > 0 more than one complete frame
+                    # can already be present here. Without this inner
+                    # loop, a discarded frame's leftover bytes just
+                    # sit unparsed until response.read() happens to
+                    # return more data - and once the camera has
+                    # already sent everything it's going to send in
+                    # this chunk, that next read() returns empty and
+                    # looks like the stream ended, even though the
+                    # frame being kept was already fully buffered.
+                    while True:
+                        header_end = buffer.find(b"\r\n\r\n")
+                        if header_end == -1:
                             break
 
-                    if length is None:
-                        # No Content-Length seen yet in what's arrived
-                        # so far - keep reading rather than treating a
-                        # still-incomplete header block as fatal.
-                        continue
+                        length = None
+                        header_text = buffer[:header_end].decode(
+                            "ascii", errors="replace"
+                        )
+                        for line in header_text.splitlines():
+                            if line.lower().startswith("content-length:"):
+                                length = int(line.split(":", 1)[1].strip())
+                                break
 
-                    body_start = header_end + 4
-                    if len(buffer) >= body_start + length:
-                        return buffer[body_start : body_start + length]
+                        if length is None:
+                            # No Content-Length seen yet in what's
+                            # arrived so far - wait for more bytes
+                            # rather than treating a still-incomplete
+                            # header block as fatal.
+                            break
+
+                        body_start = header_end + 4
+                        if len(buffer) < body_start + length:
+                            break
+
+                        frame = buffer[body_start : body_start + length]
+                        buffer = buffer[body_start + length :]
+                        frames_seen += 1
+
+                        if frames_seen >= frames_needed:
+                            return frame
+
+                        # Still within the warm-up window - this
+                        # frame's already been dropped from buffer
+                        # above; loop back around to look for the
+                        # next complete frame already buffered.
 
         except HTTPError as exc:
             raise RuntimeError(f"Unable to fetch {path}") from exc
@@ -182,6 +240,12 @@ class BlackVueClient:
         Callers can tell exactly which directions failed by comparing
         `directions` against this dict's keys - nothing is lost by
         not raising here.
+
+        Each direction also discards SNAPSHOT_WARMUP_FRAMES frames
+        before capturing - see that constant's own comment: the first
+        frame(s) after a direction change can still be showing the
+        previous direction for a short while (Christer, confirmed
+        from using the feature).
         """
 
         results: dict[str, bytes] = {}
@@ -189,7 +253,8 @@ class BlackVueClient:
         for direction in directions:
             try:
                 data = self._read_one_mjpeg_frame(
-                    f"/blackvue_live.cgi?direction={direction}"
+                    f"/blackvue_live.cgi?direction={direction}",
+                    discard=SNAPSHOT_WARMUP_FRAMES,
                 )
             except RuntimeError:
                 continue

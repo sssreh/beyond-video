@@ -285,6 +285,18 @@ def _mjpeg_part(data: bytes) -> bytes:
     return header + data + b"\r\n"
 
 
+def _mjpeg_stream(*frames: bytes) -> bytes:
+    """Concatenate several _mjpeg_part() frames into one fake stream -
+    snapshot() discards SNAPSHOT_WARMUP_FRAMES frames before capturing
+    (see that constant's own comment: a camera's shared encoder can
+    keep serving the previous direction for a moment after a switch,
+    Christer: "I know sometimes when you switch direction it shows
+    the previous direction for a short while"), so a realistic fake
+    response needs more than one frame available."""
+
+    return b"".join(frames)
+
+
 def test_snapshot_default_directions_is_f_r_i():
     from blackvue.core.blackvue_client import SNAPSHOT_DIRECTIONS
 
@@ -298,9 +310,16 @@ def test_snapshot_fetches_every_default_direction(monkeypatch):
         seen_urls.append(request_or_url)
         # Distinguish the three responses so per-direction dict keys
         # can be checked against genuinely different bytes, not just
-        # three copies of the same fake JPEG.
+        # three copies of the same fake JPEG. Two throwaway warm-up
+        # frames ahead of the real one, matching the default
+        # SNAPSHOT_WARMUP_FRAMES discard.
         direction = request_or_url.rsplit("=", 1)[-1]
-        return _FakeResponse(_mjpeg_part(f"jpeg-bytes-{direction}".encode()))
+        stream = _mjpeg_stream(
+            _mjpeg_part(b"warmup-1"),
+            _mjpeg_part(b"warmup-2"),
+            _mjpeg_part(f"jpeg-bytes-{direction}".encode()),
+        )
+        return _FakeResponse(stream)
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 
@@ -324,15 +343,22 @@ def test_snapshot_never_hangs_on_a_stream_that_keeps_sending_more_frames(
     """Regression test for the actual bug shipped in the first cut of
     this feature (Christer: "looks like both commands hang"):
     blackvue_live.cgi never closes its connection, so a fake response
-    that keeps yielding data past the first frame (simulating the
-    camera moving on to frame 2, 3, ...) must still return after
-    exactly one frame, not block waiting for the stream to end."""
+    that keeps yielding data past the frame snapshot() actually wants
+    (simulating the camera moving on to yet more frames) must still
+    return once that frame's been captured, not block waiting for the
+    stream to end."""
 
-    first_frame = _mjpeg_part(b"jpeg-bytes-F")
-    # A second part appended after the first - a real never-closing
-    # stream would keep going forever; snapshot() must never read
-    # this far.
-    stream = first_frame + _mjpeg_part(b"jpeg-bytes-F-2")
+    kept_frame = _mjpeg_part(b"jpeg-bytes-F")
+    # Two warm-up frames (discarded, per SNAPSHOT_WARMUP_FRAMES) ahead
+    # of the one that's kept, then one more appended after it - a real
+    # never-closing stream would keep going forever; snapshot() must
+    # never read this far.
+    stream = _mjpeg_stream(
+        _mjpeg_part(b"jpeg-bytes-F-warmup-1"),
+        _mjpeg_part(b"jpeg-bytes-F-warmup-2"),
+        kept_frame,
+        _mjpeg_part(b"jpeg-bytes-F-extra"),
+    )
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
 
@@ -342,10 +368,35 @@ def test_snapshot_never_hangs_on_a_stream_that_keeps_sending_more_frames(
     assert result["F"] == b"jpeg-bytes-F"
 
 
-def test_snapshot_accepts_an_explicit_direction_subset(monkeypatch):
-    monkeypatch.setattr(
-        blackvue_client_module, "urlopen", _fake_urlopen(_mjpeg_part(b"jpeg-bytes"))
+def test_snapshot_discards_warmup_frames_before_capturing(monkeypatch):
+    """Direct regression test for Christer's own report after trying
+    the feature: "I know sometimes when you switch direction it shows
+    the previous direction for a short while." A fake stream whose
+    first two frames are clearly the "wrong" (previous-direction)
+    image and whose third is the real one - snapshot() must return
+    the third, not the first."""
+
+    stream = _mjpeg_stream(
+        _mjpeg_part(b"stale-previous-direction-frame-1"),
+        _mjpeg_part(b"stale-previous-direction-frame-2"),
+        _mjpeg_part(b"real-frame-for-this-direction"),
     )
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    result = client.snapshot(("R",))
+
+    assert result["R"] == b"real-frame-for-this-direction"
+
+
+def test_snapshot_accepts_an_explicit_direction_subset(monkeypatch):
+    stream = _mjpeg_stream(
+        _mjpeg_part(b"warmup-1"),
+        _mjpeg_part(b"warmup-2"),
+        _mjpeg_part(b"jpeg-bytes"),
+    )
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
 
     client = BlackVueClient("http://camera")
     result = client.snapshot(("F",))
@@ -360,10 +411,14 @@ def test_snapshot_drops_a_direction_that_errors_rather_than_failing_the_call(
     # a "Valid" HTTP response but never actually displayed a real
     # image for it on his hardware - snapshot() has to tolerate a
     # direction erroring (here: I) without losing F/R.
+    stream = _mjpeg_stream(
+        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"jpeg-bytes")
+    )
+
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
             raise HTTPError(request_or_url, 404, "Not Found", {}, None)
-        return _FakeResponse(_mjpeg_part(b"jpeg-bytes"))
+        return _FakeResponse(stream)
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 
@@ -374,10 +429,20 @@ def test_snapshot_drops_a_direction_that_errors_rather_than_failing_the_call(
 
 
 def test_snapshot_drops_a_direction_with_an_empty_body(monkeypatch):
+    # I's own three-frame stream ends on an empty frame (still a
+    # complete, parseable part - just zero image bytes); F/R end on
+    # real data.
+    empty_stream = _mjpeg_stream(
+        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"")
+    )
+    real_stream = _mjpeg_stream(
+        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"jpeg-bytes")
+    )
+
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
-            return _FakeResponse(_mjpeg_part(b""))
-        return _FakeResponse(_mjpeg_part(b"jpeg-bytes"))
+            return _FakeResponse(empty_stream)
+        return _FakeResponse(real_stream)
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 
@@ -394,10 +459,14 @@ def test_snapshot_drops_a_direction_that_never_sends_a_complete_frame(
     # cut off before delivering that many bytes) at all - simulates a
     # direction the camera doesn't really support answering with
     # something other than a real MJPEG part.
+    real_stream = _mjpeg_stream(
+        _mjpeg_part(b"warmup-1"), _mjpeg_part(b"warmup-2"), _mjpeg_part(b"jpeg-bytes")
+    )
+
     def urlopen(request_or_url, timeout=None):
         if request_or_url.endswith("direction=I"):
             return _FakeResponse(b"not a real mjpeg part")
-        return _FakeResponse(_mjpeg_part(b"jpeg-bytes"))
+        return _FakeResponse(real_stream)
 
     monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
 
@@ -417,3 +486,105 @@ def test_snapshot_returns_an_empty_dict_when_every_direction_fails(monkeypatch):
     result = client.snapshot()
 
     assert result == {}
+
+
+def test_snapshot_uses_snapshot_warmup_frames_as_its_discard_count(monkeypatch):
+    from blackvue.core.blackvue_client import SNAPSHOT_WARMUP_FRAMES
+
+    seen_discard = []
+    real_read_one = BlackVueClient._read_one_mjpeg_frame
+
+    def spy(self, path, *, discard=0):
+        seen_discard.append(discard)
+        return real_read_one(self, path, discard=discard)
+
+    monkeypatch.setattr(BlackVueClient, "_read_one_mjpeg_frame", spy)
+    monkeypatch.setattr(
+        blackvue_client_module,
+        "urlopen",
+        _fake_urlopen(
+            _mjpeg_stream(*[_mjpeg_part(b"x")] * (SNAPSHOT_WARMUP_FRAMES + 1))
+        ),
+    )
+
+    client = BlackVueClient("http://camera")
+    client.snapshot(("F",))
+
+    assert seen_discard == [SNAPSHOT_WARMUP_FRAMES]
+
+
+# ---------------------------------------------------------------------------
+# _read_one_mjpeg_frame()'s own discard= parameter, tested directly rather
+# than only through snapshot() - see SNAPSHOT_WARMUP_FRAMES's own comment.
+# ---------------------------------------------------------------------------
+
+
+def test_read_one_mjpeg_frame_discard_zero_returns_the_first_frame(monkeypatch):
+    stream = _mjpeg_stream(_mjpeg_part(b"first"), _mjpeg_part(b"second"))
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    result = client._read_one_mjpeg_frame("/blackvue_live.cgi?direction=F", discard=0)
+
+    assert result == b"first"
+
+
+def test_read_one_mjpeg_frame_discard_skips_that_many_frames(monkeypatch):
+    stream = _mjpeg_stream(
+        _mjpeg_part(b"discard-1"),
+        _mjpeg_part(b"discard-2"),
+        _mjpeg_part(b"keep-this-one"),
+        _mjpeg_part(b"never-read"),
+    )
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+    result = client._read_one_mjpeg_frame("/blackvue_live.cgi?direction=F", discard=2)
+
+    assert result == b"keep-this-one"
+
+
+def test_read_one_mjpeg_frame_discard_parses_frames_delivered_one_byte_at_a_time(
+    monkeypatch,
+):
+    """The frame-discarding loop has to drain every complete frame
+    already sitting in the buffer before asking the network for more
+    (see _read_one_mjpeg_frame()'s own comment on why) - a response
+    that trickles in one byte per read() call is the worst case for
+    that, and is exactly the shape that first exposed the bug in this
+    fix during development (a naive implementation returned "no
+    complete frame received" even though the wanted frame had already
+    fully arrived)."""
+
+    class _ByteAtATimeResponse(_FakeResponse):
+        def read(self, size=-1):
+            return super().read(1) if size != 0 else b""
+
+    stream = _mjpeg_stream(
+        _mjpeg_part(b"discard-1"),
+        _mjpeg_part(b"discard-2"),
+        _mjpeg_part(b"keep-this-one"),
+    )
+
+    def urlopen(request_or_url, timeout=None):
+        return _ByteAtATimeResponse(stream)
+
+    monkeypatch.setattr(blackvue_client_module, "urlopen", urlopen)
+
+    client = BlackVueClient("http://camera")
+    result = client._read_one_mjpeg_frame("/blackvue_live.cgi?direction=F", discard=2)
+
+    assert result == b"keep-this-one"
+
+
+def test_read_one_mjpeg_frame_raises_when_stream_never_reaches_discard_count(
+    monkeypatch,
+):
+    # Only one frame ever arrives, but discard=2 needs three.
+    stream = _mjpeg_part(b"only-one")
+    monkeypatch.setattr(blackvue_client_module, "urlopen", _fake_urlopen(stream))
+
+    client = BlackVueClient("http://camera")
+
+    with pytest.raises(RuntimeError, match="no complete frame received"):
+        client._read_one_mjpeg_frame("/blackvue_live.cgi?direction=F", discard=2)

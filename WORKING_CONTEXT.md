@@ -16565,3 +16565,63 @@ is given).
 Files changed: src/blackvue/snap.py, src/blackvue/cli/bv_snap.py,
 src/blackvue/cli/bv_gps.py, docs/man/bv-snap.md, tests/blackvue/test_snap.py,
 tests/blackvue/cli/test_bv_snap.py, tests/blackvue/cli/test_bv_gps.py.
+
+### Follow-up: discard warm-up frames after a direction switch
+
+Christer, after using the feature some more: "are you sure the picture is
+correct. I know sometimes when you switch direction it shows the previous
+direction for a short while."
+
+This is a real behavior of the camera itself, not something introduced by
+this repo's HTTP layer - confirmed by cross-checking `bv-live`'s own live
+view (`live/app.py`'s `stream_camera()`), which opens an equally fresh
+connection per direction with `client.open_stream(...)` and no warm-up of
+its own, yet shows the exact same brief stale-frame transition Christer
+described. The camera's shared video encoder apparently needs a moment to
+actually reconfigure to the requested lens even on a brand new connection -
+so `snapshot()`'s very first frame off a freshly-opened
+`blackvue_live.cgi?direction=X` connection can still be whatever direction
+was live immediately before that request.
+
+Fix: `_read_one_mjpeg_frame()` (core/blackvue_client.py) gained a `discard`
+keyword - it now throws away that many complete frames before capturing and
+returning the one it actually gives back, rather than always returning the
+first frame it sees. New `SNAPSHOT_WARMUP_FRAMES = 2` constant, wired into
+`snapshot()`'s own call site so every direction request discards 2 frames by
+default. This is a frame-count-based mitigation, not a time-based one -
+deliberately simpler to reason about and test than trying to wait some
+fixed number of milliseconds, and roughly proportional to elapsed time
+regardless of the camera's actual frame rate. It's explicitly documented (in
+both the code comment and `docs/man/bv-snap.md`) as a starting point to
+confirm against real hardware, not a guaranteed fix - this can't be verified
+without a real camera, and the right discard count could turn out to need
+retuning once Christer's tried it.
+
+Implementation note (the actual bug caught during development, not just the
+feature): the first version of the discard loop called `response.read(4096)`
+once per outer-loop iteration and treated an empty subsequent read as "the
+stream ended," which breaks the moment more than one complete frame arrives
+in a single `read()` call - extremely common, since JPEG frames are
+typically well under 4096 bytes. A discarded frame's own bytes were being
+correctly trimmed out of the buffer, but the loop then went straight back to
+the network for more data instead of checking whether the *next* frame was
+already sitting in the buffer it had - so on a fake stream that delivered
+everything in one read (which is exactly how the test doubles here work,
+and plausibly how a real fast connection behaves too), it would give up with
+"no complete frame received" even though the wanted frame had fully arrived.
+Fixed by adding an inner loop that drains every complete frame already
+buffered before asking the network for more - verified against both an
+all-in-one-chunk fake response and a deliberately worst-case byte-at-a-time
+one before touching the test suite.
+
+Verified: `ast.parse()` on every changed file, a standalone script exercising
+`_read_one_mjpeg_frame(discard=...)` directly against hand-built multipart
+fakes (both all-at-once and one-byte-at-a-time delivery), and running every
+test function in `test_blackvue_client.py` (27/27) through a minimal
+`pytest`-shim script (this sandbox still has no network access to install
+real `pytest` - same limitation as every other session's own testing notes)
+that reimplements just enough of `monkeypatch`/`capsys`/`pytest.raises` to
+execute the real test bodies against the real module.
+
+Files changed: src/blackvue/core/blackvue_client.py,
+tests/blackvue/core/test_blackvue_client.py, docs/man/bv-snap.md.
