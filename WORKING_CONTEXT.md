@@ -16761,3 +16761,64 @@ install real pytest in this sandbox).
 
 Files changed: src/blackvue/core/blackvue_client.py,
 tests/blackvue/core/test_blackvue_client.py, docs/man/bv-snap.md.
+
+### Follow-up: bv-gps --snap also prints the GPS reading
+
+Christer, after the Interior-warm-up follow-up above, in the same
+message: "Funny result F ok, R dont exist, I got the shot for R." -
+confirms the hardware-limitation read from that follow-up (no real
+Interior stream, I just serves whatever's actually live) rather than
+anything to fix further, so no code change from that part. He also
+said "i don't know if i want any snap discarded because it almost
+similar" - read as: don't build a detect-and-drop-near-duplicates
+feature (one of the three options offered earlier and not chosen
+then either); left as-is, nothing to do.
+
+Third part of the same message was a separate, concrete ask: "I would
+also like bv-gps give the gps output even with -snap." Previously
+`--snap` short-circuited `_run()` before it ever reached the
+GPS-fetching code below it - `--snap` and the plain GPS reading were
+mutually exclusive even though bv-gps already has a live connection
+open either way.
+
+Implementation: split the GPS-fetch-and-print block out of `_run()`
+into a new `_report_gps_fix()` in cli/bv_gps.py, returning None on
+success or the EXIT_* code to report on failure. The plain (non-snap)
+path calls it exactly as before and still propagates its return code.
+The `--snap` path now calls it too, but best-effort - prints the
+coordinates/Maps-link/address the same as the plain path when a fix
+is available, warns (doesn't fail the run) if the camera has no fix
+yet or the GPS feed errors, then still runs the snapshot regardless.
+A GPS hiccup shouldn't sink a run whose actual point was the
+snapshot; `_run_snap()`'s own exit code is still what `--snap` mode
+reports.
+
+Updated docs/man/bv-gps.md: the `--snap` paragraph used to say the
+"GPS/address logic above never runs" with `--snap` - rewritten to
+describe the new alongside-not-instead-of behavior, including that
+the GPS side is best-effort under `--snap`. Fixed the matching
+EXAMPLES line too.
+
+Tests: `_FakeSnapClient`/`_stub_snap_connection` in test_bv_gps.py
+gained a `live_gps()` fake (default: raises NoGpsDataError, so every
+existing --snap test that doesn't care about GPS stays network-safe
+and unaffected). Replaced the old
+`test_run_snap_mode_never_touches_live_gps_or_reverse_geocode`
+regression guard - which asserted the opposite of the new intended
+behavior - with three new tests:
+`test_run_snap_mode_also_prints_gps_output_when_available`,
+`test_run_snap_mode_gps_no_fix_does_not_block_the_snapshot`, and
+`test_run_snap_mode_no_gps_data_does_not_block_the_snapshot`.
+
+Verified: extended the pytest-shim harness (no real pytest available
+in this sandbox) with a `capsys` fixture fake and a generic
+`run_one.py` runner (any test file, not just the one hardcoded
+before) plus a minimal `tomllib` stub module (this sandbox only has
+Python 3.10; camera_config.py's real `import tomllib` needs 3.11+,
+but every test here monkeypatches around the real TOML load, so a
+stub that only needs to satisfy the import was enough). All 31 tests
+in test_bv_gps.py pass, plus re-ran test_bv_snap.py (14/14) and
+test_blackvue_client.py (28/28) to confirm nothing else regressed.
+
+Files changed: src/blackvue/cli/bv_gps.py,
+tests/blackvue/cli/test_bv_gps.py, docs/man/bv-gps.md.

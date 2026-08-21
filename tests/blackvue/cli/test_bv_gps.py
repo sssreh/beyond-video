@@ -330,14 +330,25 @@ def test_parse_args_snap_direction_is_repeatable():
 
 
 class _FakeSnapClient:
-    def __init__(self, snapshots):
+    def __init__(self, snapshots, gps_result=None):
         self._snapshots = snapshots
+        # Default: no GPS data at all, same as a camera with no fix
+        # yet - keeps every test that doesn't care about the GPS side
+        # of --snap from accidentally hitting the real reverse_geocode
+        # (network) the moment live_gps() starts being called during
+        # --snap too (see _report_gps_fix() / task #1122).
+        self._gps_result = gps_result or NoGpsDataError("no GPS reading found")
 
     def snapshot(self, directions):
         return {d: self._snapshots[d] for d in directions if d in self._snapshots}
 
+    def live_gps(self):
+        if isinstance(self._gps_result, Exception):
+            raise self._gps_result
+        return self._gps_result
 
-def _stub_snap_connection(monkeypatch, snapshots):
+
+def _stub_snap_connection(monkeypatch, snapshots, gps_result=None):
     monkeypatch.setattr(
         bv_gps_module, "load_camera_config", lambda path: _FakeConfig()
     )
@@ -347,7 +358,10 @@ def _stub_snap_connection(monkeypatch, snapshots):
     monkeypatch.setattr(
         bv_gps_module,
         "connect",
-        lambda endpoints, timeout: (endpoints[0], _FakeSnapClient(snapshots)),
+        lambda endpoints, timeout: (
+            endpoints[0],
+            _FakeSnapClient(snapshots, gps_result=gps_result),
+        ),
     )
 
 
@@ -371,25 +385,72 @@ def test_run_snap_mode_saves_snapshots_and_reports_paths(
     assert len(list(tmp_path.glob("snap_*_F.jpg"))) == 1
 
 
-def test_run_snap_mode_never_touches_live_gps_or_reverse_geocode(
+def test_run_snap_mode_also_prints_gps_output_when_available(
     monkeypatch, capsys, tmp_path
 ):
-    """Regression guard: --snap must return before _run() falls
-    through to the GPS-fetching code below it."""
-
-    _stub_snap_connection(monkeypatch, {"F": b"front-bytes"})
-
-    def _unexpected(*args, **kwargs):
-        raise AssertionError("--snap must not touch reverse_geocode")
-
-    monkeypatch.setattr(bv_gps_module, "reverse_geocode", _unexpected)
+    # Christer: "I would also like bv-gps give the gps output even
+    # with -snap" - --snap used to return before _run() ever reached
+    # the GPS-fetching code below it (see the old version of this
+    # test, which asserted the opposite). Now it reports the fix
+    # first (same coordinates/Maps-link/address lines as the plain
+    # path), then still does the snapshot.
+    _stub_snap_connection(
+        monkeypatch,
+        {"F": b"front-bytes"},
+        gps_result=LiveGpsFix(59.334591, 18.063240),
+    )
+    monkeypatch.setattr(
+        bv_gps_module, "reverse_geocode", lambda lat, lon: "Some Street 1, Stockholm"
+    )
 
     args = bv_gps_module.parse_args(
         ["mycar", "--snap", "--output", str(tmp_path)]
     )
     code = bv_gps_module._run(args)
 
+    out = capsys.readouterr().out
     assert code == bv_gps_module.EXIT_OK
+    assert "Coordinates: 59.334591,18.06324" in out
+    assert "Google Maps: https://www.google.com/maps?q=59.334591,18.06324" in out
+    assert "Address: Some Street 1, Stockholm" in out
+    assert "F: saved" in out
+
+
+def test_run_snap_mode_gps_no_fix_does_not_block_the_snapshot(
+    monkeypatch, capsys, tmp_path
+):
+    """A GPS problem is best-effort during --snap - the snapshot is
+    the actual point of the run, so this must still succeed and still
+    save the file, just with a GPS warning alongside it."""
+
+    _stub_snap_connection(
+        monkeypatch, {"F": b"front-bytes"}, gps_result=LiveGpsFix(0.0, 0.0)
+    )
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    code = bv_gps_module._run(args)
+
+    captured = capsys.readouterr()
+    assert code == bv_gps_module.EXIT_OK
+    assert "F: saved" in captured.out
+    assert "no GPS fix currently available" in captured.err
+
+
+def test_run_snap_mode_no_gps_data_does_not_block_the_snapshot(
+    monkeypatch, capsys, tmp_path
+):
+    _stub_snap_connection(monkeypatch, {"F": b"front-bytes"})  # default: NoGpsDataError
+
+    args = bv_gps_module.parse_args(
+        ["mycar", "--snap", "--output", str(tmp_path)]
+    )
+    code = bv_gps_module._run(args)
+
+    out = capsys.readouterr().out
+    assert code == bv_gps_module.EXIT_OK
+    assert "F: saved" in out
 
 
 def test_run_snap_mode_exits_no_snapshots_when_every_direction_fails(

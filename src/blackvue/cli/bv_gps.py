@@ -64,8 +64,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--host for a camera that hasn't been set up with "
             "bv-config yet. Prints the coordinates as a pasteable "
             "pair and a Google Maps link, plus a reverse-geocoded "
-            "address. With --snap, grabs a one-shot camera snapshot "
-            "instead (see --snap's own help) - the same one-off "
+            "address. With --snap, also grabs a one-shot camera "
+            "snapshot (see --snap's own help) - the same one-off "
             "action bv-snap(1) is a dedicated command for, offered "
             "here too since this command already has a live camera "
             "connection open."
@@ -178,6 +178,58 @@ def _default_warn(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _report_gps_fix(
+    client: BlackVueClient,
+    endpoint: Endpoint,
+    args: argparse.Namespace,
+    *,
+    say=print,
+    warn=_default_warn,
+) -> int | None:
+    """Fetch the camera's live GPS fix and print it (coordinates,
+    Google Maps link, reverse-geocoded address), or warn if one isn't
+    available. Returns None on success, or the EXIT_* code the caller
+    should return on failure.
+
+    Split out of _run() so --snap can call it too (Christer: "I would
+    also like bv-gps give the gps output even with -snap" - --snap
+    used to skip this block entirely and go straight to _run_snap()).
+    The plain (non-snap) path still propagates this function's return
+    code as its own exit status, same as before this was split out;
+    --snap instead calls this best-effort and ignores the result - a
+    GPS hiccup shouldn't fail a run whose actual point was the
+    snapshot, and _run_snap() has its own exit codes for that."""
+
+    try:
+        fix = client.live_gps()
+    except NoGpsDataError as exc:
+        warn(f"bv-gps: {exc}")
+        return EXIT_PROTOCOL_ERROR
+
+    if not fix.has_fix:
+        # endpoint.name (not config.name) - defined on both the id
+        # and --host paths, since config itself only exists on the id
+        # path. Resolves to the configured endpoint's own name (e.g.
+        # "home") on that path, or the bare host string when --host
+        # was given directly - either way, a sensible label for which
+        # camera this was.
+        warn(f"bv-gps: {endpoint.name}: no GPS fix currently available")
+        return EXIT_NO_FIX
+
+    say(f"Coordinates: {coordinate_pair(fix)}")
+    say(f"Google Maps: {google_maps_url(fix)}")
+
+    if not args.no_address:
+        try:
+            address = reverse_geocode(fix.latitude, fix.longitude)
+        except MediaToolError as exc:
+            say(f"Address: unavailable ({exc})")
+        else:
+            say(f"Address: {address or 'no address found for this location'}")
+
+    return None
+
+
 def _run(
     args: argparse.Namespace, *, say=print, warn=_default_warn
 ) -> int:
@@ -218,34 +270,16 @@ def _run(
         return EXIT_UNREACHABLE
 
     if args.snap:
+        # Best-effort GPS report first (see _report_gps_fix()'s own
+        # docstring for why its return code is ignored here), then
+        # the snapshot - _run_snap()'s own exit code is what this
+        # call actually reports.
+        _report_gps_fix(client, endpoint, args, say=say, warn=warn)
         return _run_snap(args, endpoint, client, say=say, warn=warn)
 
-    try:
-        fix = client.live_gps()
-    except NoGpsDataError as exc:
-        warn(f"bv-gps: {exc}")
-        return EXIT_PROTOCOL_ERROR
-
-    if not fix.has_fix:
-        # endpoint.name (not config.name) - defined on both the id
-        # and --host paths, since config itself only exists on the id
-        # path. Resolves to the configured endpoint's own name (e.g.
-        # "home") on that path, or the bare host string when --host
-        # was given directly - either way, a sensible label for which
-        # camera this was.
-        warn(f"bv-gps: {endpoint.name}: no GPS fix currently available")
-        return EXIT_NO_FIX
-
-    say(f"Coordinates: {coordinate_pair(fix)}")
-    say(f"Google Maps: {google_maps_url(fix)}")
-
-    if not args.no_address:
-        try:
-            address = reverse_geocode(fix.latitude, fix.longitude)
-        except MediaToolError as exc:
-            say(f"Address: unavailable ({exc})")
-        else:
-            say(f"Address: {address or 'no address found for this location'}")
+    exit_code = _report_gps_fix(client, endpoint, args, say=say, warn=warn)
+    if exit_code is not None:
+        return exit_code
 
     return EXIT_OK
 

@@ -22,7 +22,7 @@ It prints the fix as a coordinate pair pasteable straight into Google Maps' own 
 
 If the camera currently has no GPS fix, it reports `(0.0, 0.0)` on this feed rather than anything meaningful - `bv-gps` treats that reading as "no fix" and says so, rather than printing a false location out in the Atlantic.
 
-`--snap` switches to a different one-shot mode entirely: instead of reading a GPS fix, it grabs a live camera snapshot per direction (Front/Rear/Interior by default) and saves each to `--output`, then exits - the GPS/address logic above never runs. This is the exact same capture `bv-snap(1)`'s own standalone command does; `--snap` here just saves reaching for a second command when you're already invoking `bv-gps`. See `bv-snap(1)` for the full behavior (per-direction drop-on-failure, filename format, etc.) - it's identical either way.
+`--snap` adds a live camera snapshot per direction (Front/Rear/Interior by default), saved to `--output`, alongside the normal GPS reading above rather than instead of it: the coordinates/Maps-link/address lines print first, then the snapshot report. The GPS side is best-effort here - if the camera has no fix yet, or the GPS feed errors, that's just a warning, not a failure; the snapshot still runs and `--snap`'s own exit code is what the command reports. This is the exact same capture `bv-snap(1)`'s own standalone command does (which has no GPS reading to report at all); `--snap` here just saves reaching for a second command when you're already invoking `bv-gps`. See `bv-snap(1)` for the snapshot behavior itself (per-direction drop-on-failure, filename format, etc.) - it's identical either way.
 
 ## ARGUMENTS
 
@@ -84,7 +84,7 @@ Check a whole list of candidate IPs, one per line in `ips.txt`:
 while read -r ip; do bv-gps --host "$ip" --no-address; done < ips.txt
 ```
 
-Grab F/R/I snapshots instead of a GPS reading:
+Grab F/R/I snapshots alongside the normal GPS reading:
 
 ```
 bv-gps Kirby --snap --output ~/snaps
