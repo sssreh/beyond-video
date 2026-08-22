@@ -33,9 +33,16 @@ CACHE_DIR="${HOME}/.cache/arm-musl-toolchain"
 TOOLCHAIN_ROOT="${CACHE_DIR}/arm-linux-musleabi-cross"
 
 find_gcc() {
-    find "$CACHE_DIR" -maxdepth 4 -type f -name "arm-linux-musleabi-gcc" 2>/dev/null | head -1
+    # || true matters: under `set -e`, a `VAR=$(fn)` assignment aborts the
+    # whole script the instant fn's pipeline exits non-zero - which `find`
+    # does unconditionally when $CACHE_DIR doesn't exist yet, i.e. on
+    # every first run. Without this, the script died silently right here,
+    # before printing anything, which is exactly what happened on
+    # Christer's first attempt.
+    find "$CACHE_DIR" -maxdepth 4 -type f -name "arm-linux-musleabi-gcc" 2>/dev/null | head -1 || true
 }
 
+mkdir -p "$CACHE_DIR"
 GCC="$(find_gcc)"
 
 if [ -z "$GCC" ]; then
