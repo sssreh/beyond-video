@@ -17665,3 +17665,18 @@ Christer's idea: instead of `describe_scene()` handing the whole clip to `qwen_v
 2. The existing frame-sampling-lag calibration curves (`_apply_sign_lag()`/tasks #1083-1091/#1098) that sync displayed description text to real video position were calibrated assuming uniform 1fps sampling. Non-uniform sampling would need the sync to lean on the model's own real per-event timestamps (already parsed - see `DescriptionEvent`/task #1073) instead of an assumed-uniform position, which could mean recalibrating or dropping those curves rather than just leaving them as-is.
 
 Not started - no code, no design doc beyond this note. Christer: "Spara som notering. Det kommer mera" - more to come on this idea later.
+
+## Note: local-LLM structured extraction for voice search (future improvement)
+
+Christer's idea: replace/augment the current hand-rolled regex parsers (`web/voice_query.py`'s place/radius patterns, `web/voice_time.py`'s date-range patterns) with a small local LLM (e.g. Llama-3-8B or Mistral-7B via Ollama/vLLM) instructed to emit structured JSON straight from the raw voice transcript, e.g.:
+```json
+{"location_keyword": "Centralbron", "from_date": "20190801", "until_date": "20190815", "scene_contains": "lastbil"}
+```
+
+**Why it's worth it.** `voice_query.py`'s own module docstring already says "extend `_PATTERNS` with more phrasings as real gaps show up" - and that's happened twice already (radius-parsing fix task #1012-1013, year-propagation/Swedish month regex fix task #1014-1017). Regex-based NLU only covers phrasings anticipated up front; an LLM generalizes across phrasing and can resolve a single compound utterance (place + date range + content keyword all in one sentence, exactly Christer's example) in one pass instead of two independent parsers each having to hit their own slice of the same transcript. The JSON shape maps directly onto bv-search's existing fields: `location_keyword` -> Place, `from_date`/`until_date` -> the same interval `voice_time.py` already produces, `scene_contains` -> Text (which already matches transcript+translation+scene-description content together).
+
+**Two real costs flagged before building this.**
+1. Standing up Ollama/vLLM is a new service to deploy and share GPU with - notably on Christer's dual-RTX-3080-Ti box (12GB/card), already tight for the Qwen3-VL-8B scene model (see the recent `--scene-quantize` threshold work). Alternative worth considering: reuse the already-loaded Qwen3-VL scene model for pure-text structured extraction instead of standing up a second local-LLM stack, avoiding the doubled VRAM contention entirely.
+2. Date arithmetic is exactly where the existing hand-rolled parser already had real bugs (year-propagation). A local 7-8B model isn't automatically better at resolving "last week" into a correct `from_date`/`until_date` unless today's date is injected into the prompt, ideally with a sanity-check afterward - and the JSON output itself needs constrained/grammar-mode decoding (Ollama/vLLM support this) rather than trusting free-form generation to always produce valid, on-schema JSON.
+
+Not started - no code, no design doc beyond this note. Christer: "ja tack, kommer mer" - more ideas to come, to be logged the same way.
