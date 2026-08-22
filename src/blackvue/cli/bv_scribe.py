@@ -317,6 +317,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--quantize",
+        choices=["auto", "none", "int8", "int4"],
+        default="auto",
+        help=(
+            "Loading precision for --model - not a different model, "
+            "just a smaller-footprint way to load the same one "
+            "(default: auto). 'auto' picks a level from the largest "
+            "single GPU detected on this machine: comfortably-sized "
+            "GPUs (~20GB+) get 'none' (full precision), mid-size GPUs "
+            "(~10-20GB, e.g. a single RTX 3080 Ti's 12GB) get 'int8', "
+            "smaller GPUs get 'int4' - always 'none' under --cpu "
+            "(int8/int4 need a CUDA GPU, via bitsandbytes - see "
+            "pyproject.toml's scene extra). Pass 'none'/'int8'/'int4' "
+            "explicitly to override the auto-detected choice."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -428,6 +446,7 @@ def _scene_kwargs(args: argparse.Namespace) -> dict:
         zoom_no_repeat_ngram_size=args.zoom_no_repeat_ngram_size,
         zoom_plate_confidence_check=args.zoom_plate_confidence_check,
         force_cpu=args.cpu,
+        quantize=args.quantize,
     )
 
 

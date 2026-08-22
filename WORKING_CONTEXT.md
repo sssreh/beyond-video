@@ -17325,3 +17325,81 @@ Files changed: src/blackvue/telemetry/gps_reader.py,
 src/blackvue/export/trip_stats.py, src/blackvue/export/trip_info.py,
 tests/blackvue/telemetry/test_gps_reader.py,
 tests/blackvue/export/test_trip_stats.py.
+
+## Auto quantization for the scene vision-language model, based on present GPU VRAM (this session)
+
+Christer, after I explained `--scene-quantize`/`--quantize` picks a
+*loading precision* for the same `Qwen3-VL-8B-Instruct` model (not a
+different model): "yes, can you make it auto by looking at present
+graphics cards." His concrete motivating machine is a dual-RTX-3080-Ti
+box (12GB VRAM per card), contrasted against his RTX 5090 laptop
+(32GB, plenty for full precision).
+
+`generate/scene.py` gained `scene_gpu_vram_gb()` - a cached,
+exception-swallowing VRAM probe mirroring the existing
+`vision_gpu_available()`/`speech.py`'s `gpu_available()` pattern:
+`import torch` inside a try/except that returns `[]` on any failure
+(no torch installed, no CUDA, etc.), else
+`torch.cuda.get_device_properties(i).total_memory` for every visible
+device, sorted largest-first. `SceneOptions.quantize` defaults to
+`"auto"`, resolved by the new `resolve_scene_quantize(requested, *,
+force_cpu)`: an explicit `none`/`int8`/`int4` always passes through
+unchanged (and is a hard error combined with `force_cpu`, see below);
+`"auto"` under `force_cpu` always resolves to `"none"`, since
+bitsandbytes' int8/int4 loading is CUDA-only and quantizing on the way
+to a CPU load buys nothing; otherwise it's keyed on the **largest
+single GPU**, not summed VRAM across cards: `>=20GB` -> `"none"`
+(full precision), `>=10GB` -> `"int8"`, below that -> `"int4"`.
+
+The largest-single-card (not sum) choice is the whole point of
+Christer's dual-3080-Ti example: two 12GB cards sum to 24GB, which
+would naively suggest full precision, but `device_map="auto"` would
+then shard the model across both cards via slow PCIe-pipelined
+inference - not actually a win. Resolving to `"int8"` instead means
+the quantized model fits on *one* 12GB card without sharding, leaving
+the second card free for a future independent job. Thresholds
+(20GB/10GB) are a reasoned heuristic against the model's real-world
+footprint, not benchmarked against actual hardware.
+
+`_load_scene_model()` builds a `transformers.BitsAndBytesConfig`
+(`load_in_8bit`/`load_in_4bit`) and passes it via `quantization_config=`
+when `quantize != "none"`. The `quantize != "none"` + `force_cpu`
+contradiction check was deliberately placed *before* the
+`import torch`/`transformers` block (not after, where the analogous
+model-class-selection code already lived) so a caller who explicitly
+combines both gets a clear "can't be combined with force_cpu/--cpu"
+message even in an environment where those packages happen to be
+missing entirely - a real corner case since this is also the sandbox's
+own test environment. `_get_scene_model()`'s cache key grew a third
+segment (`f"{model_name}:{'cpu'|'auto'}:{resolved_quantize}"`) so
+different resolved/explicit quantize levels for the same model don't
+collide; `unload_scene_model()`'s matching moved from exact-match to
+prefix-match against the new 3-part keys.
+
+Wired `--scene-quantize` (`bv-generate`, `bv-export --trip-summary`)
+and `--quantize` (`bv-scribe`, matching its own `--model`/`--cpu`
+naming) through the full stack: CLI flags -> `SceneOptions.quantize`/
+`export_trip()`'s `scene_quantize` param -> bv-web's `JobRunner.
+start_bv_export()` -> the `/jobs/bv-export` route -> `job_new_bv_
+export.html`'s new `<select>` (auto/none/int8/int4, defaulting to
+auto). Added `bitsandbytes` to the `scene` extra in pyproject.toml.
+
+Verified via a standalone script (torch not installed in this
+sandbox - no route to PyPI) exercising `scene_gpu_vram_gb()`'s
+caching/sorting, `resolve_scene_quantize()`'s full threshold matrix
+(including the dual-12GB-GPU -> int8-not-none case and exact 20.0/
+19.9/10.0/9.9GB boundaries), the cache-key change, and the
+force_cpu+quantize contradiction guard (stubbing torch/torchvision/
+qwen_vl_utils/transformers as empty importable modules so the test
+reaches the guard rather than tripping the earlier "torch not
+installed" error first). Added ~15 new tests to `test_scene.py` and
+updated cache-key fixtures in the existing `unload_scene_model()`
+tests for the 3-part format.
+
+Files changed: src/blackvue/generate/scene.py, pyproject.toml,
+src/blackvue/cli/bv_generate.py, src/blackvue/cli/bv_scribe.py,
+src/blackvue/export/trip_export.py, src/blackvue/cli/bv_export.py,
+src/blackvue/web/jobs.py, src/blackvue/web/app.py,
+src/blackvue/web/templates/job_new_bv_export.html,
+tests/blackvue/generate/test_scene.py, docs/man/bv-generate.md,
+docs/man/bv-scribe.md, docs/man/bv-export.md.

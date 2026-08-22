@@ -104,6 +104,14 @@ scene = [
     "accelerate",
     "qwen-vl-utils[decord]==0.0.8",
     "torchvision",
+    # Only actually imported (BitsAndBytesConfig) when a scene job's
+    # quantize resolves to something other than "none" - see
+    # generate/scene.py's resolve_scene_quantize()/_load_scene_model().
+    # Auto-detection picks int8/int4 on smaller single-GPU machines
+    # (e.g. Christer's dual-RTX-3080-Ti box, 12GB/card) so the ~16GB
+    # bf16 Qwen3-VL-8B-Instruct model can still load on one card
+    # instead of needing device_map="auto" sharding across both.
+    "bitsandbytes",
 ]
 
 [project.scripts]

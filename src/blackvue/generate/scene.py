@@ -192,6 +192,7 @@ _PATCH_FACTOR_3_VL = 32
 
 _SCENE_MODEL_CACHE: dict[str, "_LoadedSceneModel"] = {}
 _VISION_GPU_AVAILABLE: bool | None = None
+_SCENE_GPU_VRAM_GB: list[float] | None = None
 
 DISCLAIMER = (
     "\n\n---\n"
@@ -398,6 +399,15 @@ class SceneOptions:
     zoom_plate_confidence_check: bool = True
     trip_summary_max_new_tokens: int = 768
     force_cpu: bool = False
+    # "auto" (default), or an explicit "none"/"int8"/"int4" - see
+    # resolve_scene_quantize() below for how "auto" gets resolved.
+    # Christer: "yes, can you make it auto by looking at present
+    # graphics cards" - asked right after learning quantization would
+    # need its own flag (a loading-precision choice for the *same*
+    # model, not a different model to pick), for hardware smaller than
+    # his RTX 5090 laptop (his old dual-RTX-3080-Ti box, 12GB VRAM per
+    # card, came up as the concrete example in that conversation).
+    quantize: str = "auto"
 
 
 def vision_gpu_available() -> bool:
@@ -419,6 +429,97 @@ def vision_gpu_available() -> bool:
             _VISION_GPU_AVAILABLE = False
 
     return _VISION_GPU_AVAILABLE
+
+
+def scene_gpu_vram_gb() -> list[float]:
+    """Total VRAM (in GB) of every CUDA device visible to this
+    process, largest first. Cached the same way vision_gpu_available()
+    is - only ever informs a friendlier default (see
+    resolve_scene_quantize() below), never blocks startup. Empty list
+    if CUDA isn't available at all, or if probing it raises for any
+    reason (e.g. a broken driver install) - same "swallow, return the
+    unhelpful-but-safe answer" contract every other GPU probe in this
+    codebase follows."""
+
+    global _SCENE_GPU_VRAM_GB
+
+    if _SCENE_GPU_VRAM_GB is None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                _SCENE_GPU_VRAM_GB = sorted(
+                    (
+                        torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                        for i in range(torch.cuda.device_count())
+                    ),
+                    reverse=True,
+                )
+            else:
+                _SCENE_GPU_VRAM_GB = []
+        except Exception:
+            _SCENE_GPU_VRAM_GB = []
+
+    return _SCENE_GPU_VRAM_GB
+
+
+# Thresholds (GB) for resolve_scene_quantize()'s "auto" behavior below,
+# keyed on the *largest single* detected GPU - not the sum across every
+# card. Qwen3-VL-8B-Instruct's native bf16 weights are a ~16GB
+# footprint (Christer's own report: "Scene model never unloads from
+# GPU"); bitsandbytes int8 roughly halves that, int4 roughly quarters
+# it. device_map="auto" *can* shard a too-large model across multiple
+# GPUs when it doesn't fit on one, but that's slower PCIe-pipelined
+# inference, not what quantization is for here - the real win on
+# Christer's dual-RTX-3080-Ti box (12GB each, discussed alongside this
+# feature) is quantizing the model down onto *one* card so it never
+# needs to shard at all, and so each card could eventually host an
+# independent job rather than jointly hosting one slow one.
+_SCENE_QUANTIZE_NONE_MIN_GB = 20.0
+_SCENE_QUANTIZE_INT8_MIN_GB = 10.0
+
+VALID_SCENE_QUANTIZE_LEVELS = ("none", "int8", "int4")
+
+
+def resolve_scene_quantize(requested: str, *, force_cpu: bool) -> str:
+    """Turn SceneOptions.quantize ("auto", or an explicit "none"/
+    "int8"/"int4") into one of the three concrete levels - the same
+    "auto-detected default, but still overridable" shape bv-generate's
+    own --model-size already uses for Whisper (`args.model_size =
+    "large" if gpu_available() else "small"`).
+
+    An explicit non-"auto" value passes straight through unchanged
+    (raises ValueError for anything else - a typo'd flag value should
+    fail loudly, not silently fall back to some other level).
+
+    "auto" resolves against scene_gpu_vram_gb(): CPU-forced or no CUDA
+    GPU at all always resolves to "none" - bitsandbytes' int8/int4
+    loading paths are CUDA-only, so quantizing on the way to a CPU load
+    would buy nothing. Otherwise it's keyed on the *largest single*
+    detected GPU - see the threshold constants' own comment above for
+    why largest-single rather than summed-total."""
+
+    if requested != "auto":
+        if requested not in VALID_SCENE_QUANTIZE_LEVELS:
+            raise ValueError(
+                f"invalid scene quantize level {requested!r} - expected "
+                f"'auto' or one of {VALID_SCENE_QUANTIZE_LEVELS}"
+            )
+        return requested
+
+    if force_cpu:
+        return "none"
+
+    vram_gb = scene_gpu_vram_gb()
+    if not vram_gb:
+        return "none"
+
+    largest_gb = vram_gb[0]
+    if largest_gb >= _SCENE_QUANTIZE_NONE_MIN_GB:
+        return "none"
+    if largest_gb >= _SCENE_QUANTIZE_INT8_MIN_GB:
+        return "int8"
+    return "int4"
 
 
 def is_qwen3_vl(model_name: str) -> bool:
@@ -445,7 +546,25 @@ class _LoadedSceneModel:
     is_qwen3: bool
 
 
-def _load_scene_model(model_name: str, *, force_cpu: bool) -> _LoadedSceneModel:
+def _load_scene_model(
+    model_name: str, *, force_cpu: bool, quantize: str = "none"
+) -> _LoadedSceneModel:
+    # quantize ("int8"/"int4") is a bitsandbytes-backed, CUDA-only
+    # loading precision - resolve_scene_quantize() already resolves
+    # "auto" to "none" whenever force_cpu is set (see its own
+    # docstring), so a caller reaching this with quantize != "none"
+    # and force_cpu=True can only mean an explicit, contradictory
+    # SceneOptions(quantize=..., force_cpu=True) - worth a clear error
+    # rather than silently ignoring one of the two. Checked before the
+    # torch/transformers imports below so the caller gets this specific
+    # message even on a machine where those packages aren't installed
+    # at all (an unrelated problem they'd hit either way).
+    if quantize != "none" and force_cpu:
+        raise MediaToolError(
+            f"scene quantize={quantize!r} needs a CUDA GPU - it "
+            "can't be combined with force_cpu/--cpu"
+        )
+
     try:
         import torch
         import torchvision  # noqa: F401 - qwen_vl_utils needs this importable
@@ -475,10 +594,38 @@ def _load_scene_model(model_name: str, *, force_cpu: bool) -> _LoadedSceneModel:
     if not force_cpu and not torch.cuda.is_available():
         device_map = "cpu"
 
-    try:
-        model = ModelClass.from_pretrained(
-            model_name, torch_dtype="auto", device_map=device_map
+    # quantize ("int8"/"int4") is a bitsandbytes-backed, CUDA-only
+    # loading precision - resolve_scene_quantize() already resolves
+    # "auto" to "none" whenever force_cpu is set (see its own
+    # docstring), so a caller reaching this with quantize != "none"
+    # and force_cpu=True can only mean an explicit, contradictory
+    # SceneOptions(quantize=..., force_cpu=True) - worth a clear error
+    # rather than silently ignoring one of the two.
+    quantization_config = None
+    if quantize != "none":
+        if force_cpu:
+            raise MediaToolError(
+                f"scene quantize={quantize!r} needs a CUDA GPU - it "
+                "can't be combined with force_cpu/--cpu"
+            )
+        try:
+            from transformers import BitsAndBytesConfig
+        except ImportError as exc:
+            raise MediaToolError(
+                f"scene quantize={quantize!r} needs bitsandbytes "
+                f"installed ({exc}) - see pyproject.toml's scene extra"
+            ) from exc
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=(quantize == "int8"),
+            load_in_4bit=(quantize == "int4"),
         )
+
+    from_pretrained_kwargs: dict = {"torch_dtype": "auto", "device_map": device_map}
+    if quantization_config is not None:
+        from_pretrained_kwargs["quantization_config"] = quantization_config
+
+    try:
+        model = ModelClass.from_pretrained(model_name, **from_pretrained_kwargs)
         processor = AutoProcessor.from_pretrained(model_name)
     except Exception as exc:
         raise MediaToolError(f"could not load scene model {model_name!r}: {exc}") from exc
@@ -492,17 +639,28 @@ def _load_scene_model(model_name: str, *, force_cpu: bool) -> _LoadedSceneModel:
     )
 
 
-def _get_scene_model(model_name: str, *, force_cpu: bool) -> _LoadedSceneModel:
-    """Return a cached loaded scene model, loading it if needed. Cache
-    key includes the cpu flag, same reasoning as speech.py's
-    _get_whisper_model() - a --cpu-forced call and an auto-detected
-    call for the same model name may both legitimately be wanted
-    within one process."""
+def _get_scene_model(
+    model_name: str, *, force_cpu: bool, quantize: str = "auto"
+) -> _LoadedSceneModel:
+    """Return a cached loaded scene model, loading it if needed.
 
-    cache_key = f"{model_name}:{'cpu' if force_cpu else 'auto'}"
+    `quantize` ("auto" by default, or an explicit "none"/"int8"/
+    "int4") is resolved once here via resolve_scene_quantize() before
+    the cache is consulted, so "auto" caches under whichever concrete
+    level this machine's GPU(s) actually resolved to - see that
+    function's own docstring. Cache key includes both the cpu flag and
+    the resolved quantize level, same reasoning as speech.py's
+    _get_whisper_model() - a --cpu-forced call, an auto-detected call,
+    and a specific quantize level for the same model name may all
+    legitimately be wanted within one process."""
+
+    resolved_quantize = resolve_scene_quantize(quantize, force_cpu=force_cpu)
+    cache_key = f"{model_name}:{'cpu' if force_cpu else 'auto'}:{resolved_quantize}"
 
     if cache_key not in _SCENE_MODEL_CACHE:
-        _SCENE_MODEL_CACHE[cache_key] = _load_scene_model(model_name, force_cpu=force_cpu)
+        _SCENE_MODEL_CACHE[cache_key] = _load_scene_model(
+            model_name, force_cpu=force_cpu, quantize=resolved_quantize
+        )
 
     return _SCENE_MODEL_CACHE[cache_key]
 
@@ -525,11 +683,15 @@ def unload_scene_model(model_name: str | None = None, *, force_cpu: bool | None 
 
     With no arguments, clears every cached entry - the common case,
     since a job runner doesn't know in advance which `(model_name,
-    force_cpu)` combination (if any) the job that just finished
-    actually used. Pass `model_name` (and optionally `force_cpu`) to
-    evict a single specific entry instead - `model_name` alone evicts
-    both the `:cpu` and `:auto` variants of that model, matching
-    `_get_scene_model()`'s own cache-key scheme.
+    force_cpu, quantize)` combination (if any) the job that just
+    finished actually used. Pass `model_name` (and optionally
+    `force_cpu`) to evict matching entries instead - `model_name`
+    alone evicts every quantize variant of both the `:cpu` and `:auto`
+    forms of that model (prefix-matched, since `_get_scene_model()`'s
+    cache key has a third, resolved-quantize segment this function
+    doesn't need to know the value of); `model_name` plus `force_cpu`
+    narrows that to just the `:cpu` or `:auto` variants, still across
+    every quantize level.
 
     Safe to call when the cache is already empty (nothing loaded this
     process, or a previous call already cleared it) - a harmless no-op,
@@ -548,10 +710,11 @@ def unload_scene_model(model_name: str | None = None, *, force_cpu: bool | None 
         keys_to_drop = [
             key
             for key in _SCENE_MODEL_CACHE
-            if key == f"{model_name}:cpu" or key == f"{model_name}:auto"
+            if key.startswith(f"{model_name}:cpu:") or key.startswith(f"{model_name}:auto:")
         ]
     else:
-        keys_to_drop = [f"{model_name}:{'cpu' if force_cpu else 'auto'}"]
+        prefix = f"{model_name}:{'cpu' if force_cpu else 'auto'}:"
+        keys_to_drop = [key for key in _SCENE_MODEL_CACHE if key.startswith(prefix)]
 
     if not keys_to_drop:
         return
@@ -1243,7 +1406,7 @@ def describe_scene(
 
     warn = warn or (lambda msg: print(msg, file=sys.stderr))
 
-    loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu)
+    loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu, quantize=opts.quantize)
 
     prompt = build_prompt(opts.task)
 
@@ -1366,7 +1529,7 @@ def summarize_trip(
     elif overrides:
         raise TypeError("pass either opts= or **overrides, not both")
 
-    loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu)
+    loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu, quantize=opts.quantize)
 
     segment_text = "\n\n".join(f"[{label}]\n{text}" for label, text in segments)
     prompt = TRIP_SUMMARY_PROMPT_TEMPLATE.format(segments=segment_text)

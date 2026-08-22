@@ -247,6 +247,202 @@ def test_vision_gpu_available_false_when_torch_missing(monkeypatch):
     assert scene.vision_gpu_available() is False
 
 
+# ---------------------------------------------------------------------------
+# scene_gpu_vram_gb() / resolve_scene_quantize() - Christer: "yes, can you
+# make it auto by looking at present graphics cards", right after learning
+# quantization needs its own flag (a loading-precision choice, not a
+# different model). "auto" should pick a level from the largest single GPU
+# detected - see resolve_scene_quantize()'s own docstring for why largest-
+# single rather than summed-total (his real dual-RTX-3080-Ti box, 12GB per
+# card, was the concrete example discussed).
+# ---------------------------------------------------------------------------
+
+
+def test_scene_gpu_vram_gb_false_when_torch_missing(monkeypatch):
+    import builtins
+
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", None)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("no torch here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert scene.scene_gpu_vram_gb() == []
+
+
+def test_scene_gpu_vram_gb_no_cuda_returns_empty(monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", None)
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert scene.scene_gpu_vram_gb() == []
+
+
+def test_scene_gpu_vram_gb_sorts_multiple_gpus_largest_first(monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", None)
+
+    class _FakeProps:
+        def __init__(self, gb):
+            self.total_memory = gb * (1024**3)
+
+    fake_cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 2,
+        get_device_properties=lambda i: _FakeProps([8.0, 24.0][i]),
+    )
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = fake_cuda
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert scene.scene_gpu_vram_gb() == [24.0, 8.0]
+
+
+def test_scene_gpu_vram_gb_is_cached(monkeypatch):
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0])
+
+    # No torch import happens at all once cached - if it tried, and
+    # torch weren't on sys.path in a stripped test env, this would
+    # blow up instead of returning the cached value.
+    assert scene.scene_gpu_vram_gb() == [12.0]
+
+
+def test_resolve_scene_quantize_explicit_values_pass_through():
+    assert scene.resolve_scene_quantize("none", force_cpu=False) == "none"
+    assert scene.resolve_scene_quantize("int8", force_cpu=False) == "int8"
+    assert scene.resolve_scene_quantize("int4", force_cpu=False) == "int4"
+
+
+def test_resolve_scene_quantize_rejects_unknown_value():
+    with pytest.raises(ValueError):
+        scene.resolve_scene_quantize("bogus", force_cpu=False)
+
+
+def test_resolve_scene_quantize_force_cpu_always_resolves_auto_to_none(monkeypatch):
+    # Even with a big GPU detected, force_cpu wins - bitsandbytes'
+    # int8/int4 paths are CUDA-only, so quantizing on the way to a CPU
+    # load would buy nothing.
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [24.0])
+
+    assert scene.resolve_scene_quantize("auto", force_cpu=True) == "none"
+
+
+def test_resolve_scene_quantize_auto_no_gpu_resolves_to_none(monkeypatch):
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [])
+
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "none"
+
+
+def test_resolve_scene_quantize_auto_large_gpu_resolves_to_none(monkeypatch):
+    # e.g. Christer's RTX 5090 laptop.
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [24.0])
+
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "none"
+
+
+def test_resolve_scene_quantize_auto_mid_gpu_resolves_to_int8(monkeypatch):
+    # e.g. a single RTX 3080 Ti, 12GB.
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0])
+
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
+
+
+def test_resolve_scene_quantize_auto_keyed_on_largest_single_gpu_not_sum(monkeypatch):
+    # Two 12GB GPUs (Christer's real dual-RTX-3080-Ti box) must still
+    # resolve to "int8", not "none" from a summed 24GB - device_map="auto"
+    # sharding across both is not the point; quantizing down onto *one*
+    # card is (see resolve_scene_quantize()'s own docstring).
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0, 12.0])
+
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
+
+
+def test_resolve_scene_quantize_auto_small_gpu_resolves_to_int4(monkeypatch):
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [6.0])
+
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int4"
+
+
+def test_resolve_scene_quantize_auto_boundaries(monkeypatch):
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [20.0])
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "none"
+
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [19.9])
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
+
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [10.0])
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
+
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [9.9])
+    assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int4"
+
+
+def test_get_scene_model_cache_key_includes_resolved_quantize(monkeypatch):
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", {})
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0])  # auto -> int8
+
+    load_calls = []
+
+    def fake_load(model_name, *, force_cpu, quantize="none"):
+        load_calls.append((model_name, force_cpu, quantize))
+        return _fake_loaded_model()
+
+    monkeypatch.setattr(scene, "_load_scene_model", fake_load)
+
+    scene._get_scene_model("some-model", force_cpu=False, quantize="auto")
+
+    assert load_calls == [("some-model", False, "int8")]
+    assert "some-model:auto:int8" in scene._SCENE_MODEL_CACHE
+
+    # A second call with the same (model, force_cpu, "auto") reuses the
+    # cache - no second load.
+    scene._get_scene_model("some-model", force_cpu=False, quantize="auto")
+    assert len(load_calls) == 1
+
+    # An explicit quantize level for the same model is a distinct
+    # cache entry.
+    scene._get_scene_model("some-model", force_cpu=False, quantize="int4")
+    assert len(load_calls) == 2
+    assert "some-model:auto:int4" in scene._SCENE_MODEL_CACHE
+
+
+def test_load_scene_model_quantize_and_force_cpu_together_raises(monkeypatch):
+    # resolve_scene_quantize() already resolves "auto" to "none" under
+    # force_cpu (see its own test above) - reaching _load_scene_model()
+    # with quantize != "none" and force_cpu=True can only mean an
+    # explicit, contradictory SceneOptions(quantize=..., force_cpu=True).
+    #
+    # Stub torch/torchvision/qwen_vl_utils/transformers as importable
+    # (empty modules) so this test exercises the quantize/force_cpu
+    # guard itself, not a missing-dependency error from the imports
+    # that happen earlier in _load_scene_model() - this environment
+    # doesn't have the real scene extra installed.
+    import sys
+    import types
+
+    for name in ("torch", "torchvision", "qwen_vl_utils"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = object
+    fake_transformers.Qwen2_5_VLForConditionalGeneration = object
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    with pytest.raises(MediaToolError, match="can't be combined"):
+        scene._load_scene_model("some-model", force_cpu=True, quantize="int8")
+
+
 def test_parse_grounding_boxes_plain_json():
     raw = '[{"bbox_2d": [1, 2, 3, 4], "label": "license plate"}]'
 
@@ -308,6 +504,7 @@ def test_scene_options_defaults_match_tuned_values():
     assert opts.zoom_signs is True
     assert opts.zoom_plate_confidence_check is True
     assert opts.force_cpu is False
+    assert opts.quantize == "auto"
 
 
 def test_describe_scene_rejects_opts_and_overrides_together():
@@ -466,7 +663,7 @@ def test_describe_scene_output_includes_disclaimer(monkeypatch, tmp_path):
         is_qwen3=False,
     )
 
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu: loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
 
     result = scene.describe_scene(video_path, zoom_signs=False)
 
@@ -584,7 +781,7 @@ def test_describe_scene_builds_an_image_content_element_for_a_photo(monkeypatch,
         return [], [], {}
 
     loaded = _fake_loaded_scene_model(fake_process_vision_info)
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu: loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
 
     # crop_top/crop_bottom off so the asserted size below reflects the
     # source photo exactly - describe_scene() applies the same overlay
@@ -623,7 +820,7 @@ def test_describe_scene_still_builds_a_video_content_element_for_a_real_video(
         return [], [], {}
 
     loaded = _fake_loaded_scene_model(fake_process_vision_info)
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu: loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
 
     scene.describe_scene(video_path, zoom_signs=False)
 
@@ -653,7 +850,7 @@ def test_describe_scene_video_element_uses_fixed_resize(monkeypatch, tmp_path):
         return [], [], {}
 
     loaded = _fake_loaded_scene_model(fake_process_vision_info)
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu: loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
 
     scene.describe_scene(video_path, zoom_signs=False)
 
@@ -695,8 +892,8 @@ def test_unload_scene_model_noop_on_empty_cache(monkeypatch):
 
 def test_unload_scene_model_no_args_clears_everything(monkeypatch):
     cache = {
-        "model-a:auto": _fake_loaded_model(),
-        "model-b:cpu": _fake_loaded_model(),
+        "model-a:auto:none": _fake_loaded_model(),
+        "model-b:cpu:none": _fake_loaded_model(),
     }
     monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
 
@@ -706,38 +903,49 @@ def test_unload_scene_model_no_args_clears_everything(monkeypatch):
 
 
 def test_unload_scene_model_by_name_evicts_both_variants_only(monkeypatch):
+    # model-a has entries under both cpu/auto *and* two different
+    # resolved quantize levels (auto could have resolved to "int8" on
+    # one call and an explicit "int4" on another, within the same
+    # process) - model_name-only eviction must drop every one of
+    # model-a's entries regardless of quantize level, matching
+    # _get_scene_model()'s own cache-key scheme (see unload_scene_model()'s
+    # docstring).
     cache = {
-        "model-a:auto": _fake_loaded_model(),
-        "model-a:cpu": _fake_loaded_model(),
-        "model-b:auto": _fake_loaded_model(),
+        "model-a:auto:none": _fake_loaded_model(),
+        "model-a:auto:int8": _fake_loaded_model(),
+        "model-a:cpu:none": _fake_loaded_model(),
+        "model-b:auto:none": _fake_loaded_model(),
     }
     monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
 
     scene.unload_scene_model("model-a")
 
-    assert list(cache) == ["model-b:auto"]
+    assert list(cache) == ["model-b:auto:none"]
 
 
 def test_unload_scene_model_by_name_and_force_cpu_evicts_one_entry(monkeypatch):
     cache = {
-        "model-a:auto": _fake_loaded_model(),
-        "model-a:cpu": _fake_loaded_model(),
+        "model-a:auto:none": _fake_loaded_model(),
+        "model-a:cpu:none": _fake_loaded_model(),
+        "model-a:cpu:int4": _fake_loaded_model(),
     }
     monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
 
     scene.unload_scene_model("model-a", force_cpu=True)
 
-    assert list(cache) == ["model-a:auto"]
+    # Both cpu entries (regardless of quantize level) are evicted -
+    # force_cpu narrows to the cpu/auto axis only, not quantize.
+    assert list(cache) == ["model-a:auto:none"]
 
 
 def test_unload_scene_model_unknown_name_is_a_noop(monkeypatch):
-    cache = {"model-a:auto": _fake_loaded_model()}
+    cache = {"model-a:auto:none": _fake_loaded_model()}
     monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
 
     scene.unload_scene_model("no-such-model")
 
     # The one real entry survives untouched.
-    assert list(cache) == ["model-a:auto"]
+    assert list(cache) == ["model-a:auto:none"]
 
 
 def test_unload_scene_model_safe_when_torch_not_installed(monkeypatch):
@@ -748,7 +956,7 @@ def test_unload_scene_model_safe_when_torch_not_installed(monkeypatch):
 
     import builtins
 
-    cache = {"model-a:auto": _fake_loaded_model()}
+    cache = {"model-a:auto:none": _fake_loaded_model()}
     monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", cache)
 
     real_import = builtins.__import__

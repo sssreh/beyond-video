@@ -302,6 +302,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--scene-quantize",
+        choices=["auto", "none", "int8", "int4"],
+        default="auto",
+        help=(
+            "Loading precision for --describe-scene's vision-language "
+            "model - not a different model, just a smaller-footprint "
+            "way to load the same one (default: auto). 'auto' picks a "
+            "level from the largest single GPU detected on this "
+            "machine: comfortably-sized GPUs (~20GB+) get 'none' (full "
+            "precision, e.g. an RTX 5090 laptop), mid-size GPUs "
+            "(~10-20GB) get 'int8' (e.g. a single RTX 3080 Ti's "
+            "12GB), and smaller GPUs get 'int4' - see --cpu for "
+            "forcing CPU instead, which 'auto' always resolves to "
+            "'none' under (int8/int4 need a CUDA GPU, via "
+            "bitsandbytes - see pyproject.toml's scene extra). Pass "
+            "'none'/'int8'/'int4' explicitly to override the "
+            "auto-detected choice."
+        ),
+    )
+
+    parser.add_argument(
         "--camera",
         choices=["front", "rear", "both"],
         default="front",
@@ -888,7 +909,11 @@ def _run_describe_scene_pass(
         say(f"{recording.id}: would describe scene -> {destination.name}")
         return False
 
-    kwargs = {"model": args.scene_model, "force_cpu": args.cpu}
+    kwargs = {
+        "model": args.scene_model,
+        "force_cpu": args.cpu,
+        "quantize": args.scene_quantize,
+    }
     if task is not None:
         kwargs["task"] = task
 

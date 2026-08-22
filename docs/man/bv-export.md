@@ -15,6 +15,7 @@ bv-export [--target DIR] [--config-dir DIR] [--prefix PREFIX]
           [--include-parking] [--parking-speed SPEED]
           [--photo-duration SECONDS]
           [--trip-summary] [--scene-model MODEL] [--scene-cpu]
+          [--scene-quantize {auto,none,int8,int4}]
           [--map] [--map-icon PATH] [--map-zoom [METERS]] [--map-track-up]
           [--map-intro] [--map-intro-seconds SECONDS]
           [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-x]
@@ -117,6 +118,7 @@ A photo's own image is scaled and letterboxed (not cropped, so nothing the photo
 | `--trip-summary` | Write `trip_summary.txt` into the trip folder: one text-only synthesis pass (`generate.scene.summarize_trip()`) turning this trip's own recordings' already-generated `## Description` scene text (`Asset.SCENE_DESCRIPTION` - `bv-scribe`/`bv-generate --describe-scene` must have already described at least 2 of this trip's recordings) into a single flowing trip-level narrative that tracks how conditions changed over the trip, rather than restating each segment back to back. Needs 2+ described recordings in the trip; otherwise skipped with a `trip.log` note, not an error. This is a deliberate exception to the rule that `bv-export` never calls a model itself elsewhere (see `TEXT_ASSETS`' `scene.txt`/`scene.rear.txt` merge) - a synthesis pass genuinely has nowhere else to live once trip-level narrative generation moved out of `bv-scribe` and into the command that actually owns trip folders (see `bv-scribe(1)`). Requires the `scene` extra whenever actually used - see `bv-scribe(1)`'s own install notes. |
 | `--scene-model MODEL` | Hugging Face model id for `--trip-summary`'s synthesis pass. Default: same as `bv-scribe`'s own default (`Qwen/Qwen3-VL-8B-Instruct`). Meaningless without `--trip-summary`. |
 | `--scene-cpu` | Force `--trip-summary`'s synthesis pass onto CPU instead of GPU. Meaningless without `--trip-summary`. |
+| `--scene-quantize {auto,none,int8,int4}` | Loading precision for `--trip-summary`'s synthesis model, not a different model - `auto` (default) picks based on the largest single GPU on this machine: `none` (full precision) at 20GB+ VRAM, `int8` at 10-20GB, `int4` below that; a machine with no CUDA GPU (or `--scene-cpu`) always resolves to `none`. Sized off the largest single card, not total VRAM across cards, so e.g. two 12GB GPUs resolve to `int8` (fits on one card) rather than `none` (which would shard the model across both). Explicit `none`/`int8`/`int4` overrides the auto-detection; combining an explicit non-`none` level with `--scene-cpu` is an error. Meaningless without `--trip-summary`. Needs the `bitsandbytes` package (part of the `scene` extra). |
 
 ### Pre-record buffer trimming
 

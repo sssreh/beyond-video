@@ -21,7 +21,7 @@ bv-scribe [--raw]
           [--zoom-max-new-tokens N] [--zoom-detect-max-new-tokens N]
           [--zoom-repetition-penalty N] [--zoom-no-repeat-ngram-size N]
           [--zoom-plate-confidence-check | --no-zoom-plate-confidence-check]
-          [--cpu]
+          [--cpu] [--quantize {auto,none,int8,int4}]
           [--config-dir DIR]
           [--overwrite] [--dry-run] [-v]
           [PATH]
@@ -78,6 +78,7 @@ Check [PyTorch's "Get Started" page](https://pytorch.org/get-started/locally/) f
 | `--task {describe,ocr,both}` | `describe` for what's happening, `ocr` for on-screen text only, `both` for a single combined pass. Default: `both`. |
 | `--model MODEL` | Hugging Face model id. Default: `Qwen/Qwen3-VL-8B-Instruct` (~16GB download on first use, cached under `~/.cache/huggingface`; requires `transformers>=4.57.0`, already the `scene` extra's own floor). A smaller or quantized (`-AWQ`) variant trades accuracy for speed/VRAM - `Qwen/Qwen2.5-VL-7B-Instruct` (this feature's original default, `transformers>=4.49.0`) remains a solid fallback if you want the more real-footage-tested option instead. |
 | `--cpu` | Force CPU inference. Extremely slow for a 7B+ video model - mainly useful to confirm the pipeline runs at all without a working CUDA setup. |
+| `--quantize {auto,none,int8,int4}` | Loading precision for `--model`, not a different model - `auto` (default) picks based on the largest single GPU on this machine: `none` (full precision) at 20GB+ VRAM, `int8` at 10-20GB, `int4` below that; a machine with no CUDA GPU (or `--cpu`) always resolves to `none`. Sized off the largest single card, not total VRAM across cards, so e.g. two 12GB GPUs resolve to `int8` (fits on one card) rather than `none` (which would shard the model across both via `device_map="auto"`, a slower PCIe-pipelined load). Explicit `none`/`int8`/`int4` overrides the auto-detection; combining an explicit non-`none` level with `--cpu` is an error. Needs the `bitsandbytes` package (part of the `scene` extra). |
 
 ### Frame sampling / resolution
 

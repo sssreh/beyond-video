@@ -541,6 +541,7 @@ def bv_export(
     trip_summary: bool = False,
     scene_model: str = SCENE_DEFAULT_MODEL,
     scene_cpu: bool = False,
+    scene_quantize: str = "auto",
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -969,6 +970,7 @@ def bv_export(
                 trip_summary=trip_summary,
                 scene_model=scene_model,
                 scene_cpu=scene_cpu,
+                scene_quantize=scene_quantize,
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
@@ -1934,6 +1936,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "GPU. Meaningless without --trip-summary."
         ),
     )
+    parser.add_argument(
+        "--scene-quantize",
+        choices=["auto", "none", "int8", "int4"],
+        default="auto",
+        help=(
+            "Loading precision for --trip-summary's synthesis pass - "
+            "not a different model, just a smaller-footprint way to "
+            "load the same one (default: auto, picked from the "
+            "largest single GPU detected on this machine - see "
+            "bv-generate's --scene-quantize for the full threshold "
+            "explanation). Meaningless without --trip-summary."
+        ),
+    )
 
     parser.add_argument(
         "--overwrite",
@@ -2131,6 +2146,7 @@ def _run(
             trip_summary=args.trip_summary,
             scene_model=args.scene_model,
             scene_cpu=args.scene_cpu,
+            scene_quantize=args.scene_quantize,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
             debug=args.debug,

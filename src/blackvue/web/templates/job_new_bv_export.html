@@ -266,6 +266,21 @@
         Force the trip-summary synthesis pass onto CPU (--scene-cpu)
       </label>
     </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="scene_quantize">
+          Loading precision (--scene-quantize)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Not a different model - just a smaller-footprint way to load the same one. "auto" (default) picks a level from the largest single GPU detected on the server: comfortably-sized GPUs get full precision, smaller ones get int8 or int4 so the model still fits on one card.</span></span>
+        </label>
+        <select id="scene_quantize" name="scene_quantize">
+          <option value="auto"{% if defaults.get('scene_quantize', 'auto') == 'auto' %} selected{% endif %}>auto</option>
+          <option value="none"{% if defaults.get('scene_quantize', 'auto') == 'none' %} selected{% endif %}>none</option>
+          <option value="int8"{% if defaults.get('scene_quantize', 'auto') == 'int8' %} selected{% endif %}>int8</option>
+          <option value="int4"{% if defaults.get('scene_quantize', 'auto') == 'int4' %} selected{% endif %}>int4</option>
+        </select>
+      </div>
+    </div>
   </details>
 
   <details class="option-group" id="advanced-map">

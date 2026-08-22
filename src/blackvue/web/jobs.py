@@ -754,6 +754,7 @@ class JobRunner:
         trip_summary: bool,
         scene_model: str | None,
         scene_cpu: bool,
+        scene_quantize: str | None,
         overwrite: bool,
         dry_run: bool,
         debug: bool,
@@ -910,6 +911,8 @@ class JobRunner:
             argv += ["--scene-model", scene_model]
         if scene_cpu:
             argv.append("--scene-cpu")
+        if scene_quantize:
+            argv += ["--scene-quantize", scene_quantize]
         if overwrite:
             argv.append("--overwrite")
         if dry_run:
