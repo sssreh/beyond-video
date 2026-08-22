@@ -103,17 +103,31 @@ fallback works on any distro, yum-based or not.
 - **Hardware-backed calls will fail/hang.** Anything that talks to the
   Hi3559's real MPP video pipeline, GPS receiver, or g-sensor has no
   emulated hardware to talk to. Expect errors, not silent success.
-- **`main_app`'s GPIO check is a real, confirmed dead end - not just a
-  missing file.** `main_app` fails with `open GPIO_DEV err` trying to
-  open `/dev/hi_gpio` (found via `strings`). Creating a fake character
-  device node at that path (`sudo mknod rootfs/dev/hi_gpio c 1 3 &&
-  sudo chmod 666 rootfs/dev/hi_gpio`) does let the `open()` call
-  succeed - but the very next call, `HI_HAL_Gpio_GetBitVal`'s `ioctl()`,
-  fails with `read gpio data failed`, because a fake device node backed
-  by `/dev/null`'s major/minor doesn't implement the actual ioctl the
-  code expects. Faking a *file* is cheap; faking *driver behavior* isn't
-  - that would need a real (fake) kernel module reimplementing the
-  Hi3559 GPIO controller's register semantics, which is out of scope.
-  This is the genuine, confirmed boundary of userspace emulation for
-  `main_app` specifically, tested end-to-end on real Oracle Linux
-  hardware against firmware v1.009 - not a config gap to keep chasing.
+- **`main_app`'s GPIO check was a real wall, but a beatable one - see
+  `gpio_shim/`.** `main_app` fails with `open GPIO_DEV err` trying to
+  open `/dev/hi_gpio` (found via `strings`). A fake character device
+  node (`sudo mknod rootfs/dev/hi_gpio c 1 3 && sudo chmod 666
+  rootfs/dev/hi_gpio`) gets past `open()`, but the next call -
+  `HI_HAL_Gpio_GetBitVal`'s `ioctl()` - originally failed with `read
+  gpio data failed`, since a device node backed by `/dev/null`'s
+  major/minor doesn't implement the ioctl the code expects.
+
+  `gpio_shim/` fixes this properly: an `LD_PRELOAD` shim
+  (`gpio_shim.so`, built by `gpio_shim/build.sh`) that intercepts every
+  `ioctl()` call and fakes success specifically for fds pointing at
+  `/dev/hi_gpio`, leaving every other ioctl untouched. Wire it in with
+  `run_main_app.sh`. Confirmed working end-to-end on Oracle Linux
+  against firmware v1.009: `main_app` clears the GPIO loop completely
+  (four real `[gpio-shim] faking ioctl() success` lines) and gets
+  measurably further into its own startup than it ever did before.
+
+  It then hits the *actual* final wall: `SysUpMain Failed s32Ret: 36`.
+  `strings` confirms `SysUpMain` opens `/dev/mem` and `mmap()`s it
+  directly to talk to the Hi3559's MPP (media processing) hardware
+  registers - not an `ioctl()` on a device file, but raw physical
+  memory access expecting a real SoC's register layout on the other
+  end. That's not fakeable with another shim; it would mean modeling
+  the actual behavior of Hisilicon's proprietary MPP register set, a
+  different scale of project (closer to a chip simulator than a
+  syscall interceptor) and out of scope here. This is the genuine end
+  of the userspace-emulation road for `main_app`.
