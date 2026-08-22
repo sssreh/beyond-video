@@ -24,6 +24,11 @@ from blackvue.core.camera_config import save_camera_config
 from blackvue.core.lock import LockManifest
 from blackvue.core.lock import add_lock_assets
 from blackvue.core.lock import save_lock_manifest
+from blackvue.core.resume import ResumeState
+from blackvue.core.resume import advance_resume_point
+from blackvue.core.resume import load_resume_state
+from blackvue.core.resume import resume_point
+from blackvue.core.resume import save_resume_state
 from blackvue.generate import SCENE_DEFAULT_MODEL
 from blackvue.generate.media import MediaToolError
 from blackvue.generate.speech import SpeakerTurn
@@ -213,6 +218,18 @@ def test_parse_args_cpu_flag_can_be_set():
     args = parse_args(["/some/path", "--transcribe", "--cpu"])
 
     assert args.cpu is True
+
+
+def test_parse_args_resume_flag_defaults_to_false():
+    args = parse_args(["/some/path", "--get-duration"])
+
+    assert args.resume is False
+
+
+def test_parse_args_resume_flag_can_be_set():
+    args = parse_args(["/some/path", "--get-duration", "--resume"])
+
+    assert args.resume is True
 
 
 def test_parse_args_model_size_explicit_value_is_kept_even_on_a_gpu_machine(
@@ -2745,3 +2762,226 @@ def test_run_does_not_skip_an_unlocked_year(tmp_path, monkeypatch):
     assert exit_code == bv_generate.EXIT_OK
     assert len(called) == 1
     assert not any("already locked" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# _run: --resume
+# ---------------------------------------------------------------------------
+
+
+def _touch_recording(archive_path, stamp, kind="N", camera="F"):
+    (archive_path / f"{stamp}_{kind}{camera}.mp4").write_bytes(b"v")
+
+
+def _fake_get_duration(log):
+    def _fake(recording, archive_path, args, **kw):
+        log.append(recording.id.value)
+        return False
+
+    return _fake
+
+
+def test_run_resume_first_time_processes_everything_and_writes_a_cursor(
+    tmp_path, monkeypatch
+):
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+
+    called = []
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration(called))
+
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+    exit_code = bv_generate._run(args, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert sorted(called) == ["20260801_120000_N", "20260805_120000_N"]
+
+    state = load_resume_state(tmp_path)
+    assert resume_point(state, {"get-duration"}) == "20260805_120000"
+
+
+def test_run_resume_second_run_with_nothing_new_only_reprocesses_the_cursor(
+    tmp_path, monkeypatch
+):
+    # Steady-state daily case: no new recordings since the last run.
+    # The cursor recording (0805) is still safely re-included (cheap -
+    # _should_write_for's own skip logic, not exercised by this fake,
+    # is what actually makes that a no-op in a real run); the older
+    # one (0801) is not walked again.
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+
+    monkeypatch.setattr(
+        bv_generate, "_do_get_duration", _fake_get_duration([])
+    )
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+    bv_generate._run(args, say=lambda *a, **k: None)
+
+    called = []
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration(called))
+
+    exit_code = bv_generate._run(args, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert called == ["20260805_120000_N"]
+
+
+def test_run_resume_says_up_to_date_when_the_cursor_recording_is_gone(
+    tmp_path, monkeypatch
+):
+    # The one case recordings really is empty under --resume: the
+    # cursor points past every recording still present (e.g. the
+    # cursor recording itself was deleted, or --resume is pointed at
+    # an archive with nothing newer than a previous run already saw).
+    _touch_recording(tmp_path, "20260801_120000")
+    save_resume_state(
+        tmp_path,
+        advance_resume_point(ResumeState(), {"get-duration"}, "20260901_000000"),
+    )
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _refuse)
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+    messages = []
+
+    exit_code = bv_generate._run(args, say=messages.append)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert any("up to date" in m for m in messages)
+
+
+def test_run_resume_reprocesses_only_the_cursor_recording_and_anything_newer(
+    tmp_path, monkeypatch
+):
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration([]))
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+    bv_generate._run(args, say=lambda *a, **k: None)
+
+    # A genuinely new recording shows up before the next daily run.
+    _touch_recording(tmp_path, "20260810_120000")
+
+    called = []
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration(called))
+
+    exit_code = bv_generate._run(args, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    # The cursor recording (0805) is safely re-included; the older one
+    # (0801, already fully attempted last run) is not walked again.
+    assert sorted(called) == ["20260805_120000_N", "20260810_120000_N"]
+
+    state = load_resume_state(tmp_path)
+    assert resume_point(state, {"get-duration"}) == "20260810_120000"
+
+
+def test_run_resume_dry_run_does_not_advance_the_cursor(tmp_path, monkeypatch):
+    _touch_recording(tmp_path, "20260801_120000")
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration([]))
+    args = parse_args(
+        [str(tmp_path), "--get-duration", "--resume", "--dry-run"]
+    )
+
+    exit_code = bv_generate._run(args, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert not resume_state_path_exists(tmp_path)
+
+
+def resume_state_path_exists(archive_path):
+    return (archive_path / ".bv-generate-resume.json").exists()
+
+
+def test_run_resume_keeps_cursors_independent_per_action_combination(
+    tmp_path, monkeypatch
+):
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration([]))
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+    bv_generate._run(args, say=lambda *a, **k: None)
+
+    # A --resume run with a different action flag has never run before
+    # for this combination - it should walk everything, not inherit
+    # --get-duration's own cursor.
+    called = []
+    monkeypatch.setattr(
+        bv_generate, "_do_thumbnail",
+        lambda recording, archive_path, args, **kw: called.append(
+            recording.id.value
+        ) or False,
+    )
+    args2 = parse_args([str(tmp_path), "--thumbnail", "--resume"])
+
+    exit_code = bv_generate._run(args2, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert sorted(called) == ["20260801_120000_N", "20260805_120000_N"]
+
+
+def test_run_resume_explicit_from_wins_when_later_than_the_cursor(
+    tmp_path, monkeypatch
+):
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration([]))
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+    bv_generate._run(args, say=lambda *a, **k: None)
+
+    _touch_recording(tmp_path, "20260810_120000")
+
+    # An explicit --from newer than the cursor should narrow the range
+    # further, not be widened back out by the cursor.
+    called = []
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration(called))
+    args2 = parse_args(
+        [str(tmp_path), "--get-duration", "--resume", "--from", "20260810"]
+    )
+
+    exit_code = bv_generate._run(args2, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert called == ["20260810_120000_N"]
+
+
+def test_run_resume_advances_the_cursor_even_after_a_recording_error(
+    tmp_path, monkeypatch
+):
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+
+    # Simulate a recording that genuinely fails every time (e.g. a
+    # corrupted source) - the cursor should still advance past it, so
+    # a persistently broken recording can't pin --resume in place
+    # forever. The run's own non-zero exit code is what surfaces the
+    # failure, not a stuck cursor.
+    monkeypatch.setattr(
+        bv_generate, "_do_get_duration",
+        lambda recording, archive_path, args, **kw: True,
+    )
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+
+    exit_code = bv_generate._run(args, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_HAD_ERRORS
+    state = load_resume_state(tmp_path)
+    assert resume_point(state, {"get-duration"}) == "20260805_120000"
+
+
+def test_run_resume_does_not_narrow_a_first_ever_run(tmp_path, monkeypatch):
+    # No cursor file exists yet - behaves exactly like not passing
+    # --resume at all.
+    _touch_recording(tmp_path, "20190101_000000")
+
+    called = []
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake_get_duration(called))
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+
+    exit_code = bv_generate._run(args, say=lambda *a, **k: None)
+
+    assert exit_code == bv_generate.EXIT_OK
+    assert called == ["20190101_000000_N"]

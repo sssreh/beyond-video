@@ -17403,3 +17403,87 @@ src/blackvue/web/jobs.py, src/blackvue/web/app.py,
 src/blackvue/web/templates/job_new_bv_export.html,
 tests/blackvue/generate/test_scene.py, docs/man/bv-generate.md,
 docs/man/bv-scribe.md, docs/man/bv-export.md.
+
+## bv-generate --resume: skip already-done history on a daily/cron run (this session)
+
+Christer, planning to run `bv-generate` daily: "i would like a --lazy
+(not the right name) for bv-generate that autostart at first none
+generated asset, i am planning to run it daily and dont want to scan
+through all previous assets." He also floated "--restart" as a
+possible name while I was reading the code, still unsure of the right
+word - I picked `--resume` (matches the "continue where you left off"
+CLI convention, e.g. `wget -c`/`rsync --partial`) and said so, leaving
+it a one-line rename if he'd rather have something else.
+
+Investigated `_run()`'s existing architecture first before designing
+anything: `archive.recordings` (the full archive scan - one
+`os.scandir()` for a BlackVue archive, a recursive walk with
+per-video stat-multiplication for Folder/GoPro adapters) is always
+materialized in full *before* the `--from`/`--until` interval filter
+even runs - narrowing the requested range never reduces scan cost,
+only the size of the post-scan Python loop. So the real, avoidable
+cost a growing daily archive pays isn't the scan itself, it's the
+per-recording walk-and-skip-check pass (each `_do_*()` call's own
+`_should_write_for()` stat + possible "already exists, skipping"
+warning) over every single historical recording, every single day.
+
+Considered and rejected a design that re-checks "does recording X
+already have every requested asset" live each run (probing forward to
+find the first incomplete one): some recordings can *never* produce a
+given asset no matter how many times bv-generate runs against them
+(silent audio, no audio stream at all, a Parking-mode/photo recording
+skipped for an audio action) - a cursor built that way would get stuck
+at the first such recording forever, re-walking everything after it on
+every future run and defeating the entire point.
+
+Landed on a persisted high-water-mark cursor instead - `core/resume.py`,
+deliberately shaped like `core/lock.py`'s own manifest (a JSON sidecar
+per archive, `.bv-generate-resume.json`, entries keyed by an exact
+asset-name-set, same vocabulary as bv-lock's `LOCKABLE_ASSETS`/
+`_requested_lock_assets()`): `resume_point()`/`advance_resume_point()`
+read/write a `last_seen` timestamp per exact combination of action
+flags used. Advances to the *newest recording actually walked this
+run*, not "the first one confirmed fully done" - sidesteps the
+silent-audio problem entirely, since it never asserts a recording
+definitely produced output, only "already attempted, no need to
+re-scan/re-check it or anything before it." Advances even after a
+`_do_*()` error (a persistently broken recording, e.g. a corrupted
+source, would otherwise pin the cursor in place forever - the run's
+own non-zero exit code is what surfaces that, a plain re-run without
+`--resume` still retries it directly).
+
+`bv_generate.py`'s `_run()`: after parsing the normal `--from`/
+`--until`/`--timestamp` interval, `--resume` looks up the cursor for
+this run's exact `_requested_lock_assets(args)` set and, if found and
+later than the interval's own lower bound, replaces `interval.first`
+with it - `max()`, not replace, so an explicit `--from`/`--until` is
+only ever narrowed further, never widened back out. The cursor
+recording itself is intentionally re-included (inclusive comparison)
+on the very next run - a cheap safety margin against an interrupted
+run, since `_should_write_for()`'s own stat check makes reprocessing
+an already-complete recording a no-op. After a real (non-dry-run) run
+finds at least one recording, the cursor advances to the newest one
+walked. First run for a given action-flag combination (no cursor yet)
+behaves exactly like not passing `--resume` at all.
+
+Verified via a standalone script (no pytest/pip in this sandbox - no
+route to PyPI; also had to stub `tomllib`, a 3.11+ stdlib module not
+present on this sandbox's Python 3.10, to get past `core/camera_config.py`'s
+import chain) exercising `core/resume.py`'s load/save/round-trip and
+`resume_point()`/`advance_resume_point()` behavior, plus real
+end-to-end `bv_generate._run()` runs against tmp-dir archives covering:
+first-ever `--resume` run processes everything and writes a cursor;
+a steady-state run with nothing new only re-touches the cursor
+recording, not the whole history; a genuinely new recording gets
+picked up while older ones stay skipped; `--dry-run` never persists a
+cursor; different action-flag combinations get independent cursors;
+an explicit `--from` newer than the cursor still wins; the cursor
+advances even after a recording error; and the "up to date" message
+fires only when the cursor points past every recording still present
+(e.g. the cursor recording was since deleted). Added 15 new tests to
+`tests/blackvue/core/test_resume.py` and 11 to
+`tests/blackvue/cli/test_bv_generate.py`.
+
+Files changed: src/blackvue/core/resume.py (new),
+src/blackvue/cli/bv_generate.py, tests/blackvue/core/test_resume.py
+(new), tests/blackvue/cli/test_bv_generate.py, docs/man/bv-generate.md.

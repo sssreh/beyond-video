@@ -28,6 +28,10 @@ from ..core.joblog import wrap_say
 from ..core.joblog import wrap_warn
 from ..core.lock import assets_fully_locked
 from ..core.lock import load_lock_manifest
+from ..core.resume import advance_resume_point
+from ..core.resume import load_resume_state
+from ..core.resume import resume_point
+from ..core.resume import save_resume_state
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import SpeechSegment
@@ -49,6 +53,7 @@ from ..generate import transcribe
 from ..generate import translate
 from ..generate.mp4_repair import load_or_repair_parking_video
 from ..lexicaltimeparser import LexicalTimeParser
+from ..lexicaltimeparser import TimeInterval
 
 _SPEAKER_LINE = re.compile(r"^\[(?P<speaker>[^\]]+)\]\s*(?P<text>.*)$")
 
@@ -120,6 +125,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--timestamp",
         metavar="TIMESTAMP",
         help="Only consider recordings matching this timestamp or prefix.",
+    )
+
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip straight to new recordings instead of walking the "
+            "whole archive every run - for a daily/cron invocation "
+            "with a stable set of action flags. Remembers, per exact "
+            "combination of action flags used, the newest recording "
+            "reached by the last --resume run, saved as "
+            "'.bv-generate-resume.json' next to the archive; each "
+            "later --resume run narrows --from up to that point "
+            "(combined with an explicit --from/--until, not replacing "
+            "them - whichever bound is later wins) and, if it finds "
+            "at least one recording, advances the cursor again "
+            "afterwards. A recording is included once more on the "
+            "very next run after being the newest one seen (cheap - "
+            "already-generated files are still skipped the normal "
+            "way), as a safety margin against an interrupted run. "
+            "Changing the action flags starts that new combination's "
+            "own cursor from the beginning rather than risking a "
+            "silent gap. Doesn't skip --dry-run's own reporting, and "
+            "a dry run never advances the cursor. First run for a "
+            "given combination (no cursor yet) behaves exactly like "
+            "not passing --resume at all."
+        ),
     )
 
     parser.add_argument(
@@ -1723,8 +1755,27 @@ def _run(
             warn(f"bv-generate: {exc}")
             return EXIT_ARGS_ERROR
 
+        # --resume: narrow the lower bound up to wherever the last
+        # --resume run for this exact combination of action flags got
+        # to, so a daily/cron invocation only ever walks new
+        # recordings instead of re-scanning the whole archive's
+        # history every time (Christer: "i am planning to run it
+        # daily and dont want to scan through all previous assets").
+        # max(), not replace - an explicit --from/--until the caller
+        # gave is never widened, only ever narrowed further by the
+        # cursor. requested_assets is needed again below (to advance
+        # the cursor after a real run), so it's computed once here
+        # regardless of --ignore-lock/--resume.
+        requested_assets = _requested_lock_assets(args)
+        resume_cursor = (
+            resume_point(load_resume_state(archive_path), requested_assets)
+            if args.resume
+            else None
+        )
+        if resume_cursor is not None and resume_cursor > interval.first:
+            interval = TimeInterval(first=resume_cursor, last=interval.last)
+
         if not args.ignore_lock:
-            requested_assets = _requested_lock_assets(args)
             manifest = load_lock_manifest(archive_path)
             locked_entry = assets_fully_locked(
                 manifest, interval, requested_assets
@@ -1746,8 +1797,13 @@ def _run(
         ]
 
         if not recordings:
-            say(f"bv-generate: {archive_path} - no recordings found in "
-                "range, nothing to do.")
+            if args.resume and resume_cursor is not None:
+                say(f"bv-generate: {archive_path} - up to date, nothing "
+                    f"new since the last --resume run (cursor "
+                    f"{resume_cursor}).")
+            else:
+                say(f"bv-generate: {archive_path} - no recordings found "
+                    "in range, nothing to do.")
             return EXIT_OK
 
         # Shared across every _should_write() call this run, so an
@@ -1782,6 +1838,27 @@ def _run(
                 had_error |= _do_describe_scene(
                     recording, archive_path, args, say=say, warn=warn
                 )
+
+        # Advance the cursor to the newest recording actually walked
+        # this run - regardless of had_error: a recording that failed
+        # for a real reason (a corrupted source, say) still got a real
+        # attempt, and every _do_*() failure already surfaced its own
+        # warn() above and rolls up into this run's own non-zero exit
+        # code. Retrying it automatically forever would mean --resume
+        # can never advance past a single permanently-broken
+        # recording; a plain re-run (with or without --resume) still
+        # retries it directly. Not advanced for --dry-run, which never
+        # writes anything else either.
+        if args.resume and not args.dry_run:
+            newest = max(recording.id.value for recording in recordings)
+            save_resume_state(
+                archive_path,
+                advance_resume_point(
+                    load_resume_state(archive_path),
+                    requested_assets,
+                    newest.rsplit("_", 1)[0],
+                ),
+            )
 
         return EXIT_HAD_ERRORS if had_error else EXIT_OK
     finally:
