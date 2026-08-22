@@ -2,6 +2,114 @@
 
 ## Unreleased
 
+## [1.1.0] - "Beyond BlackVue" - 2026-08-22
+
+The project stops being BlackVue-only: a pluggable camera-adapter
+architecture now backs every command, with a `FolderAdapter` for any
+generic video folder and a full `GoProAdapter` (GPMF telemetry parsing,
+SD-card import) shipping alongside the existing `BlackVueAdapter`. Photos
+and GIFs are now first-class recordings (EXIF timestamp/orientation/GPS,
+synthetic duration, spliced into trip exports), voice search and
+ElevenLabs-powered read-aloud (with synced `.srt` download) round out
+`bv-search`/`bv-web`, and `bv-snap` adds one-shot F/R/I still capture.
+`bv-download`'s output was rewritten to be talkative (per-file timing,
+speed, always-print id), and `bv-generate` gained a `--resume` flag for
+running unattended daily/cron jobs without re-walking a growing archive's
+whole history, plus GPU-VRAM-aware scene-model quantization.
+
+### Added
+
+- Camera-adapter architecture: `adapters/base.py`'s `CameraAdapter`
+  protocol and a registry now sit behind every command (`bv-ls`,
+  `bv-generate`, `bv-export`, `bv-scribe`, `bv-search`, `bv-download`,
+  `bv-web`'s archive browser), with `BlackVueAdapter` as a pure
+  delegation wrapper preserving existing behavior exactly. New
+  `FolderAdapter` recursively scans any generic video folder and resolves
+  timestamps without camera-specific assumptions. New `GoProAdapter`
+  parses GPMF telemetry (GPS/g-sensor, with a `TICK`-based fallback for
+  older firmware) and supports SD-card import via `bv-download --media`
+  (renamed from `--sdcard`, old name kept as a hidden alias). `bv-config`'s
+  wizard now asks which adapter a camera uses.
+- Photo and GIF support: a still photo (or a GIF's first frame) is now a
+  one-frame "recording" - EXIF timestamp/orientation/GPS read and applied,
+  a configurable synthetic duration, spliced into `bv-export`'s trip
+  concatenation, used as its own archive-browser thumbnail, and skipped
+  cleanly by audio/transcribe `bv-generate` actions instead of erroring.
+- `bv-search`: voice search on the web form - record a spoken query,
+  parse it into a date/date-range (`voice_time.py`) and/or place+radius
+  (`voice_query.py`) with an editable transcript before submitting.
+- Read-aloud: scene descriptions and `trip_summary.txt` can be read aloud
+  via ElevenLabs (voice auto-picked, with a picker to override), with a
+  native audio-controls player, speed dropdown, per-cue pacing for long
+  descriptions, and a synced `.srt` download built from ElevenLabs'
+  with-timestamps response.
+- `bv-snap`: new standalone CLI for a one-shot Front/Rear/Interior
+  snapshot from a camera, also available as `bv-gps --snap` (which now
+  also prints the GPS reading) and from `bv-web` (inline preview,
+  auto-deleted after refresh/navigation-away).
+- `bv-generate --resume`: persists a per-archive, per-exact-action-
+  combination cursor (`.bv-generate-resume.json`) so a daily/cron
+  invocation narrows `--from` to just past the last run instead of
+  walking the whole archive's history every time, without permanently
+  pinning on recordings that can never produce a given asset.
+- `bv-generate`/`bv-scribe --scene-quantize`: auto-selects int8/int4/none
+  bitsandbytes quantization for the scene vision-language model based on
+  detected GPU VRAM, so lower-VRAM cards can still run it.
+- `--gps-split`: opt-in flag (`bv-export`, `bv-ls --trips`, `bv-web`) that
+  force-splits a trip on an implausible GPS jump instead of bridging it.
+- `Recording.timestamp_reliable`: recordings whose timestamp came from a
+  filesystem-mtime fallback rather than a real source are now isolated
+  from trip-grouping instead of silently corrupting a trip's boundaries.
+- Elevation: GPS altitude parsed from `$GPGGA`, surfaced as elevation
+  range/gain in `TripStats` and `trip_info.txt`.
+- Thumbnails: on-demand cached thumbnails (plus original source filename)
+  for folder/GoPro-adapter archives in the browser; a new permanent
+  `--thumbnail` `bv-generate` action for a stable thumbnail asset,
+  falling back to on-demand generation when absent.
+- Scene description: per-event timestamped descriptions feed a real
+  video-synced `description.srt` (lag-correction curves, a lead-time
+  buffer, and a trimmed-to-reading-time window), sign reads use natural-
+  language wording and get their own `scene.srt`, rear-camera
+  descriptions get a "Rear view:" prefix, and a frame-viewer with manual
+  calibration capture was added to the recording detail page for tuning
+  the lag curves against real footage. An Edit option was added for the
+  scene description file.
+
+### Changed
+
+- `bv-download`'s per-recording output rewritten to a talkative header +
+  indented-detail format: always prints the bare recording id and
+  Metadata/Front/Rear/Interior labels, per-file and total download
+  timing, and average download speed. `--timeout` default raised to 30s.
+- Scene description prompt hardened against phantom-vehicle/mirror
+  hallucination and non-driving-image refusal; `max_frames` was raised
+  to 64 via total-pixels sampling budgeting, found to regress quality,
+  and reverted back to 16.
+- `bv-web`'s nav tabs reordered into pipeline order; the standalone
+  `bv-snap` web page removed and merged into `bv-gps`'s `--snap` mode;
+  history list now shows newest-first with human-formatted, tooltip'd
+  timestamps and an uncapped, scrollable reuse-a-previous-run list
+  (extended from `bv-scribe` to `bv-export`/`bv-generate`/`bv-search`
+  too); the Google Maps line in `bv-gps` output is now a clickable link;
+  the archive browser defaults to videos-only recordings, with a
+  "Show all recordings" opt-out.
+
+### Fixed
+
+- `bv-generate` no longer crashes on a corrupted source video or one
+  with no audio stream at all during audio extraction (two unguarded
+  `probe_audio_codec` crash sites).
+- Snapshot capture (`bv-snap`/`bv-gps --snap`/`bv-web`): a hang from an
+  unbounded MJPEG read, stale warm-up frames left over after a direction
+  switch (both `bv-snap` and `bv-live`), and per-direction errors now
+  surfaced individually instead of one opaque failure.
+- `bv-web`: snapshot preview images not being deleted after a page
+  refresh or a browser Back/pagehide navigation (including a
+  Brave-specific case); a missing `manifest.json` in package-data that
+  made adapters invisible in some installs.
+- Snapshot thumbnail cap raised, with a link through to the full-
+  resolution original.
+
 ## [1.0.0] - 2026-08-15
 
 The first stable release. Scene description grows up: a locking mechanism
