@@ -22,6 +22,7 @@ bv-scribe [--raw]
           [--zoom-repetition-penalty N] [--zoom-no-repeat-ngram-size N]
           [--zoom-plate-confidence-check | --no-zoom-plate-confidence-check]
           [--cpu] [--quantize {auto,none,int8,int4}]
+          [--gpu-memory-fraction FRACTION]
           [--config-dir DIR]
           [--overwrite] [--dry-run] [-v]
           [PATH]
@@ -79,6 +80,7 @@ Check [PyTorch's "Get Started" page](https://pytorch.org/get-started/locally/) f
 | `--model MODEL` | Hugging Face model id. Default: `Qwen/Qwen3-VL-8B-Instruct` (~16GB download on first use, cached under `~/.cache/huggingface`; requires `transformers>=4.57.0`, already the `scene` extra's own floor). A smaller or quantized (`-AWQ`) variant trades accuracy for speed/VRAM - `Qwen/Qwen2.5-VL-7B-Instruct` (this feature's original default, `transformers>=4.49.0`) remains a solid fallback if you want the more real-footage-tested option instead. |
 | `--cpu` | Force CPU inference. Extremely slow for a 7B+ video model - mainly useful to confirm the pipeline runs at all without a working CUDA setup. |
 | `--quantize {auto,none,int8,int4}` | Loading precision for `--model`, not a different model - `auto` (default) picks based on the largest single GPU on this machine: `none` (full precision) at 20GB+ VRAM, `int8` at 10-20GB, `int4` below that; a machine with no CUDA GPU (or `--cpu`) always resolves to `none`. Sized off the largest single card, not total VRAM across cards, so e.g. two 12GB GPUs resolve to `int8` (fits on one card) rather than `none` (which would shard the model across both via `device_map="auto"`, a slower PCIe-pipelined load). Explicit `none`/`int8`/`int4` overrides the auto-detection; combining an explicit non-`none` level with `--cpu` is an error. Needs the `bitsandbytes` package (part of the `scene` extra). |
+| `--gpu-memory-fraction FRACTION` | Caps this process's CUDA allocations to this fraction (greater than 0, at most `1.0`) of each visible GPU's total VRAM, via `torch.cuda.set_per_process_memory_fraction()`. Not set by default (no cap - the model claims whatever VRAM it wants, e.g. ~19.3GB of a 24GB card for unquantized `Qwen3-VL-8B-Instruct`). Useful for guaranteeing some VRAM stays free for something else running on the same GPU at the same time, instead of hoping the driver is polite about it - there's no true per-process GPU *compute* priority knob on consumer NVIDIA/Windows drivers (that's an MPS priority-queue feature, data-center/Linux only), so this memory cap is the practical lever. CUDA-only, same as `--quantize`; combining it with `--cpu` is an error. |
 
 ### Frame sampling / resolution
 

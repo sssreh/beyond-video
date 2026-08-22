@@ -542,6 +542,7 @@ def bv_export(
     scene_model: str = SCENE_DEFAULT_MODEL,
     scene_cpu: bool = False,
     scene_quantize: str = "auto",
+    scene_gpu_memory_fraction: float | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
     debug: bool = False,
@@ -971,6 +972,7 @@ def bv_export(
                 scene_model=scene_model,
                 scene_cpu=scene_cpu,
                 scene_quantize=scene_quantize,
+                scene_gpu_memory_fraction=scene_gpu_memory_fraction,
                 command_line=command_line,
                 reasons=reasons,
                 debug=debug,
@@ -1949,6 +1951,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "explanation). Meaningless without --trip-summary."
         ),
     )
+    parser.add_argument(
+        "--scene-gpu-memory-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Cap --trip-summary's synthesis pass to this fraction (0 "
+            "exclusive - 1.0 inclusive) of each visible GPU's total "
+            "VRAM, via torch's own set_per_process_memory_fraction() - "
+            "see bv-generate's --scene-gpu-memory-fraction for the "
+            "full explanation. Not set by default (no cap). "
+            "Meaningless without --trip-summary."
+        ),
+    )
 
     parser.add_argument(
         "--overwrite",
@@ -2131,6 +2146,7 @@ def _run(
             stitch_map_side=args.stitch_map_side,
             stitch_map_size=args.stitch_map_size,
             stitch_map_circle=args.stitch_map_circle,
+            scene_gpu_memory_fraction=args.scene_gpu_memory_fraction,
             stitch_gsensor=args.stitch_gsensor if args.stitch else False,
             stitch_gsensor_size=args.stitch_gsensor_size,
             stitch_gsensor_pos=args.stitch_gsensor_pos,

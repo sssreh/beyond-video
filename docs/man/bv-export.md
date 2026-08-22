@@ -16,6 +16,7 @@ bv-export [--target DIR] [--config-dir DIR] [--prefix PREFIX]
           [--photo-duration SECONDS]
           [--trip-summary] [--scene-model MODEL] [--scene-cpu]
           [--scene-quantize {auto,none,int8,int4}]
+          [--scene-gpu-memory-fraction FRACTION]
           [--map] [--map-icon PATH] [--map-zoom [METERS]] [--map-track-up]
           [--map-intro] [--map-intro-seconds SECONDS]
           [--gsensor-video] [--gsensor-graph-video] [--gsensor-graph-x]
@@ -119,6 +120,7 @@ A photo's own image is scaled and letterboxed (not cropped, so nothing the photo
 | `--scene-model MODEL` | Hugging Face model id for `--trip-summary`'s synthesis pass. Default: same as `bv-scribe`'s own default (`Qwen/Qwen3-VL-8B-Instruct`). Meaningless without `--trip-summary`. |
 | `--scene-cpu` | Force `--trip-summary`'s synthesis pass onto CPU instead of GPU. Meaningless without `--trip-summary`. |
 | `--scene-quantize {auto,none,int8,int4}` | Loading precision for `--trip-summary`'s synthesis model, not a different model - `auto` (default) picks based on the largest single GPU on this machine: `none` (full precision) at 20GB+ VRAM, `int8` at 10-20GB, `int4` below that; a machine with no CUDA GPU (or `--scene-cpu`) always resolves to `none`. Sized off the largest single card, not total VRAM across cards, so e.g. two 12GB GPUs resolve to `int8` (fits on one card) rather than `none` (which would shard the model across both). Explicit `none`/`int8`/`int4` overrides the auto-detection; combining an explicit non-`none` level with `--scene-cpu` is an error. Meaningless without `--trip-summary`. Needs the `bitsandbytes` package (part of the `scene` extra). |
+| `--scene-gpu-memory-fraction FRACTION` | Caps `--trip-summary`'s synthesis pass to this fraction (greater than 0, at most `1.0`) of each visible GPU's total VRAM, via `torch.cuda.set_per_process_memory_fraction()` - see `bv-generate(1)`'s `--scene-gpu-memory-fraction` for the full explanation. Not set by default (no cap). Meaningless without `--trip-summary`. CUDA-only; combining it with `--scene-cpu` is an error. |
 
 ### Pre-record buffer trimming
 

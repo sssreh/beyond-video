@@ -355,6 +355,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--scene-gpu-memory-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Cap --describe-scene's vision-language model to this "
+            "fraction (0 exclusive - 1.0 inclusive) of each visible "
+            "GPU's total VRAM, via torch's own "
+            "set_per_process_memory_fraction() - so it guarantees some "
+            "VRAM stays free for something else running on the same "
+            "card at the same time, instead of hoping the driver is "
+            "polite about it. Not set by default (no cap - the model "
+            "claims whatever it needs). CUDA-only, same as "
+            "--scene-quantize - can't be combined with --cpu."
+        ),
+    )
+
+    parser.add_argument(
         "--camera",
         choices=["front", "rear", "both"],
         default="front",
@@ -945,6 +962,7 @@ def _run_describe_scene_pass(
         "model": args.scene_model,
         "force_cpu": args.cpu,
         "quantize": args.scene_quantize,
+        "gpu_memory_fraction": args.scene_gpu_memory_fraction,
     }
     if task is not None:
         kwargs["task"] = task

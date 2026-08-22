@@ -17487,3 +17487,67 @@ fires only when the cursor points past every recording still present
 Files changed: src/blackvue/core/resume.py (new),
 src/blackvue/cli/bv_generate.py, tests/blackvue/core/test_resume.py
 (new), tests/blackvue/cli/test_bv_generate.py, docs/man/bv-generate.md.
+
+## VRAM headroom cap for the scene model (--scene-gpu-memory-fraction / --gpu-memory-fraction) (v1.1.0, this session)
+
+Follow-through on the "cap scene model's VRAM to leave headroom for other GPU
+work" note logged earlier (see that section above, from Christer asking
+whether `describe_scene()` could run "with lower priority in order to spare
+the GPU, for other stuff" - answered at the time that there's no true
+per-process GPU *compute* priority knob on consumer NVIDIA/Windows drivers,
+only the memory-fraction lever, and logged as a note only). After cutting
+v1.1.0 "Beyond BlackVue" and asking what to build next, Christer said "yes to
+VRAM headroom cap" - so this session actually built the flag the note
+described.
+
+New opt-in `SceneOptions.gpu_memory_fraction: float | None = None` field.
+`_load_scene_model()` applies it right after `device_map` is resolved, before
+quantization: `torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction,
+device_index)` for every visible CUDA device (not just device 0), since
+`device_map="auto"` can in principle shard the model across more than one
+GPU. This is a process-wide CUDA setting, so it's only actually applied at
+model-load time - meaning a second call requesting a different cap must not
+hit a stale cached model that never got the new limit applied.
+`_get_scene_model()`'s cache key grew a fourth segment
+(`f"{model_name}:{'cpu'|'auto'}:{resolved_quantize}:{gpu_memory_fraction}"`)
+for exactly this reason, mirroring how `quantize` is already cache-keyed
+(task before this one). Validation mirrors `quantize`'s own contradiction
+check, checked before the `torch`/`transformers` imports so the error
+surfaces even on a machine without those packages installed:
+`gpu_memory_fraction is not None and force_cpu` raises `MediaToolError`
+(CUDA-only, same reasoning as `quantize`), and `not (0.0 < gpu_memory_fraction
+<= 1.0)` raises a separate `MediaToolError` naming this project's own flag
+rather than letting a bad value surface as a raw CUDA driver error deep
+inside model loading.
+
+Wired through the exact same footprint as `--scene-quantize`
+(task before this one) - `--scene-gpu-memory-fraction` (`bv-generate`,
+`bv-export --trip-summary`) and `--gpu-memory-fraction` (`bv-scribe`,
+matching its own shorter flag-naming convention): CLI flags ->
+`SceneOptions.gpu_memory_fraction` / `export_trip()`'s
+`scene_gpu_memory_fraction` param -> bv-web's `JobRunner.start_bv_export()`
+-> the `/jobs/bv-export` route -> `job_new_bv_export.html`'s new number
+input (blank = no cap), scoped to bv-export's web form only - same as
+`scene_quantize`'s own scope, not wired into bv-generate's or bv-scribe's
+own web forms.
+
+Verified via a standalone script (torch not installed in this sandbox - no
+route to PyPI) exercising the cache-key inclusion of `gpu_memory_fraction`
+(distinct cache entries for `None` vs. an explicit fraction, reuse when
+unchanged), the `force_cpu` contradiction, and the range check (rejecting
+`0.0`, `-0.1`, `1.5`) - stubbing `torch`/`torchvision`/`qwen_vl_utils`/
+`transformers` as empty importable modules so the guard is reached rather
+than tripping the earlier "torch not installed" error first, same pattern
+as the `quantize` contradiction test. Added corresponding pytest tests to
+`test_scene.py`, plus a `SceneOptions()` default-value assertion
+(`gpu_memory_fraction is None`). `ast.parse()` passed on every touched
+Python file; the new `job_new_bv_export.html` field was checked via
+`jinja2.Environment.parse()` (no live app/database available in this
+sandbox to actually render the full template with its custom filters).
+
+Files changed: src/blackvue/generate/scene.py, src/blackvue/cli/bv_generate.py,
+src/blackvue/cli/bv_scribe.py, src/blackvue/cli/bv_export.py,
+src/blackvue/export/trip_export.py, src/blackvue/web/jobs.py,
+src/blackvue/web/app.py, src/blackvue/web/templates/job_new_bv_export.html,
+tests/blackvue/generate/test_scene.py, docs/man/bv-generate.md,
+docs/man/bv-scribe.md, docs/man/bv-export.md.

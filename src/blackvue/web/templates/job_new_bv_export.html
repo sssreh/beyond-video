@@ -281,6 +281,16 @@
         </select>
       </div>
     </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="scene_gpu_memory_fraction">
+          VRAM headroom cap (--scene-gpu-memory-fraction)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Caps the trip-summary synthesis pass to this fraction (greater than 0, at most 1.0) of each visible GPU's total VRAM, so some VRAM stays free for other work on the same card. Leave blank for no cap. Not compatible with --scene-cpu.</span></span>
+        </label>
+        <input type="number" step="0.01" min="0" max="1" id="scene_gpu_memory_fraction" name="scene_gpu_memory_fraction" value="{{ defaults.get('scene_gpu_memory_fraction', '') }}" placeholder="leave blank for no cap">
+      </div>
+    </div>
   </details>
 
   <details class="option-group" id="advanced-map">

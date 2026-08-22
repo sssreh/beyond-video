@@ -418,6 +418,81 @@ def test_get_scene_model_cache_key_includes_resolved_quantize(monkeypatch):
     assert "some-model:auto:int4" in scene._SCENE_MODEL_CACHE
 
 
+def test_get_scene_model_cache_key_includes_gpu_memory_fraction(monkeypatch):
+    # gpu_memory_fraction is a process-wide CUDA setting only actually
+    # applied inside _load_scene_model() at load time (see that
+    # function) - so a second call asking for a different cap must not
+    # hit a stale cache entry that never got the new cap applied.
+    monkeypatch.setattr(scene, "_SCENE_MODEL_CACHE", {})
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0])  # auto -> int8
+
+    load_calls = []
+
+    def fake_load(model_name, *, force_cpu, quantize="none", gpu_memory_fraction=None):
+        load_calls.append((model_name, force_cpu, quantize, gpu_memory_fraction))
+        return _fake_loaded_model()
+
+    monkeypatch.setattr(scene, "_load_scene_model", fake_load)
+
+    scene._get_scene_model("some-model", force_cpu=False, quantize="auto")
+
+    assert load_calls == [("some-model", False, "int8", None)]
+    assert "some-model:auto:int8:None" in scene._SCENE_MODEL_CACHE
+
+    # A second call with the same (model, force_cpu, "auto", None)
+    # reuses the cache - no second load.
+    scene._get_scene_model("some-model", force_cpu=False, quantize="auto")
+    assert len(load_calls) == 1
+
+    # An explicit gpu_memory_fraction for the same model is a distinct
+    # cache entry.
+    scene._get_scene_model(
+        "some-model", force_cpu=False, quantize="auto", gpu_memory_fraction=0.5
+    )
+    assert len(load_calls) == 2
+    assert "some-model:auto:int8:0.5" in scene._SCENE_MODEL_CACHE
+
+
+def test_load_scene_model_gpu_memory_fraction_and_force_cpu_together_raises(monkeypatch):
+    # Same contradiction-with-force_cpu reasoning as quantize's own
+    # test above - checked before the torch/transformers imports.
+    import sys
+    import types
+
+    for name in ("torch", "torchvision", "qwen_vl_utils"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = object
+    fake_transformers.Qwen2_5_VLForConditionalGeneration = object
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    with pytest.raises(MediaToolError, match="can't be combined"):
+        scene._load_scene_model(
+            "some-model", force_cpu=True, quantize="none", gpu_memory_fraction=0.5
+        )
+
+
+def test_load_scene_model_gpu_memory_fraction_out_of_range_raises(monkeypatch):
+    import sys
+    import types
+
+    for name in ("torch", "torchvision", "qwen_vl_utils"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = object
+    fake_transformers.Qwen2_5_VLForConditionalGeneration = object
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    for bad_value in (0.0, -0.1, 1.5):
+        with pytest.raises(MediaToolError, match="greater than 0 and at most 1.0"):
+            scene._load_scene_model(
+                "some-model",
+                force_cpu=False,
+                quantize="none",
+                gpu_memory_fraction=bad_value,
+            )
+
+
 def test_load_scene_model_quantize_and_force_cpu_together_raises(monkeypatch):
     # resolve_scene_quantize() already resolves "auto" to "none" under
     # force_cpu (see its own test above) - reaching _load_scene_model()
@@ -505,6 +580,7 @@ def test_scene_options_defaults_match_tuned_values():
     assert opts.zoom_plate_confidence_check is True
     assert opts.force_cpu is False
     assert opts.quantize == "auto"
+    assert opts.gpu_memory_fraction is None
 
 
 def test_describe_scene_rejects_opts_and_overrides_together():

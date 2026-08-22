@@ -335,6 +335,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--gpu-memory-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Cap the vision-language model to this fraction (0 "
+            "exclusive - 1.0 inclusive) of each visible GPU's total "
+            "VRAM, via torch's own set_per_process_memory_fraction() - "
+            "so it guarantees some VRAM stays free for something else "
+            "running on the same card at the same time, instead of "
+            "hoping the driver is polite about it. Not set by default "
+            "(no cap). CUDA-only, same as --quantize - can't be "
+            "combined with --cpu."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Regenerate files that already exist without asking.",
@@ -447,6 +463,7 @@ def _scene_kwargs(args: argparse.Namespace) -> dict:
         zoom_plate_confidence_check=args.zoom_plate_confidence_check,
         force_cpu=args.cpu,
         quantize=args.quantize,
+        gpu_memory_fraction=args.gpu_memory_fraction,
     )
 
 

@@ -2116,6 +2116,7 @@ def export_trip(
     scene_model: str = SCENE_DEFAULT_MODEL,
     scene_cpu: bool = False,
     scene_quantize: str = "auto",
+    scene_gpu_memory_fraction: float | None = None,
     command_line: str | None = None,
     reasons: dict[RecordingId, str] | None = None,
     debug: bool = False,
@@ -2518,9 +2519,10 @@ def export_trip(
     trip's recordings, or this step is skipped with a trip.log note)
     into one flowing trip-level narrative that tracks how conditions
     changed over the trip, instead of restating each segment back to
-    back. `scene_model`/`scene_cpu`/`scene_quantize` pick the model,
-    force-CPU inference, and loading precision the same way
-    `bv-scribe`'s own `--model`/`--cpu`/`--quantize` do.
+    back. `scene_model`/`scene_cpu`/`scene_quantize`/
+    `scene_gpu_memory_fraction` pick the model, force-CPU inference,
+    loading precision, and VRAM headroom cap the same way `bv-scribe`'s
+    own `--model`/`--cpu`/`--quantize`/`--gpu-memory-fraction` do.
 
     This is a deliberate, explicit exception to the rule that
     bv-export never calls a model itself (see TEXT_ASSETS'
@@ -2955,6 +2957,7 @@ def export_trip(
                 summary_text = summarize_trip(
                     described_segments, model=scene_model, force_cpu=scene_cpu,
                     quantize=scene_quantize,
+                    gpu_memory_fraction=scene_gpu_memory_fraction,
                 )
             except MediaToolError as exc:
                 message = f"trip_summary.txt: {exc}"

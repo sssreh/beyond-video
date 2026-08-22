@@ -408,6 +408,24 @@ class SceneOptions:
     # his RTX 5090 laptop (his old dual-RTX-3080-Ti box, 12GB VRAM per
     # card, came up as the concrete example in that conversation).
     quantize: str = "auto"
+    # None (default) = no cap, the model claims whatever VRAM it wants
+    # (today that's ~19.3GB of a 24GB card for unquantized
+    # Qwen3-VL-8B-Instruct). An explicit 0 < value <= 1.0 caps this
+    # process's CUDA allocations to that fraction of each visible
+    # card's total VRAM, via torch.cuda.set_per_process_memory_fraction() -
+    # so scene description guarantees some VRAM stays free for
+    # something else running on the same GPU at the same time, instead
+    # of hoping the driver is polite about it. Christer, after asking
+    # whether describe_scene() could run "with lower priority in order
+    # to spare the GPU, for other stuff": there's no real per-process
+    # GPU *compute* priority knob on consumer NVIDIA/Windows drivers
+    # (that's an MPS priority-queue feature, data-center/Linux only) -
+    # this memory-fraction cap is the one real, implementable lever,
+    # logged as a note at the time ("put it in as a note") and built
+    # once the auto-quantization work above landed. CUDA-only, same as
+    # quantize - see _load_scene_model()'s own contradiction check
+    # against force_cpu.
+    gpu_memory_fraction: float | None = None
 
 
 def vision_gpu_available() -> bool:
@@ -547,7 +565,11 @@ class _LoadedSceneModel:
 
 
 def _load_scene_model(
-    model_name: str, *, force_cpu: bool, quantize: str = "none"
+    model_name: str,
+    *,
+    force_cpu: bool,
+    quantize: str = "none",
+    gpu_memory_fraction: float | None = None,
 ) -> _LoadedSceneModel:
     # quantize ("int8"/"int4") is a bitsandbytes-backed, CUDA-only
     # loading precision - resolve_scene_quantize() already resolves
@@ -564,6 +586,26 @@ def _load_scene_model(
             f"scene quantize={quantize!r} needs a CUDA GPU - it "
             "can't be combined with force_cpu/--cpu"
         )
+
+    # gpu_memory_fraction is a CUDA-only cap (see SceneOptions' own
+    # comment) - same contradiction-with-force_cpu reasoning as
+    # quantize above, checked here for the same "fail before the
+    # torch/transformers imports" reason. Range-checked here too
+    # (rather than leaving it to torch.cuda.set_per_process_memory_fraction()
+    # itself) so a bad CLI value fails with a message naming this
+    # project's own flag, not a raw CUDA driver error surfacing deep
+    # inside model loading.
+    if gpu_memory_fraction is not None:
+        if force_cpu:
+            raise MediaToolError(
+                f"scene gpu_memory_fraction={gpu_memory_fraction!r} needs a "
+                "CUDA GPU - it can't be combined with force_cpu/--cpu"
+            )
+        if not (0.0 < gpu_memory_fraction <= 1.0):
+            raise MediaToolError(
+                f"scene gpu_memory_fraction={gpu_memory_fraction!r} must be "
+                "greater than 0 and at most 1.0"
+            )
 
     try:
         import torch
@@ -593,6 +635,21 @@ def _load_scene_model(
     device_map = "cpu" if force_cpu else "auto"
     if not force_cpu and not torch.cuda.is_available():
         device_map = "cpu"
+
+    # Applied before the model actually allocates anything below, on
+    # every visible CUDA device rather than just device 0 - device_map
+    # "auto" can in principle shard the model across more than one GPU
+    # (see the quantize threshold comment above for why that's not the
+    # normal case this project tunes for, but it's still possible), and
+    # this cap needs to hold on whichever device(s) end up hosting it.
+    # A no-op if gpu_memory_fraction is None (the default) or CUDA
+    # isn't available - matches every other GPU probe in this module's
+    # "only ever informs a friendlier choice, never blocks startup"
+    # contract, though here there's nothing left to inform, just a
+    # limit to set.
+    if gpu_memory_fraction is not None and torch.cuda.is_available():
+        for device_index in range(torch.cuda.device_count()):
+            torch.cuda.set_per_process_memory_fraction(gpu_memory_fraction, device_index)
 
     # quantize ("int8"/"int4") is a bitsandbytes-backed, CUDA-only
     # loading precision - resolve_scene_quantize() already resolves
@@ -640,7 +697,11 @@ def _load_scene_model(
 
 
 def _get_scene_model(
-    model_name: str, *, force_cpu: bool, quantize: str = "auto"
+    model_name: str,
+    *,
+    force_cpu: bool,
+    quantize: str = "auto",
+    gpu_memory_fraction: float | None = None,
 ) -> _LoadedSceneModel:
     """Return a cached loaded scene model, loading it if needed.
 
@@ -652,14 +713,25 @@ def _get_scene_model(
     the resolved quantize level, same reasoning as speech.py's
     _get_whisper_model() - a --cpu-forced call, an auto-detected call,
     and a specific quantize level for the same model name may all
-    legitimately be wanted within one process."""
+    legitimately be wanted within one process. `gpu_memory_fraction` is
+    included in the cache key too, for the same reason - it's a
+    process-wide CUDA setting only actually applied inside
+    _load_scene_model() at load time (see that function), so a second
+    call asking for a different cap wouldn't take effect against an
+    already-loaded, cache-hit model otherwise."""
 
     resolved_quantize = resolve_scene_quantize(quantize, force_cpu=force_cpu)
-    cache_key = f"{model_name}:{'cpu' if force_cpu else 'auto'}:{resolved_quantize}"
+    cache_key = (
+        f"{model_name}:{'cpu' if force_cpu else 'auto'}:{resolved_quantize}"
+        f":{gpu_memory_fraction}"
+    )
 
     if cache_key not in _SCENE_MODEL_CACHE:
         _SCENE_MODEL_CACHE[cache_key] = _load_scene_model(
-            model_name, force_cpu=force_cpu, quantize=resolved_quantize
+            model_name,
+            force_cpu=force_cpu,
+            quantize=resolved_quantize,
+            gpu_memory_fraction=gpu_memory_fraction,
         )
 
     return _SCENE_MODEL_CACHE[cache_key]
@@ -1406,7 +1478,12 @@ def describe_scene(
 
     warn = warn or (lambda msg: print(msg, file=sys.stderr))
 
-    loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu, quantize=opts.quantize)
+    loaded = _get_scene_model(
+        opts.model,
+        force_cpu=opts.force_cpu,
+        quantize=opts.quantize,
+        gpu_memory_fraction=opts.gpu_memory_fraction,
+    )
 
     prompt = build_prompt(opts.task)
 
@@ -1529,7 +1606,12 @@ def summarize_trip(
     elif overrides:
         raise TypeError("pass either opts= or **overrides, not both")
 
-    loaded = _get_scene_model(opts.model, force_cpu=opts.force_cpu, quantize=opts.quantize)
+    loaded = _get_scene_model(
+        opts.model,
+        force_cpu=opts.force_cpu,
+        quantize=opts.quantize,
+        gpu_memory_fraction=opts.gpu_memory_fraction,
+    )
 
     segment_text = "\n\n".join(f"[{label}]\n{text}" for label, text in segments)
     prompt = TRIP_SUMMARY_PROMPT_TEMPLATE.format(segments=segment_text)

@@ -755,6 +755,7 @@ class JobRunner:
         scene_model: str | None,
         scene_cpu: bool,
         scene_quantize: str | None,
+        scene_gpu_memory_fraction: float | None,
         overwrite: bool,
         dry_run: bool,
         debug: bool,
@@ -913,6 +914,8 @@ class JobRunner:
             argv.append("--scene-cpu")
         if scene_quantize:
             argv += ["--scene-quantize", scene_quantize]
+        if scene_gpu_memory_fraction is not None:
+            argv += ["--scene-gpu-memory-fraction", str(scene_gpu_memory_fraction)]
         if overwrite:
             argv.append("--overwrite")
         if dry_run:
