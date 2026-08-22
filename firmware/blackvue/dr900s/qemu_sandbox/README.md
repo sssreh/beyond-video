@@ -68,7 +68,23 @@ fallback works on any distro, yum-based or not.
    the sysroot - the firmware ships its own glibc 2.20 and every shared
    library the binaries need (confirmed via `readelf -d`, all four CGI
    binaries only need `libc.so.6`), so no separate ARM distro/chroot has
-   to be built.
+   to be built. It also sets `LD_LIBRARY_PATH=/usr/lib:/lib` (inside the
+   sysroot) since the default dynamic-linker search path doesn't always
+   pick up custom libs like `libmwlog.so` on every host otherwise.
+
+   Confirmed working on Oracle Linux (yum-based) against firmware
+   v1.009: `upload.cgi` runs cleanly and returns a real HTML response
+   (its upload form) with no dependencies beyond libc. `blackvue_vod.cgi`,
+   `blackvue_live.cgi`, and `blackvue_livedata.cgi` all print `shmget
+   failed` and exit - they expect a System V shared-memory segment that
+   the camera's `main_app` process normally creates to share live
+   video/status state, which doesn't exist without it running too. Trying
+   to run `main_app` alongside doesn't get further in practice - it needs
+   real Hi3559 MPP/camera hardware and fails immediately once its own
+   dependencies resolve. This confirms the sandbox's core promise: real
+   ARM firmware binaries execute and produce real output under emulation,
+   with the boundary being camera-hardware-backed calls specifically, not
+   the emulation itself.
 
 ## Known gaps / things to expect
 

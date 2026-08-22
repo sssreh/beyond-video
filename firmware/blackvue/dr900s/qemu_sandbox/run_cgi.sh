@@ -79,6 +79,7 @@ echo "---"
 # parsing/handling logic, not for getting a working video stream.
 QUERY_LEN=${#QUERY_STRING}
 exec qemu-arm-static -L "$ROOTFS" \
+    -E LD_LIBRARY_PATH="/usr/lib:/lib" \
     -E GATEWAY_INTERFACE="CGI/1.1" \
     -E SERVER_PROTOCOL="HTTP/1.1" \
     -E SERVER_SOFTWARE="boa/0.94.14rc21" \
