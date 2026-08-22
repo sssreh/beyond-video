@@ -111,7 +111,12 @@ scene = [
     # (e.g. Christer's dual-RTX-3080-Ti box, 12GB/card) so the ~16GB
     # bf16 Qwen3-VL-8B-Instruct model can still load on one card
     # instead of needing device_map="auto" sharding across both.
-    "bitsandbytes",
+    # >=0.46.1 - Christer hit an unpinned install resolve to an older
+    # version that failed against this stack when he first exercised
+    # --scene-quantize for real; a plain `pip install -U
+    # bitsandbytes>=0.46.1` fixed it. Pinned here so a fresh `pip
+    # install .[scene]` gets a working version the first time.
+    "bitsandbytes>=0.46.1",
 ]
 
 [project.scripts]

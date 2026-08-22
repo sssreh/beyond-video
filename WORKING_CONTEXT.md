@@ -17623,3 +17623,9 @@ from_address = "..."      # optional, defaults to smtp_username or email
 **Verified.** New `tests/blackvue/core/test_notify.py` (config loading: missing file, no email, missing smtp_host raises, malformed TOML raises, full round-trip, defaults; `NotifyConfig.sender` fallback chain; `send_crash_notification` via a fake `smtplib.SMTP` context-manager double, including a broken-relay case confirming it returns `False` without raising) and 8 new tests appended to `tests/blackvue/cli/test_errors.py` (notifies for OS-error-while-unattended-and-configured; notifies for an unhandled exception while unattended; does not notify when attended, when unconfigured, for `KeyboardInterrupt`, or for a plain non-zero exit; swallows a malformed notify config without changing the wrapped command's exit code; confirms `load_notify_config` isn't even called when attended). No pytest/Python 3.11+ `tomllib` in this sandbox, so also ran two standalone scripts stubbing `tomllib` and `smtplib.SMTP` exercising the same scenarios directly against the real source - all passed. `py_compile` clean on all four touched/new files.
 
 Files changed: `src/blackvue/core/notify.py` (new), `src/blackvue/cli/errors.py`, `tests/blackvue/core/test_notify.py` (new), `tests/blackvue/cli/test_errors.py`, `docs/man/bv-config.md`.
+
+## Fix: pin bitsandbytes>=0.46.1 for --scene-quantize (task #1140 follow-up)
+
+Christer, testing `--scene-quantize` for real: needed `pip install -U bitsandbytes>=0.46.1` to get it working - whatever `pip install .[scene]` resolved to from the unpinned `"bitsandbytes"` entry added in task #1140 wasn't enough. Pinned `pyproject.toml`'s `scene` extra to `bitsandbytes>=0.46.1` so a fresh install gets a working version the first time instead of needing a manual upgrade.
+
+Files changed: `pyproject.toml`.
