@@ -1830,6 +1830,7 @@ def _run(
         args.overwrite_decision = _OverwriteDecision()
 
         had_error = False
+        resume_high_water: str | None = None
 
         for recording in recordings:
             if args.extract_audio:
@@ -1857,26 +1858,41 @@ def _run(
                     recording, archive_path, args, say=say, warn=warn
                 )
 
-        # Advance the cursor to the newest recording actually walked
-        # this run - regardless of had_error: a recording that failed
-        # for a real reason (a corrupted source, say) still got a real
-        # attempt, and every _do_*() failure already surfaced its own
-        # warn() above and rolls up into this run's own non-zero exit
-        # code. Retrying it automatically forever would mean --resume
-        # can never advance past a single permanently-broken
-        # recording; a plain re-run (with or without --resume) still
-        # retries it directly. Not advanced for --dry-run, which never
-        # writes anything else either.
-        if args.resume and not args.dry_run:
-            newest = max(recording.id.value for recording in recordings)
-            save_resume_state(
-                archive_path,
-                advance_resume_point(
-                    load_resume_state(archive_path),
-                    requested_assets,
-                    newest.rsplit("_", 1)[0],
-                ),
-            )
+            # Advance and persist the cursor after every single
+            # recording, not just once at the very end - a crash or
+            # Ctrl-C partway through an hours-long batch (Christer hit
+            # this for real: a describe-scene run that took 37017s
+            # ended with an unrelated "[Errno 22] Invalid argument"
+            # crash - see WORKING_CONTEXT.md) used to mean the whole
+            # run's --resume progress was thrown away, because the old
+            # single save sat after the loop and a `finally` only
+            # covers _run() printing its own "finished" line, not
+            # reaching this far. Written regardless of had_error - a
+            # recording that failed for a real reason (a corrupted
+            # source, say) still got a real attempt, and every
+            # _do_*() failure already surfaced its own warn() above and
+            # rolls up into this run's own non-zero exit code. Retrying
+            # it automatically forever would mean --resume can never
+            # advance past a single permanently-broken recording; a
+            # plain re-run (with or without --resume) still retries it
+            # directly. Not advanced for --dry-run, which never writes
+            # anything else either. max() against the running
+            # high-water mark (not just this recording's own id) keeps
+            # the same "advance to the newest walked, never backslide"
+            # guarantee the old end-of-run save had, in case recordings
+            # aren't perfectly sorted by id.
+            if args.resume and not args.dry_run:
+                resume_high_water = max(
+                    resume_high_water or recording.id.value, recording.id.value
+                )
+                save_resume_state(
+                    archive_path,
+                    advance_resume_point(
+                        load_resume_state(archive_path),
+                        requested_assets,
+                        resume_high_water.rsplit("_", 1)[0],
+                    ),
+                )
 
         return EXIT_HAD_ERRORS if had_error else EXIT_OK
     finally:

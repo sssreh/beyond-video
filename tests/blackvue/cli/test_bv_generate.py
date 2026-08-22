@@ -2972,6 +2972,43 @@ def test_run_resume_advances_the_cursor_even_after_a_recording_error(
     assert resume_point(state, {"get-duration"}) == "20260805_120000"
 
 
+def test_run_resume_saves_the_cursor_incrementally_across_a_crash(
+    tmp_path, monkeypatch
+):
+    # Real case Christer hit: a describe-scene run that took 37017s
+    # ended with an unrelated "[Errno 22] Invalid argument" crash after
+    # the last recording - see WORKING_CONTEXT.md. The old
+    # once-at-the-end save meant the whole run's --resume progress was
+    # thrown away by any crash, no matter how far it got. The cursor
+    # must now reflect every recording actually completed before an
+    # exception propagates out of _run(), not just a fully clean run.
+    _touch_recording(tmp_path, "20260801_120000")
+    _touch_recording(tmp_path, "20260805_120000")
+    _touch_recording(tmp_path, "20260810_120000")
+
+    called = []
+
+    def _fake(recording, archive_path, args, **kw):
+        if recording.id.value == "20260810_120000_N":
+            raise RuntimeError("simulated crash")
+        called.append(recording.id.value)
+        return False
+
+    monkeypatch.setattr(bv_generate, "_do_get_duration", _fake)
+    args = parse_args([str(tmp_path), "--get-duration", "--resume"])
+
+    try:
+        bv_generate._run(args, say=lambda *a, **k: None)
+        assert False, "expected the simulated crash to propagate"
+    except RuntimeError as exc:
+        assert str(exc) == "simulated crash"
+
+    assert sorted(called) == ["20260801_120000_N", "20260805_120000_N"]
+
+    state = load_resume_state(tmp_path)
+    assert resume_point(state, {"get-duration"}) == "20260805_120000"
+
+
 def test_run_resume_does_not_narrow_a_first_ever_run(tmp_path, monkeypatch):
     # No cursor file exists yet - behaves exactly like not passing
     # --resume at all.
