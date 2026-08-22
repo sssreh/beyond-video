@@ -17680,3 +17680,38 @@ Christer's idea: replace/augment the current hand-rolled regex parsers (`web/voi
 2. Date arithmetic is exactly where the existing hand-rolled parser already had real bugs (year-propagation). A local 7-8B model isn't automatically better at resolving "last week" into a correct `from_date`/`until_date` unless today's date is injected into the prompt, ideally with a sanity-check afterward - and the JSON output itself needs constrained/grammar-mode decoding (Ollama/vLLM support this) rather than trusting free-form generation to always produce valid, on-schema JSON.
 
 Not started - no code, no design doc beyond this note. Christer: "ja tack, kommer mer" - more ideas to come, to be logged the same way.
+
+## Note: bv-web statistics dashboard + per-recording stats asset (future improvement)
+
+Christer: statistics pages in bv-web - total distance driven in a given year, which roads the car spent the most time on. To make time-range totals fast, proposed a new per-recording generated asset bundling several values together (start GPS, stop GPS, distance driven, etc.) rather than the usual one-file-per-asset convention, so a dashboard query sums precomputed per-recording numbers instead of re-parsing every `.gps` file and recomputing haversine distance on every page load. Christer flagged himself that this might break the one-file-per-asset convention.
+
+**It doesn't, really.** `.gps`/`.3gf` sidecars already bundle many readings into one file each - a new `Asset` (one JSON/TOML file per recording id, several related scalar fields) is the same shape, just recording-level instead of a raw fix stream. It's the per-recording analogue of what `trip_info.txt` already does at the trip level via `compute_trip_stats()` (`export/trip_stats.py`) - same kind of computation, cached and id-keyed like `DURATION`'s self-healing `.duration.txt` pattern (`load_or_compute_duration()`). Recordings are the atomic unit trips are built from (`TripBuilder` just groups consecutive recordings), so summing precomputed per-recording distances over a date range composes correctly into trip-level and dashboard-level totals without reconstructing trips just to answer "how many km in 2019."
+
+**Needs:** (1) a new `Asset` type + a proactive generation step (a `bv-generate` action like `--thumbnail`, since the dashboard wants every recording's stats ready rather than computed on first view); (2) graceful empty/null fields for recordings with no GPS (adapter-optional - not every adapter/recording has telemetry, e.g. `FolderAdapter`/EXIF-only photos); (3) the dashboard page itself.
+
+**"Most-driven roads" is a separate, harder aggregation** than total distance - needs matching each recording's GPS track against OSM road geometry (already fetched via `osm_roads.py` for map rendering) and counting/ranking segments, rather than summing a scalar. Probably a second pass after the distance dashboard ships.
+
+Not started - no code, no design doc beyond this note.
+
+## Note: driver detection via .3gf - a driving-style classifier, not identification (future improvement)
+
+Christer: "inbillar mig att det går att identifiera förare via 3gf filen, då jag kör brutalare än min fru" - wants a Driver (Christer/Fru) filter in bv-search, reachable via voice search too ("Visa mina brutala körningar runt Centralbron").
+
+**Real signal, but be precise about what it is.** G-sensor data alone can't name a person - it can only say "this trip's aggregate g-force profile looks like driver A's profile," and only once driver A's profile has been established from labeled trips. Needs a calibration step: Christer manually tags a handful of known trips as "me" vs. "min fru," the classifier computes each label's aggregate stats (harsh-brake/accel/corner event counts or thresholds - adjacent to the existing gsensor dot-gauge/graph machinery), then new trips get scored against both centroids.
+
+**Confidence score should be first-class, not bolted on later** - "sannolikt Christer, 72%" rather than a hard guess, and low-confidence trips should surface as unknown rather than silently mislabeled. Once a trip has a driver label (with confidence), it becomes a new searchable dimension - ties directly into the local-LLM voice-query note above (a `driver` field alongside `location_keyword`/dates/`scene_contains`), and into the speaker-ID note below as a second, independent signal that could cross-check the same guess.
+
+Not started - no code, no design doc beyond this note.
+
+## Note: speaker identification for voice/driver correlation (future improvement)
+
+Christer: "Är det Thai som pratas så är det nog min fru" - wants to identify who's talking (and correlate with where the car is driven), with a probability estimate on the guess, same as the driver-detection note above.
+
+**Diarization already exists** (pyannote, `--diarize`) but only clusters same-voice segments within one recording (SPEAKER_00/01) - it has no idea *who* those are. Two paths, very different cost:
+
+1. **Cheap, essentially free:** language detection per diarized segment. `faster-whisper` already detects language as part of transcription - if one speaker's segments consistently transcribe as Thai and the other as Swedish/English, that alone is a strong signal for a two-person household where the two people reliably speak different languages, no voice enrollment or new model needed - just correlating `faster-whisper`'s own detected-language output with pyannote's existing per-segment speaker labels.
+2. **More general, real cost:** true voice identification via speaker-embedding comparison (pyannote already ships embedding extraction) against enrolled reference clips of each person's voice. Needed if the language signal alone isn't reliable (e.g. both sometimes speak the same language), but requires a one-time enrollment step and is a genuinely separate mechanism from today's diarization.
+
+Same confidence-score principle as the driver-detection note applies here, and the two signals (voice-language guess + g-sensor driving-style guess) could cross-check each other - agreement raises confidence, disagreement flags a trip for manual review instead of picking one guess arbitrarily.
+
+Not started - no code, no design doc beyond this note. Christer: "kommer mer" - more to come.
