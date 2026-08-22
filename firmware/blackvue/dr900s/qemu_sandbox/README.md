@@ -103,3 +103,17 @@ fallback works on any distro, yum-based or not.
 - **Hardware-backed calls will fail/hang.** Anything that talks to the
   Hi3559's real MPP video pipeline, GPS receiver, or g-sensor has no
   emulated hardware to talk to. Expect errors, not silent success.
+- **`main_app`'s GPIO check is a real, confirmed dead end - not just a
+  missing file.** `main_app` fails with `open GPIO_DEV err` trying to
+  open `/dev/hi_gpio` (found via `strings`). Creating a fake character
+  device node at that path (`sudo mknod rootfs/dev/hi_gpio c 1 3 &&
+  sudo chmod 666 rootfs/dev/hi_gpio`) does let the `open()` call
+  succeed - but the very next call, `HI_HAL_Gpio_GetBitVal`'s `ioctl()`,
+  fails with `read gpio data failed`, because a fake device node backed
+  by `/dev/null`'s major/minor doesn't implement the actual ioctl the
+  code expects. Faking a *file* is cheap; faking *driver behavior* isn't
+  - that would need a real (fake) kernel module reimplementing the
+  Hi3559 GPIO controller's register semantics, which is out of scope.
+  This is the genuine, confirmed boundary of userspace emulation for
+  `main_app` specifically, tested end-to-end on real Oracle Linux
+  hardware against firmware v1.009 - not a config gap to keep chasing.
