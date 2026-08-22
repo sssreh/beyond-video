@@ -59,6 +59,7 @@ mkdir -p "$OUT_DIR"
     -fPIC -shared \
     -nostdlib -nostartfiles \
     -fno-stack-protector -fno-builtin \
+    -marm -fomit-frame-pointer \
     -Wall -Wextra \
     -o "$OUT_DIR/gpio_shim.so" \
     "$SCRIPT_DIR/shim.c"
