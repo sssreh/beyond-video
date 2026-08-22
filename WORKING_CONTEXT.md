@@ -17629,3 +17629,13 @@ Files changed: `src/blackvue/core/notify.py` (new), `src/blackvue/cli/errors.py`
 Christer, testing `--scene-quantize` for real: needed `pip install -U bitsandbytes>=0.46.1` to get it working - whatever `pip install .[scene]` resolved to from the unpinned `"bitsandbytes"` entry added in task #1140 wasn't enough. Pinned `pyproject.toml`'s `scene` extra to `bitsandbytes>=0.46.1` so a fresh install gets a working version the first time instead of needing a manual upgrade.
 
 Files changed: `pyproject.toml`.
+
+## Fix: MatMul8bitLt cast-warning flood with --scene-quantize int8
+
+Christer, right after: flooded with repeated `MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization` lines. Cause: `_load_scene_model()` loaded the model with `torch_dtype="auto"`, which resolves to Qwen3-VL-8B-Instruct's native bfloat16 - but bitsandbytes' int8 path (LLM.int8()/`MatMul8bitLt`) only ever computes in float16, so every single matmul silently casts bf16->fp16 and warns about it, once per matmul, which floods stderr across a whole video's worth of frames.
+
+**Fix.** In `generate/scene.py`'s `_load_scene_model()`, load in `torch_dtype="float16"` explicitly whenever `quantize == "int8"`, instead of `"auto"` - the weights get cast to float16 for the int8 path either way, so loading in it up front sidesteps the repeated cast (and its warning) entirely. Left `"auto"` alone for `"int4"` (NF4's `bnb_4bit_compute_dtype` is independent of load dtype, no equivalent forced-cast issue) and `"none"` (unaffected, no quantization at all).
+
+**Verified** via three new tests in `tests/blackvue/generate/test_scene.py` (`test_load_scene_model_int8_quantize_forces_float16_to_avoid_matmul_cast_warning`, `..._int4_quantize_leaves_torch_dtype_auto`, `..._no_quantize_leaves_torch_dtype_auto`), each fully stubbing torch/torchvision/qwen_vl_utils/transformers so `_load_scene_model()` runs all the way to `ModelClass.from_pretrained()` and asserting the `torch_dtype` kwarg it was actually called with. No pytest in this sandbox - also ran an equivalent standalone script directly against the real source; all three scenarios passed. `py_compile` clean on both files.
+
+Files changed: `src/blackvue/generate/scene.py`, `tests/blackvue/generate/test_scene.py`.

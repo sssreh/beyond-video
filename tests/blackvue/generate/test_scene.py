@@ -518,6 +518,92 @@ def test_load_scene_model_quantize_and_force_cpu_together_raises(monkeypatch):
         scene._load_scene_model("some-model", force_cpu=True, quantize="int8")
 
 
+def _stub_scene_model_dependencies(monkeypatch, *, captured_kwargs):
+    # Full happy-path stub of torch/torchvision/qwen_vl_utils/transformers
+    # so _load_scene_model() can run all the way through to
+    # ModelClass.from_pretrained() - captured_kwargs.append(...) records
+    # what it was actually called with, for asserting on torch_dtype
+    # below. Mirrors the stubbing pattern in the guard-clause tests
+    # above, just taken one step further.
+    import sys
+    import types
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 1,
+        set_per_process_memory_fraction=lambda *a, **k: None,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torchvision", types.ModuleType("torchvision"))
+
+    fake_qwen_vl_utils = types.ModuleType("qwen_vl_utils")
+    fake_qwen_vl_utils.process_vision_info = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "qwen_vl_utils", fake_qwen_vl_utils)
+
+    class _FakeModel:
+        @classmethod
+        def from_pretrained(cls, model_name, **kwargs):
+            captured_kwargs.append(kwargs)
+            return object()
+
+    class _FakeAutoProcessor:
+        @classmethod
+        def from_pretrained(cls, model_name):
+            return object()
+
+    class _FakeBitsAndBytesConfig:
+        def __init__(self, *, load_in_8bit=False, load_in_4bit=False):
+            self.load_in_8bit = load_in_8bit
+            self.load_in_4bit = load_in_4bit
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = _FakeAutoProcessor
+    fake_transformers.Qwen2_5_VLForConditionalGeneration = _FakeModel
+    fake_transformers.BitsAndBytesConfig = _FakeBitsAndBytesConfig
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+
+def test_load_scene_model_int8_quantize_forces_float16_to_avoid_matmul_cast_warning(
+    monkeypatch,
+):
+    # bitsandbytes' int8 path (LLM.int8()/MatMul8bitLt) only ever
+    # computes in float16 - loading a bfloat16-native model (Qwen3-VL)
+    # with torch_dtype="auto" makes it silently cast on every single
+    # matmul and print "MatMul8bitLt: inputs will be cast from
+    # torch.bfloat16 to float16 during quantization" every time, which
+    # floods stderr across a whole video's worth of frames. Christer
+    # hit this running --scene-quantize int8 for real. Loading in
+    # float16 up front sidesteps the cast (and its warning) entirely.
+    captured_kwargs = []
+    _stub_scene_model_dependencies(monkeypatch, captured_kwargs=captured_kwargs)
+
+    scene._load_scene_model("some-model", force_cpu=False, quantize="int8")
+
+    assert captured_kwargs[0]["torch_dtype"] == "float16"
+
+
+def test_load_scene_model_int4_quantize_leaves_torch_dtype_auto(monkeypatch):
+    # int4 (NF4) doesn't have the same forced-float16-compute issue as
+    # int8 - its bnb_4bit_compute_dtype is independent of the load
+    # dtype, so there's no reason to override "auto" here.
+    captured_kwargs = []
+    _stub_scene_model_dependencies(monkeypatch, captured_kwargs=captured_kwargs)
+
+    scene._load_scene_model("some-model", force_cpu=False, quantize="int4")
+
+    assert captured_kwargs[0]["torch_dtype"] == "auto"
+
+
+def test_load_scene_model_no_quantize_leaves_torch_dtype_auto(monkeypatch):
+    captured_kwargs = []
+    _stub_scene_model_dependencies(monkeypatch, captured_kwargs=captured_kwargs)
+
+    scene._load_scene_model("some-model", force_cpu=False, quantize="none")
+
+    assert captured_kwargs[0]["torch_dtype"] == "auto"
+
+
 def test_parse_grounding_boxes_plain_json():
     raw = '[{"bbox_2d": [1, 2, 3, 4], "label": "license plate"}]'
 

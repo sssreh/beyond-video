@@ -677,7 +677,22 @@ def _load_scene_model(
             load_in_4bit=(quantize == "int4"),
         )
 
-    from_pretrained_kwargs: dict = {"torch_dtype": "auto", "device_map": device_map}
+    # torch_dtype: "auto" lets transformers pick the model's own native
+    # dtype (bfloat16 for Qwen3-VL-8B-Instruct). bitsandbytes' int8
+    # path (LLM.int8(), MatMul8bitLt) only ever computes in float16
+    # though - handed bfloat16 activations, it silently casts them on
+    # every single matmul and warns about it every single time
+    # ("MatMul8bitLt: inputs will be cast from torch.bfloat16 to
+    # float16 during quantization"), which floods stderr for the
+    # thousands of matmuls in one video's worth of frames (Christer
+    # hit this running --scene-quantize int8 for real). Loading in
+    # float16 up front for int8 sidesteps the cast (and its warning)
+    # entirely - it's what the weights get cast to anyway. int4
+    # (NF4) doesn't have this issue: its own bnb_4bit_compute_dtype
+    # defaults independently and isn't tied to the load dtype the
+    # same way, so "auto" is left alone there.
+    torch_dtype = "float16" if quantize == "int8" else "auto"
+    from_pretrained_kwargs: dict = {"torch_dtype": torch_dtype, "device_map": device_map}
     if quantization_config is not None:
         from_pretrained_kwargs["quantization_config"] = quantization_config
 
