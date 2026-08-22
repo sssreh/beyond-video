@@ -353,24 +353,28 @@ def test_resolve_scene_quantize_auto_large_gpu_resolves_to_none(monkeypatch):
 
 
 def test_resolve_scene_quantize_auto_mid_gpu_resolves_to_int8(monkeypatch):
-    # e.g. a single RTX 3080 Ti, 12GB.
-    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0])
+    # e.g. a single RTX 4080, 16GB.
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [16.0])
 
     assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
 
 
 def test_resolve_scene_quantize_auto_keyed_on_largest_single_gpu_not_sum(monkeypatch):
-    # Two 12GB GPUs (Christer's real dual-RTX-3080-Ti box) must still
-    # resolve to "int8", not "none" from a summed 24GB - device_map="auto"
-    # sharding across both is not the point; quantizing down onto *one*
-    # card is (see resolve_scene_quantize()'s own docstring).
-    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0, 12.0])
+    # Two 16GB GPUs must still resolve to "int8", not "none" from a
+    # summed 32GB - device_map="auto" sharding across both is not the
+    # point; quantizing down onto *one* card is (see
+    # resolve_scene_quantize()'s own docstring).
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [16.0, 16.0])
 
     assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
 
 
 def test_resolve_scene_quantize_auto_small_gpu_resolves_to_int4(monkeypatch):
-    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [6.0])
+    # e.g. Christer's real dual-RTX-3080-Ti box, 12GB/card - measured
+    # at almost 14GB actual int8 usage, too tight for a 12GB card, so
+    # this now falls through to int4 instead (see INT8_MIN_GB's own
+    # comment for the real-world measurement behind this).
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [12.0])
 
     assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int4"
 
@@ -382,10 +386,10 @@ def test_resolve_scene_quantize_auto_boundaries(monkeypatch):
     monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [19.9])
     assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
 
-    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [10.0])
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [16.0])
     assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int8"
 
-    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [9.9])
+    monkeypatch.setattr(scene, "_SCENE_GPU_VRAM_GB", [15.9])
     assert scene.resolve_scene_quantize("auto", force_cpu=False) == "int4"
 
 

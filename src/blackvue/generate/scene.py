@@ -483,18 +483,32 @@ def scene_gpu_vram_gb() -> list[float]:
 
 # Thresholds (GB) for resolve_scene_quantize()'s "auto" behavior below,
 # keyed on the *largest single* detected GPU - not the sum across every
-# card. Qwen3-VL-8B-Instruct's native bf16 weights are a ~16GB
-# footprint (Christer's own report: "Scene model never unloads from
-# GPU"); bitsandbytes int8 roughly halves that, int4 roughly quarters
-# it. device_map="auto" *can* shard a too-large model across multiple
-# GPUs when it doesn't fit on one, but that's slower PCIe-pipelined
+# card. Qwen3-VL-8B-Instruct's native bf16 weights are a ~19.3GB
+# footprint unquantized (matches the ~20GB NONE floor below).
+# device_map="auto" *can* shard a too-large model across multiple GPUs
+# when it doesn't fit on one, but that's slower PCIe-pipelined
 # inference, not what quantization is for here - the real win on
 # Christer's dual-RTX-3080-Ti box (12GB each, discussed alongside this
 # feature) is quantizing the model down onto *one* card so it never
 # needs to shard at all, and so each card could eventually host an
 # independent job rather than jointly hosting one slow one.
+#
+# INT8_MIN_GB was originally 10.0, on the assumption that bitsandbytes
+# int8 roughly halves the unquantized footprint. Christer's real
+# measurement running --scene-quantize int8 for real: it used almost
+# 14GB, not ~9-10GB - int8 (LLM.int8()) doesn't quantize everything
+# (the vision tower/embeddings stay fp16/bf16) and keeps fp16
+# mixed-precision outliers, plus real inference adds frame-tensor and
+# KV-cache overhead on top of the static weight footprint, so the
+# naive "halves it" estimate was too optimistic. Raised to 16.0 (14GB
+# measured + a safety margin) so a 12GB card - Christer's own
+# dual-RTX-3080-Ti box, the case this auto-selection exists for -
+# falls through to int4 instead of picking an int8 that wouldn't
+# actually fit on one card. int4's own real-world footprint hasn't
+# been measured yet; revisit this floor too if it turns out optimistic
+# the same way.
 _SCENE_QUANTIZE_NONE_MIN_GB = 20.0
-_SCENE_QUANTIZE_INT8_MIN_GB = 10.0
+_SCENE_QUANTIZE_INT8_MIN_GB = 16.0
 
 VALID_SCENE_QUANTIZE_LEVELS = ("none", "int8", "int4")
 
