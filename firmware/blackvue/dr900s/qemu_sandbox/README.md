@@ -22,10 +22,20 @@ hardware underneath for those calls to reach, so they'll error or hang.
 ## Prerequisites
 
 Run this on a real Linux machine (native Linux, or WSL2 on Windows) with
-normal `sudo`/`apt` access - **not** in a locked-down CI/cowork sandbox.
-(This exact limitation is why the scripts here exist rather than a
-one-shot cowork session: no root, no apt, and the package proxy blocks
+normal root access - **not** in a locked-down CI/cowork sandbox. (This
+exact limitation is why the scripts here exist rather than a one-shot
+cowork session: no root, no apt/yum, and the package proxy blocks
 GitHub/PyPI/Debian mirrors outright in that environment.)
+
+`setup_sandbox.sh` works on both apt-based (Debian/Ubuntu) and
+yum/dnf-based (Fedora, RHEL, CentOS, Rocky, Alma) systems. On the
+RHEL family specifically, `qemu-user-static` isn't packaged for 8+ even
+via EPEL (confirmed via Red Hat's own docs), so the script automatically
+falls back to downloading a prebuilt static `qemu-arm-static` binary
+straight from the [multiarch/qemu-user-static GitHub
+releases](https://github.com/multiarch/qemu-user-static/releases) if the
+package install fails or no package manager is found at all - this
+fallback works on any distro, yum-based or not.
 
 ## Steps
 
