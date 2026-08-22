@@ -1,9 +1,12 @@
 import json
 
+import blackvue.cli.errors as errors_module
 from blackvue.cli.errors import EXIT_INTERRUPTED
 from blackvue.cli.errors import EXIT_OS_ERROR
 from blackvue.cli.errors import run_cli
 from blackvue.core import history
+from blackvue.core.notify import NotifyConfig
+from blackvue.core.notify import NotifyConfigError
 
 
 def test_run_cli_returns_the_wrapped_functions_result():
@@ -177,3 +180,193 @@ def test_run_cli_falls_back_to_sys_argv_when_argv_is_none(
 
     entry = json.loads(history.history_path().read_text().strip())
     assert entry["command_line"] == "bv-ls Kirby --all"
+
+
+# ---------------------------------------------------------------------------
+# run_cli() also fires an optional crash-notification email (core/notify.py)
+# when a run genuinely crashes (not a plain non-zero exit, not Ctrl-C) while
+# unattended (no tty) - see core/notify.py's own module docstring and
+# WORKING_CONTEXT.md's "email/notify when an unattended CLI command crashes"
+# entry for the full "why" behind this.
+# ---------------------------------------------------------------------------
+
+
+def _notify_config():
+    return NotifyConfig(email="me@example.com", smtp_host="smtp.example.com")
+
+
+def test_run_cli_notifies_for_os_error_when_unattended_and_configured(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: True)
+    monkeypatch.setattr(
+        errors_module, "load_notify_config", lambda config_dir: _notify_config()
+    )
+    calls = []
+    monkeypatch.setattr(
+        errors_module,
+        "send_crash_notification",
+        lambda config, subject, body: calls.append((config, subject, body)),
+    )
+
+    def raiser():
+        raise FileNotFoundError(2, "No such file or directory", "/nope")
+
+    run_cli("bv-generate", raiser, argv=["Kirby", "--describe-scene"])
+
+    assert len(calls) == 1
+    config, subject, body = calls[0]
+    assert config.email == "me@example.com"
+    assert "bv-generate" in subject
+    assert "bv-generate Kirby --describe-scene" in body
+
+
+def test_run_cli_notifies_for_unhandled_exception_when_unattended(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: True)
+    monkeypatch.setattr(
+        errors_module, "load_notify_config", lambda config_dir: _notify_config()
+    )
+    calls = []
+    monkeypatch.setattr(
+        errors_module,
+        "send_crash_notification",
+        lambda config, subject, body: calls.append((config, subject, body)),
+    )
+
+    def raiser():
+        raise ValueError("boom")
+
+    try:
+        run_cli("bv-scribe", raiser, argv=["Kirby"])
+    except ValueError:
+        pass
+
+    assert len(calls) == 1
+
+
+def test_run_cli_does_not_notify_when_attended(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: False)
+    monkeypatch.setattr(
+        errors_module, "load_notify_config", lambda config_dir: _notify_config()
+    )
+    calls = []
+    monkeypatch.setattr(
+        errors_module,
+        "send_crash_notification",
+        lambda config, subject, body: calls.append(1),
+    )
+
+    def raiser():
+        raise FileNotFoundError(2, "No such file or directory", "/nope")
+
+    run_cli("bv-generate", raiser, argv=["Kirby"])
+
+    assert calls == []
+
+
+def test_run_cli_does_not_notify_when_nothing_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: True)
+    monkeypatch.setattr(errors_module, "load_notify_config", lambda config_dir: None)
+    calls = []
+    monkeypatch.setattr(
+        errors_module,
+        "send_crash_notification",
+        lambda config, subject, body: calls.append(1),
+    )
+
+    def raiser():
+        raise FileNotFoundError(2, "No such file or directory", "/nope")
+
+    run_cli("bv-generate", raiser, argv=["Kirby"])
+
+    assert calls == []
+
+
+def test_run_cli_does_not_notify_for_keyboard_interrupt(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: True)
+    monkeypatch.setattr(
+        errors_module, "load_notify_config", lambda config_dir: _notify_config()
+    )
+    calls = []
+    monkeypatch.setattr(
+        errors_module,
+        "send_crash_notification",
+        lambda config, subject, body: calls.append(1),
+    )
+
+    def raiser():
+        raise KeyboardInterrupt
+
+    run_cli("bv-generate", raiser, argv=["Kirby"])
+
+    assert calls == []
+
+
+def test_run_cli_does_not_notify_for_a_plain_nonzero_exit(tmp_path, monkeypatch):
+    # A command that just returns a non-zero code (e.g. bv-generate
+    # warning-and-skipping a corrupted recording) is expected,
+    # already-surfaced behavior - not a crash worth emailing about.
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: True)
+    monkeypatch.setattr(
+        errors_module, "load_notify_config", lambda config_dir: _notify_config()
+    )
+    calls = []
+    monkeypatch.setattr(
+        errors_module,
+        "send_crash_notification",
+        lambda config, subject, body: calls.append(1),
+    )
+
+    run_cli("bv-generate", lambda: 1, argv=["Kirby"])
+
+    assert calls == []
+
+
+def test_run_cli_swallows_a_malformed_notify_config_instead_of_crashing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: True)
+
+    def _raise_config_error(config_dir):
+        raise NotifyConfigError("malformed notify.toml")
+
+    monkeypatch.setattr(errors_module, "load_notify_config", _raise_config_error)
+
+    def raiser():
+        raise FileNotFoundError(2, "No such file or directory", "/nope")
+
+    # Must still behave exactly like the plain OSError case - a broken
+    # notify.toml must never take down the command it's reporting on.
+    exit_code = run_cli("bv-generate", raiser, argv=["Kirby"])
+
+    assert exit_code == EXIT_OS_ERROR
+
+
+def test_run_cli_does_not_call_default_config_dir_lookup_when_attended(
+    tmp_path, monkeypatch
+):
+    # Cheap sanity check that the notify path is genuinely skipped
+    # (not just no-op'd) when attended - load_notify_config must not
+    # even be called.
+    monkeypatch.setenv("BEYOND_VIDEO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(errors_module, "_unattended", lambda: False)
+    calls = []
+    monkeypatch.setattr(
+        errors_module, "load_notify_config", lambda config_dir: calls.append(1)
+    )
+
+    def raiser():
+        raise FileNotFoundError(2, "No such file or directory", "/nope")
+
+    run_cli("bv-generate", raiser, argv=["Kirby"])
+
+    assert calls == []

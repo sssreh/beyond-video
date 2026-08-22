@@ -72,6 +72,29 @@ bv-config Kirby --config-dir ./test-configs
 
 Configs are saved as TOML under `--config-dir`, one file per camera `ID`.
 
+An optional `notify.toml` in the same directory turns on email
+notification when a `bv-*` command crashes while running unattended
+(no terminal attached - cron, a scheduled task, a closed SSH session).
+Global, not per-camera - not written by `bv-config`'s own wizard, just
+hand-edit it directly:
+
+```
+email = "you@example.com"
+smtp_host = "smtp.example.com"
+smtp_port = 587          # optional, default 587
+smtp_username = "..."    # optional - omit for an open/internal relay
+smtp_password = "..."    # optional
+use_tls = true            # optional, default true
+from_address = "..."      # optional, defaults to smtp_username or email
+```
+
+No file, or a file with `email` left unset, means no notification -
+entirely voluntary. A crash from a plain non-zero exit (a command
+warning-and-skipping one bad recording, say) never notifies - only a
+genuinely unhandled error does, and only when there's no tty attached
+to see it directly. See `src/blackvue/core/notify.py`'s own module
+docstring for the full design reasoning.
+
 ## SEE ALSO
 
 `bv-download(1)`, the first command that reads a config this creates.
