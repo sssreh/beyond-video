@@ -404,6 +404,17 @@
   // depend on any other series being visible.
   var seriesVisible = series.map(function () { return true; });
 
+  // Every bar/point gets its opacity transition (200ms fade) plus a
+  // transition-delay computed from its own x-index, set once at
+  // creation time below - a plain CSS property, timed by the browser's
+  // style engine rather than by N separate JS timers. That's the part
+  // that actually produces the staggered build-up; the trigger further
+  // down just flips opacity on every element in one shot and lets each
+  // element's own transition-delay hold it back the right amount.
+  function revealTransition(index) {
+    return 'opacity 200ms ease ' + (index * stepMs) + 'ms';
+  }
+
   function showTooltip(evt, seriesInfo, index) {
     var value = seriesInfo.values[index];
     var tip = container.querySelector('.stats-chart-tooltip');
@@ -470,7 +481,10 @@
         // equal-or-higher-specificity inline style - only the hidden
         // state needs an inline override, since "visible" is just
         // this element's own default rendering.
-        if (!prefersReducedMotion) circle.style.opacity = 0;
+        if (!prefersReducedMotion) {
+          circle.style.opacity = 0;
+          circle.style.transition = revealTransition(index);
+        }
         circle.addEventListener('mousemove', function (evt) { showTooltip(evt, s, index); });
         circle.addEventListener('mouseleave', hideTooltip);
         circle.addEventListener('click', function () { jumpToBucket(index); });
@@ -507,7 +521,10 @@
         // See the matching comment on the line-chart's circle points
         // above - left unset when visible so .stats-chart-bar:hover's
         // dimming still applies once the bar is revealed/toggled on.
-        if (!prefersReducedMotion) rect.style.opacity = 0;
+        if (!prefersReducedMotion) {
+          rect.style.opacity = 0;
+          rect.style.transition = revealTransition(i);
+        }
         rect.addEventListener('mousemove', function (evt) { showTooltip(evt, s, i); });
         rect.addEventListener('mouseleave', hideTooltip);
         rect.addEventListener('click', function () { jumpToBucket(i); });
@@ -516,22 +533,40 @@
     });
   }
 
-  // Reveal bars/points one x-axis position at a time, respecting
-  // whatever legend-toggle state is current at the moment each step
-  // fires (a toggle clicked mid-animation, however unlikely, still
-  // wins rather than getting overwritten by a stale reveal).
+  // Reveal bars/points one x-axis position at a time. Originally driven
+  // by N separate window.setTimeout calls, one per x-index - reworked
+  // after Christer reported the animation simply never appeared (while
+  // the legend toggle, built on the same data-series tagging, worked
+  // fine). N staggered JS timers queued during page load are exactly
+  // the kind of thing a background/inactive tab can throttle or batch
+  // (Chrome clamps and coalesces timers heavily once a tab isn't
+  // focused), which would make every "step" fire in one burst the
+  // moment the tab regains focus - indistinguishable from "no
+  // animation at all" to whoever's watching. Each bar/point's own
+  // transition-delay (set via revealTransition() above, at element
+  // creation time) now carries the
+  // per-x-index stagger instead - a real CSS property the browser's
+  // own compositor times, not a JS callback queue, so it isn't subject
+  // to that throttling. Only a single trigger is needed here: flip
+  // every already-built element from its initial opacity:0 to visible
+  // in one shot, and each element's own transition-delay staggers
+  // when its fade-in actually starts.
   if (!prefersReducedMotion && n > 0) {
-    for (var xi = 0; xi < n; xi++) {
-      (function (index) {
-        window.setTimeout(function () {
-          container.querySelectorAll('[data-x-index="' + index + '"]').forEach(function (el) {
-            var seriesIndex = Number(el.getAttribute('data-series'));
-            el.style.transition = 'opacity 200ms ease';
-            el.style.opacity = seriesVisible[seriesIndex] ? '' : 0;
-          });
-        }, index * stepMs);
-      })(xi);
-    }
+    // Forces the browser to commit the opacity:0 state (set at element
+    // creation, above) to a real style/paint pass before flipping to
+    // visible - otherwise the two writes can collapse into one and the
+    // transition never fires, the same "needs a reflow in between"
+    // requirement the line-chart's own stroke-dashoffset animation
+    // handles further up with its nested requestAnimationFrame calls.
+    void container.offsetHeight;
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        container.querySelectorAll('[data-x-index]').forEach(function (el) {
+          var seriesIndex = Number(el.getAttribute('data-series'));
+          el.style.opacity = seriesVisible[seriesIndex] ? '' : 0;
+        });
+      });
+    });
   }
 
   // X-axis labels - thinned out if there isn't room for all of them.
@@ -572,7 +607,16 @@
   function applySeriesVisibility(seriesIndex) {
     var visible = seriesVisible[seriesIndex];
     container.querySelectorAll('[data-series="' + seriesIndex + '"]').forEach(function (el) {
-      el.style.opacity = visible ? 1 : 0;
+      // Overrides whatever transition-delay the build-up reveal baked
+      // into this element at creation time (see revealTransition()
+      // above) - without this, a legend click after the initial reveal
+      // would replay that same per-x-index stagger (up to 1.5s) instead
+      // of toggling right away. Left unset (rather than 1) when
+      // visible, same reasoning as the reveal loop: keeps the plain
+      // CSS :hover dimming rule from being permanently shadowed by an
+      // equal-specificity inline style.
+      el.style.transition = 'opacity 200ms ease';
+      el.style.opacity = visible ? '' : 0;
       el.style.pointerEvents = visible ? '' : 'none';
     });
   }
