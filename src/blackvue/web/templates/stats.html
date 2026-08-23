@@ -213,6 +213,19 @@
   // into #stats-legend below, one entry per series, instead of the
   // single hardcoded legend line the original one-field-only version
   // had.
+  //
+  // Second follow-up (Christer, same day): "dont be so fixated of the
+  // y axis unit, let them work around (min+max)/2 at the middle of y
+  // axis." The y-domain used to force in a 0 baseline
+  // (Math.min(0, ...actual min)) the way a "proper" zero-anchored
+  // axis would - fine for values that are naturally near zero, but it
+  // wastes most of the plot's height on empty space for a series like
+  // avg_speed_kmh that only ever wanders in, say, the 40-60 range,
+  // squashing the actual variation into a sliver at the top. The
+  // y-domain is now just [min(values), max(values)] with no forced
+  // zero - which, by construction, puts (min+max)/2 exactly at the
+  // vertical center of the plot (see yFor()) and uses the whole plot
+  // height for whatever range the data actually covers.
   var container = document.getElementById('stats-chart');
   if (!container) return;
 
@@ -247,8 +260,14 @@
     s.values.forEach(function (v) { if (v !== null && v !== undefined) allValues.push(v); });
   });
   var maxValue = Math.max.apply(null, allValues);
-  var minValue = Math.min(0, Math.min.apply(null, allValues));
-  if (maxValue === minValue) maxValue = minValue + 1;
+  var minValue = Math.min.apply(null, allValues);
+  if (maxValue === minValue) {
+    // Flat series (every value identical) - manufacture a little
+    // headroom on both sides so it doesn't collapse to one gridline,
+    // still centered on the single value itself.
+    maxValue += 1;
+    minValue -= 1;
+  }
 
   function yFor(value) {
     return padTop + plotH - ((value - minValue) / (maxValue - minValue)) * plotH;
@@ -336,13 +355,18 @@
     var seriesCount = series.length;
     var groupW = Math.max(4 * seriesCount, slotW * 0.7);
     var barW = groupW / seriesCount;
+    // Bars grow from the bottom of the y-domain (minValue), not from
+    // an absolute zero - now that the y-domain itself isn't forced to
+    // include zero (see the y-axis centering note above), zero may
+    // not even be on the chart at all.
+    var yBaseline = yFor(minValue);
     series.forEach(function (s, seriesIndex) {
       var color = PALETTE[seriesIndex % PALETTE.length];
       s.values.forEach(function (value, i) {
         if (value === null || value === undefined) return;
         var x = padLeft + slotW * (i + 0.5) - groupW / 2 + barW * seriesIndex;
-        var y = yFor(Math.max(0, value));
-        var barH = Math.abs(yFor(value) - yFor(0));
+        var y = yFor(value);
+        var barH = yBaseline - y;
         var rect = document.createElementNS(svgNS, 'rect');
         rect.setAttribute('x', x); rect.setAttribute('y', y);
         rect.setAttribute('width', Math.max(1, barW - 1)); rect.setAttribute('height', barH || 1);
