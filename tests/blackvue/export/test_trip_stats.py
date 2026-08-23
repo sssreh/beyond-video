@@ -216,31 +216,42 @@ def test_compute_trip_stats_elevation_fields_are_none_without_any_altitude_data(
 
 
 def test_compute_trip_stats_min_max_altitude():
+    # Deltas (15m, -25m) stay comfortably under
+    # _ALTITUDE_OUTLIER_JUMP_METERS (30m) so none of these are treated
+    # as a bad-fix spike - see the outlier-rejection tests below for
+    # that case specifically.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
-        _fix(1, 59.31, 18.001, altitude=150.0),
-        _fix(2, 59.32, 18.002, altitude=80.0),
+        _fix(1, 59.31, 18.001, altitude=115.0),
+        _fix(2, 59.32, 18.002, altitude=90.0),
     )
 
     stats = compute_trip_stats(fixes)
 
-    assert stats.min_altitude_meters == 80.0
-    assert stats.max_altitude_meters == 150.0
+    assert stats.min_altitude_meters == 90.0
+    assert stats.max_altitude_meters == 115.0
 
 
-def test_compute_trip_stats_elevation_gain_sums_only_climbs():
-    # 100 -> 150 (+50 climb) -> 80 (-70 descent, not counted) -> 120
-    # (+40 climb). Total gain: 50 + 40 = 90, descents ignored.
+def test_compute_trip_stats_elevation_gain_is_the_max_minus_min_range():
+    # Christer's own framing (2026-08-23): elevation_gain_meters is
+    # "the difference for the lowest and highest value", not a running
+    # total of every climb with descents ignored (the old definition -
+    # see _hysteresis_altitude_stats()'s own docstring for why that
+    # overstated real trips). 100 -> 115 -> 90 -> 105: the range is
+    # 90..115, so gain is 115-90=25, regardless of the up/down/up
+    # shape in between.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
-        _fix(1, 59.31, 18.001, altitude=150.0),
-        _fix(2, 59.32, 18.002, altitude=80.0),
-        _fix(3, 59.33, 18.003, altitude=120.0),
+        _fix(1, 59.31, 18.001, altitude=115.0),
+        _fix(2, 59.32, 18.002, altitude=90.0),
+        _fix(3, 59.33, 18.003, altitude=105.0),
     )
 
     stats = compute_trip_stats(fixes)
 
-    assert stats.elevation_gain_meters == 90.0
+    assert stats.min_altitude_meters == 90.0
+    assert stats.max_altitude_meters == 115.0
+    assert stats.elevation_gain_meters == 25.0
 
 
 def test_compute_trip_stats_elevation_bridges_gaps_missing_a_reading():
@@ -321,3 +332,53 @@ def test_compute_trip_stats_elevation_gain_registers_a_real_sustained_climb():
     assert stats.elevation_gain_meters == 15.0
     assert stats.min_altitude_meters == 0.0
     assert stats.max_altitude_meters == 15.0
+
+
+def test_compute_trip_stats_elevation_rejects_a_lone_bad_gps_fix():
+    # Second real-archive report (Christer, 2026-08-23): a stationary
+    # ~50m baseline with one badly wrong fix (300m - multipath/bad
+    # geometry, not a real 250m jump and drop in under two seconds)
+    # used to blow elevation_gain_meters up to roughly the size of the
+    # bad jump, since it cleared the dead-band and got treated as a
+    # real climb. The lone-spike check (jumps away, next reading snaps
+    # straight back) should drop the 300m reading entirely before it
+    # ever reaches the dead-band pass, leaving only the genuine
+    # sub-deadband wobble around ~50m.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=50.0),
+        _fix(1, 59.301, 18.0001, altitude=50.5),
+        _fix(2, 59.302, 18.0002, altitude=300.0),
+        _fix(3, 59.303, 18.0003, altitude=49.8),
+        _fix(4, 59.304, 18.0004, altitude=50.2),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.elevation_gain_meters == 0.0
+    assert stats.min_altitude_meters == 50.0
+    assert stats.max_altitude_meters == 50.0
+
+
+def test_compute_trip_stats_elevation_keeps_a_real_sustained_jump():
+    # A genuinely large, *sustained* change (every reading after the
+    # first big jump keeps climbing further, none of them snap back to
+    # the earlier baseline) must not be mistaken for a lone bad fix -
+    # only a jump that nothing afterward confirms gets dropped. Here
+    # the jump from ~50m to 90m is itself bigger than
+    # _ALTITUDE_OUTLIER_JUMP_METERS, same as the bad-fix case above,
+    # but the two readings after it (95m, 100m) keep moving the same
+    # direction instead of snapping back - confirmation the outlier
+    # check requires before rejecting anything.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=50.0),
+        _fix(1, 59.301, 18.0001, altitude=50.5),
+        _fix(2, 59.302, 18.0002, altitude=90.0),
+        _fix(3, 59.303, 18.0003, altitude=95.0),
+        _fix(4, 59.304, 18.0004, altitude=100.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 50.0
+    assert stats.max_altitude_meters == 100.0
+    assert stats.elevation_gain_meters == 50.0

@@ -200,6 +200,44 @@ def test_aggregate_weekday_recurs_across_multiple_weeks():
     assert len(buckets[0].recordings) == 2
 
 
+def test_aggregate_groups_by_dayofmonth_zero_padded_and_in_numeric_order():
+    # "monthday" partitions by exact date; "dayofmonth" is the
+    # weekday-style recurring one - Christer's own "an x axis with 31
+    # positions ... think like weekdays with 7 positions" - so day 3
+    # of any month lands in the same bucket as day 3 of any other.
+    # Zero-padded keys ("03" not "3") so plain string sort still
+    # yields numeric order (no "10" before "3" the way unpadded
+    # strings would sort).
+    entries = [
+        (RecordingId("20260810_090000_NF"), {"distance_km": 1.0}),
+        (RecordingId("20260703_090000_NF"), {"distance_km": 2.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="dayofmonth", fields=["distance_km"]
+    )
+
+    assert [bucket.key for bucket in buckets] == ["03", "10"]
+
+
+def test_aggregate_dayofmonth_recurs_across_different_months():
+    # Both recordings are on the 5th of their own month - "dayofmonth"
+    # should merge them into a single "05" bucket the same way
+    # "weekday" merges same-weekday recordings across weeks.
+    entries = [
+        (RecordingId("20260105_090000_NF"), {"distance_km": 1.0}),
+        (RecordingId("20260805_090000_NF"), {"distance_km": 2.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="dayofmonth", fields=["distance_km"]
+    )
+
+    assert [bucket.key for bucket in buckets] == ["05"]
+    assert buckets[0].values["distance_km"] == 3.0
+    assert len(buckets[0].recordings) == 2
+
+
 def test_aggregate_sum_field():
     entries = [
         (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),

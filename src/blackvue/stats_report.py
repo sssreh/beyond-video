@@ -128,7 +128,7 @@ DEFAULT_FIELDS: tuple[str, ...] = (
 # request listed them - see _bucket_key()'s own docstring for exactly
 # what each one means.
 GROUPINGS: tuple[str, ...] = (
-    "all", "year", "month", "monthday", "week", "weekday",
+    "all", "year", "month", "monthday", "week", "weekday", "dayofmonth",
 )
 
 _WEEKDAY_ORDER = (
@@ -223,6 +223,17 @@ def _bucket_key(timestamp: datetime, grouping: str) -> str:
     above (which all partition the selection into disjoint spans of
     time; this one instead re-cuts the *same* whole selection by a
     repeating pattern within it).
+    "dayofmonth" - one bucket per day-of-month number ("01".."31"),
+    recurring the same way "weekday" does (not to be confused with
+    "monthday" above, which partitions into one bucket per exact
+    date) - answers "which day of the month do I drive most on" /
+    surfaces a single low-mileage day inside an otherwise normal
+    month, the kind of thing a whole-month total averages away.
+    Christer's own framing, after a first "which months have low
+    mileage" pass turned out to mean this instead: "an x axis with 31
+    positions ... think like weekdays with 7 positions." Some months
+    have fewer than 31 days, so buckets 29-31 will always have fewer
+    contributing recordings than the rest - expected, not a bug.
     """
 
     if grouping == "all":
@@ -238,6 +249,8 @@ def _bucket_key(timestamp: datetime, grouping: str) -> str:
         return f"{iso_year}-W{iso_week:02d}"
     if grouping == "weekday":
         return _WEEKDAY_ORDER[timestamp.weekday()]
+    if grouping == "dayofmonth":
+        return f"{timestamp.day:02d}"
 
     raise ValueError(f"unknown grouping: {grouping!r}")
 

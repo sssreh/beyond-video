@@ -8,7 +8,7 @@
 
 ```
 bv-stats [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-         [--group {all,year,month,monthday,week,weekday}]
+         [--group {all,year,month,monthday,week,weekday,dayofmonth}]
          [--fields FIELD1,FIELD2,...] [--list-fields]
          [--json] [--config-dir DIR] [--trace]
          [PATH]
@@ -34,6 +34,7 @@ This command is deliberately split into a library half (`blackvue.stats_report`,
 | `monthday` | `2026-08-23` | One bucket per exact calendar date. |
 | `week` | `2026-W34` | One bucket per ISO 8601 week (Monday-Sunday). |
 | `weekday` | `Monday` .. `Sunday` | One bucket per day-of-week name, **recurring** across every date in the selection - a genuinely different question from the other five (which all partition the selection into disjoint time spans; this one re-cuts the whole selection by a repeating pattern, e.g. "which day of the week do I drive most on"). |
+| `dayofmonth` | `01` .. `31` | One bucket per day-of-month number, **recurring** the same way `weekday` does (not to be confused with `monthday` above, which partitions into one bucket per exact date) - e.g. "which day of the month do I drive most on," and surfaces a single low-mileage day inside an otherwise normal month that a whole-month total would average away. Some months have fewer than 31 days, so buckets `29`-`31` will always have fewer contributing recordings than the rest - expected, not a bug. |
 
 ### Fields
 
@@ -76,7 +77,7 @@ The estimated portion is never silently blended into the real number with no tra
 
 | Option | Description |
 |---|---|
-| `--group {all,year,month,monthday,week,weekday}` | Calendar period to group recordings by. Default: `all`. |
+| `--group {all,year,month,monthday,week,weekday,dayofmonth}` | Calendar period to group recordings by. Default: `all`. |
 | `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`. |
 | `--list-fields` | Print every field `--fields` accepts, with its unit and aggregation kind, then exit. Needs no archive. |
 | `--summary` | Also report an overall summary (totals across the whole selection, same as `--group all`) alongside the per-group breakdown. No effect when `--group` is already `all`. See "Summary" below. |

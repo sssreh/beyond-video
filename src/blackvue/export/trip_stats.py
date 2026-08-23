@@ -44,6 +44,28 @@ _EARTH_RADIUS_METERS = 6_371_000.0
 # climb.
 _ALTITUDE_GAIN_DEADBAND_METERS = 2.0
 
+# Second real-archive report (Christer, 2026-08-23, after the dead
+# -band fix above was already live on bv-stats' own aggregated
+# reports): "Elevation gain is to high, i want the difference for the
+# lowest and highest value but remove crazy reading." The dead-band
+# above only absorbs *small*, sub-meter-scale wobble - it does nothing
+# against a single badly wrong altitude fix (multipath off a building,
+# a momentary bad satellite geometry) that jumps far outside that
+# band in one tick and then jumps straight back on the very next one.
+# Such a reading used to get treated as fully real: it cleared the
+# dead-band, so it moved the reference and got counted as a genuine
+# climb/descent, then usually got counted *again* on the very next
+# tick snapping back - a single bad fix could contribute close to
+# double its own bogus jump to the total. _reject_altitude_outliers()
+# below drops exactly that shape of reading (jumps away, and nothing
+# after it confirms the vehicle actually went there) before the dead
+# -band pass ever sees it. 30m in one ~1-second GPS tick is far beyond
+# anything a car can climb or descend for real (even a steep 10% grade
+# at motorway speed is on the order of 2-3m/s of real vertical
+# movement - see _reject_altitude_outliers()'s own docstring) but well
+# inside the range a single bad fix can produce.
+_ALTITUDE_OUTLIER_JUMP_METERS = 30.0
+
 
 @dataclass(frozen=True)
 class TripStats:
@@ -93,46 +115,98 @@ def _haversine_distance_meters(
     return _EARTH_RADIUS_METERS * c
 
 
+def _reject_altitude_outliers(altitudes: list[float]) -> list[float]:
+    """Drop a lone bad GPS altitude fix from `altitudes` before
+    anything downstream (dead-band re-basing, min/max, gain) ever sees
+    it - see _ALTITUDE_OUTLIER_JUMP_METERS' own docstring for the real
+    -archive report this fixes.
+
+    A reading is rejected only if it jumps more than
+    _ALTITUDE_OUTLIER_JUMP_METERS away from the last *accepted*
+    reading AND the very next raw reading lands back within that same
+    threshold of that last accepted reading - i.e. neither the reading
+    itself nor anything after it is confirmed by what comes next, the
+    signature of a single bad fix that snaps back on its own. A real
+    climb or descent doesn't behave this way: consecutive readings
+    keep moving away together, they don't jump once and immediately
+    snap back to where they started. This is deliberately a one-sided
+    check against the previously *accepted* value, not the raw
+    previous reading, so two bad fixes in a row can't each "confirm"
+    the other and both slip through.
+
+    The first and last readings in the sequence are never rejected -
+    each only has one neighbor, not enough evidence either way to
+    tell a real trip endpoint from a bad fix, and rejecting a
+    sequence's own edges would need guessing at data outside the
+    sequence entirely. Sequences shorter than 3 readings have no
+    interior point to evaluate at all and pass through unchanged.
+    """
+
+    if len(altitudes) < 3:
+        return list(altitudes)
+
+    accepted = [altitudes[0]]
+    for index in range(1, len(altitudes) - 1):
+        last_accepted = accepted[-1]
+        current = altitudes[index]
+        following = altitudes[index + 1]
+        is_lone_spike = (
+            abs(current - last_accepted) > _ALTITUDE_OUTLIER_JUMP_METERS
+            and abs(following - last_accepted) <= _ALTITUDE_OUTLIER_JUMP_METERS
+        )
+        if not is_lone_spike:
+            accepted.append(current)
+    accepted.append(altitudes[-1])
+
+    return accepted
+
+
 def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, float]:
     """min/max/elevation-gain over a sequence of raw altitude
-    readings, using dead-band re-basing (this module's own
-    _ALTITUDE_GAIN_DEADBAND_METERS) rather than trusting each raw
-    reading directly - see that constant's own docstring for why.
+    readings, using outlier rejection then dead-band re-basing rather
+    than trusting each raw reading directly.
 
-    A reference altitude starts at the first reading and only ever
-    moves once a later reading differs from it by more than the
-    dead-band; only that move counts toward the returned gain (climbs
-    only - descents move the reference down but add nothing, the same
-    "ignore descents" convention compute_trip_stats() already
-    documents). min/max track the *reference*'s own path rather than
-    each individual raw reading, so on their own a single noisy
-    outlier reading can't move either statistic - it has to actually
-    clear the dead-band to register at all. A real, sustained climb or
-    descent still passes through essentially unfiltered: each step
-    only needs to clear the (small) dead-band once, so this only ever
-    suppresses the sub-dead-band back-and-forth pure sensor noise
-    produces, not a genuine trend.
+    Two passes: _reject_altitude_outliers() first drops any lone bad
+    GPS fix (see its own docstring), then a dead-band re-basing pass
+    (this module's own _ALTITUDE_GAIN_DEADBAND_METERS) absorbs
+    ordinary sub-meter GPS altitude jitter - a reference altitude
+    starts at the first (filtered) reading and only ever moves once a
+    later reading differs from it by more than the dead-band, in
+    either direction. min/max track that reference's own path rather
+    than each individual raw reading, so on their own the remaining
+    sub-dead-band noise can't move either statistic.
+
+    `elevation_gain_meters` is simply the difference between the
+    resulting max and min - Christer's own framing (2026-08-23), after
+    the previous "sum of every dead-banded climb, ignore descents"
+    definition turned out to overstate real trips whenever a bad
+    altitude fix slipped past the dead-band (which only ever catches
+    *small* noise, not one large spike): a single corrupted reading
+    raised the reference once, contributed its full jump to a running
+    total, and was never subtracted back out even though min/max
+    already showed the same reading as an extreme. Reporting max-min
+    means elevation_gain_meters can never diverge from what
+    min_altitude_meters/max_altitude_meters themselves already show -
+    there's no separate running total left to disagree with them.
 
     `altitudes` must be non-empty - callers only ever call this once
     they already know there's at least one reading, mirroring every
     other "only compute if there's data at all" guard in this module.
     """
 
-    reference = altitudes[0]
-    track_min = track_max = reference
-    gain = 0.0
+    filtered = _reject_altitude_outliers(altitudes)
 
-    for altitude in altitudes[1:]:
+    reference = filtered[0]
+    track_min = track_max = reference
+
+    for altitude in filtered[1:]:
         delta = altitude - reference
-        if delta > _ALTITUDE_GAIN_DEADBAND_METERS:
-            gain += delta
-            reference = altitude
-        elif delta < -_ALTITUDE_GAIN_DEADBAND_METERS:
+        if abs(delta) > _ALTITUDE_GAIN_DEADBAND_METERS:
             reference = altitude
         track_min = min(track_min, reference)
         track_max = max(track_max, reference)
 
-    return track_min, track_max, gain
+    return track_min, track_max, track_max - track_min
 
 
 def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
@@ -186,11 +260,18 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
 
     `min_altitude_meters`/`max_altitude_meters`/`elevation_gain_meters`
     are all computed together by _hysteresis_altitude_stats() (see its
-    own docstring for the dead-band re-basing this applies, and why -
-    a naive raw-reading sum badly overstates "gain" from ordinary GPS
-    altitude noise, confirmed against a real archive). The altitude
-    sequence fed into it is every present `altitude_meters` reading
-    among the trip's positioned fixes, in order, with any fix that
+    own docstring, and _reject_altitude_outliers()' and
+    _ALTITUDE_OUTLIER_JUMP_METERS' own docstrings, for the two-pass
+    filtering this applies and why - a naive raw-reading sum badly
+    overstates "gain" from ordinary GPS altitude noise, and a single
+    badly-wrong altitude fix can overstate it far worse still, both
+    confirmed against real archives). `elevation_gain_meters` is the
+    difference between the resulting max and min, not a running total
+    of climbs - see _hysteresis_altitude_stats()'s own docstring for
+    why that's a deliberate redefinition, not an approximation of the
+    old one. The altitude sequence fed into it is every present
+    `altitude_meters` reading among the trip's positioned fixes, in
+    order, with any fix that
     lacks one simply dropped from the sequence rather than fragmenting
     it into disconnected segments around each gap - the same "bridge
     across gaps using the nearest real reading, don't silently drop

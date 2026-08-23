@@ -65,6 +65,16 @@ def test_parse_args_group_choice():
     assert args.group == "weekday"
 
 
+def test_parse_args_group_accepts_dayofmonth():
+    # The newer recurring day-of-month grouping (01..31) - added
+    # alongside "weekday" in stats_report.GROUPINGS, see that module's
+    # own _bucket_key() docstring for the "which day of the month do I
+    # drive most on" question this answers.
+    args = parse_args(["/some/archive", "--group", "dayofmonth"])
+
+    assert args.group == "dayofmonth"
+
+
 def test_parse_args_fields_parses_comma_separated_list():
     args = parse_args(["/some/archive", "--fields", "distance_km,max_speed_kmh"])
 
