@@ -269,6 +269,40 @@ def test_thumbnail_direction_is_front_for_a_photo_recording_with_no_sidecar(tmp_
     assert recording.thumbnail_direction == "front"
 
 
+def test_stats_timestamp_strips_the_trailing_kind_letter():
+    # Christer, from the archive browser: "i would like a link to
+    # bv-stats with a prefilled full timestamp and camera." bv-stats'
+    # own --timestamp (and the web Stats dashboard's equivalent `?
+    # timestamp=` param) rejects more than one '_' - a raw recording id
+    # like "20260715_140212_N" has two (one before the time, one before
+    # the kind letter), so the link needs the kind letter stripped
+    # first, same as TimeInterval.__contains__ already does internally.
+    recording = ArchiveRecording(
+        camera_id="kirby",
+        recording=Recording(id=RecordingId("20260715_140212_N")),
+    )
+
+    assert recording.stats_timestamp == "20260715_140212"
+
+
+def test_stats_timestamp_round_trips_through_lexicaltimeparser():
+    # The whole point of stats_timestamp: it must actually be a valid
+    # --timestamp value that resolves back to this one recording, not
+    # just "looks right." Confirms the full link the template builds
+    # (?timestamp=<stats_timestamp>) would filter bv-stats down to
+    # exactly this recording and no others nearby.
+    recording = ArchiveRecording(
+        camera_id="kirby",
+        recording=Recording(id=RecordingId("20260715_140212_N")),
+    )
+
+    interval = LexicalTimeParser(timestamp=recording.stats_timestamp).parse()
+
+    assert "20260715_140212_N" in interval
+    assert "20260715_140213_N" not in interval
+    assert "20260716_140212_N" not in interval
+
+
 def test_thumbnail_path_resolves_the_right_file(tmp_path):
     archive = tmp_path / "archive"
     _write(archive, "20260715_140212_NF.thm")

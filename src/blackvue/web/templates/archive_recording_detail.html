@@ -29,6 +29,7 @@
 {% if gps_available %}
 <p><a href="/archive/{{ camera_id }}/{{ recording.id }}/location">Show Start and stop location</a></p>
 {% endif %}
+<p><a href="/stats?id={{ camera_id }}&timestamp={{ recording.stats_timestamp }}&group=recording">View this recording in bv-stats</a></p>
 
 {% if recording.scene_summary %}
 <h3>Scene summary</h3>

@@ -1074,6 +1074,24 @@ class ArchiveRecording:
         return self.recording.id.timestamp
 
     @property
+    def stats_timestamp(self) -> str:
+        """This recording's id with the trailing kind letter (_N/_E/
+        _M/_P/_A) stripped - e.g. "20260715_140212" from
+        "20260715_140212_N" - the exact string bv-stats' own
+        --timestamp (and the web Stats dashboard's equivalent query
+        param) expects. LexicalTimeParser._expand() rejects more than
+        one '_' in a --timestamp value, so the raw `id` (which has
+        two: one before the time, one before the kind letter) can't be
+        passed directly - this is the same
+        `value.rsplit("_", 1)[0]` stripping TimeInterval.__contains__
+        itself already applies to every recording id it checks against
+        a parsed interval, just done once here so the "View in
+        bv-stats" link (archive_recording_detail.html) doesn't have to
+        duplicate that logic in the template."""
+
+        return self.recording.id.value.rsplit("_", 1)[0]
+
+    @property
     def kind_label(self) -> str:
         return _KIND_LABELS.get(self.recording.id.kind, self.recording.id.kind)
 
