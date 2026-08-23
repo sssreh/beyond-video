@@ -387,8 +387,21 @@
   // seriesVisible below) so a toggled-off series stays hidden through
   // the animation instead of flashing on then off. Skipped entirely for
   // prefers-reduced-motion, matching that media feature's intent.
-  var prefersReducedMotion = !!(window.matchMedia &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  // Fifth follow-up (Christer, same day): after three separate, verified
+  // fixes to the reveal mechanism, timing, and main-thread blocking, the
+  // chart still always appeared already fully drawn with no visible
+  // animation - every single time, with no variation in the failure mode.
+  // That pattern (not slow, not partially wrong, just unconditionally
+  // absent) is what you'd see if prefersReducedMotion were evaluating
+  // true and silently skipping the whole animation block below, which it
+  // was designed to do on purpose for OS/browser "reduce motion"
+  // accessibility settings. This is Christer's own personal, single-user
+  // app - not a public site with unknown visitors who might rely on that
+  // setting - so rather than keep chasing a setting he'd have to go
+  // hunting for (and may not even be named "reduce motion" in every
+  // browser/OS), the animation no longer checks or honors that media
+  // feature at all; it always runs.
+  var prefersReducedMotion = false;
   // Christer, after this still looked unanimated on his real archive:
   // "This didn't exist until it came without animation" - screenshot
   // showed a whole year grouped "by date", 200+ x-axis positions. The
