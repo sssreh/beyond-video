@@ -22,6 +22,28 @@ from ..telemetry.movement import DEFAULT_SPEED_THRESHOLD_KMH
 # separate concern.
 _EARTH_RADIUS_METERS = 6_371_000.0
 
+# Real-archive confirmation (Christer, 2026-08-23): a raw altitude
+# reading from a single, non-differential automotive GPS receiver
+# jitters roughly +-1-4m tick-to-tick even at a steady highway speed -
+# ordinary vertical-fix noise (VDOP is routinely 2-3x worse than
+# horizontal DOP for this class of receiver), not real elevation
+# change. Left unfiltered, naively summing every positive raw delta
+# between consecutive fixes turned a real ~3-minute clip whose
+# altitude started and ended within 1m of itself into 91m of reported
+# "elevation_gain_meters" (see WORKING_CONTEXT.md's per-recording
+# stats note for the investigation). _hysteresis_altitude_stats()
+# below re-bases against a reference altitude that only moves once a
+# reading clears this dead-band, the same "significant change" filter
+# barometric altimeters and GPS trip computers already use - chosen
+# over smoothing (a moving average/median) specifically because a
+# dead-band leaves genuinely large, real deltas (an actual hill)
+# completely unaffected regardless of how few fixes span them, where
+# a windowed smoothing filter would blur a short trip's every reading
+# together. 2.0m sits comfortably above the observed per-tick noise
+# floor (~1-4m) without being so wide it would swallow a real, modest
+# climb.
+_ALTITUDE_GAIN_DEADBAND_METERS = 2.0
+
 
 @dataclass(frozen=True)
 class TripStats:
@@ -69,6 +91,48 @@ def _haversine_distance_meters(
     c = 2 * math.asin(min(1.0, math.sqrt(a)))
 
     return _EARTH_RADIUS_METERS * c
+
+
+def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, float]:
+    """min/max/elevation-gain over a sequence of raw altitude
+    readings, using dead-band re-basing (this module's own
+    _ALTITUDE_GAIN_DEADBAND_METERS) rather than trusting each raw
+    reading directly - see that constant's own docstring for why.
+
+    A reference altitude starts at the first reading and only ever
+    moves once a later reading differs from it by more than the
+    dead-band; only that move counts toward the returned gain (climbs
+    only - descents move the reference down but add nothing, the same
+    "ignore descents" convention compute_trip_stats() already
+    documents). min/max track the *reference*'s own path rather than
+    each individual raw reading, so on their own a single noisy
+    outlier reading can't move either statistic - it has to actually
+    clear the dead-band to register at all. A real, sustained climb or
+    descent still passes through essentially unfiltered: each step
+    only needs to clear the (small) dead-band once, so this only ever
+    suppresses the sub-dead-band back-and-forth pure sensor noise
+    produces, not a genuine trend.
+
+    `altitudes` must be non-empty - callers only ever call this once
+    they already know there's at least one reading, mirroring every
+    other "only compute if there's data at all" guard in this module.
+    """
+
+    reference = altitudes[0]
+    track_min = track_max = reference
+    gain = 0.0
+
+    for altitude in altitudes[1:]:
+        delta = altitude - reference
+        if delta > _ALTITUDE_GAIN_DEADBAND_METERS:
+            gain += delta
+            reference = altitude
+        elif delta < -_ALTITUDE_GAIN_DEADBAND_METERS:
+            reference = altitude
+        track_min = min(track_min, reference)
+        track_max = max(track_max, reference)
+
+    return track_min, track_max, gain
 
 
 def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
@@ -120,20 +184,23 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     carried-forward - they're deliberately each fix's own raw,
     unfilled reading only, same as before this fix.)
 
-    `min_altitude_meters`/`max_altitude_meters` are the lowest/highest
-    single `altitude_meters` reading seen (each fix's own raw value,
-    not carried-forward - same convention as average_speed_kmh/
-    max_speed_kmh). `elevation_gain_meters` is the sum of every
-    positive altitude delta between consecutive fixes that both have
-    an altitude reading - i.e. total meters climbed, ignoring descents
-    (a common trip-computer convention: two trips covering the same
-    net elevation change but one climbing-then-descending repeatedly
-    should show more "gain" than one that climbed steadily). A gap
-    between two fixes where either lacks altitude_meters contributes
-    to neither min/max nor gain - same "skip what we don't have"
-    approach the speed-based fields already use for their own gaps.
-    All three are None under the same condition as each other: no
-    fix in the trip has an altitude_meters reading at all (see
+    `min_altitude_meters`/`max_altitude_meters`/`elevation_gain_meters`
+    are all computed together by _hysteresis_altitude_stats() (see its
+    own docstring for the dead-band re-basing this applies, and why -
+    a naive raw-reading sum badly overstates "gain" from ordinary GPS
+    altitude noise, confirmed against a real archive). The altitude
+    sequence fed into it is every present `altitude_meters` reading
+    among the trip's positioned fixes, in order, with any fix that
+    lacks one simply dropped from the sequence rather than fragmenting
+    it into disconnected segments around each gap - the same "bridge
+    across gaps using the nearest real reading, don't silently drop
+    the span" philosophy `moving_seconds`/`idle_seconds` above already
+    use for missing speed readings, applied here to missing altitude
+    readings instead. `elevation_gain_meters` additionally needs at
+    least *two* present readings to mean anything (a single reading
+    has no delta to measure) - `min_altitude_meters`/
+    `max_altitude_meters` only need one. All three are None if there's
+    no altitude_meters reading anywhere in the trip at all (see
     GpsFix.altitude_meters's own docstring for when that's the case).
 
     Returns None if there are fewer than two valid, positioned fixes -
@@ -196,18 +263,17 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     altitudes = [
         fix.altitude_meters for fix in positioned if fix.altitude_meters is not None
     ]
-    min_altitude_meters = min(altitudes) if altitudes else None
-    max_altitude_meters = max(altitudes) if altitudes else None
-
-    elevation_gain_meters = 0.0
-    any_elevation_data = False
-    for previous, current in zip(positioned, positioned[1:]):
-        if previous.altitude_meters is None or current.altitude_meters is None:
-            continue
-        any_elevation_data = True
-        delta = current.altitude_meters - previous.altitude_meters
-        if delta > 0:
-            elevation_gain_meters += delta
+    if altitudes:
+        min_altitude_meters, max_altitude_meters, elevation_gain_meters = (
+            _hysteresis_altitude_stats(altitudes)
+        )
+        # A single reading has no delta to measure "gain" from at all -
+        # see this function's own docstring on why elevation_gain_meters
+        # needs two readings where min/max only need one.
+        if len(altitudes) < 2:
+            elevation_gain_meters = None
+    else:
+        min_altitude_meters = max_altitude_meters = elevation_gain_meters = None
 
     return TripStats(
         distance_km=total_meters / 1000,
@@ -217,5 +283,5 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
         idle_seconds=idle_seconds if any_speed_data else None,
         min_altitude_meters=min_altitude_meters,
         max_altitude_meters=max_altitude_meters,
-        elevation_gain_meters=elevation_gain_meters if any_elevation_data else None,
+        elevation_gain_meters=elevation_gain_meters,
     )

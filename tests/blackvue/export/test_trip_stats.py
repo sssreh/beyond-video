@@ -243,11 +243,16 @@ def test_compute_trip_stats_elevation_gain_sums_only_climbs():
     assert stats.elevation_gain_meters == 90.0
 
 
-def test_compute_trip_stats_elevation_skips_gaps_missing_either_endpoint():
-    # The middle fix has no altitude reading - the segments touching it
-    # (0->1 and 1->2) contribute nothing to elevation_gain_meters, but
-    # min/max still see every fix that *does* have a reading (offsets 0
-    # and 2), independent of the gap-based gain calculation.
+def test_compute_trip_stats_elevation_bridges_gaps_missing_a_reading():
+    # The middle fix has no altitude reading - unlike the speed-based
+    # fields' own carry-forward fix (moving/idle above), altitude
+    # simply drops any fix with no reading from the sequence fed into
+    # _hysteresis_altitude_stats() rather than fragmenting into
+    # disconnected segments around it, so offsets 0 and 2 are treated
+    # as consecutive real readings 100m apart - contributing gain, not
+    # None. See compute_trip_stats()'s own docstring for why (same
+    # "bridge across gaps, don't silently drop the span" philosophy as
+    # moving_seconds/idle_seconds).
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
         _fix(1, 59.31, 18.001, altitude=None),
@@ -258,4 +263,61 @@ def test_compute_trip_stats_elevation_skips_gaps_missing_either_endpoint():
 
     assert stats.min_altitude_meters == 100.0
     assert stats.max_altitude_meters == 200.0
+    assert stats.elevation_gain_meters == 100.0
+
+
+def test_compute_trip_stats_elevation_gain_none_with_only_one_reading():
+    # Only one fix in the whole trip has an altitude reading at all -
+    # min/max can still report that one value, but there's no delta to
+    # measure "gain" from.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=100.0),
+        _fix(1, 59.31, 18.001, altitude=None),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 100.0
+    assert stats.max_altitude_meters == 100.0
     assert stats.elevation_gain_meters is None
+
+
+def test_compute_trip_stats_elevation_gain_ignores_sub_deadband_gps_noise():
+    # Real-archive confirmation (Christer, 2026-08-23): raw automotive
+    # GPS altitude jitters +-1-4m tick-to-tick even at steady highway
+    # speed - here the readings wobble by 1-1.5m around ~10m five
+    # times in a row (net change: 0m), which a naive raw-delta sum
+    # would report as ~4m of bogus "gain". The dead-band (2.0m) should
+    # absorb all of it.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=10.0),
+        _fix(1, 59.301, 18.0001, altitude=11.0),
+        _fix(2, 59.302, 18.0002, altitude=9.7),
+        _fix(3, 59.303, 18.0003, altitude=11.2),
+        _fix(4, 59.304, 18.0004, altitude=10.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.elevation_gain_meters == 0.0
+    # min/max track the dead-band reference, not each raw reading, so
+    # neither one ever moves once sub-deadband noise wobbles under it.
+    assert stats.min_altitude_meters == 10.0
+    assert stats.max_altitude_meters == 10.0
+
+
+def test_compute_trip_stats_elevation_gain_registers_a_real_sustained_climb():
+    # A genuine, larger-than-noise climb (each step exceeds the
+    # dead-band) should pass through essentially unfiltered.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=0.0),
+        _fix(1, 59.301, 18.0001, altitude=5.0),
+        _fix(2, 59.302, 18.0002, altitude=10.0),
+        _fix(3, 59.303, 18.0003, altitude=15.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.elevation_gain_meters == 15.0
+    assert stats.min_altitude_meters == 0.0
+    assert stats.max_altitude_meters == 15.0
