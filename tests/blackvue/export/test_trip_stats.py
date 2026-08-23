@@ -138,6 +138,49 @@ def test_compute_trip_stats_max_speed_ignores_small_normal_fluctuation():
     assert stats.max_speed_kmh == 110.0
 
 
+def test_compute_trip_stats_max_speed_rejects_a_bad_leading_gps_fix():
+    # Real-archive report (Christer, 2026-08-23, after the fix above
+    # was already live): the Stats dashboard's archive-wide max speed
+    # was still 322.3 km/h - the exact same number as before the fix
+    # existed. The interior lone-spike check never even looks at a
+    # recording's own first or last reading (it only evaluates
+    # candidates against a "last accepted" reading that comes before
+    # them), so a bad fix sitting at a recording's very first GPS
+    # reading - exactly where a receiver's speed estimate is most
+    # likely to glitch, right as it (re)acquires satellites at the
+    # start of a fresh ~1-3 minute recording segment - sailed straight
+    # through untouched and became the whole trip's own max. Here the
+    # first reading is the glitch; the next two agree with each other,
+    # so they're what should survive.
+    fixes = (
+        _fix(0, 59.30, 18.000, 322.3),
+        _fix(1, 59.301, 18.0001, 80.0),
+        _fix(2, 59.302, 18.0002, 82.0),
+        _fix(3, 59.303, 18.0003, 85.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 85.0
+
+
+def test_compute_trip_stats_max_speed_rejects_a_bad_trailing_gps_fix():
+    # Mirror of the leading-edge case above - a bad fix at a
+    # recording's very last GPS reading, which the interior check also
+    # never evaluates (nothing comes after it to serve as its own
+    # "following" confirmation).
+    fixes = (
+        _fix(0, 59.30, 18.000, 80.0),
+        _fix(1, 59.301, 18.0001, 82.0),
+        _fix(2, 59.302, 18.0002, 85.0),
+        _fix(3, 59.303, 18.0003, 322.3),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 85.0
+
+
 def test_compute_trip_stats_splits_moving_and_idle_time_by_speed_threshold():
     below = DEFAULT_SPEED_THRESHOLD_KMH - 1.0
     above = DEFAULT_SPEED_THRESHOLD_KMH + 20.0

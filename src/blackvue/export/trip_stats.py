@@ -232,27 +232,65 @@ def _reject_speed_outliers(speeds: list[float]) -> list[float]:
     that function's own docstring for the full reasoning (a real,
     sustained acceleration or braking keeps moving away across
     consecutive readings; a single bad fix spikes once and snaps
-    straight back). Same edge-case handling too: the first and last
-    readings are never rejected (only one neighbor each, not enough
-    evidence), and sequences shorter than 3 readings pass through
-    unchanged.
+    straight back). Sequences shorter than 3 readings pass through
+    unchanged (no interior point to evaluate at all).
+
+    Unlike _reject_altitude_outliers(), the leading and trailing
+    readings *are* checked here (real-archive report, Christer,
+    2026-08-23: after the interior-only version of this filter
+    shipped, an archive-wide max_speed_kmh of 322.3 km/h - the exact
+    same number as before the filter existed - was still showing up,
+    which only makes sense if the bad fix sat at a recording's own
+    first or last GPS reading, where the interior check never even
+    looks). Each ~1-3 minute recording gets its own fresh fix
+    sequence, and a receiver's very first fix right after it
+    (re)acquires satellites at the start of a new segment is exactly
+    where a bad instantaneous speed estimate is most likely - the
+    interior check's "confirmed by a snap-back on the very next
+    reading" signature doesn't apply at an edge (there's no reading on
+    the far side to snap back to), so it's corroborated the other way
+    instead: the edge reading is dropped only if it jumps away from
+    its one neighbor AND that neighbor is itself confirmed by *its*
+    next reading (i.e. the neighbor looks like a real, continuing
+    trajectory, making the edge reading's isolated jump away from it
+    the anomaly, not the neighbor). This needs at least 3 readings to
+    evaluate at either edge, same threshold as the interior check.
     """
 
     if len(speeds) < 3:
         return list(speeds)
 
-    accepted = [speeds[0]]
-    for index in range(1, len(speeds) - 1):
+    n = len(speeds)
+    start = 0
+    if (
+        abs(speeds[0] - speeds[1]) > _SPEED_OUTLIER_JUMP_KMH
+        and abs(speeds[1] - speeds[2]) <= _SPEED_OUTLIER_JUMP_KMH
+    ):
+        start = 1
+
+    end = n
+    if (
+        abs(speeds[n - 1] - speeds[n - 2]) > _SPEED_OUTLIER_JUMP_KMH
+        and abs(speeds[n - 2] - speeds[n - 3]) <= _SPEED_OUTLIER_JUMP_KMH
+    ):
+        end = n - 1
+
+    trimmed = speeds[start:end]
+    if len(trimmed) < 3:
+        return trimmed
+
+    accepted = [trimmed[0]]
+    for index in range(1, len(trimmed) - 1):
         last_accepted = accepted[-1]
-        current = speeds[index]
-        following = speeds[index + 1]
+        current = trimmed[index]
+        following = trimmed[index + 1]
         is_lone_spike = (
             abs(current - last_accepted) > _SPEED_OUTLIER_JUMP_KMH
             and abs(following - last_accepted) <= _SPEED_OUTLIER_JUMP_KMH
         )
         if not is_lone_spike:
             accepted.append(current)
-    accepted.append(speeds[-1])
+    accepted.append(trimmed[-1])
 
     return accepted
 
