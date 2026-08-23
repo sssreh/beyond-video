@@ -42,7 +42,7 @@ _EARTH_RADIUS_METERS = 6_371_000.0
 # together. 2.0m sits comfortably above the observed per-tick noise
 # floor (~1-4m) without being so wide it would swallow a real, modest
 # climb.
-_ALTITUDE_GAIN_DEADBAND_METERS = 2.0
+_ALTITUDE_CHANGE_DEADBAND_METERS = 2.0
 
 # Second real-archive report (Christer, 2026-08-23, after the dead
 # -band fix above was already live on bv-stats' own aggregated
@@ -67,27 +67,39 @@ _ALTITUDE_GAIN_DEADBAND_METERS = 2.0
 _ALTITUDE_OUTLIER_JUMP_METERS = 30.0
 
 # Third real-archive report (Christer, 2026-08-23, same day as the
-# fix above): having reworked elevation_gain_meters into a max-minus
-# -min range so a single corrupted altitude fix couldn't inflate it
-# any more, Christer pushed back on the *result* rather than the
-# math: "How is that a gain?" - correctly, a range can't tell "drove
-# up a hill and back down" (net change zero, but real climbing
+# fix above): having reworked what was then elevation_gain_meters into
+# a max-minus-min range so a single corrupted altitude fix couldn't
+# inflate it any more, Christer pushed back on the *result* rather
+# than the math: "How is that a gain?" - correctly, a range can't tell
+# "drove up a hill and back down" (net change zero, but real climbing
 # happened) apart from "just drove up once and stopped" the way the
 # word "gain" is normally understood; it also can't ever go down,
 # which read as suspicious on its own ("Up, up and away") even though
-# it's mathematically inevitable for a range statistic. The
-# _reject_altitude_outliers() pass immediately above didn't exist yet
-# back when elevation_gain_meters was still a running total of every
-# climb (see _hysteresis_altitude_stats()'s own docstring for that
-# earlier definition and why it was abandoned) - a lone bad fix had
-# nothing standing between it and the running total back then. Now
-# that outlier rejection runs first, the specific failure that forced
-# the switch to range (an ungrounded spike inflating a total it never
-# got subtracted back out of) can no longer happen, so
-# _hysteresis_altitude_stats() below reverts to a true cumulative
-# -ascent total - sum of every dead-banded climb, descents excluded -
-# with the spike protection this module already has doing the job the
-# range redefinition used to.
+# it's mathematically inevitable for a range statistic. First fix: a
+# true cumulative-ascent total (sum of every dead-banded climb,
+# descents excluded), safe to bring back now that
+# _reject_altitude_outliers() closes off the lone-bad-fix failure mode
+# that had originally forced the switch away from a running total in
+# the first place (that pass didn't exist yet the first time this was
+# a running total).
+#
+# Fourth real-archive report, same day: "rename itto Elevation
+# change." Renaming the *label* to "change" while the math still only
+# ever summed climbs (never negative, same "up, up and away" shape as
+# the range version) would have left the name and the behavior
+# mismatched again - flagged this back to Christer via AskUserQuestion,
+# who chose to redefine the math to match rather than just relabel it.
+# `elevation_change_meters` (renamed from `elevation_gain_meters`
+# throughout the codebase to match) is now the *net* change: the
+# dead-banded reference's final position minus its starting position,
+# after outlier rejection - can be positive (net climb), negative (net
+# descent), or zero (round trip back to the same altitude, the exact
+# "drove up a hill and back down" case from the third report above,
+# now correctly reported as zero *change* rather than either a
+# misleading zero *range* or a misleading 50m of *gain*). min/max still
+# track the full dead-banded span independently, so "how high did it
+# get" and "did it end up net higher or lower" stay two separate,
+# equally answerable questions.
 #
 # Real-archive report (Christer, 2026-08-23): the Stats dashboard
 # showed a max_speed_kmh of 322.3 km/h for a trip in a car whose real
@@ -131,15 +143,15 @@ class TripStats:
     # camera's .gps file having $GPGGA sentences, which BlackVue
     # cameras emit every tick, but nothing guarantees that for every
     # adapter/camera this project might support in the future).
-    # min/max are independent of elevation_gain_meters (each fix's own
-    # raw altitude reading, same "not carried-forward" convention
+    # min/max are independent of elevation_change_meters (each fix's
+    # own raw altitude reading, same "not carried-forward" convention
     # average_speed_kmh/max_speed_kmh already use) - Christer wants
     # this for a stitch-video/playback overlay later, so both "the
-    # range climbed" and "the total climbed" are worth keeping
-    # separately rather than picking just one.
+    # range climbed" and "the net change" are worth keeping separately
+    # rather than picking just one.
     min_altitude_meters: float | None = None
     max_altitude_meters: float | None = None
-    elevation_gain_meters: float | None = None
+    elevation_change_meters: float | None = None
 
 
 def _haversine_distance_meters(
@@ -163,9 +175,9 @@ def _haversine_distance_meters(
 
 def _reject_altitude_outliers(altitudes: list[float]) -> list[float]:
     """Drop a lone bad GPS altitude fix from `altitudes` before
-    anything downstream (dead-band re-basing, min/max, gain) ever sees
-    it - see _ALTITUDE_OUTLIER_JUMP_METERS' own docstring for the real
-    -archive report this fixes.
+    anything downstream (dead-band re-basing, min/max, change) ever
+    sees it - see _ALTITUDE_OUTLIER_JUMP_METERS' own docstring for the
+    real-archive report this fixes.
 
     A reading is rejected only if it jumps more than
     _ALTITUDE_OUTLIER_JUMP_METERS away from the last *accepted*
@@ -246,13 +258,13 @@ def _reject_speed_outliers(speeds: list[float]) -> list[float]:
 
 
 def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, float]:
-    """min/max/elevation-gain over a sequence of raw altitude
+    """min/max/net-elevation-change over a sequence of raw altitude
     readings, using outlier rejection then dead-band re-basing rather
     than trusting each raw reading directly.
 
     Two passes: _reject_altitude_outliers() first drops any lone bad
     GPS fix (see its own docstring), then a dead-band re-basing pass
-    (this module's own _ALTITUDE_GAIN_DEADBAND_METERS) absorbs
+    (this module's own _ALTITUDE_CHANGE_DEADBAND_METERS) absorbs
     ordinary sub-meter GPS altitude jitter - a reference altitude
     starts at the first (filtered) reading and only ever moves once a
     later reading differs from it by more than the dead-band, in
@@ -260,28 +272,25 @@ def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, fl
     than each individual raw reading, so on their own the remaining
     sub-dead-band noise can't move either statistic.
 
-    `elevation_gain_meters` is a true cumulative-ascent total: every
-    time the reference moves *upward* past the dead-band, that delta
-    is added to a running sum; a downward move re-bases the reference
-    (so a later climb is measured from where the vehicle actually is)
-    but contributes nothing to the total. This is back to the
-    project's original definition, not the max-minus-min range this
-    function briefly used instead (Christer, 2026-08-23: "How is that
-    a gain?", after a range figure that started and ended at the same
-    altitude reported zero for a drive that genuinely went up and back
-    down again a hill in between - a range can't tell that shape apart
-    from a trip that just never climbed at all, which isn't what
-    "elevation gain" means to a driver, even though it can never be
-    negative). The range definition existed only to route around a
-    narrower bug: back when it was still a running total, a single
-    corrupted altitude fix that slipped past the dead-band (which only
-    ever catches *small* noise, not one large spike) contributed its
-    full bogus jump and was never subtracted back out. That exact
-    failure mode is now closed off one step earlier by
-    _reject_altitude_outliers() above, which didn't exist yet the
-    first time this was a running total - so the running total is safe
-    to bring back, with the outlier guard doing the job the range
-    redefinition used to.
+    `elevation_change_meters` is the *net* change: the dead-banded
+    reference's final position minus its starting position - can be
+    positive (net climb), negative (net descent), or zero (a round
+    trip back to the same altitude). This field has gone through two
+    earlier definitions, both abandoned for the same underlying reason
+    (see this module's own top-of-file comments for the full history
+    of each real-archive report that drove each change): a running
+    total of every dead-banded climb with descents excluded (overstated
+    trips whenever a bad fix slipped past the dead-band, before
+    _reject_altitude_outliers() existed to catch it), then a
+    max-minus-min range (couldn't distinguish a genuine climb-then
+    -descend from never having climbed at all, and its label - first
+    "Elevation gain," Christer's own later request to rename it
+    "Elevation change" - stopped matching a value that could never go
+    negative). Net change is what "change" actually means, is safe
+    against the same lone-spike failure mode as both earlier
+    definitions (outlier rejection already ran above), and correctly
+    reports zero for a there-and-back trip rather than either a
+    misleading zero range or a misleading positive "gain".
 
     `altitudes` must be non-empty - callers only ever call this once
     they already know there's at least one reading, mirroring every
@@ -291,19 +300,19 @@ def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, fl
     filtered = _reject_altitude_outliers(altitudes)
 
     reference = filtered[0]
+    start_reference = reference
     track_min = track_max = reference
-    total_gain = 0.0
 
     for altitude in filtered[1:]:
         delta = altitude - reference
-        if abs(delta) > _ALTITUDE_GAIN_DEADBAND_METERS:
-            if delta > 0:
-                total_gain += delta
+        if abs(delta) > _ALTITUDE_CHANGE_DEADBAND_METERS:
             reference = altitude
         track_min = min(track_min, reference)
         track_max = max(track_max, reference)
 
-    return track_min, track_max, total_gain
+    net_change = reference - start_reference
+
+    return track_min, track_max, net_change
 
 
 def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
@@ -360,21 +369,19 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     carried-forward - they're deliberately each fix's own raw,
     unfilled reading only, same as before this fix.)
 
-    `min_altitude_meters`/`max_altitude_meters`/`elevation_gain_meters`
+    `min_altitude_meters`/`max_altitude_meters`/`elevation_change_meters`
     are all computed together by _hysteresis_altitude_stats() (see its
     own docstring, and _reject_altitude_outliers()' and
     _ALTITUDE_OUTLIER_JUMP_METERS' own docstrings, for the two-pass
     filtering this applies and why - a naive raw-reading sum badly
-    overstates "gain" from ordinary GPS altitude noise, and a single
+    overstates "change" from ordinary GPS altitude noise, and a single
     badly-wrong altitude fix can overstate it far worse still, both
-    confirmed against real archives). `elevation_gain_meters` is a
-    true cumulative-ascent total (every dead-banded climb summed,
-    descents excluded) - see _hysteresis_altitude_stats()'s own
-    docstring for why that's safe now that outlier rejection runs
-    first, after a brief period where this field instead reported the
-    max-minus-min range turned out to not mean "gain" the way a driver
-    expects (a there-and-back climb reported zero). The altitude
-    sequence fed into it is every present
+    confirmed against real archives). `elevation_change_meters` is the
+    net change (final dead-banded altitude minus starting altitude,
+    can be positive, negative, or zero) - see
+    _hysteresis_altitude_stats()'s own docstring for the two earlier
+    definitions this field has had and why each was abandoned. The
+    altitude sequence fed into it is every present
     `altitude_meters` reading among the trip's positioned fixes, in
     order, with any fix that
     lacks one simply dropped from the sequence rather than fragmenting
@@ -382,7 +389,7 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     across gaps using the nearest real reading, don't silently drop
     the span" philosophy `moving_seconds`/`idle_seconds` above already
     use for missing speed readings, applied here to missing altitude
-    readings instead. `elevation_gain_meters` additionally needs at
+    readings instead. `elevation_change_meters` additionally needs at
     least *two* present readings to mean anything (a single reading
     has no delta to measure) - `min_altitude_meters`/
     `max_altitude_meters` only need one. All three are None if there's
@@ -453,16 +460,17 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
         fix.altitude_meters for fix in positioned if fix.altitude_meters is not None
     ]
     if altitudes:
-        min_altitude_meters, max_altitude_meters, elevation_gain_meters = (
+        min_altitude_meters, max_altitude_meters, elevation_change_meters = (
             _hysteresis_altitude_stats(altitudes)
         )
-        # A single reading has no delta to measure "gain" from at all -
-        # see this function's own docstring on why elevation_gain_meters
-        # needs two readings where min/max only need one.
+        # A single reading has no delta to measure "change" from at
+        # all - see this function's own docstring on why
+        # elevation_change_meters needs two readings where min/max
+        # only need one.
         if len(altitudes) < 2:
-            elevation_gain_meters = None
+            elevation_change_meters = None
     else:
-        min_altitude_meters = max_altitude_meters = elevation_gain_meters = None
+        min_altitude_meters = max_altitude_meters = elevation_change_meters = None
 
     return TripStats(
         distance_km=total_meters / 1000,
@@ -472,5 +480,5 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
         idle_seconds=idle_seconds if any_speed_data else None,
         min_altitude_meters=min_altitude_meters,
         max_altitude_meters=max_altitude_meters,
-        elevation_gain_meters=elevation_gain_meters,
+        elevation_change_meters=elevation_change_meters,
     )

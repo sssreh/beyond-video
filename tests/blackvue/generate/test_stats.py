@@ -111,7 +111,7 @@ def test_compute_recording_stats_gps_and_gsensor_fields():
     assert stats["max_speed_kmh"] == 50.0
     assert stats["min_altitude_m"] == 10.0
     assert stats["max_altitude_m"] == 20.0
-    assert stats["elevation_gain_m"] == 10.0
+    assert stats["elevation_change_m"] == 10.0
     # Per-axis g-force is peak/average of the *absolute* reading - see
     # generate/stats.py's own docstring for why (unconfirmed sign
     # convention, so magnitude of deviation is the meaningful signal).
@@ -171,7 +171,7 @@ def test_compute_recording_stats_distance_km_rounded_to_three_decimals(monkeypat
         idle_seconds = 5
         min_altitude_meters = None
         max_altitude_meters = None
-        elevation_gain_meters = None
+        elevation_change_meters = None
 
     monkeypatch.setattr(
         trip_stats_module, "compute_trip_stats", lambda fixes: _FakeTripStats()

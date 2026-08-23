@@ -16,7 +16,7 @@ bv-stats [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
 
 ## DESCRIPTION
 
-`bv-stats` reads every selected recording's `Stats` asset (the `<id>.stats.json` file `bv-generate --stats` writes - see `bv-generate(1)`), groups the recordings by a calendar period, and prints an aggregated summary per group: total distance, average/max speed, elevation gain, and so on. Selects recordings the same way every other `bv-*` command does - by timestamp/`--from`/`--until`/`--timestamp`.
+`bv-stats` reads every selected recording's `Stats` asset (the `<id>.stats.json` file `bv-generate --stats` writes - see `bv-generate(1)`), groups the recordings by a calendar period, and prints an aggregated summary per group: total distance, average/max speed, elevation change, and so on. Selects recordings the same way every other `bv-*` command does - by timestamp/`--from`/`--until`/`--timestamp`.
 
 A recording with no `Stats` asset yet is skipped (not an error) - run `bv-generate --stats` over the archive first to produce them. `bv-stats` reports how many recordings in range were skipped this way.
 
@@ -39,9 +39,9 @@ This command is deliberately split into a library half (`blackvue.stats_report`,
 
 ### Fields
 
-`--fields` selects which stats to report, as a comma-separated list of field keys (or `all` for every field). Run `bv-stats --list-fields` to print every available key with its unit and how it's combined across recordings in a bucket. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`.
+`--fields` selects which stats to report, as a comma-separated list of field keys (or `all` for every field). Run `bv-stats --list-fields` to print every available key with its unit and how it's combined across recordings in a bucket. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_change_m`.
 
-Each field combines multiple recordings' own readings one of four ways: `sum` (total across the bucket - distance, time, elevation gain), `avg` (mean of each recording's own average - speed, g-force), `max`/`min` (the single largest/smallest reading in the bucket - peak speed, peak g-force, lowest altitude). A recording missing a field entirely (no GPS, no g-sensor, or an older `stats.json` from before a later field was added) simply doesn't contribute to that field's aggregate rather than counting as zero. A bucket where *no* recording in it has a reading for a field reports it as `-` (unknown), not `0`.
+Each field combines multiple recordings' own readings one of four ways: `sum` (total across the bucket - distance, time, elevation change), `avg` (mean of each recording's own average - speed, g-force), `max`/`min` (the single largest/smallest reading in the bucket - peak speed, peak g-force, lowest altitude). A recording missing a field entirely (no GPS, no g-sensor, or an older `stats.json` from before a later field was added) simply doesn't contribute to that field's aggregate rather than counting as zero. A bucket where *no* recording in it has a reading for a field reports it as `-` (unknown), not `0`.
 
 `distance_km`, both speed fields, `moving_seconds`/`idle_seconds`, and all three altitude fields need a recording to have had at least two positioned GPS fixes at all (its `Stats` asset's own `has_gps` flag) - a recording can have a perfectly real, present `Stats` asset and still contribute nothing to any of these if it never got a usable GPS fix (cold-start acquisition delay, a tunnel, a Parking-mode clip recorded somewhere with no signal). Whenever `--fields` includes at least one of these, `bv-stats` reports "N of M recording(s) with Stats data have no GPS fix" alongside the usual "no Stats asset yet" line below - the two are different gaps (no `Stats` asset at all, vs. a real `Stats` asset with nothing GPS-derived in it) and a total can look short from either one. `duration_seconds` and every g-force field are unaffected by `has_gps` (duration has its own video/`.3gf` fallback chain, g-force comes from the g-sensor sidecar) and never trigger this message.
 
@@ -105,7 +105,7 @@ and read the `bv-stats: debug: ...` lines it prints along the way. If the archiv
 | Option | Description |
 |---|---|
 | `--group {all,recording,year,month,date,week,weekday,monthday}` | Calendar period to group recordings by. Default: `all`. |
-| `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`. |
+| `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_change_m`. |
 | `--list-fields` | Print every field `--fields` accepts, with its unit and aggregation kind, then exit. Needs no archive. |
 | `--summary` | Also report an overall summary (totals across the whole selection, same as `--group all`) alongside the per-group breakdown. No effect when `--group` is already `all`. See "Summary" below. |
 | `--estimate-gaps` | Fill in an estimated `distance_km` for recordings with no GPS fix but a real duration, extrapolated from average speed. See "Estimating missing distance" below. |
@@ -134,10 +134,10 @@ Archive-wide summary with the default fields:
 bv-stats
 ```
 
-Month-by-month distance and elevation gain for 2026:
+Month-by-month distance and elevation change for 2026:
 
 ```
-bv-stats --timestamp 2026 --group month --fields distance_km,elevation_gain_m
+bv-stats --timestamp 2026 --group month --fields distance_km,elevation_change_m
 ```
 
 Which day of the week has the most driving, with a grand total alongside the per-day breakdown:

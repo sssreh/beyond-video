@@ -73,17 +73,25 @@ _MAX_BOUNDARY_BRIDGE_GAP_SECONDS = 300.0
 # summing or averaging it away would hide the actual highlight).
 # "min" - the smallest single reading (min_altitude_m only).
 #
-# elevation_gain_m is a plain "sum" like distance_km/duration_seconds -
-# each recording's own elevation_gain_m is itself already a spike
-# -resistant cumulative-ascent total (see export/trip_stats.py's
+# elevation_change_m is a plain "sum" like distance_km/duration_seconds -
+# each recording's own elevation_change_m is itself already a spike
+# -resistant net-change figure (see export/trip_stats.py's
 # _hysteresis_altitude_stats() docstring), so summing those across a
-# bucket's recordings gives the bucket's own real total climbing, the
-# same way summing per-recording distance gives total distance. This
-# module briefly derived elevation_gain_m from the bucket's own raw
-# max_altitude_m/min_altitude_m readings instead (a bucket-wide range,
-# not a sum) - see aggregate_recording_stats()'s own docstring for why
-# that detour happened and why it was reverted (Christer, 2026-08-23:
-# "How is that a gain?").
+# bucket's recordings gives the bucket's own real net change, the
+# same way summing per-recording distance gives total distance (a
+# bucket spanning several recordings that each climbed a bit and each
+# descended a bit nets those against each other, the same "ups and
+# downs cancel" behavior a single multi-recording trip already has
+# internally). This module briefly derived this field from the
+# bucket's own raw max_altitude_m/min_altitude_m readings instead (a
+# bucket-wide range, not a sum) - see aggregate_recording_stats()'s own
+# docstring for why that detour happened and why it was reverted
+# (Christer, 2026-08-23: "How is that a gain?"). The field itself was
+# later renamed from elevation_gain_m to elevation_change_m and its
+# math redefined from a cumulative-ascent total to a true net change,
+# per Christer's own "and rename itto Elevation change" followed by
+# "Redefine to true net change" - see trip_stats.py's own top-of-file
+# comments for that full history.
 @dataclass(frozen=True)
 class StatField:
     """One reportable RECORDING_STATS field - its JSON key, a short
@@ -108,7 +116,7 @@ STAT_FIELDS: dict[str, StatField] = {
         StatField("max_speed_kmh", "Max speed", "km/h", "max"),
         StatField("min_altitude_m", "Min altitude", "m", "min"),
         StatField("max_altitude_m", "Max altitude", "m", "max"),
-        StatField("elevation_gain_m", "Elevation gain", "m", "sum"),
+        StatField("elevation_change_m", "Elevation change", "m", "sum"),
         StatField("max_gforce_x", "Max g-force X", "g", "max"),
         StatField("avg_gforce_x", "Avg g-force X", "g", "avg"),
         StatField("max_gforce_y", "Max g-force Y", "g", "max"),
@@ -140,7 +148,7 @@ GPS_DEPENDENT_FIELDS: frozenset[str] = frozenset((
     "idle_seconds",
     "min_altitude_m",
     "max_altitude_m",
-    "elevation_gain_m",
+    "elevation_change_m",
 ))
 
 # bv-stats' own default --fields, printed when the flag is omitted -
@@ -152,7 +160,7 @@ DEFAULT_FIELDS: tuple[str, ...] = (
     "distance_km",
     "avg_speed_kmh",
     "max_speed_kmh",
-    "elevation_gain_m",
+    "elevation_change_m",
 )
 
 # Every grouping bv-stats understands, in the order Christer's own
@@ -583,7 +591,7 @@ def aggregate_recording_stats(
     string sorts correctly), and every aggregate kind still runs the
     same way it would for a bigger bucket - "sum"/"avg"/"max"/"min"
     over a single recording's own one reading is just that reading
-    itself, elevation_gain_m included. Meant for a
+    itself, elevation_change_m included. Meant for a
     narrow selection (a day, a trip, a week) - --timestamp/--from/
     --until controls how many points this produces the same way it
     does for every other grouping; nothing here caps it, so a
@@ -603,36 +611,51 @@ def aggregate_recording_stats(
     at all reports None for it - see StatBucket's own docstring for
     why that's kept distinct from a genuine 0.0.
 
-    elevation_gain_m briefly had its own bucket-scope exception here
-    ("range": max of every recording's own max_altitude_m, minus min
-    of every recording's own min_altitude_m, rather than summing each
+    elevation_change_m (still named elevation_gain_m at the time)
+    briefly had its own bucket-scope exception here ("range": max of
+    every recording's own max_altitude_m, minus min of every
+    recording's own min_altitude_m, rather than summing each
     recording's own reading) - Christer, after a long-range "all"
     summary reported 39302m of elevation gain, "what goes up must come
     down", pointed out that summing each recording's own already
-    -computed elevation_gain_m (at the time, a *net* max-min span per
-    recording) across potentially thousands of short recordings
-    measures cumulative churn, not net elevation change, and grows
-    without bound the more there is to aggregate - that fix was
-    correct for what elevation_gain_m meant back then.
+    -computed value (at the time, a *net* max-min span per recording)
+    across potentially thousands of short recordings measures
+    cumulative churn, not net elevation change, and grows without
+    bound the more there is to aggregate - that fix was correct for
+    what the field meant back then.
 
-    export/trip_stats.py's own elevation_gain_meters has since been
-    redefined again, back to a genuine cumulative-ascent total, this
-    time with the outlier rejection the original definition never had
-    (see _hysteresis_altitude_stats()'s own docstring) - Christer's
-    "How is that a gain?" (2026-08-23) pointed out a net span can't
-    tell a real climb-then-descend trip apart from one that never
-    climbed at all, which isn't what "gain" means. Summing that new
-    per-recording figure across a bucket is now the *correct* combine
-    again, not the same unbounded-churn mistake as before: each
-    recording's own reading is already "how much this recording
-    climbed", so summing many of them is exactly "how much climbing
-    happened across the whole bucket" - the same relationship
-    distance_km's own per-recording readings have to a bucket's total
-    distance. A genuinely large total over a long selection (a year of
-    driving through hilly terrain) is real cumulative climbing, not a
-    bug - the same way Strava/Garmin's own "elevation gain" figures
-    grow across a season rather than resetting, and never shrink back
-    toward zero just because the rider came back downhill afterward.
+    export/trip_stats.py's own definition has since gone through two
+    more revisions. First, back to a genuine cumulative-ascent total,
+    with the outlier rejection the original definition never had (see
+    _hysteresis_altitude_stats()'s own docstring) - Christer's "How is
+    that a gain?" (2026-08-23) pointed out a net span can't tell a real
+    climb-then-descend trip apart from one that never climbed at all,
+    which isn't what "gain" means. Summing that per-recording figure
+    across a bucket was the *correct* combine for it, not the same
+    unbounded-churn mistake as before: each recording's own reading was
+    already "how much this recording climbed", so summing many of them
+    was exactly "how much climbing happened across the whole bucket" -
+    the same relationship distance_km's own per-recording readings have
+    to a bucket's total distance.
+
+    Then, same day, once Christer asked to rename the label itself to
+    "Elevation change" ("and rename itto Elevation change"): a plain
+    rename would have left a label implying negative values possible
+    paired with math that could never produce one, so the field was
+    renamed elevation_gain_m -> elevation_change_m *and* redefined to
+    a true net change (final dead-banded altitude minus starting
+    dead-banded altitude - can be positive, negative, or zero), per
+    Christer's explicit "Redefine to true net change." Summing each
+    recording's own net change across a bucket is still the correct
+    "sum" combine - a multi-recording bucket's total net change is the
+    sum of each leg's own net change, the same additive relationship
+    every other "sum" field in this table has, just no longer
+    guaranteed non-negative. A large positive or negative total over a
+    long selection is real net elevation change (a mountain trip that
+    ended lower than it started, or higher), not a bug - unlike
+    Strava/Garmin's own "elevation gain" figures (which only ever grow,
+    by design), this field can now shrink back toward, or past, zero
+    exactly when a bucket's driving did.
 
     `estimate_gaps`, when True and `distance_km` is one of `fields`,
     fills in an *estimated* distance for every recording in a bucket

@@ -252,7 +252,7 @@ def compute_recording_stats(
         "idle_seconds": trip_stats.idle_seconds if trip_stats else None,
         "min_altitude_m": trip_stats.min_altitude_meters if trip_stats else None,
         "max_altitude_m": trip_stats.max_altitude_meters if trip_stats else None,
-        "elevation_gain_m": trip_stats.elevation_gain_meters if trip_stats else None,
+        "elevation_change_m": trip_stats.elevation_change_meters if trip_stats else None,
     }
     stats.update(_gforce_stats(gsensor_samples))
 

@@ -120,8 +120,13 @@ def write_trip_info(
                 f"Elevation: {stats.min_altitude_meters:.0f} m to "
                 f"{stats.max_altitude_meters:.0f} m"
             )
-        if stats.elevation_gain_meters is not None:
-            lines.append(f"Elevation gain: {stats.elevation_gain_meters:.0f} m")
+        if stats.elevation_change_meters is not None:
+            # +/- sign shown explicitly (:+.0f) since this is now a net
+            # change - can be negative (net descent) as well as positive
+            # (net climb) or zero (round trip back to the same altitude) -
+            # see trip_stats.py's own _hysteresis_altitude_stats()
+            # docstring for the full history of what this field has meant.
+            lines.append(f"Elevation change: {stats.elevation_change_meters:+.0f} m")
 
     if start_address:
         lines.append(f"Start location: {start_address}")

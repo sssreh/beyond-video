@@ -89,7 +89,7 @@ def test_gps_dependent_fields_excludes_duration_and_gforce():
     assert "max_gforce_x" not in GPS_DEPENDENT_FIELDS
     assert "avg_gforce_z" not in GPS_DEPENDENT_FIELDS
     assert "distance_km" in GPS_DEPENDENT_FIELDS
-    assert "elevation_gain_m" in GPS_DEPENDENT_FIELDS
+    assert "elevation_change_m" in GPS_DEPENDENT_FIELDS
 
 
 def test_aggregate_groups_all_into_one_bucket():
@@ -283,21 +283,22 @@ def test_aggregate_groups_by_recording_never_combines_two_recordings():
     assert len(buckets) == 2
 
 
-def test_aggregate_groups_by_recording_elevation_gain_sum_still_works():
-    # elevation_gain_m is a plain "sum" field like distance_km (see
+def test_aggregate_groups_by_recording_elevation_change_sum_still_works():
+    # elevation_change_m is a plain "sum" field like distance_km (see
     # STAT_FIELDS' own comment for why - each recording's own reading
-    # is already a spike-resistant cumulative-ascent total, so summing
-    # combines correctly). A single-recording bucket reduces to that
-    # one reading, same as every other grouping's code path.
+    # is already a spike-resistant net-change figure, so summing
+    # combines correctly, even though it can now be negative). A
+    # single-recording bucket reduces to that one reading, same as
+    # every other grouping's code path.
     entries = [
-        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 36.0}),
+        (RecordingId("20260823_090000_NF"), {"elevation_change_m": 36.0}),
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="recording", fields=["elevation_gain_m"]
+        entries, grouping="recording", fields=["elevation_change_m"]
     )
 
-    assert buckets[0].values["elevation_gain_m"] == 36.0
+    assert buckets[0].values["elevation_change_m"] == 36.0
 
 
 def test_aggregate_sum_field():
@@ -313,81 +314,107 @@ def test_aggregate_sum_field():
     assert buckets[0].values["distance_km"] == 15.0
 
 
-def test_aggregate_elevation_gain_sums_each_recordings_own_climbing():
-    # elevation_gain_m is a plain "sum" (see STAT_FIELDS' own comment
-    # for the history: it was briefly a bucket-wide "range" - max of
-    # every recording's own max_altitude_m minus min of every
-    # recording's own min_altitude_m - specifically to route around a
-    # bug where the per-recording field itself wasn't a real "gain"
-    # yet; now that export/trip_stats.py's own elevation_gain_meters
-    # is a genuine spike-resistant cumulative-ascent total, summing
-    # each recording's own reading gives the bucket's real total
-    # climbing, the same relationship every other "sum" field
-    # (distance_km, duration_seconds) already has).
+def test_aggregate_elevation_change_sums_each_recordings_own_net_change():
+    # elevation_change_m is a plain "sum" (see STAT_FIELDS' own comment
+    # for the full history: it was briefly a bucket-wide "range" - max
+    # of every recording's own max_altitude_m minus min of every
+    # recording's own min_altitude_m - then a cumulative-ascent total,
+    # before landing on its current, true net-change definition; now
+    # that export/trip_stats.py's own elevation_change_meters is a
+    # genuine spike-resistant net change per recording, summing each
+    # recording's own reading gives the bucket's real total net change,
+    # the same relationship every other "sum" field (distance_km,
+    # duration_seconds) already has - these three all happen to be
+    # positive here, but a mix of net-climb and net-descent legs would
+    # sum (and partially cancel) the same way).
     entries = [
-        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),
-        (RecordingId("20260823_120000_NF"), {"elevation_gain_m": 15.0}),
-        (RecordingId("20260823_180000_NF"), {"elevation_gain_m": 8.0}),
+        (RecordingId("20260823_090000_NF"), {"elevation_change_m": 10.0}),
+        (RecordingId("20260823_120000_NF"), {"elevation_change_m": 15.0}),
+        (RecordingId("20260823_180000_NF"), {"elevation_change_m": 8.0}),
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="all", fields=["elevation_gain_m"]
+        entries, grouping="all", fields=["elevation_change_m"]
     )
 
-    assert buckets[0].values["elevation_gain_m"] == 33.0
+    assert buckets[0].values["elevation_change_m"] == 33.0
 
 
-def test_aggregate_elevation_gain_can_legitimately_grow_large_over_many_recordings():
+def test_aggregate_elevation_change_sums_positive_and_negative_legs():
+    # The one behavior a plain "sum" gains once elevation_change_m
+    # became a true net change rather than a cumulative-ascent total:
+    # a net-descent recording contributes a *negative* reading, which
+    # partially cancels a bucket's net-climb recordings rather than
+    # only ever adding on top of them - drove up a hill (+20), then
+    # later drove back down a different way (-12), nets to +8 for the
+    # bucket, the same additive relationship every other "sum" field
+    # has, just no longer guaranteed non-negative.
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"elevation_change_m": 20.0}),
+        (RecordingId("20260823_180000_NF"), {"elevation_change_m": -12.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["elevation_change_m"]
+    )
+
+    assert buckets[0].values["elevation_change_m"] == 8.0
+
+
+def test_aggregate_elevation_change_can_legitimately_grow_large_over_many_recordings():
     # Unlike the old range definition (bounded by the selection's real
-    # min/max altitude no matter how much driving it covers), a true
-    # cumulative-ascent total genuinely keeps growing the more real
-    # climbing a long selection contains - the same way a fitness
-    # tracker's own "elevation gain" for a whole season isn't capped
-    # by any single day's terrain. 500 recordings each with a modest,
-    # real 12m of their own climbing sum to 6000m total - not a bug,
-    # just what "total climbing over a lot of driving" looks like.
+    # min/max altitude no matter how much driving it covers), a net
+    # change genuinely keeps growing (in whichever direction the net
+    # driving trended) the more of it a long selection contains - a
+    # season of consistently net-climbing trips doesn't cap out just
+    # because any single day's terrain was modest. 500 recordings each
+    # with a real, modest 12m of their own net climb sum to 6000m total
+    # - not a bug, just what "net elevation change over a lot of
+    # driving that all trended uphill" looks like (a mix of net-climb
+    # and net-descent legs would instead partially cancel, same as any
+    # other "sum" field once some readings go negative).
     entries = [
         (
             RecordingId(f"202608{(i % 28) + 1:02d}_{i % 24:02d}0000_NF"),
-            {"elevation_gain_m": 12.0},
+            {"elevation_change_m": 12.0},
         )
         for i in range(500)
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="all", fields=["elevation_gain_m"]
+        entries, grouping="all", fields=["elevation_change_m"]
     )
 
-    assert buckets[0].values["elevation_gain_m"] == 6000.0
+    assert buckets[0].values["elevation_change_m"] == 6000.0
 
 
-def test_aggregate_elevation_gain_ignores_recordings_missing_the_reading():
+def test_aggregate_elevation_change_ignores_recordings_missing_the_reading():
     entries = [
-        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),
-        (RecordingId("20260823_180000_NF"), {"distance_km": 4.0}),  # no elevation_gain_m
+        (RecordingId("20260823_090000_NF"), {"elevation_change_m": 10.0}),
+        (RecordingId("20260823_180000_NF"), {"distance_km": 4.0}),  # no elevation_change_m
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="all", fields=["elevation_gain_m"]
+        entries, grouping="all", fields=["elevation_change_m"]
     )
 
-    # The second recording has no elevation_gain_m reading at all, so
+    # The second recording has no elevation_change_m reading at all, so
     # it simply doesn't contribute - same "missing isn't zero, and
     # isn't excluded from the rest" convention every other field
     # follows.
-    assert buckets[0].values["elevation_gain_m"] == 10.0
+    assert buckets[0].values["elevation_change_m"] == 10.0
 
 
-def test_aggregate_elevation_gain_none_when_no_recording_has_altitude_readings():
+def test_aggregate_elevation_change_none_when_no_recording_has_altitude_readings():
     entries = [
         (RecordingId("20260823_090000_NF"), {"distance_km": 4.0}),
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="all", fields=["elevation_gain_m"]
+        entries, grouping="all", fields=["elevation_change_m"]
     )
 
-    assert buckets[0].values["elevation_gain_m"] is None
+    assert buckets[0].values["elevation_change_m"] is None
 
 
 def test_aggregate_avg_field():
@@ -740,7 +767,7 @@ def test_stat_fields_cover_every_generate_stats_numeric_field():
     expected = {
         "duration_seconds", "distance_km", "moving_seconds", "idle_seconds",
         "avg_speed_kmh", "max_speed_kmh", "min_altitude_m", "max_altitude_m",
-        "elevation_gain_m", "max_gforce_x", "avg_gforce_x", "max_gforce_y",
+        "elevation_change_m", "max_gforce_x", "avg_gforce_x", "max_gforce_y",
         "avg_gforce_y", "max_gforce_z", "avg_gforce_z",
     }
 
