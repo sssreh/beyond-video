@@ -17709,6 +17709,17 @@ Christer: "inbillar mig att det går att identifiera förare via 3gf filen, då 
 
 **The stored `driver` value should be an opaque label, not a real name.** Christer: store `"driver1"`/`"driver2"`/`"unknown"` (or `"undetermined"`) rather than baking "Christer"/"Fru" directly into `RECORDING_STATS`, and map labels to display names separately afterward. Not a strange idea - it's exactly what pyannote diarization already does (`SPEAKER_00`/`SPEAKER_01`, no names) - same separation of concerns: the classifier only needs to be internally *consistent* (the same physical person always gets the same label), while turning a label into a displayed name becomes a small, independently-editable mapping that changes without touching a single already-written `.stats.json`. Real consequence for the calibration step above: label consistency across separate recordings/runs only holds if new trips are *classified against* Christer's labeled reference trips (nearest-centroid to a fixed "driver1 reference set" / "driver2 reference set" he defines once), not re-clustered from scratch each run - an unsupervised re-cluster per batch could flip which label means which person between runs.
 
+**Per-signal guesses, not just one combined field.** Christer: should GPS/route pattern, voice, and g-force each have their own guess, plus a fused total? Yes - sound design, and natural given `RECORDING_STATS` is JSON (nesting is free, unlike a flat CSV row). Proposed shape:
+```json
+"driver": {
+  "total":  {"label": "driver1", "confidence": 0.72},
+  "gforce": {"label": "driver1", "confidence": 0.65},
+  "voice":  {"label": "driver1", "confidence": 0.81},
+  "route":  {"label": null, "confidence": null}
+}
+```
+`route` (which roads/times statistically correlate with which person) is a third, distinct signal from g-force - g-force measures *how* someone drives, route/time measures *where/when*, each needing the same kind of reference-trip calibration but on different features. Only `driver.total` needs to be searchable in bv-search; the per-signal breakdown is diagnostic/auditable (which signal actually drove a guess, and whether signals agreed or disagreed - disagreement is exactly the "flag for manual review" case the speaker-ID note below already wants), not something the UI filters on directly. Build incrementally - only populate the signals that actually have a working classifier behind them (`gforce` first, since it's the only one with a design so far); leave the others null rather than pre-declaring empty placeholders for signals that don't exist yet.
+
 Not started - no code, no design doc beyond this note.
 
 ## Note: speaker identification for voice/driver correlation (future improvement)
