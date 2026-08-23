@@ -40,8 +40,8 @@ from .archive.recording_id import RecordingId
 # not something that sums or averages across many.
 #
 # "sum" - total across every recording in the bucket (distance driven,
-# time spent, meters climbed - each recording's own contributes
-# additively to the bucket's whole).
+# time spent - each recording's own contributes additively to the
+# bucket's whole).
 # "avg" - the mean of each recording's own average (avg_speed_kmh/
 # avg_gforce_* are already themselves a per-recording mean, so
 # further averaging those together - rather than re-deriving a
@@ -53,6 +53,12 @@ from .archive.recording_id import RecordingId
 # bucket (a peak speed or g-force is only meaningful as a peak,
 # summing or averaging it away would hide the actual highlight).
 # "min" - the smallest single reading (min_altitude_m only).
+# "range" - elevation_gain_m only (see its own STAT_FIELDS entry
+# below): the bucket's own highest max_altitude_m minus its own
+# lowest min_altitude_m, computed straight from those two raw fields
+# rather than by combining each recording's own already-computed
+# elevation_gain_m readings - see aggregate_recording_stats()'s "range"
+# branch for why summing those instead would grow without bound.
 @dataclass(frozen=True)
 class StatField:
     """One reportable RECORDING_STATS field - its JSON key, a short
@@ -77,7 +83,7 @@ STAT_FIELDS: dict[str, StatField] = {
         StatField("max_speed_kmh", "Max speed", "km/h", "max"),
         StatField("min_altitude_m", "Min altitude", "m", "min"),
         StatField("max_altitude_m", "Max altitude", "m", "max"),
-        StatField("elevation_gain_m", "Elevation gain", "m", "sum"),
+        StatField("elevation_gain_m", "Elevation gain", "m", "range"),
         StatField("max_gforce_x", "Max g-force X", "g", "max"),
         StatField("avg_gforce_x", "Avg g-force X", "g", "avg"),
         StatField("max_gforce_y", "Max g-force Y", "g", "max"),
@@ -378,6 +384,23 @@ def aggregate_recording_stats(
     at all reports None for it - see StatBucket's own docstring for
     why that's kept distinct from a genuine 0.0.
 
+    "range" (elevation_gain_m only) is the one exception to "combine
+    each recording's own reading of this same field": Christer, after
+    a long-range "all" summary reported 39302m of elevation gain -
+    "what goes up must come down" - pointed out that summing each
+    recording's own already-computed max-min gain across potentially
+    thousands of short recordings measures cumulative churn, not net
+    elevation change, and grows without bound the more there is to
+    aggregate. elevation_gain_m is instead derived fresh at bucket
+    scope from the bucket's own max_altitude_m/min_altitude_m readings
+    (max of every recording's own max_altitude_m, minus the min of
+    every recording's own min_altitude_m) - the same "highest minus
+    lowest" definition _hysteresis_altitude_stats() already uses per
+    recording (see its own docstring), just widened to however many
+    recordings the bucket actually spans, so it stays bounded by the
+    real terrain range regardless of how much driving is in the
+    selection.
+
     `estimate_gaps`, when True and `distance_km` is one of `fields`,
     fills in an *estimated* distance for every recording in a bucket
     that has no real distance_km reading (no GPS fix at all, or -
@@ -417,6 +440,35 @@ def aggregate_recording_stats(
         values: dict[str, float | None] = {}
         for field_key in fields:
             field = STAT_FIELDS[field_key]
+
+            if field.aggregate == "range":
+                # elevation_gain_m only - see this function's own
+                # docstring for why it's derived from the bucket's own
+                # max_altitude_m/min_altitude_m readings directly
+                # rather than by combining each recording's own
+                # already-computed elevation_gain_m (that would sum
+                # unboundedly across many recordings instead of
+                # reporting the bucket's real net elevation span).
+                # Reads the two underlying fields straight off the raw
+                # per-recording stats dicts, independent of whether
+                # min_altitude_m/max_altitude_m were themselves also
+                # requested in `fields`.
+                max_readings = [
+                    stats["max_altitude_m"]
+                    for _, stats in bucket_entries
+                    if stats.get("max_altitude_m") is not None
+                ]
+                min_readings = [
+                    stats["min_altitude_m"]
+                    for _, stats in bucket_entries
+                    if stats.get("min_altitude_m") is not None
+                ]
+                if max_readings and min_readings:
+                    values[field_key] = max(max_readings) - min(min_readings)
+                else:
+                    values[field_key] = None
+                continue
+
             readings = [
                 stats[field_key]
                 for _, stats in bucket_entries

@@ -243,15 +243,104 @@ def test_aggregate_monthday_recurs_across_different_months():
 
 def test_aggregate_sum_field():
     entries = [
-        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),
-        (RecordingId("20260823_180000_NF"), {"elevation_gain_m": 5.0}),
+        (RecordingId("20260823_090000_NF"), {"distance_km": 10.0}),
+        (RecordingId("20260823_180000_NF"), {"distance_km": 5.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["distance_km"]
+    )
+
+    assert buckets[0].values["distance_km"] == 15.0
+
+
+def test_aggregate_elevation_gain_is_bucket_range_not_summed_per_recording():
+    # Christer, after a long-range summary reported 39302m of
+    # elevation gain: "what goes up must come down." elevation_gain_m
+    # used to be "sum" - each recording's own already-computed max-min
+    # gain added into the bucket's total - which grows without bound
+    # the more (short, individually-small-gain) recordings a bucket
+    # spans, rather than reflecting the bucket's real net elevation
+    # span. It's now "range": max(every recording's own
+    # max_altitude_m) - min(every recording's own min_altitude_m).
+    # Three recordings whose own per-recording elevation_gain_m
+    # readings (10+15+8=33) would have summed well past what the
+    # bucket's own altitude readings actually span (45-2=43 is
+    # *more* here on purpose - the two numbers have no fixed relation
+    # to each other, which is exactly the point: "sum" and "range" are
+    # different quantities, not two ways of writing the same one).
+    entries = [
+        (
+            RecordingId("20260823_090000_NF"),
+            {"max_altitude_m": 30.0, "min_altitude_m": 20.0, "elevation_gain_m": 10.0},
+        ),
+        (
+            RecordingId("20260823_120000_NF"),
+            {"max_altitude_m": 45.0, "min_altitude_m": 30.0, "elevation_gain_m": 15.0},
+        ),
+        (
+            RecordingId("20260823_180000_NF"),
+            {"max_altitude_m": 10.0, "min_altitude_m": 2.0, "elevation_gain_m": 8.0},
+        ),
     ]
 
     buckets = aggregate_recording_stats(
         entries, grouping="all", fields=["elevation_gain_m"]
     )
 
+    assert buckets[0].values["elevation_gain_m"] == 43.0  # 45 (max) - 2 (min)
+
+
+def test_aggregate_elevation_gain_survives_over_many_recordings():
+    # The actual regression this guards: a bucket spanning thousands
+    # of short recordings, each with a small but real max-min gain -
+    # summing those (the old behavior) would keep growing without any
+    # relation to real terrain; the bucket-wide range stays bounded by
+    # the real min/max regardless of how many recordings contribute.
+    entries = [
+        (
+            RecordingId(f"202608{(i % 28) + 1:02d}_{i % 24:02d}0000_NF"),
+            {"max_altitude_m": 40.0 + (i % 5), "min_altitude_m": 10.0 - (i % 3)},
+        )
+        for i in range(500)
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["elevation_gain_m"]
+    )
+
+    assert buckets[0].values["elevation_gain_m"] == 44.0 - 8.0
+
+
+def test_aggregate_elevation_gain_ignores_fields_missing_altitude_readings():
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),  # no min/max
+        (
+            RecordingId("20260823_180000_NF"),
+            {"max_altitude_m": 20.0, "min_altitude_m": 5.0},
+        ),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["elevation_gain_m"]
+    )
+
+    # The first recording has no min/max_altitude_m at all, so it
+    # simply doesn't contribute - same "missing isn't zero, and isn't
+    # excluded from the rest" convention every other field follows.
     assert buckets[0].values["elevation_gain_m"] == 15.0
+
+
+def test_aggregate_elevation_gain_none_when_no_recording_has_altitude_readings():
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"distance_km": 4.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["elevation_gain_m"]
+    )
+
+    assert buckets[0].values["elevation_gain_m"] is None
 
 
 def test_aggregate_avg_field():
