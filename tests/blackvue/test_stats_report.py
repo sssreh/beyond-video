@@ -4,8 +4,10 @@ from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
+from blackvue.stats_report import GPS_DEPENDENT_FIELDS
 from blackvue.stats_report import STAT_FIELDS
 from blackvue.stats_report import aggregate_recording_stats
+from blackvue.stats_report import count_recordings_without_gps
 from blackvue.stats_report import load_recording_stats
 
 
@@ -52,6 +54,41 @@ def test_load_recording_stats_parses_real_json(tmp_path):
     )
 
     assert load_recording_stats(recording) == {"distance_km": 1.5}
+
+
+def test_count_recordings_without_gps_counts_missing_and_false_has_gps():
+    entries = [
+        (RecordingId("20260101_100000_NF"), {"has_gps": True, "distance_km": 1.0}),
+        (RecordingId("20260102_100000_NF"), {"has_gps": False}),
+        # An older stats.json predating the has_gps field entirely -
+        # missing the key altogether should count the same as False,
+        # not silently pass a stats.get("has_gps") truthiness check.
+        (RecordingId("20260103_100000_NF"), {"distance_km": 3.0}),
+    ]
+
+    assert count_recordings_without_gps(entries) == 2
+
+
+def test_count_recordings_without_gps_zero_when_all_have_gps():
+    entries = [
+        (RecordingId("20260101_100000_NF"), {"has_gps": True}),
+        (RecordingId("20260102_100000_NF"), {"has_gps": True}),
+    ]
+
+    assert count_recordings_without_gps(entries) == 0
+
+
+def test_gps_dependent_fields_excludes_duration_and_gforce():
+    # duration_seconds has its own non-GPS fallback chain (video span,
+    # then .3gf) and every g-force field comes from the g-sensor
+    # sidecar, not GPS - neither should trip the "no GPS" coverage
+    # warning bv_stats.py prints when none of the *requested* fields
+    # actually depend on a GPS fix.
+    assert "duration_seconds" not in GPS_DEPENDENT_FIELDS
+    assert "max_gforce_x" not in GPS_DEPENDENT_FIELDS
+    assert "avg_gforce_z" not in GPS_DEPENDENT_FIELDS
+    assert "distance_km" in GPS_DEPENDENT_FIELDS
+    assert "elevation_gain_m" in GPS_DEPENDENT_FIELDS
 
 
 def test_aggregate_groups_all_into_one_bucket():

@@ -268,6 +268,52 @@ def test_run_summary_json_shape(monkeypatch, tmp_path):
     assert {b["key"] for b in payload["buckets"]} == {"Monday", "Tuesday"}
 
 
+def test_run_reports_no_gps_coverage_for_gps_dependent_fields(monkeypatch, tmp_path):
+    with_gps = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path, {"has_gps": True, "distance_km": 5.0}
+    )
+    without_gps = _make_recording_with_stats(
+        "20260823_110000_NF", tmp_path, {"has_gps": False}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([with_gps, without_gps])),
+    )
+    args = parse_args([str(tmp_path), "--fields", "distance_km"])
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    assert any(
+        "1 of 2 recording(s) with Stats data have no GPS fix" in m
+        for m in messages
+    )
+
+
+def test_run_no_gps_message_suppressed_for_non_gps_fields(monkeypatch, tmp_path):
+    # Only g-force fields requested - has_gps says nothing about
+    # whether the .3gf g-sensor sidecar exists, so the GPS-coverage
+    # message would be actively misleading noise here and must not
+    # appear.
+    recording = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path, {"has_gps": False, "max_gforce_x": 0.4}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([recording])),
+    )
+    args = parse_args([str(tmp_path), "--fields", "max_gforce_x"])
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    assert not any("no GPS fix" in m for m in messages)
+
+
 def test_run_skips_recordings_without_stats_and_reports_count(monkeypatch, tmp_path):
     with_stats = _make_recording_with_stats(
         "20260823_100000_NF", tmp_path, {"distance_km": 5.0}

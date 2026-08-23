@@ -87,6 +87,31 @@ STAT_FIELDS: dict[str, StatField] = {
     )
 }
 
+# Which STAT_FIELDS keys can only ever have a real reading when a
+# recording had at least two positioned GPS fixes (RECORDING_STATS'
+# own "has_gps" flag - see generate/stats.py's compute_recording_stats()
+# docstring) - everything compute_trip_stats() derives from the GPS
+# track: distance, both speeds, moving/idle time (which need a speed
+# series to integrate), and all three altitude fields. duration_seconds
+# is deliberately excluded even though .gps is the last resort in its
+# own fallback chain (video span, then .3gf, then .gps) - most
+# recordings' duration comes from one of the first two, so has_gps
+# being False doesn't reliably predict a missing duration the way it
+# does for the fields above. Every g-force field is also excluded -
+# those come from the .3gf g-sensor sidecar, entirely independent of
+# GPS. See count_recordings_without_gps()'s own docstring for what
+# this set is actually for.
+GPS_DEPENDENT_FIELDS: frozenset[str] = frozenset((
+    "distance_km",
+    "avg_speed_kmh",
+    "max_speed_kmh",
+    "moving_seconds",
+    "idle_seconds",
+    "min_altitude_m",
+    "max_altitude_m",
+    "elevation_gain_m",
+))
+
 # bv-stats' own default --fields, printed when the flag is omitted -
 # the handful most people actually want a trip/period summary of
 # (duration, distance, speed, elevation), leaving the rarer g-force
@@ -140,6 +165,40 @@ def load_recording_stats(recording: Recording) -> dict | None:
         return json.loads(asset_file.path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def count_recordings_without_gps(
+    entries: list[tuple[RecordingId, dict]],
+) -> int:
+    """How many of `entries` (already-loaded RECORDING_STATS dicts -
+    see load_recording_stats()) have no GPS fix at all (has_gps is
+    False or missing), and therefore contribute nothing to any
+    GPS_DEPENDENT_FIELDS aggregate no matter how many recordings a
+    report's totals otherwise look like they cover.
+
+    This exists because "N of M recording(s) in range have no Stats
+    asset yet, skipped" (bv_stats.py's own message for a recording
+    with no <id>.stats.json at all) only catches one kind of gap - a
+    recording can have a perfectly real, present RECORDING_STATS file
+    and still contribute nothing to distance_km/avg_speed_kmh/etc. if
+    it simply never got a usable GPS fix (cold-start acquisition delay,
+    a tunnel/parking-structure gap, or a Parking-mode clip recorded
+    stationary somewhere with no signal at all - see the elevation-gain
+    GPS-noise fix and the g-sensor-baseline note elsewhere in
+    WORKING_CONTEXT.md for other examples of real, not corrupted,
+    GPS-availability gaps). Christer's own real archive is a concrete
+    case: `bv-generate --stats` had written a Stats asset for
+    essentially every recording, yet only a majority-but-not-all of
+    them actually had a `.gps` sidecar downloaded at all (`--mode`
+    controls which recording *kinds* bv-download fetches, not video
+    vs. sidecar separately, but a kind can still be download-complete
+    with no GPS fix inside its .gps file, or with a .gps file that
+    never resolved to two positioned fixes) - a whole-selection total
+    that looked "a little short" wasn't a bug in the aggregation math,
+    it was this gap being invisible in the report.
+    """
+
+    return sum(1 for _, stats in entries if not stats.get("has_gps"))
 
 
 def _bucket_key(timestamp: datetime, grouping: str) -> str:

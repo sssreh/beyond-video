@@ -34,10 +34,12 @@ from ..core.joblog import wrap_say
 from ..core.joblog import wrap_warn
 from ..lexicaltimeparser import LexicalTimeParser
 from ..stats_report import DEFAULT_FIELDS
+from ..stats_report import GPS_DEPENDENT_FIELDS
 from ..stats_report import GROUPINGS
 from ..stats_report import STAT_FIELDS
 from ..stats_report import StatBucket
 from ..stats_report import aggregate_recording_stats
+from ..stats_report import count_recordings_without_gps
 from ..stats_report import load_recording_stats
 
 EXIT_OK = 0
@@ -358,6 +360,15 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
                 f"bv-stats: {skipped} of {len(recordings)} recording(s) "
                 "in range have no Stats asset yet, skipped."
             )
+
+        if GPS_DEPENDENT_FIELDS.intersection(args.fields):
+            no_gps = count_recordings_without_gps(entries)
+            if no_gps:
+                say(
+                    f"bv-stats: {no_gps} of {len(entries)} recording(s) "
+                    "with Stats data have no GPS fix - distance/speed/"
+                    "altitude fields won't include them."
+                )
 
         buckets = aggregate_recording_stats(
             entries, grouping=args.group, fields=args.fields,
