@@ -279,11 +279,50 @@ class StatBucket:
     than 0.0 (a real zero and "nothing to measure" must stay
     distinguishable, the same convention TripStats' own altitude
     fields already use - see export/trip_stats.py).
+
+    `estimated_distance_km`/`estimated_recording_count` are only ever
+    non-default when `aggregate_recording_stats()` was called with
+    `estimate_gaps=True` and this bucket actually needed to fill a
+    gap - see that function's own docstring for what "estimated" means
+    here and why it's kept as a separate, visible figure rather than
+    silently folded into `values["distance_km"]` with no trace. Both
+    default to None/0 (no estimation happened, or happened but found
+    nothing to fill) so every existing caller/test constructing a
+    StatBucket without these two fields keeps working unchanged.
     """
 
     key: str
     recordings: tuple[RecordingId, ...]
     values: dict[str, float | None]
+    estimated_distance_km: float | None = None
+    estimated_recording_count: int = 0
+
+
+def _speed_basis_kmh(entries: list[tuple[RecordingId, dict]]) -> float | None:
+    """Weighted average speed (km/h) - total real distance over total
+    real duration - from whichever of `entries` have *both* a
+    distance_km and a duration_seconds reading. This is the basis
+    aggregate_recording_stats()'s `estimate_gaps` extrapolates a
+    no-GPS recording's own distance from (that recording's own
+    duration_seconds * this basis), not a plain mean of each
+    recording's own avg_speed_kmh - a duration-weighted figure isn't
+    skewed by many short recordings the way an unweighted mean of
+    per-recording averages would be. None if nothing in `entries` has
+    both readings at all - nothing to extrapolate from.
+    """
+
+    total_km = 0.0
+    total_hours = 0.0
+    for _, stats in entries:
+        distance = stats.get("distance_km")
+        duration = stats.get("duration_seconds")
+        if distance is not None and duration:
+            total_km += distance
+            total_hours += duration / 3600.0
+
+    if total_hours <= 0:
+        return None
+    return total_km / total_hours
 
 
 def aggregate_recording_stats(
@@ -291,6 +330,7 @@ def aggregate_recording_stats(
     *,
     grouping: str,
     fields: list[str],
+    estimate_gaps: bool = False,
 ) -> list[StatBucket]:
     """Group `entries` (each recording's id paired with its already-
     loaded RECORDING_STATS dict - see load_recording_stats()) by
@@ -313,12 +353,35 @@ def aggregate_recording_stats(
     A bucket where *no* recording has a present reading for a field
     at all reports None for it - see StatBucket's own docstring for
     why that's kept distinct from a genuine 0.0.
+
+    `estimate_gaps`, when True and `distance_km` is one of `fields`,
+    fills in an *estimated* distance for every recording in a bucket
+    that has no real distance_km reading (no GPS fix at all, or -
+    the rarer one-fix edge case - too few fixes for compute_trip_stats()
+    to derive anything) but does have a duration_seconds reading and
+    isn't a Parking-mode recording (see RecordingId.is_parking -
+    Parking clips are triggered while stationary, so extrapolating a
+    moving average speed onto one would invent distance that was never
+    driven, not fill a real gap). Each such recording's own duration is
+    multiplied by a speed basis (see _speed_basis_kmh() above) - that
+    bucket's own real distance/duration ratio if it has any, otherwise
+    the whole selection's - and summed into `values["distance_km"]`
+    alongside the real readings, with the estimated portion and the
+    count of recordings it came from kept separately on
+    `StatBucket.estimated_distance_km`/`estimated_recording_count` so
+    a caller can always show what was measured versus inferred, never
+    silently blend them with no trace. A bucket where nothing anywhere
+    in the whole selection has both readings (nothing to build a speed
+    basis from at all) is left exactly as it would be without
+    `estimate_gaps` - there's nothing to extrapolate from.
     """
 
     buckets: dict[str, list[tuple[RecordingId, dict]]] = {}
     for recording_id, stats in entries:
         key = _bucket_key(recording_id.timestamp, grouping)
         buckets.setdefault(key, []).append((recording_id, stats))
+
+    global_basis = _speed_basis_kmh(entries) if estimate_gaps else None
 
     result = []
     for key in sorted(buckets, key=lambda k: _sort_key(k, grouping)):
@@ -350,8 +413,38 @@ def aggregate_recording_stats(
                     f"unknown aggregate kind: {field.aggregate!r}"
                 )
 
+        estimated_distance_km: float | None = None
+        estimated_recording_count = 0
+        if estimate_gaps and "distance_km" in fields:
+            basis = _speed_basis_kmh(bucket_entries)
+            if basis is None:
+                basis = global_basis
+            if basis is not None:
+                missing = [
+                    (recording_id, stats)
+                    for recording_id, stats in bucket_entries
+                    if stats.get("distance_km") is None
+                    and stats.get("duration_seconds")
+                    and not recording_id.is_parking
+                ]
+                if missing:
+                    estimated_distance_km = sum(
+                        stats["duration_seconds"] / 3600.0 * basis
+                        for _, stats in missing
+                    )
+                    estimated_recording_count = len(missing)
+                    values["distance_km"] = (
+                        values["distance_km"] or 0.0
+                    ) + estimated_distance_km
+
         result.append(
-            StatBucket(key=key, recordings=recording_ids, values=values)
+            StatBucket(
+                key=key,
+                recordings=recording_ids,
+                values=values,
+                estimated_distance_km=estimated_distance_km,
+                estimated_recording_count=estimated_recording_count,
+            )
         )
 
     return result

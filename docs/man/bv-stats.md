@@ -49,6 +49,12 @@ A grouped breakdown (`--group` anything but `all`) can make the grand total hard
 
 If the summary's own totals look lower than expected, check both coverage lines printed just above it: "N of M recording(s) in range have no Stats asset yet, skipped" (run `bv-generate --stats` over the archive first, or over more of it) and, for GPS-dependent fields, "N of M recording(s) with Stats data have no GPS fix" (see "Fields" above) - a total can look short from either gap, and they're not the same thing: the first means `bv-generate --stats` hasn't touched those recordings at all, the second means it has, but the recording itself never got a usable GPS fix.
 
+### Estimating missing distance
+
+`--estimate-gaps` fills in an *estimated* `distance_km` for every recording that has no real one (no GPS fix, or the rarer case of too few fixes to compute anything) but does have a `duration_seconds` reading - by multiplying that recording's own duration by an average speed basis (real distance divided by real duration, from whichever recordings in the same bucket do have both readings, falling back to the whole selection's basis if the bucket itself has none). Parking-mode recordings are never estimated - they're stationary by definition, so extrapolating a moving average speed onto one would invent distance that was never driven, not fill a real gap.
+
+The estimated portion is never silently blended into the real number with no trace: a bucket's `distance_km` total includes it, but the text report appends "(includes ~X.XX km estimated from N recording(s) with no GPS fix)" on the same line, and `--json` output carries it as separate `estimated_distance_km`/`estimated_recording_count` keys on that bucket. This is still an estimate, not a measurement - useful for a sanity-check total (confirmed against Christer's own real Arlanda round trip: the raw GPS-only total undercounted his own known 107.7 km by about 15%, and `--estimate-gaps` closed roughly a third of that gap by filling in the recording right at trip start and the one right at trip end, both losing their GPS fix during acquisition/loss rather than being genuinely stationary) - but it can't recover distance from a recording that has neither a GPS fix nor a duration at all, and a bucket with no real GPS data anywhere in the whole selection has nothing to build a speed basis from in the first place.
+
 ## ARGUMENTS
 
 | Argument | Description |
@@ -74,6 +80,7 @@ If the summary's own totals look lower than expected, check both coverage lines 
 | `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`. |
 | `--list-fields` | Print every field `--fields` accepts, with its unit and aggregation kind, then exit. Needs no archive. |
 | `--summary` | Also report an overall summary (totals across the whole selection, same as `--group all`) alongside the per-group breakdown. No effect when `--group` is already `all`. See "Summary" below. |
+| `--estimate-gaps` | Fill in an estimated `distance_km` for recordings with no GPS fix but a real duration, extrapolated from average speed. See "Estimating missing distance" below. |
 | `--json` | Print the aggregated report as JSON instead of a human-readable table. |
 
 ### General
@@ -108,6 +115,12 @@ Which day of the week has the most driving, with a grand total alongside the per
 
 ```
 bv-stats --group weekday --fields distance_km,duration_seconds --summary
+```
+
+Distance for a single day, with an estimate for any GPS-less recordings called out separately:
+
+```
+bv-stats --timestamp 20260823 --fields distance_km --estimate-gaps
 ```
 
 Every field, as JSON, for a future bv-web stats tab or other scripting:

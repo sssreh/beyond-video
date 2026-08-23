@@ -294,6 +294,96 @@ def test_aggregate_avg_skips_missing_readings_not_averaged_as_zero():
     assert buckets[0].values["avg_speed_kmh"] == 40.0
 
 
+def test_estimate_gaps_fills_missing_distance_from_bucket_speed_basis():
+    # Two recordings with real GPS data (50 km/h average, from 5km/0.1h
+    # and 5km/0.1h - a clean, easy-to-check basis), plus one no-GPS
+    # recording with only a duration - 0.1h at that same 50 km/h basis
+    # should add 5.0 km.
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"distance_km": 5.0, "duration_seconds": 360}),
+        (RecordingId("20260823_091000_NF"), {"distance_km": 5.0, "duration_seconds": 360}),
+        (RecordingId("20260823_092000_NF"), {"duration_seconds": 360}),  # no GPS at all
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["distance_km"], estimate_gaps=True,
+    )
+
+    assert buckets[0].values["distance_km"] == 15.0
+    assert buckets[0].estimated_distance_km == 5.0
+    assert buckets[0].estimated_recording_count == 1
+
+
+def test_estimate_gaps_never_estimates_parking_recordings():
+    # A Parking-mode recording is stationary by definition - applying a
+    # moving average speed to it would invent distance that was never
+    # driven, so it must be excluded even though it has a duration and
+    # no distance_km of its own, same as any other no-GPS recording.
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"distance_km": 10.0, "duration_seconds": 600}),
+        (RecordingId("20260823_091000_PF"), {"duration_seconds": 9}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["distance_km"], estimate_gaps=True,
+    )
+
+    assert buckets[0].values["distance_km"] == 10.0
+    assert buckets[0].estimated_distance_km is None
+    assert buckets[0].estimated_recording_count == 0
+
+
+def test_estimate_gaps_falls_back_to_global_basis_when_bucket_has_no_gps_data():
+    # --group weekday (or any grouping) can put every no-GPS recording
+    # into a bucket with zero real distance data of its own - there's
+    # nothing bucket-local to build a speed basis from, so it must fall
+    # back to the whole selection's basis instead of leaving the bucket
+    # unfilled.
+    entries = [
+        (RecordingId("20260817_090000_NF"), {"distance_km": 6.0, "duration_seconds": 360}),  # Monday
+        (RecordingId("20260818_090000_NF"), {"duration_seconds": 360}),  # Tuesday, no GPS at all
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="weekday", fields=["distance_km"], estimate_gaps=True,
+    )
+
+    tuesday = next(b for b in buckets if b.key == "Tuesday")
+    assert tuesday.estimated_recording_count == 1
+    assert tuesday.estimated_distance_km == 6.0  # 6.0 km/h basis * 0.1h
+    assert tuesday.values["distance_km"] == 6.0
+
+
+def test_estimate_gaps_no_effect_without_the_flag():
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"distance_km": 5.0, "duration_seconds": 360}),
+        (RecordingId("20260823_092000_NF"), {"duration_seconds": 360}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["distance_km"],
+    )
+
+    assert buckets[0].values["distance_km"] == 5.0
+    assert buckets[0].estimated_distance_km is None
+    assert buckets[0].estimated_recording_count == 0
+
+
+def test_estimate_gaps_leaves_bucket_unfilled_when_nothing_anywhere_has_a_basis():
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"duration_seconds": 360}),
+        (RecordingId("20260823_092000_NF"), {"duration_seconds": 360}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["distance_km"], estimate_gaps=True,
+    )
+
+    assert buckets[0].values["distance_km"] is None
+    assert buckets[0].estimated_distance_km is None
+    assert buckets[0].estimated_recording_count == 0
+
+
 def test_stat_fields_cover_every_generate_stats_numeric_field():
     expected = {
         "duration_seconds", "distance_km", "moving_seconds", "idle_seconds",

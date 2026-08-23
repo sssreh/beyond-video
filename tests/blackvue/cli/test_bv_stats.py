@@ -48,6 +48,7 @@ def test_parse_args_defaults():
     assert args.fields == list(bv_stats.DEFAULT_FIELDS)
     assert args.list_fields is False
     assert args.summary is False
+    assert args.estimate_gaps is False
     assert args.json is False
     assert args.trace is False
 
@@ -312,6 +313,95 @@ def test_run_no_gps_message_suppressed_for_non_gps_fields(monkeypatch, tmp_path)
 
     assert exit_code == bv_stats.EXIT_OK
     assert not any("no GPS fix" in m for m in messages)
+
+
+def test_run_estimate_gaps_fills_and_labels_estimated_distance(monkeypatch, tmp_path):
+    with_gps = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path,
+        {"has_gps": True, "distance_km": 10.0, "duration_seconds": 600},
+    )
+    without_gps = _make_recording_with_stats(
+        "20260823_110000_NF", tmp_path,
+        {"has_gps": False, "duration_seconds": 600},
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([with_gps, without_gps])),
+    )
+    args = parse_args(
+        [str(tmp_path), "--fields", "distance_km", "--estimate-gaps"]
+    )
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    joined = "\n".join(messages)
+    # 10.0 km real + 10.0 km estimated (same 10 km/h basis, same
+    # 600s duration) = 20.0 km total, with the estimated portion
+    # called out separately rather than blended in silently.
+    assert "20.00 km" in joined
+    assert "includes ~10.00 km estimated from 1 recording(s) with no GPS fix" in joined
+
+
+def test_run_estimate_gaps_has_no_effect_without_the_flag(monkeypatch, tmp_path):
+    with_gps = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path,
+        {"has_gps": True, "distance_km": 10.0, "duration_seconds": 600},
+    )
+    without_gps = _make_recording_with_stats(
+        "20260823_110000_NF", tmp_path,
+        {"has_gps": False, "duration_seconds": 600},
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([with_gps, without_gps])),
+    )
+    args = parse_args([str(tmp_path), "--fields", "distance_km"])
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    joined = "\n".join(messages)
+    assert "10.00 km" in joined
+    assert "estimated" not in joined
+
+
+def test_run_estimate_gaps_json_shape(monkeypatch, tmp_path):
+    with_gps = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path,
+        {"has_gps": True, "distance_km": 10.0, "duration_seconds": 600},
+    )
+    without_gps = _make_recording_with_stats(
+        "20260823_110000_NF", tmp_path,
+        {"has_gps": False, "duration_seconds": 600},
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([with_gps, without_gps])),
+    )
+    args = parse_args(
+        [str(tmp_path), "--fields", "distance_km", "--estimate-gaps", "--json"]
+    )
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    payload = None
+    for message in messages:
+        try:
+            payload = json.loads(message)
+        except (ValueError, TypeError):
+            continue
+    assert payload is not None
+    assert payload[0]["values"]["distance_km"] == 20.0
+    assert payload[0]["estimated_distance_km"] == 10.0
+    assert payload[0]["estimated_recording_count"] == 1
 
 
 def test_run_skips_recordings_without_stats_and_reports_count(monkeypatch, tmp_path):

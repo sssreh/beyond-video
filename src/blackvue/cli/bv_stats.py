@@ -202,6 +202,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--estimate-gaps",
+        action="store_true",
+        help=(
+            "Fill in an estimated distance for recordings that have no "
+            "GPS fix (see the 'no GPS fix' message above) but do have a "
+            "duration, by multiplying their duration by an average "
+            "speed derived from the recordings around them that do have "
+            "real distance data. Parking-mode recordings are never "
+            "estimated (they're stationary, not driving). The estimated "
+            "portion is always shown separately from real, measured "
+            "distance - see 'Fields' below."
+        ),
+    )
+
+    parser.add_argument(
         "--json",
         action="store_true",
         help=(
@@ -256,8 +271,16 @@ def _print_bucket(say, label: str, bucket: StatBucket, fields: list[str]) -> Non
         field_label = STAT_FIELDS[field_key].label
         if value is None:
             say(f"  {field_label}: -")
-        else:
-            say(f"  {field_label}: {_format_value(field_key, value)}")
+            continue
+        line = f"  {field_label}: {_format_value(field_key, value)}"
+        if field_key == "distance_km" and bucket.estimated_recording_count:
+            estimated = _format_value("distance_km", bucket.estimated_distance_km)
+            line += (
+                f" (includes ~{estimated} estimated from "
+                f"{bucket.estimated_recording_count} recording(s) with "
+                "no GPS fix)"
+            )
+        say(line)
 
 
 def _print_text_report(
@@ -279,14 +302,18 @@ def _print_text_report(
 
 
 def _buckets_to_json(buckets: list[StatBucket]) -> list[dict]:
-    return [
-        {
+    result = []
+    for bucket in buckets:
+        entry = {
             "key": bucket.key,
             "recordings": [str(recording_id) for recording_id in bucket.recordings],
             "values": bucket.values,
         }
-        for bucket in buckets
-    ]
+        if bucket.estimated_recording_count:
+            entry["estimated_distance_km"] = bucket.estimated_distance_km
+            entry["estimated_recording_count"] = bucket.estimated_recording_count
+        result.append(entry)
+    return result
 
 
 def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
@@ -372,12 +399,14 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         buckets = aggregate_recording_stats(
             entries, grouping=args.group, fields=args.fields,
+            estimate_gaps=args.estimate_gaps,
         )
 
         summary_bucket = None
         if args.summary and args.group != "all":
             summary_bucket = aggregate_recording_stats(
                 entries, grouping="all", fields=args.fields,
+                estimate_gaps=args.estimate_gaps,
             )[0]
 
         if args.json:
