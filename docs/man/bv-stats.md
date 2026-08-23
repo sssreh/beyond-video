@@ -8,7 +8,7 @@
 
 ```
 bv-stats [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-         [--group {all,year,month,monthday,week,weekday,dayofmonth}]
+         [--group {all,year,month,date,week,weekday,monthday}]
          [--fields FIELD1,FIELD2,...] [--list-fields]
          [--json] [--config-dir DIR] [--trace]
          [PATH]
@@ -31,10 +31,10 @@ This command is deliberately split into a library half (`blackvue.stats_report`,
 | `all` (default) | one bucket | Everything in range, summarized together. |
 | `year` | `2026` | One bucket per calendar year. |
 | `month` | `2026-08` | One bucket per calendar year+month. |
-| `monthday` | `2026-08-23` | One bucket per exact calendar date. |
+| `date` | `2026-08-23` | One bucket per exact calendar date. |
 | `week` | `2026-W34` | One bucket per ISO 8601 week (Monday-Sunday). |
 | `weekday` | `Monday` .. `Sunday` | One bucket per day-of-week name, **recurring** across every date in the selection - a genuinely different question from the other five (which all partition the selection into disjoint time spans; this one re-cuts the whole selection by a repeating pattern, e.g. "which day of the week do I drive most on"). |
-| `dayofmonth` | `01` .. `31` | One bucket per day-of-month number, **recurring** the same way `weekday` does (not to be confused with `monthday` above, which partitions into one bucket per exact date) - e.g. "which day of the month do I drive most on," and surfaces a single low-mileage day inside an otherwise normal month that a whole-month total would average away. Some months have fewer than 31 days, so buckets `29`-`31` will always have fewer contributing recordings than the rest - expected, not a bug. |
+| `monthday` | `01` .. `31` | One bucket per day-of-month number, **recurring** the same way `weekday` does (not to be confused with `date` above, which partitions into one bucket per exact date) - e.g. "which day of the month do I drive most on," and surfaces a single low-mileage day inside an otherwise normal month that a whole-month total would average away. Some months have fewer than 31 days, so buckets `29`-`31` will always have fewer contributing recordings than the rest - expected, not a bug. |
 
 ### Fields
 
@@ -46,7 +46,7 @@ Each field combines multiple recordings' own readings one of four ways: `sum` (t
 
 ### Summary
 
-A grouped breakdown (`--group` anything but `all`) can make the grand total hard to eyeball - e.g. seven `--group weekday` lines, or thirty-odd `--group monthday` lines, none of which is itself "the whole range." `--summary` adds one more section computed the same way `--group all` would (every selected recording, one bucket), printed ahead of the per-group breakdown in text mode, and as a `"summary"` key alongside `"buckets"` in `--json` mode (the plain list shape from before is unchanged when `--summary` isn't given, for anything already parsing this command's JSON output).
+A grouped breakdown (`--group` anything but `all`) can make the grand total hard to eyeball - e.g. seven `--group weekday` lines, or thirty-odd `--group date` lines, none of which is itself "the whole range." `--summary` adds one more section computed the same way `--group all` would (every selected recording, one bucket), printed ahead of the per-group breakdown in text mode, and as a `"summary"` key alongside `"buckets"` in `--json` mode (the plain list shape from before is unchanged when `--summary` isn't given, for anything already parsing this command's JSON output).
 
 If the summary's own totals look lower than expected, check both coverage lines printed just above it: "N of M recording(s) in range have no Stats asset yet, skipped" (run `bv-generate --stats` over the archive first, or over more of it) and, for GPS-dependent fields, "N of M recording(s) with Stats data have no GPS fix" (see "Fields" above) - a total can look short from either gap, and they're not the same thing: the first means `bv-generate --stats` hasn't touched those recordings at all, the second means it has, but the recording itself never got a usable GPS fix.
 
@@ -77,7 +77,7 @@ The estimated portion is never silently blended into the real number with no tra
 
 | Option | Description |
 |---|---|
-| `--group {all,year,month,monthday,week,weekday,dayofmonth}` | Calendar period to group recordings by. Default: `all`. |
+| `--group {all,year,month,date,week,weekday,monthday}` | Calendar period to group recordings by. Default: `all`. |
 | `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`. |
 | `--list-fields` | Print every field `--fields` accepts, with its unit and aggregation kind, then exit. Needs no archive. |
 | `--summary` | Also report an overall summary (totals across the whole selection, same as `--group all`) alongside the per-group breakdown. No effect when `--group` is already `all`. See "Summary" below. |
@@ -127,7 +127,7 @@ bv-stats --timestamp 20260823 --fields distance_km --estimate-gaps
 Every field, as JSON, for a future bv-web stats tab or other scripting:
 
 ```
-bv-stats --group monthday --fields all --json
+bv-stats --group date --fields all --json
 ```
 
 See every field `--fields` understands:

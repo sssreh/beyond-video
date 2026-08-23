@@ -128,7 +128,7 @@ DEFAULT_FIELDS: tuple[str, ...] = (
 # request listed them - see _bucket_key()'s own docstring for exactly
 # what each one means.
 GROUPINGS: tuple[str, ...] = (
-    "all", "year", "month", "monthday", "week", "weekday", "dayofmonth",
+    "all", "year", "month", "date", "week", "weekday", "monthday",
 )
 
 _WEEKDAY_ORDER = (
@@ -209,9 +209,11 @@ def _bucket_key(timestamp: datetime, grouping: str) -> str:
     or --timestamp/--from/--until-range-wide, summary).
     "year" - one bucket per calendar year ("2026").
     "month" - one bucket per calendar year+month ("2026-08").
-    "monthday" - one bucket per exact calendar date ("2026-08-23") -
-    the finest-grained of the three date-hierarchy groupings above
-    it, e.g. for a day-by-day trend line.
+    "date" - one bucket per exact calendar date ("2026-08-23") - the
+    finest-grained of the three date-hierarchy groupings above it,
+    e.g. for a day-by-day trend line. (Named "date", not "monthday" -
+    see the "monthday" entry below for why the two names swapped from
+    an earlier version of this grouping set.)
     "week" - one bucket per ISO 8601 week ("2026-W34") - Monday-
     Sunday, the same definition Python's own date.isocalendar() uses,
     rather than a rolling 7-day window, so "this week" lines up with
@@ -223,17 +225,26 @@ def _bucket_key(timestamp: datetime, grouping: str) -> str:
     above (which all partition the selection into disjoint spans of
     time; this one instead re-cuts the *same* whole selection by a
     repeating pattern within it).
-    "dayofmonth" - one bucket per day-of-month number ("01".."31"),
+    "monthday" - one bucket per day-of-month number ("01".."31"),
     recurring the same way "weekday" does (not to be confused with
-    "monthday" above, which partitions into one bucket per exact
-    date) - answers "which day of the month do I drive most on" /
-    surfaces a single low-mileage day inside an otherwise normal
-    month, the kind of thing a whole-month total averages away.
-    Christer's own framing, after a first "which months have low
-    mileage" pass turned out to mean this instead: "an x axis with 31
-    positions ... think like weekdays with 7 positions." Some months
-    have fewer than 31 days, so buckets 29-31 will always have fewer
-    contributing recordings than the rest - expected, not a bug.
+    "date" above, which partitions into one bucket per exact date) -
+    answers "which day of the month do I drive most on" / surfaces a
+    single low-mileage day inside an otherwise normal month, the kind
+    of thing a whole-month total averages away. Christer's own
+    framing, after a first "which months have low mileage" pass
+    turned out to mean this instead: "an x axis with 31 positions ...
+    think like weekdays with 7 positions." Some months have fewer
+    than 31 days, so buckets 29-31 will always have fewer contributing
+    recordings than the rest - expected, not a bug. Named "monthday"
+    (not the "dayofmonth" this grouping originally shipped under) to
+    actually match "weekday"'s own naming pattern - "weekday" recurs
+    by day-of-week, "monthday" recurs by day-of-month, both read as
+    [unit]+"day"; the exact-date grouping above had to move off
+    "monthday" onto "date" to free the name up, since Christer's
+    original ask for this grouping was itself phrased as "monthday"
+    and the two being swapped was exactly what caused an earlier
+    round of confusion ("I dont think you understand what i meant
+    with monthday").
     """
 
     if grouping == "all":
@@ -242,14 +253,14 @@ def _bucket_key(timestamp: datetime, grouping: str) -> str:
         return f"{timestamp:%Y}"
     if grouping == "month":
         return f"{timestamp:%Y-%m}"
-    if grouping == "monthday":
+    if grouping == "date":
         return f"{timestamp:%Y-%m-%d}"
     if grouping == "week":
         iso_year, iso_week, _ = timestamp.isocalendar()
         return f"{iso_year}-W{iso_week:02d}"
     if grouping == "weekday":
         return _WEEKDAY_ORDER[timestamp.weekday()]
-    if grouping == "dayofmonth":
+    if grouping == "monthday":
         return f"{timestamp.day:02d}"
 
     raise ValueError(f"unknown grouping: {grouping!r}")

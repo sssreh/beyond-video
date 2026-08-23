@@ -135,7 +135,7 @@ def test_aggregate_groups_by_month():
     assert [bucket.key for bucket in buckets] == ["2026-07", "2026-08"]
 
 
-def test_aggregate_groups_by_monthday():
+def test_aggregate_groups_by_date():
     entries = [
         (RecordingId("20260823_090000_NF"), {"distance_km": 1.0}),
         (RecordingId("20260823_180000_NF"), {"distance_km": 2.0}),
@@ -143,7 +143,7 @@ def test_aggregate_groups_by_monthday():
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="monthday", fields=["distance_km"]
+        entries, grouping="date", fields=["distance_km"]
     )
 
     assert [bucket.key for bucket in buckets] == ["2026-08-23", "2026-08-24"]
@@ -185,7 +185,7 @@ def test_aggregate_groups_by_weekday_in_calendar_order_not_alphabetical():
 def test_aggregate_weekday_recurs_across_multiple_weeks():
     # Both dates are Mondays, three weeks apart - "weekday" grouping
     # should merge them into a single "Monday" bucket, unlike
-    # "monthday"/"week" which would keep them separate.
+    # "date"/"week" which would keep them separate.
     entries = [
         (RecordingId("20260803_090000_NF"), {"distance_km": 1.0}),
         (RecordingId("20260824_090000_NF"), {"distance_km": 2.0}),
@@ -200,11 +200,14 @@ def test_aggregate_weekday_recurs_across_multiple_weeks():
     assert len(buckets[0].recordings) == 2
 
 
-def test_aggregate_groups_by_dayofmonth_zero_padded_and_in_numeric_order():
-    # "monthday" partitions by exact date; "dayofmonth" is the
+def test_aggregate_groups_by_monthday_zero_padded_and_in_numeric_order():
+    # "date" partitions by exact calendar date; "monthday" is the
     # weekday-style recurring one - Christer's own "an x axis with 31
     # positions ... think like weekdays with 7 positions" - so day 3
     # of any month lands in the same bucket as day 3 of any other.
+    # Named "monthday" (not this grouping's original "dayofmonth") to
+    # actually match "weekday"'s own naming pattern - see
+    # stats_report.py's _bucket_key() docstring for the full story.
     # Zero-padded keys ("03" not "3") so plain string sort still
     # yields numeric order (no "10" before "3" the way unpadded
     # strings would sort).
@@ -214,14 +217,14 @@ def test_aggregate_groups_by_dayofmonth_zero_padded_and_in_numeric_order():
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="dayofmonth", fields=["distance_km"]
+        entries, grouping="monthday", fields=["distance_km"]
     )
 
     assert [bucket.key for bucket in buckets] == ["03", "10"]
 
 
-def test_aggregate_dayofmonth_recurs_across_different_months():
-    # Both recordings are on the 5th of their own month - "dayofmonth"
+def test_aggregate_monthday_recurs_across_different_months():
+    # Both recordings are on the 5th of their own month - "monthday"
     # should merge them into a single "05" bucket the same way
     # "weekday" merges same-weekday recordings across weeks.
     entries = [
@@ -230,7 +233,7 @@ def test_aggregate_dayofmonth_recurs_across_different_months():
     ]
 
     buckets = aggregate_recording_stats(
-        entries, grouping="dayofmonth", fields=["distance_km"]
+        entries, grouping="monthday", fields=["distance_km"]
     )
 
     assert [bucket.key for bucket in buckets] == ["05"]

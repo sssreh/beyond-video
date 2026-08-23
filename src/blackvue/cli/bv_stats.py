@@ -163,10 +163,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="all",
         help=(
             "Calendar period to group recordings by (default: "
-            "%(default)s). 'monthday' groups by exact calendar date; "
+            "%(default)s). 'date' groups by exact calendar date; "
             "'weekday' groups by day-of-week name (Monday..Sunday), "
             "recurring across the whole selection rather than one "
-            "bucket per date; 'dayofmonth' groups by day-of-month "
+            "bucket per date; 'monthday' groups by day-of-month "
             "number (01..31), recurring the same way."
         ),
     )
