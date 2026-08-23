@@ -292,14 +292,17 @@ def test_compute_trip_stats_min_max_altitude():
     assert stats.max_altitude_meters == 115.0
 
 
-def test_compute_trip_stats_elevation_gain_is_the_max_minus_min_range():
-    # Christer's own framing (2026-08-23): elevation_gain_meters is
-    # "the difference for the lowest and highest value", not a running
-    # total of every climb with descents ignored (the old definition -
-    # see _hysteresis_altitude_stats()'s own docstring for why that
-    # overstated real trips). 100 -> 115 -> 90 -> 105: the range is
-    # 90..115, so gain is 115-90=25, regardless of the up/down/up
-    # shape in between.
+def test_compute_trip_stats_elevation_gain_is_a_cumulative_ascent_total():
+    # Christer's own follow-up (2026-08-23), "How is that a gain?",
+    # after elevation_gain_meters briefly reported the max-minus-min
+    # range instead: a range can't tell "climbed, then descended, then
+    # climbed again" apart from "just climbed once" the way the word
+    # "gain" is normally understood. 100 -> 115 -> 90 -> 105 climbs
+    # twice (100->115 is +15, 90->105 is +15) with one descent
+    # (115->90) that doesn't count against the total - so gain is
+    # 15+15=30, not the range's 115-90=25. min/max still track the
+    # actual altitude span independently (see TripStats' own
+    # docstring).
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
         _fix(1, 59.31, 18.001, altitude=115.0),
@@ -311,7 +314,36 @@ def test_compute_trip_stats_elevation_gain_is_the_max_minus_min_range():
 
     assert stats.min_altitude_meters == 90.0
     assert stats.max_altitude_meters == 115.0
-    assert stats.elevation_gain_meters == 25.0
+    assert stats.elevation_gain_meters == 30.0
+
+
+def test_compute_trip_stats_elevation_gain_ignores_a_descent_back_to_start():
+    # The exact shape Christer's "How is that a gain?" report was
+    # about: drive up a hill and back down to the same altitude. A
+    # range statistic reports 0 here (start and end are equal), which
+    # reads as "no gain at all" even though real climbing happened.
+    # The cumulative-ascent total instead counts the 50m climb and
+    # ignores the 50m descent, correctly reporting 50.0.
+    #
+    # Climbs and descends gradually (5 readings, each 25m step) rather
+    # than in one single jump-and-return - a lone up-then-immediately
+    # -back-down single-fix shape is indistinguishable from a bad GPS
+    # spike (see _reject_altitude_outliers()'s own docstring) and would
+    # get filtered out entirely before this test's real point (that a
+    # *genuine* descent contributes nothing) ever gets exercised.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=0.0),
+        _fix(1, 59.301, 18.0001, altitude=25.0),
+        _fix(2, 59.302, 18.0002, altitude=50.0),
+        _fix(3, 59.303, 18.0003, altitude=25.0),
+        _fix(4, 59.304, 18.0004, altitude=0.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 0.0
+    assert stats.max_altitude_meters == 50.0
+    assert stats.elevation_gain_meters == 50.0
 
 
 def test_compute_trip_stats_elevation_bridges_gaps_missing_a_reading():

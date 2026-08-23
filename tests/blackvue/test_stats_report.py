@@ -283,17 +283,14 @@ def test_aggregate_groups_by_recording_never_combines_two_recordings():
     assert len(buckets) == 2
 
 
-def test_aggregate_groups_by_recording_range_aggregate_still_works():
-    # elevation_gain_m's "range" aggregate kind (see
-    # aggregate_recording_stats()'s own docstring) reduces to that one
-    # recording's own already-per-recording max-min span when there's
-    # only ever one recording in the bucket - not a special case, the
-    # same code path every other grouping uses.
+def test_aggregate_groups_by_recording_elevation_gain_sum_still_works():
+    # elevation_gain_m is a plain "sum" field like distance_km (see
+    # STAT_FIELDS' own comment for why - each recording's own reading
+    # is already a spike-resistant cumulative-ascent total, so summing
+    # combines correctly). A single-recording bucket reduces to that
+    # one reading, same as every other grouping's code path.
     entries = [
-        (
-            RecordingId("20260823_090000_NF"),
-            {"max_altitude_m": 44.0, "min_altitude_m": 8.0},
-        ),
+        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 36.0}),
     ]
 
     buckets = aggregate_recording_stats(
@@ -316,53 +313,43 @@ def test_aggregate_sum_field():
     assert buckets[0].values["distance_km"] == 15.0
 
 
-def test_aggregate_elevation_gain_is_bucket_range_not_summed_per_recording():
-    # Christer, after a long-range summary reported 39302m of
-    # elevation gain: "what goes up must come down." elevation_gain_m
-    # used to be "sum" - each recording's own already-computed max-min
-    # gain added into the bucket's total - which grows without bound
-    # the more (short, individually-small-gain) recordings a bucket
-    # spans, rather than reflecting the bucket's real net elevation
-    # span. It's now "range": max(every recording's own
-    # max_altitude_m) - min(every recording's own min_altitude_m).
-    # Three recordings whose own per-recording elevation_gain_m
-    # readings (10+15+8=33) would have summed well past what the
-    # bucket's own altitude readings actually span (45-2=43 is
-    # *more* here on purpose - the two numbers have no fixed relation
-    # to each other, which is exactly the point: "sum" and "range" are
-    # different quantities, not two ways of writing the same one).
+def test_aggregate_elevation_gain_sums_each_recordings_own_climbing():
+    # elevation_gain_m is a plain "sum" (see STAT_FIELDS' own comment
+    # for the history: it was briefly a bucket-wide "range" - max of
+    # every recording's own max_altitude_m minus min of every
+    # recording's own min_altitude_m - specifically to route around a
+    # bug where the per-recording field itself wasn't a real "gain"
+    # yet; now that export/trip_stats.py's own elevation_gain_meters
+    # is a genuine spike-resistant cumulative-ascent total, summing
+    # each recording's own reading gives the bucket's real total
+    # climbing, the same relationship every other "sum" field
+    # (distance_km, duration_seconds) already has).
     entries = [
-        (
-            RecordingId("20260823_090000_NF"),
-            {"max_altitude_m": 30.0, "min_altitude_m": 20.0, "elevation_gain_m": 10.0},
-        ),
-        (
-            RecordingId("20260823_120000_NF"),
-            {"max_altitude_m": 45.0, "min_altitude_m": 30.0, "elevation_gain_m": 15.0},
-        ),
-        (
-            RecordingId("20260823_180000_NF"),
-            {"max_altitude_m": 10.0, "min_altitude_m": 2.0, "elevation_gain_m": 8.0},
-        ),
+        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),
+        (RecordingId("20260823_120000_NF"), {"elevation_gain_m": 15.0}),
+        (RecordingId("20260823_180000_NF"), {"elevation_gain_m": 8.0}),
     ]
 
     buckets = aggregate_recording_stats(
         entries, grouping="all", fields=["elevation_gain_m"]
     )
 
-    assert buckets[0].values["elevation_gain_m"] == 43.0  # 45 (max) - 2 (min)
+    assert buckets[0].values["elevation_gain_m"] == 33.0
 
 
-def test_aggregate_elevation_gain_survives_over_many_recordings():
-    # The actual regression this guards: a bucket spanning thousands
-    # of short recordings, each with a small but real max-min gain -
-    # summing those (the old behavior) would keep growing without any
-    # relation to real terrain; the bucket-wide range stays bounded by
-    # the real min/max regardless of how many recordings contribute.
+def test_aggregate_elevation_gain_can_legitimately_grow_large_over_many_recordings():
+    # Unlike the old range definition (bounded by the selection's real
+    # min/max altitude no matter how much driving it covers), a true
+    # cumulative-ascent total genuinely keeps growing the more real
+    # climbing a long selection contains - the same way a fitness
+    # tracker's own "elevation gain" for a whole season isn't capped
+    # by any single day's terrain. 500 recordings each with a modest,
+    # real 12m of their own climbing sum to 6000m total - not a bug,
+    # just what "total climbing over a lot of driving" looks like.
     entries = [
         (
             RecordingId(f"202608{(i % 28) + 1:02d}_{i % 24:02d}0000_NF"),
-            {"max_altitude_m": 40.0 + (i % 5), "min_altitude_m": 10.0 - (i % 3)},
+            {"elevation_gain_m": 12.0},
         )
         for i in range(500)
     ]
@@ -371,26 +358,24 @@ def test_aggregate_elevation_gain_survives_over_many_recordings():
         entries, grouping="all", fields=["elevation_gain_m"]
     )
 
-    assert buckets[0].values["elevation_gain_m"] == 44.0 - 8.0
+    assert buckets[0].values["elevation_gain_m"] == 6000.0
 
 
-def test_aggregate_elevation_gain_ignores_fields_missing_altitude_readings():
+def test_aggregate_elevation_gain_ignores_recordings_missing_the_reading():
     entries = [
-        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),  # no min/max
-        (
-            RecordingId("20260823_180000_NF"),
-            {"max_altitude_m": 20.0, "min_altitude_m": 5.0},
-        ),
+        (RecordingId("20260823_090000_NF"), {"elevation_gain_m": 10.0}),
+        (RecordingId("20260823_180000_NF"), {"distance_km": 4.0}),  # no elevation_gain_m
     ]
 
     buckets = aggregate_recording_stats(
         entries, grouping="all", fields=["elevation_gain_m"]
     )
 
-    # The first recording has no min/max_altitude_m at all, so it
-    # simply doesn't contribute - same "missing isn't zero, and isn't
-    # excluded from the rest" convention every other field follows.
-    assert buckets[0].values["elevation_gain_m"] == 15.0
+    # The second recording has no elevation_gain_m reading at all, so
+    # it simply doesn't contribute - same "missing isn't zero, and
+    # isn't excluded from the rest" convention every other field
+    # follows.
+    assert buckets[0].values["elevation_gain_m"] == 10.0
 
 
 def test_aggregate_elevation_gain_none_when_no_recording_has_altitude_readings():

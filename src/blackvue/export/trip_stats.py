@@ -66,6 +66,29 @@ _ALTITUDE_GAIN_DEADBAND_METERS = 2.0
 # inside the range a single bad fix can produce.
 _ALTITUDE_OUTLIER_JUMP_METERS = 30.0
 
+# Third real-archive report (Christer, 2026-08-23, same day as the
+# fix above): having reworked elevation_gain_meters into a max-minus
+# -min range so a single corrupted altitude fix couldn't inflate it
+# any more, Christer pushed back on the *result* rather than the
+# math: "How is that a gain?" - correctly, a range can't tell "drove
+# up a hill and back down" (net change zero, but real climbing
+# happened) apart from "just drove up once and stopped" the way the
+# word "gain" is normally understood; it also can't ever go down,
+# which read as suspicious on its own ("Up, up and away") even though
+# it's mathematically inevitable for a range statistic. The
+# _reject_altitude_outliers() pass immediately above didn't exist yet
+# back when elevation_gain_meters was still a running total of every
+# climb (see _hysteresis_altitude_stats()'s own docstring for that
+# earlier definition and why it was abandoned) - a lone bad fix had
+# nothing standing between it and the running total back then. Now
+# that outlier rejection runs first, the specific failure that forced
+# the switch to range (an ungrounded spike inflating a total it never
+# got subtracted back out of) can no longer happen, so
+# _hysteresis_altitude_stats() below reverts to a true cumulative
+# -ascent total - sum of every dead-banded climb, descents excluded -
+# with the spike protection this module already has doing the job the
+# range redefinition used to.
+#
 # Real-archive report (Christer, 2026-08-23): the Stats dashboard
 # showed a max_speed_kmh of 322.3 km/h for a trip in a car whose real
 # electronic limiter caps it at 250 km/h - obviously a spurious
@@ -237,18 +260,28 @@ def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, fl
     than each individual raw reading, so on their own the remaining
     sub-dead-band noise can't move either statistic.
 
-    `elevation_gain_meters` is simply the difference between the
-    resulting max and min - Christer's own framing (2026-08-23), after
-    the previous "sum of every dead-banded climb, ignore descents"
-    definition turned out to overstate real trips whenever a bad
-    altitude fix slipped past the dead-band (which only ever catches
-    *small* noise, not one large spike): a single corrupted reading
-    raised the reference once, contributed its full jump to a running
-    total, and was never subtracted back out even though min/max
-    already showed the same reading as an extreme. Reporting max-min
-    means elevation_gain_meters can never diverge from what
-    min_altitude_meters/max_altitude_meters themselves already show -
-    there's no separate running total left to disagree with them.
+    `elevation_gain_meters` is a true cumulative-ascent total: every
+    time the reference moves *upward* past the dead-band, that delta
+    is added to a running sum; a downward move re-bases the reference
+    (so a later climb is measured from where the vehicle actually is)
+    but contributes nothing to the total. This is back to the
+    project's original definition, not the max-minus-min range this
+    function briefly used instead (Christer, 2026-08-23: "How is that
+    a gain?", after a range figure that started and ended at the same
+    altitude reported zero for a drive that genuinely went up and back
+    down again a hill in between - a range can't tell that shape apart
+    from a trip that just never climbed at all, which isn't what
+    "elevation gain" means to a driver, even though it can never be
+    negative). The range definition existed only to route around a
+    narrower bug: back when it was still a running total, a single
+    corrupted altitude fix that slipped past the dead-band (which only
+    ever catches *small* noise, not one large spike) contributed its
+    full bogus jump and was never subtracted back out. That exact
+    failure mode is now closed off one step earlier by
+    _reject_altitude_outliers() above, which didn't exist yet the
+    first time this was a running total - so the running total is safe
+    to bring back, with the outlier guard doing the job the range
+    redefinition used to.
 
     `altitudes` must be non-empty - callers only ever call this once
     they already know there's at least one reading, mirroring every
@@ -259,15 +292,18 @@ def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, fl
 
     reference = filtered[0]
     track_min = track_max = reference
+    total_gain = 0.0
 
     for altitude in filtered[1:]:
         delta = altitude - reference
         if abs(delta) > _ALTITUDE_GAIN_DEADBAND_METERS:
+            if delta > 0:
+                total_gain += delta
             reference = altitude
         track_min = min(track_min, reference)
         track_max = max(track_max, reference)
 
-    return track_min, track_max, track_max - track_min
+    return track_min, track_max, total_gain
 
 
 def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
@@ -331,11 +367,14 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     filtering this applies and why - a naive raw-reading sum badly
     overstates "gain" from ordinary GPS altitude noise, and a single
     badly-wrong altitude fix can overstate it far worse still, both
-    confirmed against real archives). `elevation_gain_meters` is the
-    difference between the resulting max and min, not a running total
-    of climbs - see _hysteresis_altitude_stats()'s own docstring for
-    why that's a deliberate redefinition, not an approximation of the
-    old one. The altitude sequence fed into it is every present
+    confirmed against real archives). `elevation_gain_meters` is a
+    true cumulative-ascent total (every dead-banded climb summed,
+    descents excluded) - see _hysteresis_altitude_stats()'s own
+    docstring for why that's safe now that outlier rejection runs
+    first, after a brief period where this field instead reported the
+    max-minus-min range turned out to not mean "gain" the way a driver
+    expects (a there-and-back climb reported zero). The altitude
+    sequence fed into it is every present
     `altitude_meters` reading among the trip's positioned fixes, in
     order, with any fix that
     lacks one simply dropped from the sequence rather than fragmenting
