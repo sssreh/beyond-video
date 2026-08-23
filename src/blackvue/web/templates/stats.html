@@ -381,19 +381,35 @@
   // one x-axis position at a time, rather than the whole chart
   // appearing at once. Every bar/point gets tagged with data-x-index
   // (its position along the x-axis) and data-series (which series it
-  // belongs to, matching the legend below); reveal() below walks
-  // x-index 0..n-1 on a stagger and un-hides whatever's tagged with
-  // that index, respecting each series' current legend-toggle state
-  // (see seriesVisible below) so a toggled-off series stays hidden
-  // through the animation instead of flashing on then off. Total
-  // animation length is capped so a wide selection (e.g. a whole
-  // year's worth of --group date buckets) still finishes quickly
-  // rather than taking one visible step per day. Skipped entirely for
+  // belongs to, matching the legend below); each one's own
+  // transition-delay (see revealTransition() below) staggers when it
+  // fades in, respecting each series' current legend-toggle state (see
+  // seriesVisible below) so a toggled-off series stays hidden through
+  // the animation instead of flashing on then off. Skipped entirely for
   // prefers-reduced-motion, matching that media feature's intent.
   var prefersReducedMotion = !!(window.matchMedia &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  var totalAnimMs = prefersReducedMotion ? 0 : Math.min(1500, Math.max(300, n * 60));
-  var stepMs = n > 0 ? totalAnimMs / n : 0;
+  // Christer, after this still looked unanimated on his real archive:
+  // "This didn't exist until it came without animation" - screenshot
+  // showed a whole year grouped "by date", 200+ x-axis positions. The
+  // original formula (totalAnimMs capped at 1500ms, stepMs = totalAnimMs
+  // / n) divides that fixed budget across every x-index individually,
+  // so at n=200 neighboring points are only ~7ms apart - nowhere near
+  // perceptible as a left-to-right build, just a near-simultaneous
+  // fade-in that reads as "it just appeared". Bucketing x-indices into
+  // a capped number of animation steps (rather than giving every index
+  // its own slot) keeps each step's delay above MIN_STEP_MS regardless
+  // of how wide n gets - several neighboring x-indices within a wide
+  // chart share a reveal step instead of each getting a separately
+  // (and imperceptibly) timed one, which loses nothing visible since
+  // "one date out of 200" was never going to read as its own step
+  // anyway.
+  var MIN_STEP_MS = 40;
+  var MAX_TOTAL_MS = 2000;
+  var maxAnimSteps = Math.floor(MAX_TOTAL_MS / MIN_STEP_MS);
+  var animSteps = prefersReducedMotion ? 0 : Math.min(n, maxAnimSteps);
+  var totalAnimMs = animSteps > 0 ? Math.min(MAX_TOTAL_MS, Math.max(300, animSteps * MIN_STEP_MS)) : 0;
+  var stepMs = animSteps > 0 ? totalAnimMs / animSteps : 0;
 
   // Per-series visibility, driven by clicking a legend entry
   // (Christer: "can clicking on the legend toggle the data for it off
@@ -412,7 +428,8 @@
   // down just flips opacity on every element in one shot and lets each
   // element's own transition-delay hold it back the right amount.
   function revealTransition(index) {
-    return 'opacity 200ms ease ' + (index * stepMs) + 'ms';
+    var bucket = (animSteps > 0 && n > 0) ? Math.floor(index / n * animSteps) : 0;
+    return 'opacity 200ms ease ' + (bucket * stepMs) + 'ms';
   }
 
   function showTooltip(evt, seriesInfo, index) {
