@@ -8,9 +8,9 @@
 
 ```
 bv-stats [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
-         [--group {all,year,month,date,week,weekday,monthday}]
+         [--group {all,recording,year,month,date,week,weekday,monthday}]
          [--fields FIELD1,FIELD2,...] [--list-fields]
-         [--json] [--config-dir DIR] [--trace]
+         [--json] [--config-dir DIR] [--trace] [--debug]
          [PATH]
 ```
 
@@ -29,6 +29,7 @@ This command is deliberately split into a library half (`blackvue.stats_report`,
 | Grouping | Bucket | Meaning |
 |---|---|---|
 | `all` (default) | one bucket | Everything in range, summarized together. |
+| `recording` | a recording id, e.g. `20260823_140501_F` | One bucket per individual recording - no grouping at all. Meant for a narrow selection (a day, a trip) so a chart can plot one point per recording instead of a calendar-period rollup - see bv-web's Stats dashboard, whose grouping dropdown offers this as an ungrouped view. Every field degenerates correctly for a one-recording bucket with no special handling; there's no enforced point cap, so picking this over a wide range (a whole year) will produce one bucket per recording in it, by design, not as a bug. |
 | `year` | `2026` | One bucket per calendar year. |
 | `month` | `2026-08` | One bucket per calendar year+month. |
 | `date` | `2026-08-23` | One bucket per exact calendar date. |
@@ -64,6 +65,24 @@ A GPS dropout - a tunnel, a parking garage, a high-rise canyon - doesn't politel
 
 Unlike `--estimate-gaps`, this is a real, GPS-anchored distance (the same before/after-tunnel technique described above, just extended across the one boundary a single recording's own stats can't see past) rather than a speed-basis extrapolation, so it's on unconditionally and doesn't need a flag. It's still kept visibly separate from directly-measured distance, the same way estimated distance is: the text report appends "(includes ~X.XX km bridged across N recording boundary(ies))" on the `distance_km` line, and `--json` output carries `bridged_distance_km`/`bridged_recording_count` keys on the affected bucket. A recording that already received a boundary-bridge contribution is excluded from `--estimate-gaps`'s own gap-filling, so a single-fix recording at a trip's edge never gets credited twice for the same missing stretch.
 
+### Where bv-stats spends its time
+
+`bv-stats` has two real, algorithmically distinct cost centers, and they scale with different things:
+
+The archive scan (`adapter.open_archive()`) reads every file the archive has ever held - not just the recordings in the selected range - via one directory scan plus one per-file size lookup. This runs on every `bv-stats` invocation regardless of `--timestamp`/`--from`/`--until` (those filters are applied afterward, over the already-scanned recording list), so its cost scales with the *total* size of the archive, not the size of the selection. On an archive that's been growing for years, this can be the largest single cost even for a narrow `--timestamp` query.
+
+Reading each selected recording's `Stats` asset (`<id>.stats.json`) is one file open plus a small JSON parse per recording actually in range - this scales with the *selection* size, not the archive's total size, so it stays cheap even on a large archive as long as the query itself is narrow.
+
+Aggregation (bucketing and combining the parsed stats) is comparatively negligible next to the two phases above.
+
+`--debug` prints the real elapsed time for each of these phases (plus the up-front filter step), so instead of guessing which one dominates on your own archive and hardware, run:
+
+```
+bv-stats --debug
+```
+
+and read the `bv-stats: debug: ...` lines it prints along the way. If the archive-scan line dominates, the cost is proportional to how large the archive has grown, not to the query; if the "read N Stats asset(s)" line dominates instead, it's the selection itself that's large. There's no single number this document can give you that would be trustworthy across every archive size, disk, and filesystem it might run on - `--debug` exists so you can get a real one for your own setup instead of relying on a guess.
+
 ## ARGUMENTS
 
 | Argument | Description |
@@ -85,7 +104,7 @@ Unlike `--estimate-gaps`, this is a real, GPS-anchored distance (the same before
 
 | Option | Description |
 |---|---|
-| `--group {all,year,month,date,week,weekday,monthday}` | Calendar period to group recordings by. Default: `all`. |
+| `--group {all,recording,year,month,date,week,weekday,monthday}` | Calendar period to group recordings by. Default: `all`. |
 | `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`. |
 | `--list-fields` | Print every field `--fields` accepts, with its unit and aggregation kind, then exit. Needs no archive. |
 | `--summary` | Also report an overall summary (totals across the whole selection, same as `--group all`) alongside the per-group breakdown. No effect when `--group` is already `all`. See "Summary" below. |
@@ -97,6 +116,7 @@ Unlike `--estimate-gaps`, this is a real, GPS-anchored distance (the same before
 | Option | Description |
 |---|---|
 | `--trace` | Print a `.` to stdout every 25 recordings scanned, so a long run shows it's still active. |
+| `--debug` | Print elapsed time for each phase (opening/scanning the archive, filtering to the selected range, reading each recording's Stats asset, aggregating), so a slow run can be diagnosed. See "Where bv-stats spends its time" below. |
 | `-h`, `--help` | Show help and exit. |
 
 ## EXIT STATUS

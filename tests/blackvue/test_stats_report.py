@@ -242,6 +242,67 @@ def test_aggregate_monthday_recurs_across_different_months():
     assert len(buckets[0].recordings) == 2
 
 
+def test_aggregate_groups_by_recording_one_bucket_each_in_chronological_order():
+    # "recording" is the one non-calendar grouping - Christer: "can
+    # you plot the graph a recording id at a time for non-grouped
+    # graphs." No combining at all: every recording gets its own
+    # bucket, key'd by its own RecordingId (already chronologically
+    # sortable as a plain string - see RecordingId's own docstring),
+    # regardless of insertion order.
+    entries = [
+        (RecordingId("20260823_180000_NF"), {"distance_km": 2.0}),
+        (RecordingId("20260823_090000_NF"), {"distance_km": 1.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="recording", fields=["distance_km"]
+    )
+
+    assert [bucket.key for bucket in buckets] == [
+        "20260823_090000_NF", "20260823_180000_NF",
+    ]
+    assert buckets[0].values["distance_km"] == 1.0
+    assert buckets[1].values["distance_km"] == 2.0
+    assert len(buckets[0].recordings) == 1
+    assert len(buckets[1].recordings) == 1
+
+
+def test_aggregate_groups_by_recording_never_combines_two_recordings():
+    # Two recordings on the same day, same as test_aggregate_groups_by_date
+    # above (which merges these into one "2026-08-23" bucket) - grouping
+    # by "recording" instead must keep them fully separate.
+    entries = [
+        (RecordingId("20260823_090000_NF"), {"distance_km": 1.0}),
+        (RecordingId("20260823_180000_NF"), {"distance_km": 2.0}),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="recording", fields=["distance_km"]
+    )
+
+    assert len(buckets) == 2
+
+
+def test_aggregate_groups_by_recording_range_aggregate_still_works():
+    # elevation_gain_m's "range" aggregate kind (see
+    # aggregate_recording_stats()'s own docstring) reduces to that one
+    # recording's own already-per-recording max-min span when there's
+    # only ever one recording in the bucket - not a special case, the
+    # same code path every other grouping uses.
+    entries = [
+        (
+            RecordingId("20260823_090000_NF"),
+            {"max_altitude_m": 44.0, "min_altitude_m": 8.0},
+        ),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="recording", fields=["elevation_gain_m"]
+    )
+
+    assert buckets[0].values["elevation_gain_m"] == 36.0
+
+
 def test_aggregate_sum_field():
     entries = [
         (RecordingId("20260823_090000_NF"), {"distance_km": 10.0}),

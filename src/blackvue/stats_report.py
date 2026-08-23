@@ -153,7 +153,7 @@ DEFAULT_FIELDS: tuple[str, ...] = (
 # request listed them - see _bucket_key()'s own docstring for exactly
 # what each one means.
 GROUPINGS: tuple[str, ...] = (
-    "all", "year", "month", "date", "week", "weekday", "monthday",
+    "all", "recording", "year", "month", "date", "week", "weekday", "monthday",
 )
 
 _WEEKDAY_ORDER = (
@@ -230,6 +230,12 @@ def _bucket_key(timestamp: datetime, grouping: str) -> str:
     """The bucket key one recording's own start timestamp falls into
     for `grouping` - see GROUPINGS' own comment for the full list.
 
+    Never called for grouping == "recording" - aggregate_recording_stats()
+    handles that one directly (each recording's own RecordingId *is*
+    its bucket key, not something derived from its timestamp the way
+    every calendar grouping below is), see that function's own
+    docstring.
+
     "all" - a single bucket for the whole selection (an archive-wide,
     or --timestamp/--from/--until-range-wide, summary).
     "year" - one bucket per calendar year ("2026").
@@ -297,6 +303,10 @@ def _sort_key(bucket_key: str, grouping: str):
     "year"/"month"/"monthday"/"week" are all zero-padded, lexically-
     sortable-as-chronological strings already (_bucket_key() built
     them that way on purpose), so the key itself sorts correctly.
+    "recording" is the same story for a different reason - its key is
+    a RecordingId's own value string, already fixed-width and zero-
+    padded by construction (see RecordingId's own docstring), not
+    something _bucket_key() built at all.
     "weekday" is the one exception - "Monday" < "Tuesday" alphabetic-
     ally isn't Monday-first calendar order, so it's sorted by
     position in _WEEKDAY_ORDER instead. "all" only ever has the one
@@ -552,6 +562,30 @@ def aggregate_recording_stats(
     report should read Jan, Feb, Mar..., regardless of which month's
     recordings happened to appear first in `entries`.
 
+    `grouping="recording"` is the one non-calendar grouping: every
+    recording gets its own single-recording bucket instead of being
+    combined with any others at all - Christer's own request, once he
+    had a working grouped chart, for "the graph a recording id at a
+    time for non-grouped graphs": every other grouping answers "how
+    does this add up over some period," this one instead plots the
+    raw, ungrouped per-recording data point by point, which the
+    existing bucket/chart machinery already supports for free once a
+    bucket can hold exactly one recording - no separate code path
+    needed in bv_stats.py or the web dashboard, both already render
+    whatever StatBucket.key/values a grouping happens to produce.
+    Chronological order still holds (RecordingId's own zero-padded
+    string sorts correctly), and every aggregate kind still runs the
+    same way it would for a bigger bucket - "sum"/"avg"/"max"/"min"
+    over a single recording's own one reading is just that reading
+    itself, and "range" (elevation_gain_m) reduces to that one
+    recording's own already-per-recording max-min span. Meant for a
+    narrow selection (a day, a trip, a week) - --timestamp/--from/
+    --until controls how many points this produces the same way it
+    does for every other grouping; nothing here caps it, so a
+    --group recording run over a whole archive plots one point per
+    recording, which is exactly as much data as was asked for, just
+    not necessarily a readable chart.
+
     Each field's multiple per-recording readings combine according to
     its own STAT_FIELDS[...].aggregate: "sum"/"avg"/"max"/"min" over
     every *present* (non-None) reading among the bucket's recordings -
@@ -626,7 +660,15 @@ def aggregate_recording_stats(
 
     buckets: dict[str, list[tuple[RecordingId, dict]]] = {}
     for recording_id, stats in entries:
-        key = _bucket_key(recording_id.timestamp, grouping)
+        if grouping == "recording":
+            # One bucket per recording, key'd by the recording's own
+            # id (unique, and already a zero-padded fixed-width string
+            # that sorts chronologically - see RecordingId's own
+            # docstring) - not derived from its timestamp via
+            # _bucket_key() the way every calendar grouping is.
+            key = str(recording_id)
+        else:
+            key = _bucket_key(recording_id.timestamp, grouping)
         buckets.setdefault(key, []).append((recording_id, stats))
 
     global_basis = _speed_basis_kmh(entries) if estimate_gaps else None

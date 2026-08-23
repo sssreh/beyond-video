@@ -77,6 +77,29 @@ def test_parse_args_group_accepts_monthday():
     assert args.group == "monthday"
 
 
+def test_parse_args_group_accepts_recording():
+    # The one non-calendar grouping - one point per individual
+    # recording, no combining at all - Christer: "can you plot the
+    # graph a recording id at a time for non-grouped graphs." See
+    # stats_report.py's aggregate_recording_stats() docstring for the
+    # full design.
+    args = parse_args(["/some/archive", "--group", "recording"])
+
+    assert args.group == "recording"
+
+
+def test_parse_args_debug_defaults_false():
+    args = parse_args(["/some/archive"])
+
+    assert args.debug is False
+
+
+def test_parse_args_debug_flag():
+    args = parse_args(["/some/archive", "--debug"])
+
+    assert args.debug is True
+
+
 def test_parse_args_fields_parses_comma_separated_list():
     args = parse_args(["/some/archive", "--fields", "distance_km,max_speed_kmh"])
 
@@ -164,6 +187,75 @@ def test_run_reports_aggregated_totals(monkeypatch, tmp_path):
     assert "5.00 km" in joined
     assert "40.0 km/h" in joined
     assert "90.0 km/h" in joined
+
+
+def test_run_group_recording_gives_one_bucket_per_recording(monkeypatch, tmp_path):
+    recording_a = _make_recording_with_stats(
+        "20260823_090000_NF", tmp_path, {"distance_km": 1.0}
+    )
+    recording_b = _make_recording_with_stats(
+        "20260823_180000_NF", tmp_path, {"distance_km": 2.0}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([recording_a, recording_b])),
+    )
+    args = parse_args(
+        [str(tmp_path), "--fields", "distance_km", "--group", "recording"]
+    )
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    joined = "\n".join(messages)
+    assert "20260823_090000_NF (1 recording(s))" in joined
+    assert "20260823_180000_NF (1 recording(s))" in joined
+
+
+def test_run_debug_prints_phase_timings(monkeypatch, tmp_path):
+    # Christer: "Do we know where bv-stats spend its time." --debug
+    # surfaces the scan/filter/load/aggregate phase breakdown so a
+    # slow run can be diagnosed on the machine it's actually slow on,
+    # rather than guessed at - see bv_stats.py's own --debug help text.
+    recording = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path, {"distance_km": 5.0}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([recording])),
+    )
+    args = parse_args([str(tmp_path), "--fields", "distance_km", "--debug"])
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    joined = "\n".join(messages)
+    assert "debug: scanned archive in" in joined
+    assert "debug: filtered to 1 recording(s) in range in" in joined
+    assert "debug: read 1 Stats asset(s) in" in joined
+    assert "debug: aggregated 1 bucket(s) in" in joined
+
+
+def test_run_debug_off_by_default_no_phase_timings(monkeypatch, tmp_path):
+    recording = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path, {"distance_km": 5.0}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([recording])),
+    )
+    args = parse_args([str(tmp_path), "--fields", "distance_km"])
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    assert not any("debug:" in message for message in messages)
 
 
 def test_run_json_output_is_valid_json_with_expected_shape(monkeypatch, tmp_path):

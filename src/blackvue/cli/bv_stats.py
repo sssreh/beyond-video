@@ -167,7 +167,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'weekday' groups by day-of-week name (Monday..Sunday), "
             "recurring across the whole selection rather than one "
             "bucket per date; 'monthday' groups by day-of-month "
-            "number (01..31), recurring the same way."
+            "number (01..31), recurring the same way; 'recording' "
+            "doesn't group at all - one point per individual "
+            "recording, for a non-grouped, per-recording view over a "
+            "narrow selection (a day, a trip)."
         ),
     )
     parser.add_argument(
@@ -235,6 +238,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"{TRACE_INTERVAL_RECORDINGS} recordings scanned, so a "
             "long run shows it's still active (see bv-search's own "
             "--trace)."
+        ),
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Print elapsed time for each phase (opening/scanning the "
+            "archive, filtering to the selected range, reading each "
+            "recording's Stats asset, aggregating) so a slow run can "
+            "be diagnosed - see 'Where bv-stats spends its time' in "
+            "bv-stats(1)."
         ),
     )
 
@@ -341,14 +356,28 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         _print_list_fields(say)
         return EXIT_OK
 
-    archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
-    adapter_id = camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
-    adapter = get_adapter(adapter_id)
-    archive = adapter.open_archive(archive_path)
-
+    # `started_at`/`started_monotonic` are captured before
+    # adapter.open_archive() below (not after, as this used to do) so
+    # the "finished ... (X.Xs)" line at the end of _run() - and the
+    # --debug phase breakdown - both account for the archive scan too.
+    # That scan (one os.scandir() over every file the archive has ever
+    # held, not just the selected range - see ArchiveReader.read()'s
+    # own docstring) runs on every bv-stats call regardless of
+    # --timestamp/--from/--until, and on a large, long-lived archive
+    # it can be the single largest cost - see --debug's own help text
+    # and bv-stats(1)'s "Where bv-stats spends its time" section.
     started_at = datetime.now()
     started_monotonic = time.monotonic()
     say(f"bv-stats: started {started_at:%H:%M:%S}")
+
+    archive_path, camera_config = resolve_archive_path(args.path, args.config_dir)
+    adapter_id = camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
+    adapter = get_adapter(adapter_id)
+
+    scan_start = time.monotonic()
+    archive = adapter.open_archive(archive_path)
+    if args.debug:
+        say(f"bv-stats: debug: scanned archive in {time.monotonic() - scan_start:.2f}s")
 
     try:
         try:
@@ -359,10 +388,17 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
             warn(f"bv-stats: {exc}")
             return EXIT_ARGS_ERROR
 
+        filter_start = time.monotonic()
         recordings = [
             recording for recording in archive.recordings
             if recording.id.value in interval
         ]
+        if args.debug:
+            say(
+                f"bv-stats: debug: filtered to {len(recordings)} "
+                f"recording(s) in range in "
+                f"{time.monotonic() - filter_start:.2f}s"
+            )
 
         if not recordings:
             say(f"bv-stats: {archive_path} - no recordings found in range.")
@@ -372,6 +408,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         entries: list[tuple] = []
         skipped = 0
 
+        load_start = time.monotonic()
         for recording in recordings:
             if progress is not None:
                 progress.tick()
@@ -384,6 +421,11 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         if progress is not None:
             progress.finish()
+        if args.debug:
+            say(
+                f"bv-stats: debug: read {len(entries)} Stats asset(s) "
+                f"in {time.monotonic() - load_start:.2f}s"
+            )
 
         if not entries:
             say(
@@ -408,6 +450,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
                     "altitude fields won't include them."
                 )
 
+        aggregate_start = time.monotonic()
         buckets = aggregate_recording_stats(
             entries, grouping=args.group, fields=args.fields,
             estimate_gaps=args.estimate_gaps,
@@ -419,6 +462,11 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
                 entries, grouping="all", fields=args.fields,
                 estimate_gaps=args.estimate_gaps,
             )[0]
+        if args.debug:
+            say(
+                f"bv-stats: debug: aggregated {len(buckets)} bucket(s) "
+                f"in {time.monotonic() - aggregate_start:.2f}s"
+            )
 
         if args.json:
             payload: dict | list = {
