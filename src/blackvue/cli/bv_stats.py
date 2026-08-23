@@ -281,6 +281,13 @@ def _print_bucket(say, label: str, bucket: StatBucket, fields: list[str]) -> Non
                 f"{bucket.estimated_recording_count} recording(s) with "
                 "no GPS fix)"
             )
+        if field_key == "distance_km" and bucket.bridged_recording_count:
+            bridged = _format_value("distance_km", bucket.bridged_distance_km)
+            line += (
+                f" (includes {bridged} bridged across "
+                f"{bucket.bridged_recording_count} GPS dropout(s) at a "
+                "recording boundary)"
+            )
         say(line)
 
 
@@ -313,6 +320,9 @@ def _buckets_to_json(buckets: list[StatBucket]) -> list[dict]:
         if bucket.estimated_recording_count:
             entry["estimated_distance_km"] = bucket.estimated_distance_km
             entry["estimated_recording_count"] = bucket.estimated_recording_count
+        if bucket.bridged_recording_count:
+            entry["bridged_distance_km"] = bucket.bridged_distance_km
+            entry["bridged_recording_count"] = bucket.bridged_recording_count
         result.append(entry)
     return result
 

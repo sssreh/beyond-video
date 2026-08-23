@@ -24,12 +24,31 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import timedelta
 
 from .archive.asset import Asset
 from .archive.recording import Recording
 from .archive.recording_id import RecordingId
+
+# Mean Earth radius in meters - the same well-known value export/
+# trip_stats.py's own _EARTH_RADIUS_METERS uses, duplicated rather than
+# imported (that one's module-private by convention, and this module's
+# own docstring is explicit about staying import-light - no `..export`
+# dependency, so bv-web can import this module directly without pulling
+# in export/'s own, much heavier dependency chain).
+_EARTH_RADIUS_METERS = 6_371_000.0
+
+# _boundary_bridge_km()'s own cutoff for "close enough in time to be
+# the same GPS dropout, not two unrelated recordings" - reuses trip/
+# trip_builder.py's own DEFAULT_MAX_GAP (5 minutes) *value*, not the
+# import itself (this module deliberately doesn't reach into ..trip,
+# same reasoning as _EARTH_RADIUS_METERS above - see
+# _boundary_bridge_km()'s own docstring for why this threshold matters
+# at all).
+_MAX_BOUNDARY_BRIDGE_GAP_SECONDS = 300.0
 
 # Every RECORDING_STATS field worth reporting on, each tagged with how
 # to combine several recordings' own values of it into one bucket's
@@ -319,6 +338,25 @@ class StatBucket:
     default to None/0 (no estimation happened, or happened but found
     nothing to fill) so every existing caller/test constructing a
     StatBucket without these two fields keeps working unchanged.
+
+    `bridged_distance_km`/`bridged_recording_count` are the same idea
+    for a different gap: distance recovered by _boundary_bridge_km()'s
+    straight-line bridge between one recording's own last real GPS fix
+    and the next recording's own first one, when a GPS dropout (a
+    tunnel, a parking garage) straddles the boundary between two
+    recordings rather than sitting entirely inside one - see
+    aggregate_recording_stats()'s own docstring and
+    _boundary_bridge_km()'s for the full "based off time, how much of
+    the distance belongs to each recording id" design (Christer,
+    2026-08-23). Unlike estimate_gaps, this always runs (it's a real
+    haversine between two real GPS positions, the same technique
+    export/trip_stats.py's own compute_trip_stats() already applies
+    unconditionally for gaps *inside* one recording or one merged trip -
+    this just extends the same idea across the one boundary that
+    technique can't see past) - kept as its own visible figure anyway,
+    for the same "never silently blend measured and bridged numbers"
+    reason estimated_distance_km already is. None/0 when nothing in
+    this bucket received a bridge contribution.
     """
 
     key: str
@@ -326,6 +364,8 @@ class StatBucket:
     values: dict[str, float | None]
     estimated_distance_km: float | None = None
     estimated_recording_count: int = 0
+    bridged_distance_km: float | None = None
+    bridged_recording_count: int = 0
 
 
 def _speed_basis_kmh(entries: list[tuple[RecordingId, dict]]) -> float | None:
@@ -353,6 +393,146 @@ def _speed_basis_kmh(entries: list[tuple[RecordingId, dict]]) -> float | None:
     if total_hours <= 0:
         return None
     return total_km / total_hours
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two lat/lon points - the
+    same formula export/trip_stats.py's own _haversine_distance_meters()
+    uses (straight-line, not road-following - see that function's own
+    docstring for why the difference is negligible for adjacent GPS
+    fixes, and _boundary_bridge_km()'s own docstring for why it's a
+    reasonable approximation here too, over a longer span)."""
+
+    lat1_rad, lat2_rad = math.radians(lat1), math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
+    )
+    return 2 * _EARTH_RADIUS_METERS * math.asin(math.sqrt(a)) / 1000.0
+
+
+def _gps_point(gps: dict | None) -> tuple[float, float, datetime] | None:
+    """Parse one recording's own start_gps/end_gps dict (see
+    generate/stats.py's compute_recording_stats()) into (lat, lon,
+    time), or None if `gps` is None (no positioned fix at all) or -
+    the one thing that can't be assumed for every already-on-disk
+    .stats.json - missing the "time" key a pre-2026-08-23 file won't
+    have yet (self-heals the next time `bv-generate --stats` runs over
+    that recording, see _do_stats()'s own read-merge-write docstring;
+    until then, _boundary_bridge_km() just can't bridge using that
+    recording's own boundary, the same "nothing to work with" fallback
+    as no GPS at all)."""
+
+    if gps is None:
+        return None
+    time_str = gps.get("time")
+    if time_str is None:
+        return None
+    try:
+        return gps["lat"], gps["lon"], datetime.fromisoformat(time_str)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _boundary_bridge_km(
+    entries: list[tuple[RecordingId, dict]],
+) -> dict[RecordingId, float]:
+    """How much extra distance to credit to each recording in `entries`
+    from bridging a GPS dropout that straddles the boundary between it
+    and the chronologically-*next* recording - Christer's own follow-up
+    once he'd confirmed the same technique already recovers distance
+    for a dropout entirely *inside* one recording (or one merged trip -
+    see export/trip_stats.py's compute_trip_stats()): "our stats file
+    does not contain first and last gps position, that could help a
+    little if you have a previous recording and a next recording gps
+    position, yes i know, but a straight line is better than nothing"
+    then, once start_gps/end_gps turned out to already be there just
+    missing a timestamp: "based of time can you see how much of the
+    distance belong to each recording id".
+
+    For each adjacent pair (A, then B) in `entries` sorted chronologic-
+    ally: if A's own end_gps and B's own start_gps are both present
+    (see _gps_point()) and no more than
+    _MAX_BOUNDARY_BRIDGE_GAP_SECONDS (5 minutes, the same value trip/
+    trip_builder.py's own DEFAULT_MAX_GAP already uses to decide "same
+    trip or not" - a dropout inside one continuous drive should be well
+    under that, and not bridging a longer gap avoids inventing a
+    straight-line "drive" across what's actually two unrelated trips,
+    e.g. a multi-hour parked gap between them) apart in time, a single
+    straight-line distance is computed between those two points -
+    exactly export/trip_stats.py's own gap-bridging technique, just
+    applied across the one boundary that per-recording computation
+    can't see past.
+
+    That one distance is then split between A and B by *time*, not
+    evenly: how much of the total gap falls before A's own video
+    actually ends (duration_seconds past A's own start) versus after
+    B's own video actually starts. A recording whose own GPS dropped
+    out well before its video stopped recording (a tunnel entered with
+    a while still left on the clip) gets more of the bridge than one
+    whose GPS was still live until nearly the end. Any portion of the
+    gap that falls *between* the two videos themselves (neither was
+    actually recording, e.g. a brief file-rotation pause) is left
+    unattributed to either - there's no recording there to credit it
+    to, the same "no coverage, nothing counted" honesty gaps inside one
+    recording already get.
+
+    Parking-mode recordings (RecordingId.is_parking) are never bridged
+    from or to - they're stationary by definition (triggered by g
+    -sensor motion while parked), so a straight line to/from one would
+    invent movement that never happened, the same reason estimate_gaps
+    already excludes them from its own extrapolation.
+
+    Returns a dict of only the recordings that actually received a
+    (non-zero) bridge contribution - most entries won't appear in it at
+    all, the same "sparse, not every key present" convention every
+    other per-recording lookup in this module uses.
+    """
+
+    bonus: dict[RecordingId, float] = {}
+
+    ordered = sorted(entries, key=lambda entry: entry[0])
+    for (id_a, stats_a), (id_b, stats_b) in zip(ordered, ordered[1:]):
+        if id_a.is_parking or id_b.is_parking:
+            continue
+
+        point_a = _gps_point(stats_a.get("end_gps"))
+        point_b = _gps_point(stats_b.get("start_gps"))
+        if point_a is None or point_b is None:
+            continue
+
+        lat_a, lon_a, time_a = point_a
+        lat_b, lon_b, time_b = point_b
+
+        total_gap_seconds = (time_b - time_a).total_seconds()
+        if total_gap_seconds <= 0 or total_gap_seconds > _MAX_BOUNDARY_BRIDGE_GAP_SECONDS:
+            continue
+
+        duration_a = stats_a.get("duration_seconds")
+        if duration_a is None:
+            continue
+        video_end_a = id_a.timestamp + timedelta(seconds=duration_a)
+
+        tail_seconds = max(0.0, (video_end_a - time_a).total_seconds())
+        head_seconds = max(0.0, (time_b - id_b.timestamp).total_seconds())
+        if tail_seconds <= 0 and head_seconds <= 0:
+            continue
+
+        bridge_km = _haversine_km(lat_a, lon_a, lat_b, lon_b)
+        if bridge_km <= 0:
+            continue
+
+        a_share = bridge_km * min(1.0, tail_seconds / total_gap_seconds)
+        b_share = bridge_km * min(1.0, head_seconds / total_gap_seconds)
+
+        if a_share > 0:
+            bonus[id_a] = bonus.get(id_a, 0.0) + a_share
+        if b_share > 0:
+            bonus[id_b] = bonus.get(id_b, 0.0) + b_share
+
+    return bonus
 
 
 def aggregate_recording_stats(
@@ -421,6 +601,27 @@ def aggregate_recording_stats(
     in the whole selection has both readings (nothing to build a speed
     basis from at all) is left exactly as it would be without
     `estimate_gaps` - there's nothing to extrapolate from.
+
+    Distance recovered across a recording-boundary GPS dropout (see
+    _boundary_bridge_km()'s own docstring) always runs, unlike
+    `estimate_gaps` - it's a real straight-line distance between two
+    real GPS fixes, the same technique export/trip_stats.py's own
+    compute_trip_stats() already applies unconditionally for gaps
+    inside one recording, just extended across the one boundary that
+    per-recording computation can't see past, not a speed-based
+    extrapolation. It's still kept as its own visible figure
+    (`StatBucket.bridged_distance_km`/`bridged_recording_count`) rather
+    than folded silently into `values["distance_km"]`, for the same
+    "never blend measured and inferred with no trace" reason
+    `estimated_distance_km` already is. A recording that received a
+    boundary-bridge contribution is excluded from `estimate_gaps`' own
+    "missing" list for the same bucket - the one case where both could
+    otherwise apply to the very same recording is a single-fix
+    recording sitting right at a boundary (has a real start_gps/
+    end_gps, but too few fixes for compute_trip_stats() to derive a
+    distance_km at all), and the boundary bridge's real, GPS-anchored
+    figure is preferable to a cruder whole-duration speed-basis guess
+    for it.
     """
 
     buckets: dict[str, list[tuple[RecordingId, dict]]] = {}
@@ -429,6 +630,9 @@ def aggregate_recording_stats(
         buckets.setdefault(key, []).append((recording_id, stats))
 
     global_basis = _speed_basis_kmh(entries) if estimate_gaps else None
+    boundary_bonus_km = (
+        _boundary_bridge_km(entries) if "distance_km" in fields else {}
+    )
 
     result = []
     for key in sorted(buckets, key=lambda k: _sort_key(k, grouping)):
@@ -502,6 +706,7 @@ def aggregate_recording_stats(
                     if stats.get("distance_km") is None
                     and stats.get("duration_seconds")
                     and not recording_id.is_parking
+                    and boundary_bonus_km.get(recording_id, 0.0) <= 0
                 ]
                 if missing:
                     estimated_distance_km = sum(
@@ -513,6 +718,21 @@ def aggregate_recording_stats(
                         values["distance_km"] or 0.0
                     ) + estimated_distance_km
 
+        bridged_distance_km: float | None = None
+        bridged_recording_count = 0
+        if boundary_bonus_km:
+            contributing = [
+                boundary_bonus_km[recording_id]
+                for recording_id in recording_ids
+                if boundary_bonus_km.get(recording_id, 0.0) > 0
+            ]
+            if contributing:
+                bridged_distance_km = sum(contributing)
+                bridged_recording_count = len(contributing)
+                values["distance_km"] = (
+                    values["distance_km"] or 0.0
+                ) + bridged_distance_km
+
         result.append(
             StatBucket(
                 key=key,
@@ -520,6 +740,8 @@ def aggregate_recording_stats(
                 values=values,
                 estimated_distance_km=estimated_distance_km,
                 estimated_recording_count=estimated_recording_count,
+                bridged_distance_km=bridged_distance_km,
+                bridged_recording_count=bridged_recording_count,
             )
         )
 

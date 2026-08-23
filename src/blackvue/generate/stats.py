@@ -204,12 +204,35 @@ def compute_recording_stats(
             positioned_fixes=positioned_fixes,
         ),
         "has_gps": bool(positioned_fixes),
+        # "time" (the fix's own timestamp, ISO 8601, naive - matching
+        # GpsFix.timestamp's own naive-UTC convention, see
+        # telemetry/gps_reader.py) lets stats_report.py's
+        # _boundary_bridge_km() work out how much of the gap between
+        # this recording's own last real fix and the *next* recording's
+        # first real fix falls inside this recording's own video span
+        # versus the next one's, when bridging a GPS dropout that
+        # straddles the boundary between two recordings (Christer,
+        # 2026-08-23: "our stats file does not contain first and last
+        # gps position, that could help a little if you have a previous
+        # recording and a next recording gps position ... based of time
+        # can you see how much of the distance belong to each recording
+        # id"). Without a timestamp there'd be no way to do that time
+        # -proportional split - lat/lon alone only gives the *where*,
+        # not the *when*.
         "start_gps": (
-            {"lat": positioned_fixes[0].latitude, "lon": positioned_fixes[0].longitude}
+            {
+                "lat": positioned_fixes[0].latitude,
+                "lon": positioned_fixes[0].longitude,
+                "time": positioned_fixes[0].timestamp.isoformat(),
+            }
             if positioned_fixes else None
         ),
         "end_gps": (
-            {"lat": positioned_fixes[-1].latitude, "lon": positioned_fixes[-1].longitude}
+            {
+                "lat": positioned_fixes[-1].latitude,
+                "lon": positioned_fixes[-1].longitude,
+                "time": positioned_fixes[-1].timestamp.isoformat(),
+            }
             if positioned_fixes else None
         ),
         # Rounded to 3 decimals (~1m precision) - a single recording is

@@ -130,6 +130,9 @@
         {% if key == "distance_km" and summary_bucket.estimated_recording_count %}
         <span class="hint">(includes ~{{ summary_bucket.estimated_distance_km|stat_value("distance_km") }} estimated from {{ summary_bucket.estimated_recording_count }} recording(s) with no GPS fix)</span>
         {% endif %}
+        {% if key == "distance_km" and summary_bucket.bridged_recording_count %}
+        <span class="hint">(includes {{ summary_bucket.bridged_distance_km|stat_value("distance_km") }} bridged across {{ summary_bucket.bridged_recording_count }} GPS dropout(s) at a recording boundary)</span>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -174,6 +177,9 @@
         {% if bucket.values.get(key) is none %}-{% else %}{{ bucket.values[key]|stat_value(key) }}{% endif %}
         {% if key == "distance_km" and bucket.estimated_recording_count %}
         <span class="hint">(~{{ bucket.estimated_distance_km|stat_value("distance_km") }} est.)</span>
+        {% endif %}
+        {% if key == "distance_km" and bucket.bridged_recording_count %}
+        <span class="hint">(+{{ bucket.bridged_distance_km|stat_value("distance_km") }} bridged)</span>
         {% endif %}
       </td>
       {% endfor %}

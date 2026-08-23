@@ -97,8 +97,16 @@ def test_compute_recording_stats_gps_and_gsensor_fields():
     stats = compute_recording_stats(recording, adapter)
 
     assert stats["has_gps"] is True
-    assert stats["start_gps"] == {"lat": 59.00, "lon": 18.00}
-    assert stats["end_gps"] == {"lat": 59.01, "lon": 18.01}
+    # "time" (the fix's own timestamp) lets stats_report.py's
+    # _boundary_bridge_km() work out how a GPS dropout that straddles
+    # two recordings should split between them - see
+    # generate/stats.py's own comment on start_gps/end_gps for why.
+    assert stats["start_gps"] == {
+        "lat": 59.00, "lon": 18.00, "time": "2026-08-23T10:00:00",
+    }
+    assert stats["end_gps"] == {
+        "lat": 59.01, "lon": 18.01, "time": "2026-08-23T10:01:00",
+    }
     assert stats["distance_km"] > 0
     assert stats["max_speed_kmh"] == 50.0
     assert stats["min_altitude_m"] == 10.0

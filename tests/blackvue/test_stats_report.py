@@ -6,6 +6,7 @@ from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.stats_report import GPS_DEPENDENT_FIELDS
 from blackvue.stats_report import STAT_FIELDS
+from blackvue.stats_report import _boundary_bridge_km
 from blackvue.stats_report import aggregate_recording_stats
 from blackvue.stats_report import count_recordings_without_gps
 from blackvue.stats_report import load_recording_stats
@@ -512,6 +513,181 @@ def test_estimate_gaps_leaves_bucket_unfilled_when_nothing_anywhere_has_a_basis(
     assert buckets[0].values["distance_km"] is None
     assert buckets[0].estimated_distance_km is None
     assert buckets[0].estimated_recording_count == 0
+
+
+def test_boundary_bridge_splits_gap_proportionally_by_time():
+    # Christer: "our stats file does not contain first and last gps
+    # position, that could help a little if you have a previous
+    # recording and a next recording gps position, yes i know, but a
+    # straight line is better than nothing" then "based of time can
+    # you see how much of the distance belong to each recording id".
+    # Recording A's own GPS drops at 13:32:00, but A's own video (180s
+    # from a 13:30:00 start) keeps running until 13:33:00 - a 60s tail
+    # with no coverage. Recording B starts at 13:33:00 but doesn't
+    # reacquire GPS until 13:33:30 - a 30s head with no coverage. The
+    # 90s total gap between A's last fix and B's first should split
+    # 60/90 to A, 30/90 to B.
+    id_a = RecordingId("20260823_133000_NF")
+    id_b = RecordingId("20260823_133300_NF")
+    stats_a = {
+        "duration_seconds": 180,
+        "end_gps": {"lat": 60.0, "lon": 20.0, "time": "2026-08-23T13:32:00"},
+    }
+    stats_b = {
+        "duration_seconds": 180,
+        "start_gps": {"lat": 60.01, "lon": 20.02, "time": "2026-08-23T13:33:30"},
+    }
+
+    bonus = _boundary_bridge_km([(id_a, stats_a), (id_b, stats_b)])
+
+    assert id_a in bonus and id_b in bonus
+    total = bonus[id_a] + bonus[id_b]
+    assert round(bonus[id_a] / total, 3) == round(60 / 90, 3)
+    assert round(bonus[id_b] / total, 3) == round(30 / 90, 3)
+    assert total > 0
+
+
+def test_boundary_bridge_adds_to_bucket_distance_as_its_own_visible_figure():
+    id_a = RecordingId("20260823_133000_NF")
+    id_b = RecordingId("20260823_133300_NF")
+    entries = [
+        (
+            id_a,
+            {
+                "duration_seconds": 180,
+                "distance_km": 1.0,
+                "end_gps": {"lat": 60.0, "lon": 20.0, "time": "2026-08-23T13:32:00"},
+            },
+        ),
+        (
+            id_b,
+            {
+                "duration_seconds": 180,
+                "distance_km": 1.0,
+                "start_gps": {
+                    "lat": 60.01, "lon": 20.02, "time": "2026-08-23T13:33:30",
+                },
+            },
+        ),
+    ]
+
+    buckets = aggregate_recording_stats(entries, grouping="all", fields=["distance_km"])
+    bucket = buckets[0]
+
+    # Real per-recording sums (1.0 + 1.0) plus the bridged bonus, kept
+    # visible separately rather than silently blended in - same
+    # "never blend measured and inferred with no trace" convention
+    # estimated_distance_km already follows.
+    assert bucket.bridged_recording_count == 2
+    assert bucket.bridged_distance_km > 0
+    assert round(bucket.values["distance_km"], 6) == round(
+        2.0 + bucket.bridged_distance_km, 6
+    )
+
+
+def test_boundary_bridge_skipped_when_gap_exceeds_five_minutes():
+    # A gap this long is more likely two unrelated trips (a long
+    # parked stop) than one continuous GPS dropout - see
+    # _boundary_bridge_km()'s own docstring for why it reuses trip/
+    # trip_builder.py's own 5-minute DEFAULT_MAX_GAP as the cutoff.
+    id_a = RecordingId("20260823_133000_NF")
+    id_b = RecordingId("20260823_140000_NF")
+    stats_a = {
+        "duration_seconds": 180,
+        "end_gps": {"lat": 60.0, "lon": 20.0, "time": "2026-08-23T13:32:00"},
+    }
+    stats_b = {
+        "duration_seconds": 180,
+        "start_gps": {"lat": 60.01, "lon": 20.02, "time": "2026-08-23T14:00:10"},
+    }
+
+    bonus = _boundary_bridge_km([(id_a, stats_a), (id_b, stats_b)])
+
+    assert bonus == {}
+
+
+def test_boundary_bridge_excludes_parking_recordings():
+    id_a = RecordingId("20260823_133000_NF")
+    id_p = RecordingId("20260823_133300_PF")
+    stats_a = {
+        "duration_seconds": 180,
+        "end_gps": {"lat": 60.0, "lon": 20.0, "time": "2026-08-23T13:32:00"},
+    }
+    stats_p = {
+        "duration_seconds": 180,
+        "start_gps": {"lat": 60.01, "lon": 20.02, "time": "2026-08-23T13:33:30"},
+    }
+
+    bonus = _boundary_bridge_km([(id_a, stats_a), (id_p, stats_p)])
+
+    assert bonus == {}
+
+
+def test_boundary_bridge_ignores_stats_json_without_migrated_timestamp():
+    # A .stats.json written before this feature shipped has start_gps/
+    # end_gps with lat/lon but no "time" key yet - self-heals the next
+    # time bv-generate --stats runs over it (see _do_stats()'s read
+    # -merge-write), but until then there's nothing to bridge with.
+    id_a = RecordingId("20260823_133000_NF")
+    id_b = RecordingId("20260823_133300_NF")
+    stats_a = {
+        "duration_seconds": 180,
+        "end_gps": {"lat": 60.0, "lon": 20.0},  # no "time"
+    }
+    stats_b = {
+        "duration_seconds": 180,
+        "start_gps": {"lat": 60.01, "lon": 20.02, "time": "2026-08-23T13:33:30"},
+    }
+
+    bonus = _boundary_bridge_km([(id_a, stats_a), (id_b, stats_b)])
+
+    assert bonus == {}
+
+
+def test_boundary_bridge_excluded_from_estimate_gaps_double_counting():
+    # The one case where estimate_gaps and boundary bridging could
+    # both apply to the same recording: a single-fix recording (real
+    # start_gps/end_gps, but too few fixes for compute_trip_stats() to
+    # derive distance_km at all - so distance_km is None). Once the
+    # boundary bridge has already credited it, estimate_gaps must not
+    # also extrapolate a whole-duration speed-basis guess on top.
+    id_a = RecordingId("20260823_090000_NF")  # has real distance_km + duration
+    id_b = RecordingId("20260823_133000_NF")  # single-fix, distance_km None
+    id_c = RecordingId("20260823_133300_NF")
+    entries = [
+        (id_a, {"duration_seconds": 3600, "distance_km": 60.0}),
+        (
+            id_b,
+            {
+                "duration_seconds": 180,
+                "distance_km": None,
+                "end_gps": {
+                    "lat": 60.0, "lon": 20.0, "time": "2026-08-23T13:32:30",
+                },
+            },
+        ),
+        (
+            id_c,
+            {
+                "duration_seconds": 180,
+                "start_gps": {
+                    "lat": 60.005, "lon": 20.01, "time": "2026-08-23T13:33:10",
+                },
+            },
+        ),
+    ]
+
+    buckets = aggregate_recording_stats(
+        entries, grouping="all", fields=["distance_km"], estimate_gaps=True,
+    )
+    bucket = buckets[0]
+
+    # id_b received a boundary bridge contribution, so estimate_gaps'
+    # own "missing" list must exclude it - only a genuinely GPS-less
+    # recording would still need the speed-basis extrapolation.
+    assert bucket.estimated_recording_count == 0
+    assert bucket.estimated_distance_km is None
+    assert bucket.bridged_recording_count >= 1
 
 
 def test_stat_fields_cover_every_generate_stats_numeric_field():
