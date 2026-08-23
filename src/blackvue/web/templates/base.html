@@ -748,6 +748,24 @@
     .stats-legend-item { cursor: pointer; user-select: none; }
     .stats-legend-item:hover { color: var(--text); }
     .stats-legend-item-off { opacity: 0.45; }
+    /* Replaces two full duplicated checkbox lists ("Fields" and
+       "Graph fields", one row of checkboxes per field, repeated
+       verbatim) with a single compact field list - one row per field,
+       a "Table" checkbox and a "Graph" checkbox per row - after
+       Christer: "We have both Fields and Graph fields, we only need
+       one of them i think." The two selections stay functionally
+       independent (still `fields`/`graph_fields`, still resolved by
+       _selected_stat_fields()/_selected_graph_fields() in app.py) -
+       only the form's own visual repetition was the actual complaint,
+       not the underlying "a wide report table shouldn't force a
+       cluttered chart" behavior, which is why this stayed a layout
+       change rather than a merge into one selection. Tighter padding
+       than the plain `table`/`th`/`td` rule above, since 15 rows of
+       "field name + two checkboxes" reads better dense than at the
+       report table's own roomier spacing. */
+    .stats-fields-table td, .stats-fields-table th { padding: 0.3rem 0.6rem; }
+    .stats-fields-table { margin-bottom: 1rem; }
+    .stats-fields-checkbox-col { text-align: center; width: 4.5rem; }
     .stats-legend-item-off .stats-legend-swatch { opacity: 0.5; }
     /* Chart-point click scrolls the matching table row into view and
        flashes this highlight briefly, so it's obvious which row the

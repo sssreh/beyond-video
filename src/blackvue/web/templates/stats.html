@@ -75,27 +75,24 @@
         </select>
       </div>
     </div>
-    <label class="field-label">Fields</label>
-    <div class="checkbox-row">
-      {% for key, field in all_fields.items() %}
-      <label class="filter-checkbox">
-        <input type="checkbox" name="fields" value="{{ key }}" style="width: auto; margin: 0;"{% if key in selected_fields %} checked{% endif %}>
-        {{ field.label }}
-      </label>
-      {% endfor %}
-    </div>
-    <label class="field-label" for="graph_fields_0">
-      Graph fields
-      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which stats to plot on the chart - independent of which Fields above are shown in the report table, so you can graph a field without adding it as a table column (or vice versa). Check more than one to draw multiple series on the same chart; each series is scaled to its own min-max range (shown in the legend) so fields with very different units/magnitudes (e.g. km alongside seconds) still each use the full chart height.</span></span>
+    <label class="field-label">
+      Fields
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">"Table" adds a field as a column in the report below; "Graph" plots it on the chart above - independent of each other, so you can graph a field without cluttering the table with it (or vice versa). Check more than one Graph box to draw multiple series on the same chart; each series is scaled to its own min-max range (shown in the legend) so fields with very different units/magnitudes (e.g. km alongside seconds) still each use the full chart height.</span></span>
     </label>
-    <div class="checkbox-row">
-      {% for key, field in all_fields.items() %}
-      <label class="filter-checkbox">
-        <input type="checkbox" id="graph_fields_{{ loop.index0 }}" name="graph_fields" value="{{ key }}" style="width: auto; margin: 0;"{% if key in graph_fields %} checked{% endif %}>
-        {{ field.label }} ({{ field.unit }})
-      </label>
-      {% endfor %}
-    </div>
+    <table class="stats-fields-table">
+      <thead>
+        <tr><th>Field</th><th class="stats-fields-checkbox-col">Table</th><th class="stats-fields-checkbox-col">Graph</th></tr>
+      </thead>
+      <tbody>
+        {% for key, field in all_fields.items() %}
+        <tr>
+          <td>{{ field.label }} ({{ field.unit }})</td>
+          <td class="stats-fields-checkbox-col"><input type="checkbox" name="fields" value="{{ key }}" aria-label="Show {{ field.label }} in the report table" style="width: auto; margin: 0;"{% if key in selected_fields %} checked{% endif %}></td>
+          <td class="stats-fields-checkbox-col"><input type="checkbox" name="graph_fields" value="{{ key }}" aria-label="Graph {{ field.label }} on the chart" style="width: auto; margin: 0;"{% if key in graph_fields %} checked{% endif %}></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
     <div class="checkbox-row">
       <label class="filter-checkbox">
         <input type="checkbox" id="estimate_gaps" name="estimate_gaps" value="true" style="width: auto; margin: 0;"{% if estimate_gaps %} checked{% endif %}>
