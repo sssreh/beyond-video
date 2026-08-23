@@ -35,10 +35,11 @@ from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _job_snapshot_path
 from blackvue.web.app import _recent_web_runs
 from blackvue.web.app import _reuse_defaults
+from blackvue.web.app import _selected_graph_fields
 from blackvue.web.app import _selected_stat_fields
 from blackvue.web.app import _slugify
 from blackvue.web.app import _sliced_job_output
-from blackvue.web.app import _stats_chart_data
+from blackvue.web.app import _stats_chart_series
 from blackvue.web.app import _video_label_for_filename
 from blackvue.web.app import TAIL_LINE_COUNT
 from blackvue.web.archive_browser import scan_archive
@@ -657,7 +658,38 @@ def test_selected_stat_fields_falls_back_to_defaults_when_all_unknown():
     assert _selected_stat_fields(["bogus"]) == list(DEFAULT_FIELDS)
 
 
-def test_stats_chart_data_pulls_the_graphed_field_and_recording_count():
+def test_selected_graph_fields_keeps_only_still_selected_report_fields():
+    # A graph field that's a real STAT_FIELDS key but was unchecked
+    # from the report's own --fields selection shouldn't silently
+    # still be graphed - see _selected_graph_fields()'s own docstring.
+    assert _selected_graph_fields(
+        ["distance_km", "avg_speed_kmh", "not_a_real_field"],
+        selected_fields=["distance_km", "duration_seconds"],
+    ) == ["distance_km"]
+
+
+def test_selected_graph_fields_falls_back_to_first_selected_field_when_empty():
+    assert _selected_graph_fields([], selected_fields=["distance_km", "avg_speed_kmh"]) == [
+        "distance_km"
+    ]
+
+
+def test_selected_graph_fields_falls_back_when_nothing_valid_left():
+    assert _selected_graph_fields(
+        ["bogus"], selected_fields=["distance_km", "avg_speed_kmh"]
+    ) == ["distance_km"]
+
+
+def test_selected_graph_fields_keeps_more_than_one_field():
+    # Christer's own follow-up request: "more than 1 stats on the y
+    # axis" - multiple checked graph fields should all survive.
+    assert _selected_graph_fields(
+        ["avg_speed_kmh", "distance_km"],
+        selected_fields=["distance_km", "avg_speed_kmh", "duration_seconds"],
+    ) == ["avg_speed_kmh", "distance_km"]
+
+
+def test_stats_chart_series_builds_one_series_per_graphed_field():
     buckets = [
         StatBucket(
             key="2026-07",
@@ -671,24 +703,44 @@ def test_stats_chart_data_pulls_the_graphed_field_and_recording_count():
         ),
     ]
 
-    chart_data = _stats_chart_data(buckets, "distance_km")
+    chart_data = _stats_chart_series(buckets, ["distance_km", "avg_speed_kmh"])
 
-    assert chart_data == [
-        {"key": "2026-07", "value": 505.93, "recording_count": 3},
-        {"key": "2026-08", "value": None, "recording_count": 1},
+    assert chart_data["keys"] == ["2026-07", "2026-08"]
+    assert chart_data["recording_counts"] == [3, 1]
+    assert chart_data["series"] == [
+        {
+            "field": "distance_km",
+            "label": "Distance",
+            "unit": "km",
+            "values": [505.93, None],
+        },
+        {
+            "field": "avg_speed_kmh",
+            "label": "Avg speed",
+            "unit": "km/h",
+            "values": [42.0, 41.0],
+        },
     ]
 
 
-def test_stats_chart_data_switches_field_with_graph_field():
-    buckets = [StatBucket(key="Monday", recordings=(), values={"distance_km": 10.0, "avg_speed_kmh": 55.0})]
+def test_stats_chart_series_single_field_matches_old_behavior():
+    buckets = [StatBucket(key="Monday", recordings=(), values={"avg_speed_kmh": 55.0})]
 
-    assert _stats_chart_data(buckets, "avg_speed_kmh") == [
-        {"key": "Monday", "value": 55.0, "recording_count": 0}
+    chart_data = _stats_chart_series(buckets, ["avg_speed_kmh"])
+
+    assert chart_data["keys"] == ["Monday"]
+    assert chart_data["recording_counts"] == [0]
+    assert chart_data["series"][0]["values"] == [55.0]
+
+
+def test_stats_chart_series_empty_buckets_has_empty_keys_but_keeps_series_shape():
+    chart_data = _stats_chart_series([], ["distance_km"])
+
+    assert chart_data["keys"] == []
+    assert chart_data["recording_counts"] == []
+    assert chart_data["series"] == [
+        {"field": "distance_km", "label": "Distance", "unit": "km", "values": []}
     ]
-
-
-def test_stats_chart_data_empty_buckets_is_empty():
-    assert _stats_chart_data([], "distance_km") == []
 
 
 def test_slugify_lowercases_and_hyphenates():

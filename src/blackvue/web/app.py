@@ -556,7 +556,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         id: str | None = Query(default=None),
         group: str = Query(default="all"),
         fields: list[str] = Query(default=[]),
-        graph_field: str | None = Query(default=None),
+        graph_fields: list[str] = Query(default=[]),
         chart_type: str = Query(default="bar"),
         timestamp: str | None = Query(default=None),
         from_: str | None = Query(default=None, alias="from"),
@@ -578,7 +578,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         selected_fields = _selected_stat_fields(fields)
         grouping = group if group in GROUPINGS else "all"
-        graph_field = graph_field if graph_field in selected_fields else selected_fields[0]
+        graph_fields = _selected_graph_fields(graph_fields, selected_fields)
         chart_type = chart_type if chart_type in ("bar", "line") else "bar"
 
         cameras = _camera_options()
@@ -638,7 +638,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 # raw 500.
                 error = str(exc)
 
-        chart_data = _stats_chart_data(buckets, graph_field)
+        chart_data = _stats_chart_series(buckets, graph_fields)
 
         return templates.TemplateResponse(
             request,
@@ -651,7 +651,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "grouping": grouping,
                 "all_fields": STAT_FIELDS,
                 "selected_fields": selected_fields,
-                "graph_field": graph_field,
+                "graph_fields": graph_fields,
                 "chart_type": chart_type,
                 "timestamp_value": timestamp or "",
                 "from_value": from_ or "",
@@ -3119,20 +3119,47 @@ def _selected_stat_fields(fields: list[str]) -> list[str]:
     return [f for f in fields if f in STAT_FIELDS] or list(DEFAULT_FIELDS)
 
 
-def _stats_chart_data(buckets: list, graph_field: str) -> list[dict]:
-    """The minimal per-bucket payload stats.html's inline <script>
-    needs to draw bars/points and label them - just the currently-
-    graphed field's own value and a recording count, not the whole
-    StatBucket (which carries every requested field, most of them
-    irrelevant to whichever single field is currently graphed)."""
-    return [
-        {
-            "key": bucket.key,
-            "value": bucket.values.get(graph_field),
-            "recording_count": len(bucket.recordings),
-        }
-        for bucket in buckets
-    ]
+def _selected_graph_fields(fields: list[str], selected_fields: list[str]) -> list[str]:
+    """stats_dashboard()'s own --graph_fields query-string validation -
+    Christer's own follow-up request ("I will also like to have more
+    than 1 stats on the y axis") after the dashboard originally only
+    ever graphed one field at a time. Keeps only keys that are both a
+    real STAT_FIELDS entry *and* still among this request's own
+    --fields selection (a field the table isn't even showing shouldn't
+    silently still be on the graph), falling back to just the first
+    selected field so there's always at least one series to draw -
+    the same "degrade to something sane, don't 500 on a tampered or
+    stale query string" contract _selected_stat_fields() above
+    already follows."""
+    graph = [f for f in fields if f in STAT_FIELDS and f in selected_fields]
+    return graph or selected_fields[:1]
+
+
+def _stats_chart_series(buckets: list, graph_fields: list[str]) -> dict[str, object]:
+    """The per-series payload stats.html's inline <script> needs to
+    draw one or more bars/lines sharing a single x-axis (one entry per
+    bucket, in bucket order) and, since Christer also asked "where are
+    my legends", enough about each series (its own label/unit) for the
+    chart to build a real legend from this data alone rather than the
+    template hand-writing one field's label like the single-series
+    version did. Each series' own `values` entry is None wherever that
+    field has no reading in a bucket (not 0 - same "missing isn't
+    zero" convention _stats_chart_data() used before this), aligned by
+    index with `keys`/`recording_counts` so the chart script can zip
+    them back together without a lookup."""
+    return {
+        "keys": [bucket.key for bucket in buckets],
+        "recording_counts": [len(bucket.recordings) for bucket in buckets],
+        "series": [
+            {
+                "field": field,
+                "label": STAT_FIELDS[field].label,
+                "unit": STAT_FIELDS[field].unit,
+                "values": [bucket.values.get(field) for bucket in buckets],
+            }
+            for field in graph_fields
+        ],
+    }
 
 
 def _slugify(value: object) -> str:

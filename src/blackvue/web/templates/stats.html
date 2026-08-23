@@ -66,19 +66,6 @@
         </select>
       </div>
       <div class="field">
-        <label class="field-label" for="graph_field">
-          Graph field
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which one field to plot - fields have different units (km, km/h, s) so only one is graphed at a time, though the table below shows every field checked below.</span></span>
-        </label>
-        <select id="graph_field" name="graph_field">
-          {% for key, field in all_fields.items() %}
-          {% if key in selected_fields %}
-          <option value="{{ key }}"{% if key == graph_field %} selected{% endif %}>{{ field.label }} ({{ field.unit }})</option>
-          {% endif %}
-          {% endfor %}
-        </select>
-      </div>
-      <div class="field">
         <label class="field-label" for="chart_type">
           Chart type
         </label>
@@ -95,6 +82,20 @@
         <input type="checkbox" name="fields" value="{{ key }}" style="width: auto; margin: 0;"{% if key in selected_fields %} checked{% endif %}>
         {{ field.label }}
       </label>
+      {% endfor %}
+    </div>
+    <label class="field-label" for="graph_fields_0">
+      Graph fields
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which of the fields above to plot on the chart - check more than one to draw multiple series on the same chart. Fields with very different units/magnitudes (e.g. km alongside seconds) will share one y-axis scale, so they may not read cleanly together.</span></span>
+    </label>
+    <div class="checkbox-row">
+      {% for key, field in all_fields.items() %}
+      {% if key in selected_fields %}
+      <label class="filter-checkbox">
+        <input type="checkbox" id="graph_fields_{{ loop.index0 }}" name="graph_fields" value="{{ key }}" style="width: auto; margin: 0;"{% if key in graph_fields %} checked{% endif %}>
+        {{ field.label }} ({{ field.unit }})
+      </label>
+      {% endif %}
       {% endfor %}
     </div>
     <div class="checkbox-row">
@@ -140,11 +141,9 @@
 {% endif %}
 
 <div class="content-panel">
-<h3>{{ all_fields[graph_field].label }} by {{ grouping }}</h3>
-<div id="stats-chart" data-chart-type="{{ chart_type }}" data-unit="{{ all_fields[graph_field].unit }}"></div>
-<div class="stats-legend">
-  <span class="stats-legend-swatch"></span> {{ all_fields[graph_field].label }} ({{ all_fields[graph_field].unit }})
-</div>
+<h3>{% for key in graph_fields %}{{ all_fields[key].label }}{% if not loop.last %}, {% endif %}{% endfor %} by {{ grouping }}</h3>
+<div id="stats-chart" data-chart-type="{{ chart_type }}"></div>
+<div class="stats-legend" id="stats-legend"></div>
 </div>
 
 <div class="content-panel">
@@ -193,37 +192,62 @@
   // library anywhere else in it (self-hosted NAS app, no CDN
   // dependency the rest of the app relies on), so this stays
   // consistent with that rather than being the first page to pull one
-  // in. Reads the per-bucket payload the /stats route embedded above
-  // (key/value/recording_count only - the graphed field's own value,
-  // not every requested field) and draws bars or a line, with a
-  // hover tooltip and a click that scrolls to + briefly highlights
-  // that bucket's row in the table below - Christer's own "clickable
-  // points for actual data" request, satisfied by linking back into
-  // the already-present per-bucket recording list rather than
-  // reconstructing a time-range URL (which "weekday" grouping has no
-  // single clean range for anyway, since it recurs across the whole
+  // in. Reads the {keys, recording_counts, series} payload the /stats
+  // route embedded above and draws one bar-group/line per graphed
+  // field, with a hover tooltip and a click that scrolls to +
+  // briefly highlights that bucket's row in the table below -
+  // Christer's own "clickable points for actual data" request,
+  // satisfied by linking back into the already-present per-bucket
+  // recording list rather than reconstructing a time-range URL (which
+  // the weekday/dayofmonth groupings in particular have no single
+  // clean range for anyway, since they recur across the whole
   // selection).
+  //
+  // Follow-up request (Christer, 2026-08-23): "I will also like to
+  // have more than 1 stats on the y axis and where are my legends" -
+  // this version draws every checked "Graph fields" series on one
+  // shared x-axis/y-scale (all series share one linear scale, so
+  // fields with very different units/magnitudes won't read cleanly
+  // together - a known limitation of a single shared axis, not a bug)
+  // and builds a real legend (colored swatch + field label + unit)
+  // into #stats-legend below, one entry per series, instead of the
+  // single hardcoded legend line the original one-field-only version
+  // had.
   var container = document.getElementById('stats-chart');
   if (!container) return;
 
   var raw = document.getElementById('stats-chart-data');
-  var data = JSON.parse(raw.textContent || '[]').filter(function (d) {
-    return d.value !== null && d.value !== undefined;
+  var payload = JSON.parse(raw.textContent || '{}');
+  var keys = payload.keys || [];
+  var recordingCounts = payload.recording_counts || [];
+  var series = (payload.series || []).filter(function (s) {
+    return s.values.some(function (v) { return v !== null && v !== undefined; });
   });
-  if (!data.length) {
-    container.innerHTML = '<p class="empty">No data for the selected field in this range.</p>';
+
+  if (!keys.length || !series.length) {
+    container.innerHTML = '<p class="empty">No data for the selected field(s) in this range.</p>';
     return;
   }
 
+  // Fixed palette, cycled if more series are graphed than colors -
+  // chosen for contrast against both the light and dark themes'
+  // panel background rather than pulled from the existing --link
+  // variable (which every series used to share, back when only one
+  // was ever drawn at once).
+  var PALETTE = ['#4f8fea', '#e8834f', '#4fbf7a', '#c95fd1', '#e0c343', '#5fc9c9'];
+
   var chartType = container.getAttribute('data-chart-type') || 'bar';
-  var unit = container.getAttribute('data-unit') || '';
   var width = 720, height = 260;
   var padLeft = 50, padRight = 20, padTop = 20, padBottom = 40;
   var plotW = width - padLeft - padRight;
   var plotH = height - padTop - padBottom;
 
-  var maxValue = Math.max.apply(null, data.map(function (d) { return d.value; }));
-  var minValue = Math.min(0, Math.min.apply(null, data.map(function (d) { return d.value; })));
+  var allValues = [];
+  series.forEach(function (s) {
+    s.values.forEach(function (v) { if (v !== null && v !== undefined) allValues.push(v); });
+  });
+  var maxValue = Math.max.apply(null, allValues);
+  var minValue = Math.min(0, Math.min.apply(null, allValues));
   if (maxValue === minValue) maxValue = minValue + 1;
 
   function yFor(value) {
@@ -257,12 +281,15 @@
     svg.appendChild(label);
   });
 
-  var n = data.length;
+  var n = keys.length;
   var slotW = plotW / n;
 
-  function showTooltip(evt, d) {
+  function showTooltip(evt, seriesInfo, index) {
+    var value = seriesInfo.values[index];
     var tip = container.querySelector('.stats-chart-tooltip');
-    tip.textContent = d.key + ': ' + d.value.toFixed(2) + ' ' + unit + ' (' + d.recording_count + ' recording(s))';
+    tip.textContent = keys[index] + ' - ' + seriesInfo.label + ': ' +
+      value.toFixed(2) + ' ' + seriesInfo.unit +
+      ' (' + recordingCounts[index] + ' recording(s))';
     tip.style.left = evt.offsetX + 'px';
     tip.style.top = evt.offsetY + 'px';
     tip.hidden = false;
@@ -271,8 +298,8 @@
     var tip = container.querySelector('.stats-chart-tooltip');
     if (tip) tip.hidden = true;
   }
-  function jumpToBucket(d) {
-    var row = document.getElementById('bucket-row-' + slugify(d.key));
+  function jumpToBucket(index) {
+    var row = document.getElementById('bucket-row-' + slugify(keys[index]));
     if (!row) return;
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
     row.classList.add('stats-row-highlight');
@@ -280,52 +307,65 @@
   }
 
   if (chartType === 'line') {
-    var points = data.map(function (d, i) {
-      var x = padLeft + slotW * (i + 0.5);
-      var y = yFor(d.value);
-      return [x, y];
-    });
-    var path = document.createElementNS(svgNS, 'polyline');
-    path.setAttribute('points', points.map(function (p) { return p.join(','); }).join(' '));
-    path.setAttribute('class', 'stats-chart-line');
-    svg.appendChild(path);
-    points.forEach(function (p, i) {
-      var circle = document.createElementNS(svgNS, 'circle');
-      circle.setAttribute('cx', p[0]); circle.setAttribute('cy', p[1]);
-      circle.setAttribute('r', 5);
-      circle.setAttribute('class', 'stats-chart-point');
-      circle.addEventListener('mousemove', function (evt) { showTooltip(evt, data[i]); });
-      circle.addEventListener('mouseleave', hideTooltip);
-      circle.addEventListener('click', function () { jumpToBucket(data[i]); });
-      svg.appendChild(circle);
+    series.forEach(function (s, seriesIndex) {
+      var color = PALETTE[seriesIndex % PALETTE.length];
+      var points = [];
+      s.values.forEach(function (value, i) {
+        if (value === null || value === undefined) return;
+        points.push([padLeft + slotW * (i + 0.5), yFor(value), i]);
+      });
+      var path = document.createElementNS(svgNS, 'polyline');
+      path.setAttribute('points', points.map(function (p) { return p[0] + ',' + p[1]; }).join(' '));
+      path.setAttribute('class', 'stats-chart-line');
+      path.setAttribute('stroke', color);
+      svg.appendChild(path);
+      points.forEach(function (p) {
+        var index = p[2];
+        var circle = document.createElementNS(svgNS, 'circle');
+        circle.setAttribute('cx', p[0]); circle.setAttribute('cy', p[1]);
+        circle.setAttribute('r', 5);
+        circle.setAttribute('class', 'stats-chart-point');
+        circle.setAttribute('fill', color);
+        circle.addEventListener('mousemove', function (evt) { showTooltip(evt, s, index); });
+        circle.addEventListener('mouseleave', hideTooltip);
+        circle.addEventListener('click', function () { jumpToBucket(index); });
+        svg.appendChild(circle);
+      });
     });
   } else {
-    data.forEach(function (d, i) {
-      var barW = Math.max(4, slotW * 0.6);
-      var x = padLeft + slotW * (i + 0.5) - barW / 2;
-      var y = yFor(Math.max(0, d.value));
-      var barH = Math.abs(yFor(d.value) - yFor(0));
-      var rect = document.createElementNS(svgNS, 'rect');
-      rect.setAttribute('x', x); rect.setAttribute('y', y);
-      rect.setAttribute('width', barW); rect.setAttribute('height', barH || 1);
-      rect.setAttribute('class', 'stats-chart-bar');
-      rect.addEventListener('mousemove', function (evt) { showTooltip(evt, d); });
-      rect.addEventListener('mouseleave', hideTooltip);
-      rect.addEventListener('click', function () { jumpToBucket(d); });
-      svg.appendChild(rect);
+    var seriesCount = series.length;
+    var groupW = Math.max(4 * seriesCount, slotW * 0.7);
+    var barW = groupW / seriesCount;
+    series.forEach(function (s, seriesIndex) {
+      var color = PALETTE[seriesIndex % PALETTE.length];
+      s.values.forEach(function (value, i) {
+        if (value === null || value === undefined) return;
+        var x = padLeft + slotW * (i + 0.5) - groupW / 2 + barW * seriesIndex;
+        var y = yFor(Math.max(0, value));
+        var barH = Math.abs(yFor(value) - yFor(0));
+        var rect = document.createElementNS(svgNS, 'rect');
+        rect.setAttribute('x', x); rect.setAttribute('y', y);
+        rect.setAttribute('width', Math.max(1, barW - 1)); rect.setAttribute('height', barH || 1);
+        rect.setAttribute('class', 'stats-chart-bar');
+        rect.setAttribute('fill', color);
+        rect.addEventListener('mousemove', function (evt) { showTooltip(evt, s, i); });
+        rect.addEventListener('mouseleave', hideTooltip);
+        rect.addEventListener('click', function () { jumpToBucket(i); });
+        svg.appendChild(rect);
+      });
     });
   }
 
   // X-axis labels - thinned out if there isn't room for all of them.
   var labelEvery = Math.max(1, Math.ceil(n / 12));
-  data.forEach(function (d, i) {
+  keys.forEach(function (key, i) {
     if (i % labelEvery !== 0) return;
     var x = padLeft + slotW * (i + 0.5);
     var label = document.createElementNS(svgNS, 'text');
     label.setAttribute('x', x); label.setAttribute('y', height - padBottom + 16);
     label.setAttribute('text-anchor', 'middle');
     label.setAttribute('class', 'stats-chart-axis-label');
-    label.textContent = d.key;
+    label.textContent = key;
     svg.appendChild(label);
   });
 
@@ -334,6 +374,24 @@
   tooltip.className = 'stats-chart-tooltip';
   tooltip.hidden = true;
   container.appendChild(tooltip);
+
+  // Real per-field legend (Christer: "where are my legends") - built
+  // from this same series data, so it can never drift out of sync
+  // with what's actually drawn above.
+  var legend = document.getElementById('stats-legend');
+  if (legend) {
+    series.forEach(function (s, seriesIndex) {
+      var color = PALETTE[seriesIndex % PALETTE.length];
+      var item = document.createElement('span');
+      item.className = 'stats-legend-item';
+      var swatch = document.createElement('span');
+      swatch.className = 'stats-legend-swatch';
+      swatch.style.background = color;
+      item.appendChild(swatch);
+      item.appendChild(document.createTextNode(s.label + ' (' + s.unit + ')'));
+      legend.appendChild(item);
+    });
+  }
 })();
 </script>
 {% else %}

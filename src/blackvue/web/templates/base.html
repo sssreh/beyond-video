@@ -714,10 +714,15 @@
     .stats-chart-svg { display: block; }
     .stats-chart-grid { stroke: var(--panel-border); stroke-width: 1; }
     .stats-chart-axis-label { fill: var(--muted); font-size: 11px; }
-    .stats-chart-bar { fill: var(--link); }
+    /* Bar/line/point fill+stroke colors are set inline per series by
+       stats.html's own script (one color per graphed field, from its
+       own fixed palette - see that script's own comment) rather than
+       fixed here, now that more than one field can be graphed at once
+       (Christer: "more than 1 stats on the y axis"). These classes
+       still carry every non-color, structural rule. */
     .stats-chart-bar:hover { opacity: 0.8; cursor: pointer; }
-    .stats-chart-line { fill: none; stroke: var(--link); stroke-width: 2; }
-    .stats-chart-point { fill: var(--link); cursor: pointer; }
+    .stats-chart-line { fill: none; stroke-width: 2; }
+    .stats-chart-point { cursor: pointer; }
     .stats-chart-point:hover { opacity: 0.8; }
     .stats-chart-tooltip {
       position: absolute; transform: translate(-50%, -115%);
@@ -725,10 +730,15 @@
       border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.8rem;
       white-space: nowrap; pointer-events: none;
     }
-    .stats-legend { display: flex; align-items: center; gap: 0.4rem;
-      margin-top: 0.5rem; font-size: 0.85rem; color: var(--muted); }
+    /* One .stats-legend-item per graphed field ("where are my
+       legends" - Christer's own follow-up once more than one field
+       could be plotted at all), wrapping onto more than one line if
+       there isn't room for all of them on one. */
+    .stats-legend { display: flex; align-items: center; flex-wrap: wrap;
+      gap: 0.25rem 1rem; margin-top: 0.5rem; font-size: 0.85rem; color: var(--muted); }
+    .stats-legend-item { display: flex; align-items: center; gap: 0.4rem; }
     .stats-legend-swatch { display: inline-block; width: 0.8rem;
-      height: 0.8rem; border-radius: 2px; background: var(--link); }
+      height: 0.8rem; border-radius: 2px; }
     /* Chart-point click scrolls the matching table row into view and
        flashes this highlight briefly, so it's obvious which row the
        click landed on. */
