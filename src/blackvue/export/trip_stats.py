@@ -66,6 +66,29 @@ _ALTITUDE_GAIN_DEADBAND_METERS = 2.0
 # inside the range a single bad fix can produce.
 _ALTITUDE_OUTLIER_JUMP_METERS = 30.0
 
+# Real-archive report (Christer, 2026-08-23): the Stats dashboard
+# showed a max_speed_kmh of 322.3 km/h for a trip in a car whose real
+# electronic limiter caps it at 250 km/h - obviously a spurious
+# reading. speed_kmh is parsed straight from each GPS fix's own
+# $GPRMC speed-over-ground field (telemetry/gps_reader.py's
+# _parse_rmc()), not computed from consecutive lat/lon and elapsed
+# time, so the classic "tiny elapsed time amplifies a small position
+# jump" failure mode doesn't apply here - this is the receiver's own
+# instantaneous speed estimate glitching for a single epoch
+# (multipath, momentary bad satellite geometry), the same underlying
+# GPS-noise class as the altitude spike this module already filters
+# (see _ALTITUDE_OUTLIER_JUMP_METERS' own docstring just above).
+# max_speed_kmh used to trust every raw reading directly, so one bad
+# epoch could set the whole trip's reported max. 100 km/h of change
+# within one ~1-second GPS tick (fixes arrive at roughly 1Hz - see
+# compute_trip_stats()'s own docstring) is about 2.8g of longitudinal
+# acceleration - far beyond anything a road car can do in a single
+# tick (even a supercar's 0-100 km/h in under 2 seconds averages
+# under 1.5g, and that's a sustained ramp across many ticks, not one
+# instantaneous jump) - but well inside the range a single bad GPS fix
+# can produce.
+_SPEED_OUTLIER_JUMP_KMH = 100.0
+
 
 @dataclass(frozen=True)
 class TripStats:
@@ -161,6 +184,44 @@ def _reject_altitude_outliers(altitudes: list[float]) -> list[float]:
     return accepted
 
 
+def _reject_speed_outliers(speeds: list[float]) -> list[float]:
+    """Drop a lone bad GPS speed-over-ground reading from `speeds`
+    before average_speed_kmh/max_speed_kmh ever see it - see
+    _SPEED_OUTLIER_JUMP_KMH's own docstring for the real-archive
+    report this fixes.
+
+    Reuses _reject_altitude_outliers()' exact one-sided "jumps more
+    than the threshold away from the last *accepted* reading, and the
+    very next raw reading snaps back within that same threshold"
+    signature, applied to speed_kmh instead of altitude_meters - see
+    that function's own docstring for the full reasoning (a real,
+    sustained acceleration or braking keeps moving away across
+    consecutive readings; a single bad fix spikes once and snaps
+    straight back). Same edge-case handling too: the first and last
+    readings are never rejected (only one neighbor each, not enough
+    evidence), and sequences shorter than 3 readings pass through
+    unchanged.
+    """
+
+    if len(speeds) < 3:
+        return list(speeds)
+
+    accepted = [speeds[0]]
+    for index in range(1, len(speeds) - 1):
+        last_accepted = accepted[-1]
+        current = speeds[index]
+        following = speeds[index + 1]
+        is_lone_spike = (
+            abs(current - last_accepted) > _SPEED_OUTLIER_JUMP_KMH
+            and abs(following - last_accepted) <= _SPEED_OUTLIER_JUMP_KMH
+        )
+        if not is_lone_spike:
+            accepted.append(current)
+    accepted.append(speeds[-1])
+
+    return accepted
+
+
 def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, float]:
     """min/max/elevation-gain over a sequence of raw altitude
     readings, using outlier rejection then dead-band re-basing rather
@@ -227,7 +288,12 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     near-zero readings, the same way a GPS trip computer usually
     reports "average speed". `max_speed_kmh` is the highest single
     reading. Both are None if no fix in the trip has a `speed_kmh`
-    reading at all (some GPS sentence types don't carry one).
+    reading at all (some GPS sentence types don't carry one). Both are
+    computed over _reject_speed_outliers()'s filtered readings rather
+    than the raw sequence directly - see that function's and
+    _SPEED_OUTLIER_JUMP_KMH's own docstrings for the real-archive
+    report (a reported max_speed_kmh of 322.3 km/h in a car limited to
+    250) this fixes.
 
     `moving_seconds`/`idle_seconds` split the time between consecutive
     positioned fixes into "the vehicle was moving" vs. "it wasn't",
@@ -338,8 +404,11 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
             moving_seconds += elapsed_seconds
 
     speeds = [fix.speed_kmh for fix in positioned if fix.speed_kmh is not None]
-    average_speed_kmh = sum(speeds) / len(speeds) if speeds else None
-    max_speed_kmh = max(speeds) if speeds else None
+    filtered_speeds = _reject_speed_outliers(speeds)
+    average_speed_kmh = (
+        sum(filtered_speeds) / len(filtered_speeds) if filtered_speeds else None
+    )
+    max_speed_kmh = max(filtered_speeds) if filtered_speeds else None
 
     altitudes = [
         fix.altitude_meters for fix in positioned if fix.altitude_meters is not None

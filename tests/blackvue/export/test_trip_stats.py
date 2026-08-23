@@ -78,6 +78,66 @@ def test_compute_trip_stats_speed_fields_are_none_without_any_speed_data():
     assert stats.idle_seconds is None
 
 
+def test_compute_trip_stats_max_speed_rejects_a_lone_bad_gps_fix():
+    # Real-archive report (Christer, 2026-08-23): a car with a real
+    # 250 km/h electronic limiter showed a Stats-dashboard max speed
+    # of 322.3 km/h - a single glitched $GPRMC speed-over-ground
+    # reading, not a real jump (nothing before or after it confirms
+    # the vehicle was ever going that fast). The lone-spike check
+    # (jumps away from the last accepted reading, next reading snaps
+    # straight back) should drop the 322.3 reading entirely, the same
+    # way _reject_altitude_outliers() already drops an equivalent
+    # altitude spike.
+    fixes = (
+        _fix(0, 59.30, 18.000, 118.0),
+        _fix(1, 59.301, 18.0001, 120.5),
+        _fix(2, 59.302, 18.0002, 322.3),
+        _fix(3, 59.303, 18.0003, 119.8),
+        _fix(4, 59.304, 18.0004, 121.2),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 121.2
+    assert 118.0 <= stats.average_speed_kmh <= 122.0
+
+
+def test_compute_trip_stats_max_speed_keeps_a_real_sustained_acceleration():
+    # A genuinely large but *sustained* speed change (every reading
+    # after the jump keeps climbing further, none of them snap back)
+    # must not be mistaken for a lone bad fix - only a jump that
+    # nothing afterward confirms gets dropped. The jump from ~40 to
+    # 150 km/h is itself bigger than _SPEED_OUTLIER_JUMP_KMH, but the
+    # two readings after it (155, 160) keep moving the same direction
+    # instead of snapping back to ~40.
+    fixes = (
+        _fix(0, 59.30, 18.000, 35.0),
+        _fix(1, 59.301, 18.0001, 40.0),
+        _fix(2, 59.302, 18.0002, 150.0),
+        _fix(3, 59.303, 18.0003, 155.0),
+        _fix(4, 59.304, 18.0004, 160.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 160.0
+
+
+def test_compute_trip_stats_max_speed_ignores_small_normal_fluctuation():
+    # Ordinary reading-to-reading speed changes (well under
+    # _SPEED_OUTLIER_JUMP_KMH's 100 km/h threshold) must pass through
+    # completely unfiltered - this isn't a smoothing filter.
+    fixes = (
+        _fix(0, 59.30, 18.000, 90.0),
+        _fix(1, 59.31, 18.001, 110.0),
+        _fix(2, 59.32, 18.002, 95.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 110.0
+
+
 def test_compute_trip_stats_splits_moving_and_idle_time_by_speed_threshold():
     below = DEFAULT_SPEED_THRESHOLD_KMH - 1.0
     above = DEFAULT_SPEED_THRESHOLD_KMH + 20.0
