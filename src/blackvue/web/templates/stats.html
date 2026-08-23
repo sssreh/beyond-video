@@ -253,6 +253,23 @@
   // STAT_FIELDS were also checked under "Fields" above it - fixed in
   // web/app.py (_selected_graph_fields()) and this template's form
   // markup, not in this script.
+  //
+  // Fourth follow-up (Christer, 2026-08-23): "I couldnt see the date
+  // graph building 1 date at a time. And can clicking on the legend
+  // toggle the data for it off and on?" Two additions, both purely in
+  // this script - no chart_data_json/route changes needed:
+  //   1. Build-up animation: bars/points now reveal left to right, one
+  //      x-axis position at a time, instead of the whole chart
+  //      appearing in one frame - see the data-x-index tagging and the
+  //      reveal loop further down, plus a stroke-dash "drawing"
+  //      animation for the line-chart polyline itself.
+  //   2. Legend click-to-toggle: clicking a legend entry hides/shows
+  //      that series' bars/points/line - see seriesVisible,
+  //      applySeriesVisibility(), and the legend item's click/keydown
+  //      handlers near the bottom of this script.
+  // Both respect prefers-reduced-motion (animation skipped entirely)
+  // and use each series' existing data-series tag rather than adding a
+  // second bookkeeping structure.
   var container = document.getElementById('stats-chart');
   if (!container) return;
 
@@ -351,6 +368,34 @@
   var n = keys.length;
   var slotW = plotW / n;
 
+  // Build-up animation (Christer: "I couldn't see the date graph
+  // building 1 date at a time") - bars/points reveal left to right,
+  // one x-axis position at a time, rather than the whole chart
+  // appearing at once. Every bar/point gets tagged with data-x-index
+  // (its position along the x-axis) and data-series (which series it
+  // belongs to, matching the legend below); reveal() below walks
+  // x-index 0..n-1 on a stagger and un-hides whatever's tagged with
+  // that index, respecting each series' current legend-toggle state
+  // (see seriesVisible below) so a toggled-off series stays hidden
+  // through the animation instead of flashing on then off. Total
+  // animation length is capped so a wide selection (e.g. a whole
+  // year's worth of --group date buckets) still finishes quickly
+  // rather than taking one visible step per day. Skipped entirely for
+  // prefers-reduced-motion, matching that media feature's intent.
+  var prefersReducedMotion = !!(window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var totalAnimMs = prefersReducedMotion ? 0 : Math.min(1500, Math.max(300, n * 60));
+  var stepMs = n > 0 ? totalAnimMs / n : 0;
+
+  // Per-series visibility, driven by clicking a legend entry
+  // (Christer: "can clicking on the legend toggle the data for it off
+  // and on?"). True = shown. Toggling just flips the opacity/
+  // pointer-events of every element tagged data-series="<index>" -
+  // no re-layout, since each series already has its own independent
+  // y-domain (see the "Third follow-up" note above) that doesn't
+  // depend on any other series being visible.
+  var seriesVisible = series.map(function () { return true; });
+
   function showTooltip(evt, seriesInfo, index) {
     var value = seriesInfo.values[index];
     var tip = container.querySelector('.stats-chart-tooltip');
@@ -385,7 +430,23 @@
       path.setAttribute('points', points.map(function (p) { return p[0] + ',' + p[1]; }).join(' '));
       path.setAttribute('class', 'stats-chart-line');
       path.setAttribute('stroke', color);
+      path.setAttribute('data-series', seriesIndex);
       svg.appendChild(path);
+      // Draws the line left-to-right over the same total duration the
+      // points stagger-reveal across, via the classic stroke-dash
+      // trick (dasharray = the line's own real length, dashoffset
+      // animated from that length down to 0). getTotalLength() needs
+      // the element already attached to the DOM, hence this running
+      // after appendChild above.
+      if (!prefersReducedMotion && points.length > 1) {
+        var lineLength = path.getTotalLength();
+        path.style.strokeDasharray = lineLength;
+        path.style.strokeDashoffset = lineLength;
+        path.style.transition = 'stroke-dashoffset ' + totalAnimMs + 'ms linear';
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(function () { path.style.strokeDashoffset = 0; });
+        });
+      }
       points.forEach(function (p) {
         var index = p[2];
         var circle = document.createElementNS(svgNS, 'circle');
@@ -393,6 +454,15 @@
         circle.setAttribute('r', 5);
         circle.setAttribute('class', 'stats-chart-point');
         circle.setAttribute('fill', color);
+        circle.setAttribute('data-series', seriesIndex);
+        circle.setAttribute('data-x-index', index);
+        // Left unset (rather than set to 1) when already visible, so
+        // the .stats-chart-point:hover dimming rule in base.html (a
+        // plain CSS class rule) isn't permanently shadowed by an
+        // equal-or-higher-specificity inline style - only the hidden
+        // state needs an inline override, since "visible" is just
+        // this element's own default rendering.
+        if (!prefersReducedMotion) circle.style.opacity = 0;
         circle.addEventListener('mousemove', function (evt) { showTooltip(evt, s, index); });
         circle.addEventListener('mouseleave', hideTooltip);
         circle.addEventListener('click', function () { jumpToBucket(index); });
@@ -424,12 +494,36 @@
         rect.setAttribute('width', Math.max(1, barW - 1)); rect.setAttribute('height', barH || 1);
         rect.setAttribute('class', 'stats-chart-bar');
         rect.setAttribute('fill', color);
+        rect.setAttribute('data-series', seriesIndex);
+        rect.setAttribute('data-x-index', i);
+        // See the matching comment on the line-chart's circle points
+        // above - left unset when visible so .stats-chart-bar:hover's
+        // dimming still applies once the bar is revealed/toggled on.
+        if (!prefersReducedMotion) rect.style.opacity = 0;
         rect.addEventListener('mousemove', function (evt) { showTooltip(evt, s, i); });
         rect.addEventListener('mouseleave', hideTooltip);
         rect.addEventListener('click', function () { jumpToBucket(i); });
         svg.appendChild(rect);
       });
     });
+  }
+
+  // Reveal bars/points one x-axis position at a time, respecting
+  // whatever legend-toggle state is current at the moment each step
+  // fires (a toggle clicked mid-animation, however unlikely, still
+  // wins rather than getting overwritten by a stale reveal).
+  if (!prefersReducedMotion && n > 0) {
+    for (var xi = 0; xi < n; xi++) {
+      (function (index) {
+        window.setTimeout(function () {
+          container.querySelectorAll('[data-x-index="' + index + '"]').forEach(function (el) {
+            var seriesIndex = Number(el.getAttribute('data-series'));
+            el.style.transition = 'opacity 200ms ease';
+            el.style.opacity = seriesVisible[seriesIndex] ? '' : 0;
+          });
+        }, index * stepMs);
+      })(xi);
+    }
   }
 
   // X-axis labels - thinned out if there isn't room for all of them.
@@ -458,12 +552,34 @@
   // "Third follow-up" above) the axis itself no longer shows absolute
   // numbers once more than one series is graphed - this is where
   // that range actually became meaningful text.
+  // Click-to-toggle (Christer: "can clicking on the legend toggle the
+  // data for it off and on?") - flips seriesVisible[seriesIndex] and
+  // immediately sets the opacity of every already-drawn element tagged
+  // data-series="<index>" (bars, points, and the line itself) to match,
+  // regardless of whether the build-up animation has reached that
+  // x-index yet - a click is a deliberate, immediate action, so it
+  // shouldn't wait on the stagger. The reveal loop above still checks
+  // seriesVisible at the moment each of its own steps fires, so any
+  // x-index the animation hasn't reached yet also comes in respecting
+  // whatever's currently toggled off.
+  function applySeriesVisibility(seriesIndex) {
+    var visible = seriesVisible[seriesIndex];
+    container.querySelectorAll('[data-series="' + seriesIndex + '"]').forEach(function (el) {
+      el.style.opacity = visible ? 1 : 0;
+      el.style.pointerEvents = visible ? '' : 'none';
+    });
+  }
+
   var legend = document.getElementById('stats-legend');
   if (legend) {
     series.forEach(function (s, seriesIndex) {
       var color = PALETTE[seriesIndex % PALETTE.length];
       var item = document.createElement('span');
       item.className = 'stats-legend-item';
+      item.setAttribute('data-series', seriesIndex);
+      item.setAttribute('role', 'button');
+      item.setAttribute('tabindex', '0');
+      item.title = 'Click to show/hide this field on the chart';
       var swatch = document.createElement('span');
       swatch.className = 'stats-legend-swatch';
       swatch.style.background = color;
@@ -472,6 +588,15 @@
         formatNum(s._trueMin) :
         formatNum(s._trueMin) + '–' + formatNum(s._trueMax);
       item.appendChild(document.createTextNode(s.label + ' (' + s.unit + ') · ' + rangeText));
+      function toggle() {
+        seriesVisible[seriesIndex] = !seriesVisible[seriesIndex];
+        item.classList.toggle('stats-legend-item-off', !seriesVisible[seriesIndex]);
+        applySeriesVisibility(seriesIndex);
+      }
+      item.addEventListener('click', toggle);
+      item.addEventListener('keydown', function (evt) {
+        if (evt.key === 'Enter' || evt.key === ' ') { evt.preventDefault(); toggle(); }
+      });
       legend.appendChild(item);
     });
   }

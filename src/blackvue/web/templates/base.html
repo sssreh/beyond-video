@@ -739,6 +739,16 @@
     .stats-legend-item { display: flex; align-items: center; gap: 0.4rem; }
     .stats-legend-swatch { display: inline-block; width: 0.8rem;
       height: 0.8rem; border-radius: 2px; }
+    /* Click-to-toggle (Christer: "can clicking on the legend toggle the
+       data for it off and on?") - the item itself is now a button;
+       .stats-legend-item-off (set by stats.html's own script) fades
+       both the text and swatch to signal that series is currently
+       hidden from the chart, without needing a second icon/state
+       indicator. */
+    .stats-legend-item { cursor: pointer; user-select: none; }
+    .stats-legend-item:hover { color: var(--text); }
+    .stats-legend-item-off { opacity: 0.45; }
+    .stats-legend-item-off .stats-legend-swatch { opacity: 0.5; }
     /* Chart-point click scrolls the matching table row into view and
        flashes this highlight briefly, so it's obvious which row the
        click landed on. */
