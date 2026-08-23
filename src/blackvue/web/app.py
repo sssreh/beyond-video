@@ -578,7 +578,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         selected_fields = _selected_stat_fields(fields)
         grouping = group if group in GROUPINGS else "all"
-        graph_fields = _selected_graph_fields(graph_fields, selected_fields)
+        graph_fields = _selected_graph_fields(graph_fields)
+        aggregate_fields = _fields_for_aggregation(selected_fields, graph_fields)
         chart_type = chart_type if chart_type in ("bar", "line") else "bar"
 
         cameras = _camera_options()
@@ -618,17 +619,17 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                         continue
                     entries.append((recording.id, stats))
 
-                if GPS_DEPENDENT_FIELDS.intersection(selected_fields):
+                if GPS_DEPENDENT_FIELDS.intersection(aggregate_fields):
                     no_gps = count_recordings_without_gps(entries)
 
                 if entries:
                     buckets = aggregate_recording_stats(
-                        entries, grouping=grouping, fields=selected_fields,
+                        entries, grouping=grouping, fields=aggregate_fields,
                         estimate_gaps=estimate_gaps,
                     )
                     if grouping != "all":
                         summary_bucket = aggregate_recording_stats(
-                            entries, grouping="all", fields=selected_fields,
+                            entries, grouping="all", fields=aggregate_fields,
                             estimate_gaps=estimate_gaps,
                         )[0]
             except ValueError as exc:
@@ -3119,20 +3120,49 @@ def _selected_stat_fields(fields: list[str]) -> list[str]:
     return [f for f in fields if f in STAT_FIELDS] or list(DEFAULT_FIELDS)
 
 
-def _selected_graph_fields(fields: list[str], selected_fields: list[str]) -> list[str]:
+def _selected_graph_fields(fields: list[str]) -> list[str]:
     """stats_dashboard()'s own --graph_fields query-string validation -
     Christer's own follow-up request ("I will also like to have more
     than 1 stats on the y axis") after the dashboard originally only
-    ever graphed one field at a time. Keeps only keys that are both a
-    real STAT_FIELDS entry *and* still among this request's own
-    --fields selection (a field the table isn't even showing shouldn't
-    silently still be on the graph), falling back to just the first
-    selected field so there's always at least one series to draw -
-    the same "degrade to something sane, don't 500 on a tampered or
-    stale query string" contract _selected_stat_fields() above
-    already follows."""
-    graph = [f for f in fields if f in STAT_FIELDS and f in selected_fields]
-    return graph or selected_fields[:1]
+    ever graphed one field at a time. Keeps only keys that are a real
+    STAT_FIELDS entry, falling back to bv-stats' own first
+    DEFAULT_FIELDS entry so there's always at least one series to draw
+    - the same "degrade to something sane, don't 500 on a tampered or
+    stale query string" contract _selected_stat_fields() above already
+    follows.
+
+    Deliberately *not* filtered against the report's own --fields
+    selection (_selected_stat_fields()) - Christer, looking at a
+    5-series chart: "Why 15 fields but only 5 graph fields." The
+    "Graph fields" checkbox list used to only ever offer whichever of
+    the 15 STAT_FIELDS also happened to be checked under "Fields"
+    above it, coupling two independent questions (what the report
+    table should show vs. what the chart should plot) for no reason.
+    Graphing a field no longer requires it to also be a report column
+    - see _fields_for_aggregation() below for how stats_dashboard()
+    makes sure a graph-only field still has aggregated data to draw."""
+    graph = [f for f in fields if f in STAT_FIELDS]
+    return graph or [DEFAULT_FIELDS[0]]
+
+
+def _fields_for_aggregation(selected_fields: list[str], graph_fields: list[str]) -> list[str]:
+    """The full set of STAT_FIELDS keys aggregate_recording_stats()
+    needs to actually compute for one /stats request. Now that
+    "Graph fields" is independent of "Fields" (see
+    _selected_graph_fields()'s own docstring), a field can be graphed
+    without being a report table column - so stats_dashboard() has to
+    aggregate the union of both lists, not just selected_fields, or a
+    graph-only field would have no data in bucket.values and silently
+    render as an empty series. Order: selected_fields first (so the
+    report table's own column order is unaffected), then any
+    graph_fields not already included, deduplicated."""
+    fields = list(selected_fields)
+    seen = set(fields)
+    for field in graph_fields:
+        if field not in seen:
+            fields.append(field)
+            seen.add(field)
+    return fields
 
 
 def _stats_chart_series(buckets: list, graph_fields: list[str]) -> dict[str, object]:

@@ -31,6 +31,7 @@ from blackvue.web.app import _apply_snapshot_deletion_gating
 from blackvue.web.app import _archive_filter_flags
 from blackvue.web.app import _authorize_job_view
 from blackvue.web.app import _delete_job_snapshots
+from blackvue.web.app import _fields_for_aggregation
 from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _job_snapshot_path
 from blackvue.web.app import _recent_web_runs
@@ -658,35 +659,57 @@ def test_selected_stat_fields_falls_back_to_defaults_when_all_unknown():
     assert _selected_stat_fields(["bogus"]) == list(DEFAULT_FIELDS)
 
 
-def test_selected_graph_fields_keeps_only_still_selected_report_fields():
-    # A graph field that's a real STAT_FIELDS key but was unchecked
-    # from the report's own --fields selection shouldn't silently
-    # still be graphed - see _selected_graph_fields()'s own docstring.
+def test_selected_graph_fields_keeps_only_known_stat_fields():
     assert _selected_graph_fields(
-        ["distance_km", "avg_speed_kmh", "not_a_real_field"],
-        selected_fields=["distance_km", "duration_seconds"],
-    ) == ["distance_km"]
+        ["distance_km", "avg_speed_kmh", "not_a_real_field"]
+    ) == ["distance_km", "avg_speed_kmh"]
 
 
-def test_selected_graph_fields_falls_back_to_first_selected_field_when_empty():
-    assert _selected_graph_fields([], selected_fields=["distance_km", "avg_speed_kmh"]) == [
-        "distance_km"
-    ]
+def test_selected_graph_fields_allows_fields_not_in_report_selection():
+    # Christer, looking at a 5-series chart: "Why 15 fields but only 5
+    # graph fields." _selected_graph_fields() no longer takes a
+    # selected_fields param at all - a field can be graphed without
+    # also being a report table column. max_gforce_x isn't among
+    # DEFAULT_FIELDS/the report's own selection, but should still be
+    # graphable on its own.
+    assert _selected_graph_fields(["max_gforce_x"]) == ["max_gforce_x"]
+
+
+def test_selected_graph_fields_falls_back_to_default_field_when_empty():
+    assert _selected_graph_fields([]) == [DEFAULT_FIELDS[0]]
 
 
 def test_selected_graph_fields_falls_back_when_nothing_valid_left():
-    assert _selected_graph_fields(
-        ["bogus"], selected_fields=["distance_km", "avg_speed_kmh"]
-    ) == ["distance_km"]
+    assert _selected_graph_fields(["bogus"]) == [DEFAULT_FIELDS[0]]
 
 
 def test_selected_graph_fields_keeps_more_than_one_field():
     # Christer's own follow-up request: "more than 1 stats on the y
     # axis" - multiple checked graph fields should all survive.
-    assert _selected_graph_fields(
-        ["avg_speed_kmh", "distance_km"],
-        selected_fields=["distance_km", "avg_speed_kmh", "duration_seconds"],
-    ) == ["avg_speed_kmh", "distance_km"]
+    assert _selected_graph_fields(["avg_speed_kmh", "distance_km"]) == [
+        "avg_speed_kmh",
+        "distance_km",
+    ]
+
+
+def test_fields_for_aggregation_unions_selected_and_graph_fields():
+    # A graph-only field (checked under "Graph fields" but not
+    # "Fields") still needs aggregate_recording_stats() to actually
+    # compute it, or the chart would silently render an empty series
+    # for it - see _fields_for_aggregation()'s own docstring.
+    assert _fields_for_aggregation(
+        ["distance_km", "avg_speed_kmh"], ["max_gforce_x", "distance_km"]
+    ) == ["distance_km", "avg_speed_kmh", "max_gforce_x"]
+
+
+def test_fields_for_aggregation_preserves_report_field_order_first():
+    assert _fields_for_aggregation(
+        ["duration_seconds", "distance_km"], ["distance_km", "duration_seconds"]
+    ) == ["duration_seconds", "distance_km"]
+
+
+def test_fields_for_aggregation_handles_empty_graph_fields():
+    assert _fields_for_aggregation(["distance_km"], []) == ["distance_km"]
 
 
 def test_stats_chart_series_builds_one_series_per_graphed_field():
