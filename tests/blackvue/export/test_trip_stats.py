@@ -181,6 +181,55 @@ def test_compute_trip_stats_max_speed_rejects_a_bad_trailing_gps_fix():
     assert stats.max_speed_kmh == 85.0
 
 
+def test_compute_trip_stats_max_speed_excludes_post_reacquisition_decay():
+    # Real-archive report (Christer, 2026-08-23, third follow-up): the
+    # Stats dashboard's max speed was STILL 322.3 km/h even after both
+    # the interior and leading/trailing-edge outlier filters shipped.
+    # Tracing the actual recording's raw .gps file found why: this
+    # wasn't a single bad tick that snaps back - it was a 3-tick
+    # *decaying* run (322.3 -> 174.3 -> 80.4, then back to ~normal)
+    # immediately after a real GPS dropout ended. Because each reading
+    # differs from the one before it rather than snapping back in one
+    # tick, _reject_speed_outliers() never flags any of them (proven
+    # by this exact fixture: without the settle-window exclusion this
+    # test is checking, the filtered max here would still be 322.3 -
+    # see this module's own test for that shape,
+    # test_compute_trip_stats_max_speed_rejects_a_lone_bad_gps_fix,
+    # which only ever has *one* bad tick, not a multi-tick decay).
+    #
+    # The three valid=False fixes at offsets 3-5 simulate the real
+    # dropout - a run of $GPRMC sentences reporting mode 'N' (no fix
+    # at all), which read_gps() still turns into GpsFix objects (mode
+    # 'N' just means valid=False, latitude/longitude/speed_kmh all
+    # None - see gps_reader.py's _parse_rmc()), unlike the module's
+    # first (superseded) design, which assumed those sentences never
+    # reach compute_trip_stats() at all. compute_trip_stats() itself
+    # still only reports stats over its "positioned" fixes, but
+    # _speeds_excluding_reacquisition_settle() needs the *raw* fixes
+    # (including these invalid ones) to tell "a real dropout just
+    # ended" apart from "this recording just has sparse GPS" - see
+    # that function's own docstring for why. The three readings right
+    # after the dropout are the decaying glitch; readings a few
+    # seconds later are back to a normal, plausible speed.
+    fixes = (
+        _fix(0, 59.30, 18.0000, 30.0),
+        _fix(1, 59.301, 18.0001, 32.0),
+        _fix(2, 59.302, 18.0002, 29.0),
+        _fix(3, None, None, None, valid=False),
+        _fix(4, None, None, None, valid=False),
+        _fix(5, None, None, None, valid=False),
+        _fix(6, 59.303, 18.0003, 322.3),
+        _fix(7, 59.304, 18.0004, 174.0),
+        _fix(8, 59.305, 18.0005, 80.0),
+        _fix(9, 59.306, 18.0006, 31.0),
+        _fix(10, 59.307, 18.0007, 28.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 32.0
+
+
 def test_compute_trip_stats_splits_moving_and_idle_time_by_speed_threshold():
     below = DEFAULT_SPEED_THRESHOLD_KMH - 1.0
     above = DEFAULT_SPEED_THRESHOLD_KMH + 20.0

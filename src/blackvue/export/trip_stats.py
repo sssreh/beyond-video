@@ -124,6 +124,65 @@ _ALTITUDE_OUTLIER_JUMP_METERS = 30.0
 # can produce.
 _SPEED_OUTLIER_JUMP_KMH = 100.0
 
+# Real-archive report (Christer, 2026-08-23, second follow-up after the
+# lone-bad-fix filter above and its leading/trailing-edge extension
+# both shipped): the Stats dashboard's archive-wide max speed was
+# STILL 322.3 km/h - the exact same number, on the exact same
+# recording (20260730_162351_N), even after both fixes. Tracing that
+# recording's raw .gps file found why: this isn't a single bad tick
+# that snaps straight back (the shape both filters above catch) - it's
+# a brief *decaying* run of bad readings (174.046kn/322.3km/h, then
+# 94.089kn/174.3km/h, then 43.438kn/80.4km/h) immediately after three
+# consecutive $GPRMC sentences reporting no fix at all (mode indicator
+# 'N'), while the vehicle's own real speed the whole time - per every
+# surrounding reading and the GPGGA position, essentially unmoving -
+# was close to zero. The receiver briefly hallucinated a burst of fast
+# movement while reacquiring a fix, then correctly reported near-zero
+# again a few ticks later. Because each of those three readings
+# differs from the one before it (322 -> 174 -> 80, decaying rather
+# than snapping back in one tick), _reject_speed_outliers()'s "the
+# very next reading returns within threshold of the last accepted one"
+# confirmation never fires for any of them - a multi-tick decay
+# defeats a filter built to catch a single-tick spike-and-instant
+# -return, interior or edge.
+#
+# This is the same "the receiver needs a moment after reacquiring
+# before its own readings can be trusted" problem
+# SNAPSHOT_WARMUP_FRAMES already exists to work around for camera
+# snapshots (bv_gps.py) - applied here to GPS speed instead. Whenever
+# at least one genuinely *invalid* fix (GpsFix.valid False - the
+# receiver reporting mode 'N', no position at all) sits between two
+# positioned fixes, that means a real GPS dropout just ended - and the
+# first few positioned readings to arrive after it have their
+# speed_kmh excluded from average/max entirely, regardless of what
+# their own mode indicator claims (the very first reading after this
+# real dropout had mode 'A' - technically "valid" per GpsFix.valid's
+# own docstring - while its older, ignored status field still said
+# 'V'; the receiver's own signals disagreed with each other, so mode
+# alone isn't a reliable enough signal to lean on here).
+#
+# An earlier version of this fix triggered on elapsed time between
+# consecutive positioned fixes instead (more than a couple of normal
+# ~1Hz tick intervals apart) - simpler, and it looked equivalent on
+# this one real recording, but it was wrong in general: a large gap
+# between two positioned fixes can also just mean a recording has
+# naturally sparse GPS (infrequent fixes, no dropout at all), which is
+# legitimate and already anticipated elsewhere in this codebase's own
+# moving/idle carry-forward logic. That version incorrectly discarded
+# a perfectly good, sparse-but-real reading whenever two positioned
+# fixes just happened to be far apart in time - caught by an existing
+# test (test_stats.py's test_compute_recording_stats_gps_and_gsensor_fields,
+# whose two fixes are 60s apart with no dropout at all) failing before
+# this ever shipped. Checking for an actually-invalid fix in between,
+# rather than just a time gap, is what tells the two cases apart.
+#
+# Position/altitude are untouched by this - only speed_kmh sampling.
+# Simulated against the real culprit recording's raw .gps file before
+# shipping: this drops its own max_speed_kmh from 322.3 to a
+# plausible 41.9 km/h, matching the range every neighboring recording
+# that same day already showed.
+_GPS_REACQUISITION_SETTLE_READINGS = 3
+
 
 @dataclass(frozen=True)
 class TripStats:
@@ -295,6 +354,69 @@ def _reject_speed_outliers(speeds: list[float]) -> list[float]:
     return accepted
 
 
+def _speeds_excluding_reacquisition_settle(
+    fixes: tuple[GpsFix, ...],
+) -> list[float]:
+    """Return the trip's positioned fixes' own speed_kmh readings, with
+    the first _GPS_REACQUISITION_SETTLE_READINGS of them excluded
+    after any real gap in GPS validity - see
+    _GPS_REACQUISITION_SETTLE_READINGS' own docstring for the
+    real-archive report this fixes.
+
+    Takes the *raw* `fixes` sequence (before compute_trip_stats()'s own
+    "positioned" filtering), not just the positioned ones, specifically
+    so it can tell "a real dropout just ended" (at least one actually
+    -invalid fix - GpsFix.valid False - sits between two positioned
+    fixes) apart from "this recording just has naturally sparse GPS
+    fixes" (no invalid fix in between at all, e.g. a short recording
+    with only a start and end reading, still perfectly legitimate).
+    An early version of this filter used only the elapsed time between
+    consecutive positioned fixes as its trigger, which looked
+    equivalent on the one real recording that motivated it but turned
+    out to be wrong in general: a large gap alone doesn't mean a
+    dropout happened, and that version incorrectly discarded a
+    perfectly good, sparse-but-real reading whenever two positioned
+    fixes just happened to be far apart in time.
+
+    The receiver's own speed estimate needs a few ticks to reconverge
+    after reacquiring a real dropout, regardless of what those first
+    readings' own mode indicator claims (see
+    _GPS_REACQUISITION_SETTLE_READINGS' docstring - the very first
+    reading after a real dropout can itself report a "valid" mode
+    while still being garbage). Runs before _reject_speed_outliers()
+    gets a chance to look at the sequence at all - the settling
+    readings this drops can decay across several ticks rather than
+    spiking once and snapping back, which is exactly the shape
+    _reject_speed_outliers() can't catch on its own (see its own
+    docstring).
+    """
+
+    speeds: list[float] = []
+    settle_remaining = 0
+    saw_invalid_since_last_positioned = False
+
+    for fix in fixes:
+        is_positioned = (
+            fix.valid and fix.latitude is not None and fix.longitude is not None
+        )
+        if not is_positioned:
+            saw_invalid_since_last_positioned = True
+            continue
+
+        if saw_invalid_since_last_positioned:
+            settle_remaining = _GPS_REACQUISITION_SETTLE_READINGS
+        saw_invalid_since_last_positioned = False
+
+        if settle_remaining > 0:
+            settle_remaining -= 1
+            continue
+
+        if fix.speed_kmh is not None:
+            speeds.append(fix.speed_kmh)
+
+    return speeds
+
+
 def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, float]:
     """min/max/net-elevation-change over a sequence of raw altitude
     readings, using outlier rejection then dead-band re-basing rather
@@ -372,11 +494,17 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     reports "average speed". `max_speed_kmh` is the highest single
     reading. Both are None if no fix in the trip has a `speed_kmh`
     reading at all (some GPS sentence types don't carry one). Both are
-    computed over _reject_speed_outliers()'s filtered readings rather
-    than the raw sequence directly - see that function's and
-    _SPEED_OUTLIER_JUMP_KMH's own docstrings for the real-archive
-    report (a reported max_speed_kmh of 322.3 km/h in a car limited to
-    250) this fixes.
+    computed over _reject_speed_outliers()'s filtered readings, which
+    in turn run on _speeds_excluding_reacquisition_settle()'s own
+    output rather than the raw sequence directly - two independent
+    passes, since a real archive produced two different shapes of bad
+    reading: a single tick that spikes and snaps straight back
+    (_reject_speed_outliers()), and a multi-tick decay right after a
+    GPS dropout ends (_speeds_excluding_reacquisition_settle()) - see
+    both functions' and _SPEED_OUTLIER_JUMP_KMH's/the comment above
+    _GPS_REACQUISITION_SETTLE_READINGS' own real-archive reports (both
+    a reported max_speed_kmh of 322.3 km/h in a car limited to 250)
+    each one fixes.
 
     `moving_seconds`/`idle_seconds` split the time between consecutive
     positioned fixes into "the vehicle was moving" vs. "it wasn't",
@@ -487,7 +615,7 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
         else:
             moving_seconds += elapsed_seconds
 
-    speeds = [fix.speed_kmh for fix in positioned if fix.speed_kmh is not None]
+    speeds = _speeds_excluding_reacquisition_settle(fixes)
     filtered_speeds = _reject_speed_outliers(speeds)
     average_speed_kmh = (
         sum(filtered_speeds) / len(filtered_speeds) if filtered_speeds else None
