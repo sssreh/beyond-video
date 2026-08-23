@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block title %}Stats - Beyond Video{% endblock %}
+{% block content %}
+<h2 class="page-heading">Stats</h2>
+<div class="command-help">
+  <p>Aggregates each recording's own Stats asset (<code>bv-generate --stats</code>)
+  into a summary over a calendar period - the same aggregation
+  <code>bv-stats</code> runs from the command line, with a graph and
+  clickable points back to the underlying recordings.</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<div class="content-panel">
+<form method="get" action="/stats">
+  <div class="option-group">
+    <h3>Selection</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera's archive to summarize.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      <option value=""{% if not camera_id %} selected{% endif %} disabled>Choose a camera&hellip;</option>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}"{% if camera.id == camera_id %} selected{% endif %}>{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix - an alternative to From/Until for a single recording or day.</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" value="{{ timestamp_value }}" placeholder="e.g. 20260715 or 2026">
+      </div>
+      <div class="field">
+        <label class="field-label" for="from_">
+          From
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward.</span></span>
+        </label>
+        <input type="text" id="from_" name="from" value="{{ from_value }}" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="until">
+          Until
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
+        </label>
+        <input type="text" id="until" name="until" value="{{ until_value }}" placeholder="whole archive if blank">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Report</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="group">
+          Group by
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Calendar period to group recordings by. "weekday" recurs across the whole selection (which day of the week you drive most on) rather than partitioning it into disjoint spans.</span></span>
+        </label>
+        <select id="group" name="group">
+          {% for g in groupings %}
+          <option value="{{ g }}"{% if g == grouping %} selected{% endif %}>{{ g }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="graph_field">
+          Graph field
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which one field to plot - fields have different units (km, km/h, s) so only one is graphed at a time, though the table below shows every field checked below.</span></span>
+        </label>
+        <select id="graph_field" name="graph_field">
+          {% for key, field in all_fields.items() %}
+          {% if key in selected_fields %}
+          <option value="{{ key }}"{% if key == graph_field %} selected{% endif %}>{{ field.label }} ({{ field.unit }})</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="chart_type">
+          Chart type
+        </label>
+        <select id="chart_type" name="chart_type">
+          <option value="bar"{% if chart_type == "bar" %} selected{% endif %}>Bar</option>
+          <option value="line"{% if chart_type == "line" %} selected{% endif %}>Line</option>
+        </select>
+      </div>
+    </div>
+    <label class="field-label">Fields</label>
+    <div class="checkbox-row">
+      {% for key, field in all_fields.items() %}
+      <label class="filter-checkbox">
+        <input type="checkbox" name="fields" value="{{ key }}" style="width: auto; margin: 0;"{% if key in selected_fields %} checked{% endif %}>
+        {{ field.label }}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="checkbox-row">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="estimate_gaps" name="estimate_gaps" value="true" style="width: auto; margin: 0;"{% if estimate_gaps %} checked{% endif %}>
+        Estimate distance for recordings with no GPS fix, from average speed
+      </label>
+    </div>
+  </div>
+
+  <button type="submit">Show stats</button>
+</form>
+</div>
+
+{% if camera_id %}
+{% if skipped %}
+<p class="hint">{{ skipped }} of {{ total_in_range }} recording(s) in range have no Stats asset yet, skipped - run <code>bv-generate --stats</code> over the archive first.</p>
+{% endif %}
+{% if no_gps %}
+<p class="hint">{{ no_gps }} recording(s) with Stats data have no GPS fix - distance/speed/altitude fields won't include them{% if not estimate_gaps %} (check "Estimate distance" above to fill in an estimate){% endif %}.</p>
+{% endif %}
+
+{% if buckets %}
+{% if summary_bucket %}
+<div class="content-panel">
+<h3>Summary ({{ summary_bucket.recordings|length }} recording(s))</h3>
+<table>
+  <tbody>
+    {% for key in selected_fields %}
+    <tr>
+      <th>{{ all_fields[key].label }}</th>
+      <td>
+        {% if summary_bucket.values.get(key) is none %}-{% else %}{{ summary_bucket.values[key]|stat_value(key) }}{% endif %}
+        {% if key == "distance_km" and summary_bucket.estimated_recording_count %}
+        <span class="hint">(includes ~{{ summary_bucket.estimated_distance_km|stat_value("distance_km") }} estimated from {{ summary_bucket.estimated_recording_count }} recording(s) with no GPS fix)</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<div class="content-panel">
+<h3>{{ all_fields[graph_field].label }} by {{ grouping }}</h3>
+<div id="stats-chart" data-chart-type="{{ chart_type }}" data-unit="{{ all_fields[graph_field].unit }}"></div>
+<div class="stats-legend">
+  <span class="stats-legend-swatch"></span> {{ all_fields[graph_field].label }} ({{ all_fields[graph_field].unit }})
+</div>
+</div>
+
+<div class="content-panel">
+<table>
+  <thead>
+    <tr>
+      <th>{{ grouping|capitalize }}</th>
+      <th>Recordings</th>
+      {% for key in selected_fields %}
+      <th>{{ all_fields[key].label }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for bucket in buckets %}
+    <tr id="bucket-row-{{ bucket.key|slugify }}">
+      <td>{{ bucket.key }}</td>
+      <td>
+        <details>
+          <summary>{{ bucket.recordings|length }}</summary>
+          <ul class="asset-list">
+            {% for recording_id in bucket.recordings %}
+            <li><a href="/archive/{{ camera_id }}/{{ recording_id }}">{{ recording_id }}</a></li>
+            {% endfor %}
+          </ul>
+        </details>
+      </td>
+      {% for key in selected_fields %}
+      <td>
+        {% if bucket.values.get(key) is none %}-{% else %}{{ bucket.values[key]|stat_value(key) }}{% endif %}
+        {% if key == "distance_km" and bucket.estimated_recording_count %}
+        <span class="hint">(~{{ bucket.estimated_distance_km|stat_value("distance_km") }} est.)</span>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<script id="stats-chart-data" type="application/json">{{ chart_data_json|safe }}</script>
+<script>
+(function () {
+  // Hand-rolled inline SVG bar/line chart - bv-web has no charting
+  // library anywhere else in it (self-hosted NAS app, no CDN
+  // dependency the rest of the app relies on), so this stays
+  // consistent with that rather than being the first page to pull one
+  // in. Reads the per-bucket payload the /stats route embedded above
+  // (key/value/recording_count only - the graphed field's own value,
+  // not every requested field) and draws bars or a line, with a
+  // hover tooltip and a click that scrolls to + briefly highlights
+  // that bucket's row in the table below - Christer's own "clickable
+  // points for actual data" request, satisfied by linking back into
+  // the already-present per-bucket recording list rather than
+  // reconstructing a time-range URL (which "weekday" grouping has no
+  // single clean range for anyway, since it recurs across the whole
+  // selection).
+  var container = document.getElementById('stats-chart');
+  if (!container) return;
+
+  var raw = document.getElementById('stats-chart-data');
+  var data = JSON.parse(raw.textContent || '[]').filter(function (d) {
+    return d.value !== null && d.value !== undefined;
+  });
+  if (!data.length) {
+    container.innerHTML = '<p class="empty">No data for the selected field in this range.</p>';
+    return;
+  }
+
+  var chartType = container.getAttribute('data-chart-type') || 'bar';
+  var unit = container.getAttribute('data-unit') || '';
+  var width = 720, height = 260;
+  var padLeft = 50, padRight = 20, padTop = 20, padBottom = 40;
+  var plotW = width - padLeft - padRight;
+  var plotH = height - padTop - padBottom;
+
+  var maxValue = Math.max.apply(null, data.map(function (d) { return d.value; }));
+  var minValue = Math.min(0, Math.min.apply(null, data.map(function (d) { return d.value; })));
+  if (maxValue === minValue) maxValue = minValue + 1;
+
+  function yFor(value) {
+    return padTop + plotH - ((value - minValue) / (maxValue - minValue)) * plotH;
+  }
+
+  function slugify(key) {
+    return key.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  }
+
+  var svgNS = 'http://www.w3.org/2000/svg';
+  var svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('class', 'stats-chart-svg');
+
+  // Baseline + a couple of horizontal gridlines for readability.
+  [0, 0.5, 1].forEach(function (t) {
+    var value = minValue + t * (maxValue - minValue);
+    var y = yFor(value);
+    var line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', padLeft); line.setAttribute('x2', width - padRight);
+    line.setAttribute('y1', y); line.setAttribute('y2', y);
+    line.setAttribute('class', 'stats-chart-grid');
+    svg.appendChild(line);
+    var label = document.createElementNS(svgNS, 'text');
+    label.setAttribute('x', padLeft - 8); label.setAttribute('y', y + 4);
+    label.setAttribute('text-anchor', 'end');
+    label.setAttribute('class', 'stats-chart-axis-label');
+    label.textContent = Math.round(value * 100) / 100;
+    svg.appendChild(label);
+  });
+
+  var n = data.length;
+  var slotW = plotW / n;
+
+  function showTooltip(evt, d) {
+    var tip = container.querySelector('.stats-chart-tooltip');
+    tip.textContent = d.key + ': ' + d.value.toFixed(2) + ' ' + unit + ' (' + d.recording_count + ' recording(s))';
+    tip.style.left = evt.offsetX + 'px';
+    tip.style.top = evt.offsetY + 'px';
+    tip.hidden = false;
+  }
+  function hideTooltip() {
+    var tip = container.querySelector('.stats-chart-tooltip');
+    if (tip) tip.hidden = true;
+  }
+  function jumpToBucket(d) {
+    var row = document.getElementById('bucket-row-' + slugify(d.key));
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('stats-row-highlight');
+    setTimeout(function () { row.classList.remove('stats-row-highlight'); }, 1500);
+  }
+
+  if (chartType === 'line') {
+    var points = data.map(function (d, i) {
+      var x = padLeft + slotW * (i + 0.5);
+      var y = yFor(d.value);
+      return [x, y];
+    });
+    var path = document.createElementNS(svgNS, 'polyline');
+    path.setAttribute('points', points.map(function (p) { return p.join(','); }).join(' '));
+    path.setAttribute('class', 'stats-chart-line');
+    svg.appendChild(path);
+    points.forEach(function (p, i) {
+      var circle = document.createElementNS(svgNS, 'circle');
+      circle.setAttribute('cx', p[0]); circle.setAttribute('cy', p[1]);
+      circle.setAttribute('r', 5);
+      circle.setAttribute('class', 'stats-chart-point');
+      circle.addEventListener('mousemove', function (evt) { showTooltip(evt, data[i]); });
+      circle.addEventListener('mouseleave', hideTooltip);
+      circle.addEventListener('click', function () { jumpToBucket(data[i]); });
+      svg.appendChild(circle);
+    });
+  } else {
+    data.forEach(function (d, i) {
+      var barW = Math.max(4, slotW * 0.6);
+      var x = padLeft + slotW * (i + 0.5) - barW / 2;
+      var y = yFor(Math.max(0, d.value));
+      var barH = Math.abs(yFor(d.value) - yFor(0));
+      var rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', x); rect.setAttribute('y', y);
+      rect.setAttribute('width', barW); rect.setAttribute('height', barH || 1);
+      rect.setAttribute('class', 'stats-chart-bar');
+      rect.addEventListener('mousemove', function (evt) { showTooltip(evt, d); });
+      rect.addEventListener('mouseleave', hideTooltip);
+      rect.addEventListener('click', function () { jumpToBucket(d); });
+      svg.appendChild(rect);
+    });
+  }
+
+  // X-axis labels - thinned out if there isn't room for all of them.
+  var labelEvery = Math.max(1, Math.ceil(n / 12));
+  data.forEach(function (d, i) {
+    if (i % labelEvery !== 0) return;
+    var x = padLeft + slotW * (i + 0.5);
+    var label = document.createElementNS(svgNS, 'text');
+    label.setAttribute('x', x); label.setAttribute('y', height - padBottom + 16);
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('class', 'stats-chart-axis-label');
+    label.textContent = d.key;
+    svg.appendChild(label);
+  });
+
+  container.appendChild(svg);
+  var tooltip = document.createElement('div');
+  tooltip.className = 'stats-chart-tooltip';
+  tooltip.hidden = true;
+  container.appendChild(tooltip);
+})();
+</script>
+{% else %}
+<p class="empty">No recordings with Stats data in range.</p>
+{% endif %}
+{% endif %}
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}

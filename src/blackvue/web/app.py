@@ -113,6 +113,14 @@ from ..generate.mp4_repair import load_or_repair_parking_video
 from ..generate.scene import SceneOptions
 from ..generate.speech import transcribe
 from ..lexicaltimeparser import LexicalTimeParser
+from ..stats_report import DEFAULT_FIELDS
+from ..stats_report import GPS_DEPENDENT_FIELDS
+from ..stats_report import GROUPINGS
+from ..stats_report import STAT_FIELDS
+from ..stats_report import aggregate_recording_stats
+from ..stats_report import count_recordings_without_gps
+from ..stats_report import load_recording_stats
+from ..cli.bv_stats import _format_value as _format_stat_value
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -250,6 +258,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     templates.env.filters["local_time"] = lambda iso: datetime.fromisoformat(
         iso
     ).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    # stats.html renders every StatBucket value through this - reuses
+    # bv-stats' own _format_value() (duration as H:MM:SS via
+    # timedelta, everything else fixed-precision + unit) so the web
+    # dashboard matches the CLI report's own formatting exactly,
+    # rather than a second implementation slowly drifting from it.
+    templates.env.filters["stat_value"] = (
+        lambda value, field_key: _format_stat_value(field_key, value)
+    )
+    # Bucket keys ("2026-08", "Monday", "2026-08-23") need to become a
+    # safe HTML element id for the chart's click-to-scroll-to-row
+    # behavior - see stats.html's own inline <script> for what reads
+    # this id back out. _slugify() is a plain module-level function
+    # (not a lambda here) so it's directly testable - see its own
+    # docstring.
+    templates.env.filters["slugify"] = _slugify
     # See RECORDING_ID_RE's own comment above - job_detail.html calls
     # this per output line to decide whether to render it as a link
     # rather than plain text.
@@ -525,6 +548,124 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
 
         return FileResponse(path)
+
+    @app.get("/stats", response_class=HTMLResponse)
+    async def stats_dashboard(
+        request: Request,
+        user: User = Depends(require_login),
+        id: str | None = Query(default=None),
+        group: str = Query(default="all"),
+        fields: list[str] = Query(default=[]),
+        graph_field: str | None = Query(default=None),
+        chart_type: str = Query(default="bar"),
+        timestamp: str | None = Query(default=None),
+        from_: str | None = Query(default=None, alias="from"),
+        until: str | None = Query(default=None, alias="until"),
+        estimate_gaps: bool = Query(default=False),
+    ):
+        # Read-only dashboard over stats_report.py's aggregation
+        # (bv-stats' own library half - see that module's docstring:
+        # "so a future bv-web stats tab can call the aggregation
+        # directly instead of parsing this command's text output").
+        # Deliberately built the same way archive_recording_list()
+        # above is - a GET with query-string filters, no JobRunner
+        # involved, since this is a read over already-computed
+        # RECORDING_STATS assets, not something that runs a subprocess
+        # or takes any real time.
+        timestamp = timestamp or None
+        from_ = from_ or None
+        until = until or None
+
+        selected_fields = _selected_stat_fields(fields)
+        grouping = group if group in GROUPINGS else "all"
+        graph_field = graph_field if graph_field in selected_fields else selected_fields[0]
+        chart_type = chart_type if chart_type in ("bar", "line") else "bar"
+
+        cameras = _camera_options()
+        camera_id = id if id and any(c["id"] == id for c in cameras) else None
+
+        error = None
+        buckets: list = []
+        summary_bucket = None
+        skipped = 0
+        total_in_range = 0
+        no_gps = 0
+
+        if camera_id:
+            try:
+                archive_path = _find_camera_archive(app.state.camera_config_cache, camera_id)
+                adapter_id = _find_camera_adapter_id(app.state.camera_config_cache, camera_id)
+                adapter = get_adapter(adapter_id)
+                archive = adapter.open_archive(archive_path)
+
+                time_interval = None
+                if timestamp or from_ or until:
+                    time_interval = LexicalTimeParser(
+                        timestamp=timestamp, from_=from_, until=until
+                    ).parse()
+
+                recordings = [
+                    recording for recording in archive.recordings
+                    if time_interval is None or recording.id.value in time_interval
+                ]
+                total_in_range = len(recordings)
+
+                entries: list = []
+                for recording in recordings:
+                    stats = load_recording_stats(recording)
+                    if stats is None:
+                        skipped += 1
+                        continue
+                    entries.append((recording.id, stats))
+
+                if GPS_DEPENDENT_FIELDS.intersection(selected_fields):
+                    no_gps = count_recordings_without_gps(entries)
+
+                if entries:
+                    buckets = aggregate_recording_stats(
+                        entries, grouping=grouping, fields=selected_fields,
+                        estimate_gaps=estimate_gaps,
+                    )
+                    if grouping != "all":
+                        summary_bucket = aggregate_recording_stats(
+                            entries, grouping="all", fields=selected_fields,
+                            estimate_gaps=estimate_gaps,
+                        )[0]
+            except ValueError as exc:
+                # A bad/conflicting LexicalTimeParser filter combo -
+                # same "show the form again with the error" handling
+                # archive_recording_list() above uses, rather than a
+                # raw 500.
+                error = str(exc)
+
+        chart_data = _stats_chart_data(buckets, graph_field)
+
+        return templates.TemplateResponse(
+            request,
+            "stats.html",
+            {
+                "user": user,
+                "cameras": cameras,
+                "camera_id": camera_id,
+                "groupings": GROUPINGS,
+                "grouping": grouping,
+                "all_fields": STAT_FIELDS,
+                "selected_fields": selected_fields,
+                "graph_field": graph_field,
+                "chart_type": chart_type,
+                "timestamp_value": timestamp or "",
+                "from_value": from_ or "",
+                "until_value": until or "",
+                "estimate_gaps": estimate_gaps,
+                "buckets": buckets,
+                "summary_bucket": summary_bucket,
+                "skipped": skipped,
+                "total_in_range": total_in_range,
+                "no_gps": no_gps,
+                "chart_data_json": json.dumps(chart_data),
+                "error": error,
+            },
+        )
 
     @app.get("/archive", response_class=HTMLResponse)
     async def archive_camera_list(
@@ -2961,6 +3102,46 @@ def _camera_options() -> list[dict[str, str]]:
         label = id_ if config.name == id_ else f"{config.name} ({id_})"
         options.append({"id": id_, "label": label})
     return options
+
+
+def _selected_stat_fields(fields: list[str]) -> list[str]:
+    """stats_dashboard()'s own --fields query-string validation - drop
+    any key that isn't a real STAT_FIELDS entry (a stale bookmark, a
+    hand-edited URL), and fall back to bv-stats' own DEFAULT_FIELDS
+    when nothing valid is left. The same "silently degrade to
+    something sane rather than 500 on a tampered query string" choice
+    _archive_filter_flags() below makes for the archive browser's own
+    filters. A plain module-level function (not nested inside
+    create_app()) so it's directly testable without a TestClient -
+    see test_app_reuse.py's own module docstring for why this repo
+    tests app.py logic as plain functions rather than through real
+    HTTP requests."""
+    return [f for f in fields if f in STAT_FIELDS] or list(DEFAULT_FIELDS)
+
+
+def _stats_chart_data(buckets: list, graph_field: str) -> list[dict]:
+    """The minimal per-bucket payload stats.html's inline <script>
+    needs to draw bars/points and label them - just the currently-
+    graphed field's own value and a recording count, not the whole
+    StatBucket (which carries every requested field, most of them
+    irrelevant to whichever single field is currently graphed)."""
+    return [
+        {
+            "key": bucket.key,
+            "value": bucket.values.get(graph_field),
+            "recording_count": len(bucket.recordings),
+        }
+        for bucket in buckets
+    ]
+
+
+def _slugify(value: object) -> str:
+    """stats.html's stat_value/slugify Jinja filters both live here so
+    they're testable the same way - a bucket key ("2026-08", "Monday",
+    "2026-08-23") becomes a safe HTML element id for the chart's
+    click-to-scroll-to-row behavior (see stats.html's own inline
+    <script> for what reads this id back out)."""
+    return re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
 
 
 def _archive_filter_flags(

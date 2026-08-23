@@ -706,6 +706,34 @@
     .content-panel table { margin: 0; }
     .content-panel > *:first-child { margin-top: 0; }
     .content-panel > *:last-child { margin-bottom: 0; }
+    /* stats.html's hand-rolled inline SVG chart (bv-web's first -
+       see that template's own <script> comment for why no charting
+       library was pulled in). #stats-chart is the mount point the
+       script appends an <svg> + tooltip <div> into. */
+    #stats-chart { position: relative; }
+    .stats-chart-svg { display: block; }
+    .stats-chart-grid { stroke: var(--panel-border); stroke-width: 1; }
+    .stats-chart-axis-label { fill: var(--muted); font-size: 11px; }
+    .stats-chart-bar { fill: var(--link); }
+    .stats-chart-bar:hover { opacity: 0.8; cursor: pointer; }
+    .stats-chart-line { fill: none; stroke: var(--link); stroke-width: 2; }
+    .stats-chart-point { fill: var(--link); cursor: pointer; }
+    .stats-chart-point:hover { opacity: 0.8; }
+    .stats-chart-tooltip {
+      position: absolute; transform: translate(-50%, -115%);
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.8rem;
+      white-space: nowrap; pointer-events: none;
+    }
+    .stats-legend { display: flex; align-items: center; gap: 0.4rem;
+      margin-top: 0.5rem; font-size: 0.85rem; color: var(--muted); }
+    .stats-legend-swatch { display: inline-block; width: 0.8rem;
+      height: 0.8rem; border-radius: 2px; background: var(--link); }
+    /* Chart-point click scrolls the matching table row into view and
+       flashes this highlight briefly, so it's obvious which row the
+       click landed on. */
+    .stats-row-highlight { background: var(--link); opacity: 0.85;
+      transition: background 1.5s ease, opacity 1.5s ease; }
     /* job_new_bv_scribe.html's "Reuse a previous run" panel (the
        "i would like to have a button or something like in bv-web to
        get the latest run parameters filled in" feature) - a short
@@ -876,6 +904,7 @@
     <a class="tab{{ ' active' if request.url.path == '/trips' or request.url.path.startswith('/trips/') else '' }}" href="/trips">Trips</a>
     <a class="tab{{ ' active' if request.url.path.startswith('/archive') else '' }}" href="/archive">Browse archive</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-search' else '' }}" href="/jobs/bv-search">Search</a>
+    <a class="tab{{ ' active' if request.url.path == '/stats' else '' }}" href="/stats">Stats</a>
   </nav>
   {% endif %}
   {% block content %}{% endblock %}

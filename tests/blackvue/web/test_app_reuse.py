@@ -35,13 +35,18 @@ from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _job_snapshot_path
 from blackvue.web.app import _recent_web_runs
 from blackvue.web.app import _reuse_defaults
+from blackvue.web.app import _selected_stat_fields
+from blackvue.web.app import _slugify
 from blackvue.web.app import _sliced_job_output
+from blackvue.web.app import _stats_chart_data
 from blackvue.web.app import _video_label_for_filename
 from blackvue.web.app import TAIL_LINE_COUNT
 from blackvue.web.archive_browser import scan_archive
 from blackvue.web.jobs import Job
 from blackvue.web.jobs import JobStatus
 from blackvue.web.users import User
+from blackvue.stats_report import DEFAULT_FIELDS
+from blackvue.stats_report import StatBucket
 
 
 def _record(tmp_path, monkeypatch, **overrides):
@@ -622,3 +627,81 @@ def test_snapshot_gating_is_a_no_op_without_a_snapshot_dir(tmp_path):
     _apply_snapshot_deletion_gating(job, JobStatus.SUCCEEDED, is_auto_reload=False)
 
     assert job.snapshot_shown_while_finished is False
+
+
+# ---------------------------------------------------------------------------
+# _selected_stat_fields() / _stats_chart_data() / _slugify() - stats_dashboard()
+# (task #1174, the bv-web "Stats" tab over bv-stats' own aggregation - see
+# stats_report.py's module docstring). Pulled out of the route into plain
+# module-level functions specifically so they're testable here without a
+# TestClient, matching this file's own established approach (see the module
+# docstring above).
+# ---------------------------------------------------------------------------
+
+
+def test_selected_stat_fields_keeps_only_known_keys():
+    assert _selected_stat_fields(["distance_km", "not_a_real_field", "avg_speed_kmh"]) == [
+        "distance_km",
+        "avg_speed_kmh",
+    ]
+
+
+def test_selected_stat_fields_falls_back_to_defaults_when_empty():
+    assert _selected_stat_fields([]) == list(DEFAULT_FIELDS)
+
+
+def test_selected_stat_fields_falls_back_to_defaults_when_all_unknown():
+    # A stale bookmark or hand-edited URL with only bogus ?fields=
+    # values should degrade to the same default report bv-stats
+    # itself opens with, not an empty/broken page.
+    assert _selected_stat_fields(["bogus"]) == list(DEFAULT_FIELDS)
+
+
+def test_stats_chart_data_pulls_the_graphed_field_and_recording_count():
+    buckets = [
+        StatBucket(
+            key="2026-07",
+            recordings=("a", "b", "c"),
+            values={"distance_km": 505.93, "avg_speed_kmh": 42.0},
+        ),
+        StatBucket(
+            key="2026-08",
+            recordings=("d",),
+            values={"distance_km": None, "avg_speed_kmh": 41.0},
+        ),
+    ]
+
+    chart_data = _stats_chart_data(buckets, "distance_km")
+
+    assert chart_data == [
+        {"key": "2026-07", "value": 505.93, "recording_count": 3},
+        {"key": "2026-08", "value": None, "recording_count": 1},
+    ]
+
+
+def test_stats_chart_data_switches_field_with_graph_field():
+    buckets = [StatBucket(key="Monday", recordings=(), values={"distance_km": 10.0, "avg_speed_kmh": 55.0})]
+
+    assert _stats_chart_data(buckets, "avg_speed_kmh") == [
+        {"key": "Monday", "value": 55.0, "recording_count": 0}
+    ]
+
+
+def test_stats_chart_data_empty_buckets_is_empty():
+    assert _stats_chart_data([], "distance_km") == []
+
+
+def test_slugify_lowercases_and_hyphenates():
+    assert _slugify("2026-08") == "2026-08"
+    assert _slugify("Monday") == "monday"
+
+
+def test_slugify_collapses_non_alnum_runs_and_strips_edges():
+    assert _slugify("2026-08-23 09:20:14") == "2026-08-23-09-20-14"
+
+
+def test_slugify_accepts_non_string_bucket_keys():
+    # bucket.key is always a str in practice, but the filter is called
+    # from Jinja where a stray int/None wouldn't be shocking - make
+    # sure it degrades gracefully rather than raising.
+    assert _slugify(2026) == "2026"
