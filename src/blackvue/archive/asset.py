@@ -43,6 +43,16 @@ class Asset(Enum):
     # spot.
     THUMBNAIL = ("Thm",)
 
+    # Per-recording computed statistics (distance, speed, g-force,
+    # driver guess, ...) written by bv-generate --stats as a single
+    # <id>.stats.json file - see WORKING_CONTEXT.md's "bv-web
+    # statistics dashboard + per-recording stats asset" note for the
+    # schema and the read-merge-write persistence design. Deliberately
+    # one JSON file with many fields rather than one Asset per field,
+    # unlike everything else in this enum - the fields are cheap to
+    # (re)compute together and are always consumed together too.
+    RECORDING_STATS = ("Stats",)
+
     TRANSCRIPT = ("Plain", "Transcript")
     TRANSCRIPT_DIARIZED = ("Diar", "Transcript")
     TRANSLATION = ("Plain", "Translate")

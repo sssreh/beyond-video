@@ -38,6 +38,7 @@
     {"suffix": ".aac", "asset": "AUDIO", "kind": "generated"},
     {"suffix": ".duration.txt", "asset": "DURATION", "kind": "generated"},
     {"suffix": ".thumb.jpg", "asset": "THUMBNAIL", "kind": "generated"},
+    {"suffix": ".stats.json", "asset": "RECORDING_STATS", "kind": "generated"},
     {"suffix": ".diarized.transcript.txt", "asset": "TRANSCRIPT_DIARIZED", "kind": "generated"},
     {"suffix": ".diarized.translation.txt", "asset": "TRANSLATION_DIARIZED", "kind": "generated"},
     {"suffix": ".transcript.txt", "asset": "TRANSCRIPT", "kind": "generated"},

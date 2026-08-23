@@ -43,6 +43,7 @@ from .speech import gpu_available
 from .speech import speaker_for
 from .speech import transcribe
 from .speech import translate
+from .stats import compute_recording_stats
 from .subtitles import format_srt
 from .subtitles import parse_srt
 
@@ -60,6 +61,7 @@ __all__ = [
     "SpeakerTurn",
     "SpeechSegment",
     "Transcript",
+    "compute_recording_stats",
     "compute_span",
     "describe_scene",
     "detect_language",

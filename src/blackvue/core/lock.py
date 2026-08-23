@@ -66,6 +66,7 @@ LOCKABLE_ASSETS = frozenset({
     "srt",
     "describe-scene",
     "diarize",
+    "stats",
 })
 
 

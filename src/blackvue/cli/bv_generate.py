@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import threading
@@ -17,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..adapters import registry
+from ..adapters.base import CameraAdapter
 from ..archive import Asset
 from ..archive.photo import recording_is_photo
 from ..archive.recording import Recording
@@ -35,6 +37,7 @@ from ..core.resume import save_resume_state
 from ..generate import MediaToolError
 from ..generate import SCENE_DEFAULT_MODEL
 from ..generate import SpeechSegment
+from ..generate import compute_recording_stats
 from ..generate import describe_scene
 from ..generate import detect_language
 from ..generate import diarize
@@ -192,6 +195,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "on first view if this hasn't been run yet, so running "
             "this ahead of time just avoids paying that cost on first "
             "view."
+        ),
+    )
+
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help=(
+            "Compute this recording's own statistics - duration, "
+            "distance, speed, altitude, moving/idle time, and per-axis "
+            "g-force - from its video/.gps/.3gf (or adapter-equivalent) "
+            "data. Saved as <recording>.stats.json. Cheap: a single "
+            "linear pass over the recording's own telemetry, safe to "
+            "run on every recording every time. Every field is always "
+            "freshly recomputed and merged into any existing "
+            "<recording>.stats.json rather than skipped when the file "
+            "already exists - --overwrite has no effect on this "
+            "action; see --stats-overwrite instead."
+        ),
+    )
+
+    parser.add_argument(
+        "--stats-overwrite",
+        action="store_true",
+        help=(
+            "With --stats, replace the whole <recording>.stats.json "
+            "instead of merging freshly computed fields into it - "
+            "wipes any other key already in the file (e.g. one written "
+            "by a future tool this version doesn't know about). Rarely "
+            "needed: a plain --stats already recomputes and overwrites "
+            "every field it knows how to compute on every run."
         ),
     )
 
@@ -431,15 +464,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.extract_audio
         or args.get_duration
         or args.thumbnail
+        or args.stats
         or args.transcribe
         or args.translate is not None
         or args.describe_scene
     ):
         parser.error(
             "specify at least one action: --extract-audio, "
-            "--get-duration, --thumbnail, --transcribe, --translate, "
-            "or --describe-scene"
+            "--get-duration, --thumbnail, --stats, --transcribe, "
+            "--translate, or --describe-scene"
         )
+
+    if args.stats_overwrite and not args.stats:
+        parser.error("--stats-overwrite requires --stats")
 
     if args.scene_model is None:
         args.scene_model = SCENE_DEFAULT_MODEL
@@ -551,6 +588,8 @@ def _requested_lock_assets(args: argparse.Namespace) -> set[str]:
         requested.add("get-duration")
     if args.thumbnail:
         requested.add("thumbnail")
+    if args.stats:
+        requested.add("stats")
     if args.transcribe:
         requested.add("transcribe")
     if args.translate is not None:
@@ -930,6 +969,69 @@ def _do_thumbnail(
         warn(f"bv-generate: {recording.id}: {exc}")
         return True
 
+    _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
+    return False
+
+
+def _do_stats(
+    recording: Recording,
+    archive_path: Path,
+    adapter: CameraAdapter,
+    args: argparse.Namespace,
+    *,
+    say=print,
+    warn=_default_warn,
+) -> bool:
+    """Compute and write one recording's <id>.stats.json (the
+    RECORDING_STATS asset - see generate/stats.py's own docstring and
+    WORKING_CONTEXT.md's "bv-web statistics dashboard + per-recording
+    stats asset" note for the full design). Return True on error.
+
+    Deliberately does not use _should_write_for()/--overwrite at all -
+    unlike every other action in this file, there's no "the file
+    already exists, skip or ask" question here. Every field
+    compute_recording_stats() returns is cheap to recompute (a single
+    linear pass over this recording's own GPS/g-sensor data) and is
+    always freshly computed and merged into any existing
+    <id>.stats.json on every run: read-merge-write, not skip-if-exists
+    or whole-file overwrite. This means a bugfix to a stats field (or
+    a newly added field) applies to every already-stats'd recording
+    automatically the next time --stats runs over it, with no
+    migration step, and a value that came from somewhere else entirely
+    (e.g. a future driver.* block this version of the code doesn't
+    compute) survives untouched across repeated runs. --stats-overwrite
+    is the escape hatch that replaces the whole file with only the
+    freshly computed fields instead of merging.
+    """
+
+    destination = archive_path / f"{recording.id}.stats.json"
+
+    if args.dry_run:
+        say(f"{recording.id}: would compute stats -> {destination.name}")
+        return False
+
+    try:
+        fresh = compute_recording_stats(recording, adapter)
+    except MediaToolError as exc:
+        warn(f"bv-generate: {recording.id}: {exc}")
+        return True
+
+    merged = fresh
+    if not args.stats_overwrite and destination.exists():
+        try:
+            existing = json.loads(destination.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            warn(
+                f"bv-generate: {recording.id}: existing {destination.name} "
+                f"unreadable, replacing it: {exc}"
+            )
+            existing = {}
+        if isinstance(existing, dict):
+            merged = {**existing, **fresh}
+
+    destination.write_text(
+        json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     _report(say, args.verbose, f"{recording.id}: wrote {destination.name}")
     return False
 
@@ -1756,7 +1858,8 @@ def _run(
     adapter_id = (
         camera_config.adapter if camera_config is not None else DEFAULT_ADAPTER_ID
     )
-    archive = registry.get_adapter(adapter_id).open_archive(archive_path)
+    adapter = registry.get_adapter(adapter_id)
+    archive = adapter.open_archive(archive_path)
 
     started_at = datetime.now()
     started_monotonic = time.monotonic()
@@ -1846,6 +1949,11 @@ def _run(
             if args.thumbnail:
                 had_error |= _do_thumbnail(
                     recording, archive_path, args, say=say, warn=warn
+                )
+
+            if args.stats:
+                had_error |= _do_stats(
+                    recording, archive_path, adapter, args, say=say, warn=warn
                 )
 
             if args.transcribe or args.translate is not None:

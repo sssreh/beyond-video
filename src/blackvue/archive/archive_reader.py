@@ -29,6 +29,7 @@ class ArchiveReader:
         (".aac", Asset.AUDIO),
         (".duration.txt", Asset.DURATION),
         (".thumb.jpg", Asset.THUMBNAIL),
+        (".stats.json", Asset.RECORDING_STATS),
         # The diarized suffixes must be checked before the plain
         # ones below - ".diarized.transcript.txt" also ends with
         # ".transcript.txt", so the plain check would wrongly match

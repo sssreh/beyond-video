@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import threading
 from pathlib import Path
@@ -113,6 +114,8 @@ def _base_args(**overrides):
         extract_audio=False,
         get_duration=False,
         thumbnail=False,
+        stats=False,
+        stats_overwrite=False,
         transcribe=False,
         translate=None,
         language=None,
@@ -206,6 +209,25 @@ def test_parse_args_npu_model_dir_allowed_with_language():
 
     assert args.npu_model_dir == Path("/tmp/npu-model")
     assert args.language == "en"
+
+
+def test_parse_args_accepts_stats():
+    args = parse_args(["/some/path", "--stats"])
+
+    assert args.stats is True
+    assert args.stats_overwrite is False
+
+
+def test_parse_args_stats_overwrite_requires_stats():
+    with pytest.raises(SystemExit):
+        parse_args(["/some/path", "--get-duration", "--stats-overwrite"])
+
+
+def test_parse_args_stats_overwrite_allowed_with_stats():
+    args = parse_args(["/some/path", "--stats", "--stats-overwrite"])
+
+    assert args.stats is True
+    assert args.stats_overwrite is True
 
 
 def test_parse_args_cpu_flag_defaults_to_false():
@@ -2612,6 +2634,108 @@ def test_translate_only_skips_writing_when_whisper_finds_no_speech(
 
 
 # ---------------------------------------------------------------------------
+# _do_stats
+# ---------------------------------------------------------------------------
+
+
+def test_do_stats_dry_run_writes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(bv_generate, "compute_recording_stats", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    args = _base_args(stats=True, dry_run=True)
+    messages = []
+
+    had_error = bv_generate._do_stats(
+        recording, tmp_path, adapter=object(), args=args, say=messages.append
+    )
+
+    assert had_error is False
+    assert not (tmp_path / "20260715_134010_N.stats.json").exists()
+    assert any("would compute stats" in m for m in messages)
+
+
+def test_do_stats_merges_into_existing_file_preserving_unrelated_keys(
+    monkeypatch, tmp_path
+):
+    # A plain --stats always recomputes/overwrites the "cheap" fields
+    # (everything compute_recording_stats() itself produces), but any
+    # *other* top-level key already in the file - e.g. a future
+    # driver.* block this version of the code doesn't compute at all -
+    # is left untouched. See _do_stats()'s own docstring.
+    destination = tmp_path / "20260715_134010_N.stats.json"
+    destination.write_text(
+        json.dumps({"duration_seconds": 999, "driver": {"guess": "driver1"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        bv_generate,
+        "compute_recording_stats",
+        lambda recording, adapter: {"duration_seconds": 42, "distance_km": 1.5},
+    )
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    args = _base_args(stats=True)
+
+    had_error = bv_generate._do_stats(
+        recording, tmp_path, adapter=object(), args=args
+    )
+
+    written = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert had_error is False
+    assert written["duration_seconds"] == 42
+    assert written["distance_km"] == 1.5
+    assert written["driver"] == {"guess": "driver1"}
+
+
+def test_do_stats_overwrite_replaces_whole_file(monkeypatch, tmp_path):
+    destination = tmp_path / "20260715_134010_N.stats.json"
+    destination.write_text(
+        json.dumps({"duration_seconds": 999, "driver": {"guess": "driver1"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        bv_generate,
+        "compute_recording_stats",
+        lambda recording, adapter: {"duration_seconds": 42},
+    )
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    args = _base_args(stats=True, stats_overwrite=True)
+
+    had_error = bv_generate._do_stats(
+        recording, tmp_path, adapter=object(), args=args
+    )
+
+    written = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert had_error is False
+    assert written == {"duration_seconds": 42}
+    assert "driver" not in written
+
+
+def test_do_stats_warns_and_reports_error_on_media_tool_error(monkeypatch, tmp_path):
+    def fake_compute(recording, adapter):
+        raise MediaToolError("no GPS or g-sensor data at all")
+
+    monkeypatch.setattr(bv_generate, "compute_recording_stats", fake_compute)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    args = _base_args(stats=True)
+    warnings = []
+
+    had_error = bv_generate._do_stats(
+        recording, tmp_path, adapter=object(), args=args, warn=warnings.append
+    )
+
+    assert had_error is True
+    assert not (tmp_path / "20260715_134010_N.stats.json").exists()
+    assert any("no GPS or g-sensor data at all" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
 # _requested_lock_assets
 # ---------------------------------------------------------------------------
 
@@ -2627,6 +2751,7 @@ def test_requested_lock_assets_maps_every_action_flag():
         extract_audio=True,
         get_duration=True,
         thumbnail=True,
+        stats=True,
         transcribe=True,
         translate="sv",
         srt=True,
@@ -2638,6 +2763,7 @@ def test_requested_lock_assets_maps_every_action_flag():
         "extract-audio",
         "get-duration",
         "thumbnail",
+        "stats",
         "transcribe",
         "translate",
         "srt",
