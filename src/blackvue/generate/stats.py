@@ -212,7 +212,17 @@ def compute_recording_stats(
             {"lat": positioned_fixes[-1].latitude, "lon": positioned_fixes[-1].longitude}
             if positioned_fixes else None
         ),
-        "distance_km": trip_stats.distance_km if trip_stats else None,
+        # Rounded to 3 decimals (~1m precision) - a single recording is
+        # only ~3 minutes, so distance_km is very often sub-1km, and
+        # compute_trip_stats()'s own raw haversine-sum float prints
+        # with 15+ meaningless digits (e.g. 0.017387641027105147) if
+        # passed straight through. Trip-level trip_info.txt keeps the
+        # unrounded value from compute_trip_stats() itself - this
+        # rounding is local to the per-recording asset, not a change
+        # to trip_stats.py.
+        "distance_km": (
+            round(trip_stats.distance_km, 3) if trip_stats else None
+        ),
         "avg_speed_kmh": trip_stats.average_speed_kmh if trip_stats else None,
         "max_speed_kmh": trip_stats.max_speed_kmh if trip_stats else None,
         "moving_seconds": trip_stats.moving_seconds if trip_stats else None,

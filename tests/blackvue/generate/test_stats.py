@@ -145,6 +145,39 @@ def test_compute_recording_stats_fewer_than_two_positioned_fixes():
     assert stats["moving_seconds"] is None
 
 
+def test_compute_recording_stats_distance_km_rounded_to_three_decimals(monkeypatch):
+    # compute_trip_stats() itself returns raw, unrounded haversine-sum
+    # floats (e.g. 0.017387641027105147) - compute_recording_stats()
+    # rounds distance_km to 3 decimals (~1m precision) before it lands
+    # in the per-recording .stats.json, since a single ~3min recording
+    # is almost always sub-1km. Patched at its real module (not the
+    # deferred local import inside compute_recording_stats()) so the
+    # patch is visible regardless of import timing.
+    import blackvue.export.trip_stats as trip_stats_module
+
+    class _FakeTripStats:
+        distance_km = 0.017387641027105147
+        average_speed_kmh = 12.3
+        max_speed_kmh = 20.0
+        moving_seconds = 30
+        idle_seconds = 5
+        min_altitude_meters = None
+        max_altitude_meters = None
+        elevation_gain_meters = None
+
+    monkeypatch.setattr(
+        trip_stats_module, "compute_trip_stats", lambda fixes: _FakeTripStats()
+    )
+
+    recording = _recording(with_gsensor=False)
+    fixes = (_fix(0, 59.00, 18.00), _fix(60, 59.01, 18.01))
+    adapter = _FakeAdapter(fixes=fixes, gsensor=False)
+
+    stats = compute_recording_stats(recording, adapter)
+
+    assert stats["distance_km"] == 0.017
+
+
 def test_compute_recording_stats_no_gsensor_data_leaves_gforce_none():
     recording = _recording(with_gsensor=False)
     adapter = _FakeAdapter(

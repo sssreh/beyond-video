@@ -17713,6 +17713,12 @@ Tests: `tests/blackvue/generate/test_stats.py` (new file) covers `compute_record
 
 Not started: the dashboard page itself, and "most-driven roads" aggregation (both noted above).
 
+**Real-world testing findings (Christer ran `bv-generate Kirby --stats --timestamp 20260823` against ~30 real recordings, 6.1s total).** Two things surfaced from inspecting actual output:
+
+1. `distance_km` now rounds to 3 decimals (~1m precision) in `generate/stats.py`. The raw value from `compute_trip_stats()` is a haversine-sum float that prints with 15+ meaningless digits (e.g. `0.017387641027105147`) - unreadable at the per-recording level, where a single ~3min recording is almost always sub-1km anyway. `trip_info.txt` keeps the unrounded trip-level value; this rounding is local to the per-recording asset only. Real batch range observed: 0.017-5.35 km per recording, max_speed_kmh up to 124.92, altitude -19.7m to 51.4m. There's no enforced ceiling on any GPS-derived field - they're bounded only by physical driving speed and the recording's own ~3-minute span, not by anything in the code.
+
+2. Raw `.3gf` inspection (one real recording, byte-level parse) found that **all three g-sensor axes sit on a nonzero baseline** (X: 114-126, Y: -12 to -2, Z: 22-32 in the sample checked) with only ~10-12 units of wobble on top - consistent with gravity split across axes by mounting angle plus idle/road vibration, not driving events. This means today's `max_gforce_*`/`avg_gforce_*` fields are baseline-dominated and **not yet usable for driver classification** as-is - the classifier design below will need per-axis baseline subtraction first (e.g. median offset, or a dedicated stationary-calibration recording), not raw absolute values.
+
 ## Note: driver detection via .3gf - a driving-style classifier, not identification (future improvement)
 
 Christer: "inbillar mig att det går att identifiera förare via 3gf filen, då jag kör brutalare än min fru" - wants a Driver (Christer/Fru) filter in bv-search, reachable via voice search too ("Visa mina brutala körningar runt Centralbron").
