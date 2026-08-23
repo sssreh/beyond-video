@@ -483,6 +483,19 @@
           window.requestAnimationFrame(function () { path.style.strokeDashoffset = 0; });
         });
       }
+      // Christer: "i cant scroll down until the graph is fully drawn" -
+      // a wide date range means hundreds of these circles per series,
+      // and svg is already attached to the live document (see the
+      // "No graph visible" fix above - needed for getTotalLength()).
+      // Appending each circle individually to an attached SVG risks a
+      // synchronous style/layout recalc per call, hundreds of times in
+      // a row - real work on the main thread, which blocks scrolling
+      // and input the whole time it runs, regardless of whether the
+      // reveal itself is later driven by CSS. Building every point
+      // into a detached DocumentFragment first and appending that
+      // fragment to svg once cuts hundreds of live-DOM mutations down
+      // to one per series.
+      var pointsFragment = document.createDocumentFragment();
       points.forEach(function (p) {
         var index = p[2];
         var circle = document.createElementNS(svgNS, 'circle');
@@ -505,8 +518,9 @@
         circle.addEventListener('mousemove', function (evt) { showTooltip(evt, s, index); });
         circle.addEventListener('mouseleave', hideTooltip);
         circle.addEventListener('click', function () { jumpToBucket(index); });
-        svg.appendChild(circle);
+        pointsFragment.appendChild(circle);
       });
+      svg.appendChild(pointsFragment);
     });
   } else {
     var seriesCount = series.length;
@@ -523,6 +537,13 @@
     var yBaseline = padTop + plotH;
     series.forEach(function (s, seriesIndex) {
       var color = PALETTE[seriesIndex % PALETTE.length];
+      // Same fragment-batching reasoning as the line chart's points
+      // above - a wide date range means hundreds of bars per series,
+      // and appending each one individually to the already-attached
+      // svg risks a synchronous layout recalc per call, which is real
+      // main-thread work that blocks scrolling/input for however long
+      // it takes to run.
+      var barsFragment = document.createDocumentFragment();
       s.values.forEach(function (value, i) {
         if (value === null || value === undefined) return;
         var x = padLeft + slotW * (i + 0.5) - groupW / 2 + barW * seriesIndex;
@@ -545,8 +566,9 @@
         rect.addEventListener('mousemove', function (evt) { showTooltip(evt, s, i); });
         rect.addEventListener('mouseleave', hideTooltip);
         rect.addEventListener('click', function () { jumpToBucket(i); });
-        svg.appendChild(rect);
+        barsFragment.appendChild(rect);
       });
+      svg.appendChild(barsFragment);
     });
   }
 
