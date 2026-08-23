@@ -24,13 +24,13 @@ The ID identifies the camera's configuration and, through it, the local archive 
 
 `bv-gps`, `bv-live`, and `bv-snap` are the odd ones out among these five: none touches the archive at all, only a live connection to the camera itself (see `docs/man/bv-gps.md`/`docs/man/bv-live.md`/`docs/man/bv-snap.md` - one prints a single GPS reading and exits, one serves a persistent live dashboard, and one grabs a live F/R/I snapshot and exits) - they're listed here purely because they share the same camera-ID-as-first-argument shape as `bv-config`/`bv-download`, not because they take part in recording selection below. (`bv-gps` also has its own `--snap` one-shot mode doing exactly what `bv-snap` does, for anyone who'd rather not reach for a second command - see `docs/man/bv-gps.md`.)
 
-`bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, `bv-search`, and `bv-lock` accept a camera system ID in the same `path` position a literal archive directory would go - `bv-ls Kirby` resolves `Kirby` to that camera's configured `archive` directory, same as `bv-download`/`bv-config` already do. Resolution only kicks in for a bare id: anything that looks like a real path (`.`/`..`, a `./`/`../` prefix, an absolute path, or anything containing a path separator) is always used literally, so a directory that happens to share a name with a configured camera still works via `./Kirby` or `.\Kirby` - the same escape hatch `git checkout ./file` uses for a same-named branch. A bare name that isn't a configured camera id falls back to being treated as a literal path too, so nothing about existing scripts using plain directory names changes. Each of these six commands also takes its own `--config-dir` to point at a non-default camera config directory, matching `bv-config`'s own flag.
+`bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, `bv-search`, `bv-lock`, and `bv-stats` accept a camera system ID in the same `path` position a literal archive directory would go - `bv-ls Kirby` resolves `Kirby` to that camera's configured `archive` directory, same as `bv-download`/`bv-config` already do. Resolution only kicks in for a bare id: anything that looks like a real path (`.`/`..`, a `./`/`../` prefix, an absolute path, or anything containing a path separator) is always used literally, so a directory that happens to share a name with a configured camera still works via `./Kirby` or `.\Kirby` - the same escape hatch `git checkout ./file` uses for a same-named branch. A bare name that isn't a configured camera id falls back to being treated as a literal path too, so nothing about existing scripts using plain directory names changes. Each of these seven commands also takes its own `--config-dir` to point at a non-default camera config directory, matching `bv-config`'s own flag.
 
 `bv-export` additionally reads an optional `Target` directory from the resolved camera's config (see `docs/man/bv-config.md`) and uses it as its own `--target` flag's default when `--target` isn't given explicitly on the command line - an explicit `--target` always wins. If `path` resolves to a camera with no `Target` set (or doesn't resolve to a camera at all), `--target` is still required.
 
 ## Recording selection by timestamp
 
-`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, `bv-search`, and `bv-lock` (with `--lock-assets`/`--unlock-assets` - `--list` ignores them and always shows every lock) all accept the same three timestamp options, narrowing which recordings/range a run considers (`bv-scribe --raw` is the one exception - it processes raw video files with no archive/recording-id structure at all, so these don't apply there; see `docs/man/bv-scribe.md`):
+`bv-download`, `bv-ls`, `bv-generate`, `bv-export`, `bv-scribe`, `bv-search`, `bv-lock` (with `--lock-assets`/`--unlock-assets` - `--list` ignores them and always shows every lock), and `bv-stats` all accept the same three timestamp options, narrowing which recordings/range a run considers (`bv-scribe --raw` is the one exception - it processes raw video files with no archive/recording-id structure at all, so these don't apply there; see `docs/man/bv-scribe.md`):
 
 ```text
 --from TIMESTAMP
@@ -84,6 +84,7 @@ bv-generate /path/to/archive --from 202607 --until 202608
 bv-export /path/to/archive --target /path/to/trips --timestamp 20260715
 bv-search /path/to/archive --timestamp 20260715 --text roundabout
 bv-lock /path/to/archive --timestamp 2019 --lock-assets get-duration,describe-scene
+bv-stats /path/to/archive --timestamp 2026 --group month
 ```
 
 ## What's genuinely per-command
