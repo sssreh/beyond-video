@@ -47,6 +47,7 @@ def test_parse_args_defaults():
     assert args.group == "all"
     assert args.fields == list(bv_stats.DEFAULT_FIELDS)
     assert args.list_fields is False
+    assert args.summary is False
     assert args.json is False
     assert args.trace is False
 
@@ -180,6 +181,91 @@ def test_run_json_output_is_valid_json_with_expected_shape(monkeypatch, tmp_path
     assert payload[0]["key"] == "all"
     assert payload[0]["recordings"] == ["20260823_100000_NF"]
     assert payload[0]["values"]["distance_km"] == 5.0
+
+
+def test_run_summary_adds_overall_totals_alongside_grouped_breakdown(monkeypatch, tmp_path):
+    monday = _make_recording_with_stats(
+        "20260824_100000_NF", tmp_path, {"distance_km": 5.0}
+    )
+    tuesday = _make_recording_with_stats(
+        "20260825_100000_NF", tmp_path, {"distance_km": 7.0}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([monday, tuesday])),
+    )
+    args = parse_args(
+        [str(tmp_path), "--fields", "distance_km", "--group", "weekday", "--summary"]
+    )
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    joined = "\n".join(messages)
+    assert "Summary (2 recording(s))" in joined
+    # The summary totals both recordings' distance together...
+    assert "12.00 km" in joined
+    # ...while the per-weekday breakdown still shows each on its own.
+    assert "Monday (1 recording(s))" in joined
+    assert "Tuesday (1 recording(s))" in joined
+    assert "5.00 km" in joined
+    assert "7.00 km" in joined
+
+
+def test_run_summary_has_no_effect_when_group_is_all(monkeypatch, tmp_path):
+    recording = _make_recording_with_stats(
+        "20260823_100000_NF", tmp_path, {"distance_km": 5.0}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([recording])),
+    )
+    args = parse_args([str(tmp_path), "--fields", "distance_km", "--summary"])
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    joined = "\n".join(messages)
+    assert "Summary" not in joined
+
+
+def test_run_summary_json_shape(monkeypatch, tmp_path):
+    monday = _make_recording_with_stats(
+        "20260824_100000_NF", tmp_path, {"distance_km": 5.0}
+    )
+    tuesday = _make_recording_with_stats(
+        "20260825_100000_NF", tmp_path, {"distance_km": 7.0}
+    )
+    monkeypatch.setattr(
+        bv_stats,
+        "get_adapter",
+        lambda adapter_id: _FakeAdapter(_FakeArchive([monday, tuesday])),
+    )
+    args = parse_args(
+        [
+            str(tmp_path), "--fields", "distance_km",
+            "--group", "weekday", "--summary", "--json",
+        ]
+    )
+    messages = []
+
+    exit_code = bv_stats._run(args, say=messages.append, warn=messages.append)
+
+    assert exit_code == bv_stats.EXIT_OK
+    payload = None
+    for message in messages:
+        try:
+            payload = json.loads(message)
+        except (ValueError, TypeError):
+            continue
+    assert payload is not None
+    assert payload["summary"]["key"] == "all"
+    assert payload["summary"]["values"]["distance_km"] == 12.0
+    assert {b["key"] for b in payload["buckets"]} == {"Monday", "Tuesday"}
 
 
 def test_run_skips_recordings_without_stats_and_reports_count(monkeypatch, tmp_path):

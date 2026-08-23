@@ -41,6 +41,12 @@ This command is deliberately split into a library half (`blackvue.stats_report`,
 
 Each field combines multiple recordings' own readings one of four ways: `sum` (total across the bucket - distance, time, elevation gain), `avg` (mean of each recording's own average - speed, g-force), `max`/`min` (the single largest/smallest reading in the bucket - peak speed, peak g-force, lowest altitude). A recording missing a field entirely (no GPS, no g-sensor, or an older `stats.json` from before a later field was added) simply doesn't contribute to that field's aggregate rather than counting as zero. A bucket where *no* recording in it has a reading for a field reports it as `-` (unknown), not `0`.
 
+### Summary
+
+A grouped breakdown (`--group` anything but `all`) can make the grand total hard to eyeball - e.g. seven `--group weekday` lines, or thirty-odd `--group monthday` lines, none of which is itself "the whole range." `--summary` adds one more section computed the same way `--group all` would (every selected recording, one bucket), printed ahead of the per-group breakdown in text mode, and as a `"summary"` key alongside `"buckets"` in `--json` mode (the plain list shape from before is unchanged when `--summary` isn't given, for anything already parsing this command's JSON output).
+
+If the summary's own totals look lower than expected, check the "N of M recording(s) in range have no Stats asset yet, skipped" line printed just above it - a recording without a `Stats` asset (run `bv-generate --stats` over the archive first, or over more of it) doesn't count toward *any* total, grouped or summarized, and that's the most common reason a total looks short: the timestamp range covers more of the archive than `bv-generate --stats` has actually been run over.
+
 ## ARGUMENTS
 
 | Argument | Description |
@@ -65,6 +71,7 @@ Each field combines multiple recordings' own readings one of four ways: `sum` (t
 | `--group {all,year,month,monthday,week,weekday}` | Calendar period to group recordings by. Default: `all`. |
 | `--fields FIELD1,FIELD2,...` | Comma-separated stats fields to report, or `all`. Default: `duration_seconds,distance_km,avg_speed_kmh,max_speed_kmh,elevation_gain_m`. |
 | `--list-fields` | Print every field `--fields` accepts, with its unit and aggregation kind, then exit. Needs no archive. |
+| `--summary` | Also report an overall summary (totals across the whole selection, same as `--group all`) alongside the per-group breakdown. No effect when `--group` is already `all`. See "Summary" below. |
 | `--json` | Print the aggregated report as JSON instead of a human-readable table. |
 
 ### General
@@ -95,10 +102,10 @@ Month-by-month distance and elevation gain for 2026:
 bv-stats --timestamp 2026 --group month --fields distance_km,elevation_gain_m
 ```
 
-Which day of the week has the most driving:
+Which day of the week has the most driving, with a grand total alongside the per-day breakdown:
 
 ```
-bv-stats --group weekday --fields distance_km,duration_seconds
+bv-stats --group weekday --fields distance_km,duration_seconds --summary
 ```
 
 Every field, as JSON, for a future bv-web stats tab or other scripting:

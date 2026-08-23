@@ -185,6 +185,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "Also report an overall summary (totals across the whole "
+            "selection, same as --group all) alongside the per-group "
+            "breakdown. No effect when --group is already 'all' - "
+            "that's already the whole selection in one bucket. Useful "
+            "because a per-group breakdown (e.g. --group weekday) can "
+            "make the grand total hard to eyeball from the individual "
+            "group lines, especially if a chunk of the range is silently "
+            "excluded for lacking a Stats asset (see the 'skipped' line)."
+        ),
+    )
+
+    parser.add_argument(
         "--json",
         action="store_true",
         help=(
@@ -231,21 +246,34 @@ def _print_list_fields(say) -> None:
         say(f"  {field.key:<18} {field.label} ({field.unit}, {field.aggregate})")
 
 
-def _print_text_report(say, buckets: list[StatBucket], fields: list[str]) -> None:
+def _print_bucket(say, label: str, bucket: StatBucket, fields: list[str]) -> None:
+    say("")
+    say(f"{label} ({len(bucket.recordings)} recording(s))")
+    for field_key in fields:
+        value = bucket.values.get(field_key)
+        field_label = STAT_FIELDS[field_key].label
+        if value is None:
+            say(f"  {field_label}: -")
+        else:
+            say(f"  {field_label}: {_format_value(field_key, value)}")
+
+
+def _print_text_report(
+    say,
+    buckets: list[StatBucket],
+    fields: list[str],
+    *,
+    summary_bucket: StatBucket | None = None,
+) -> None:
     if not buckets:
         say("bv-stats: no recordings with Stats data in range.")
         return
 
+    if summary_bucket is not None:
+        _print_bucket(say, "Summary", summary_bucket, fields)
+
     for bucket in buckets:
-        say("")
-        say(f"{bucket.key} ({len(bucket.recordings)} recording(s))")
-        for field_key in fields:
-            value = bucket.values.get(field_key)
-            label = STAT_FIELDS[field_key].label
-            if value is None:
-                say(f"  {label}: -")
-            else:
-                say(f"  {label}: {_format_value(field_key, value)}")
+        _print_bucket(say, bucket.key, bucket, fields)
 
 
 def _buckets_to_json(buckets: list[StatBucket]) -> list[dict]:
@@ -335,10 +363,28 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
             entries, grouping=args.group, fields=args.fields,
         )
 
+        summary_bucket = None
+        if args.summary and args.group != "all":
+            summary_bucket = aggregate_recording_stats(
+                entries, grouping="all", fields=args.fields,
+            )[0]
+
         if args.json:
-            say(json.dumps(_buckets_to_json(buckets), indent=2))
+            payload: dict | list = {
+                "buckets": _buckets_to_json(buckets),
+            }
+            if summary_bucket is not None:
+                payload["summary"] = _buckets_to_json([summary_bucket])[0]
+            if summary_bucket is None:
+                # No --summary given: keep the original flat-list shape
+                # for backward compatibility with anything already
+                # parsing this output (e.g. a future bv-web stats tab
+                # calling stats_report directly wouldn't hit this path
+                # at all, but a script shelling out to this CLI would).
+                payload = _buckets_to_json(buckets)
+            say(json.dumps(payload, indent=2))
         else:
-            _print_text_report(say, buckets, args.fields)
+            _print_text_report(say, buckets, args.fields, summary_bucket=summary_bucket)
 
         return EXIT_OK
     finally:
