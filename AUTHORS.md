@@ -2,6 +2,8 @@
 
 ## Founder
 
+<img src="images/contributor_christer.png" alt="Christer" width="120">
+
 Christer R (sssreh).
 
 ## Project
