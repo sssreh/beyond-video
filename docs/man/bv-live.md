@@ -10,12 +10,14 @@
 bv-live [--config-dir DIR] [--timeout SECONDS] [--host HOST] [--port PORT]
         [--map-zoom METERS] [--gsensor-window SECONDS] [--no-browser]
         [--browser {default,chrome,edge,firefox,brave}]
-        ID
+        (ID | --camera-host HOST[:PORT])
 ```
 
 ## DESCRIPTION
 
 `bv-live` connects to a BlackVue camera (over its configured endpoints - see `bv-config(1)`) and serves a one-page live dashboard in your browser: the camera's own front/rear video feed (switchable with a button), a map that scrolls to follow its current position, and a strip chart of its live g-sensor readings - all fed live from the camera's own endpoints for as long as this command keeps running.
+
+`ID` and `--camera-host` are mutually exclusive, exactly one required - the same quick-connect pattern `bv-gps`/`bv-download`/`bv-snap` already use for a camera that hasn't been set up in `bv-config` yet: no `--config-dir` lookup, no `[[endpoint]]` fallback list, just one address tried directly. It's named `--camera-host` rather than plain `--host` deliberately - `bv-live` already has its own `--host` below, which is the address this command's *own* web server listens on, a completely different thing from which camera it connects to. In `--camera-host` mode there's no archive directory to keep the OSM map tile cache in either (that normally lives inside the camera's own archive, alongside `bv-export`'s own map cache - see the Map panel below), so it falls back to a cache directory next to `--config-dir` instead.
 
 A browser window opens automatically a moment after the server starts (pass `--no-browser` to skip this and just print the URL) - on Windows, in whichever browser is actually set as your OS-level default, detected from the same registry key Windows itself uses to decide which browser handles a link; a fixed Edge/Chrome/Firefox search is used as a fallback if that can't be determined (a non-Windows OS, or a default browser this doesn't recognize a "new window" flag for). If Windows' own default-browser association isn't cooperating - it's been known to silently reset itself back to Edge - pass `--browser chrome` (or `edge`/`firefox`/`brave`) to skip OS-default detection entirely and always use that browser; if it can't be found, this falls back to the same detection-then-fixed-list chain rather than giving up. The camera feed is the star of the dashboard: as the browser window is resized smaller, the map and g-sensor panels give up space (and eventually stack below it) before the camera feed does.
 
@@ -31,13 +33,14 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 
 | Argument | Description |
 |---|---|
-| `ID` | Camera system id (see `bv-config(1)`). |
+| `ID` | Camera system id (see `bv-config(1)`). Mutually exclusive with `--camera-host`. |
 
 ## OPTIONS
 
 | Option | Description |
 |---|---|
-| `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. |
+| `--camera-host HOST[:PORT]` | Connect directly to this address instead of a `bv-config`'d camera id - no `--config-dir` lookup, no endpoint fallback list. Mutually exclusive with `ID`. Not to be confused with `--host` below, which is the address this command's own web server listens on, not the camera's. |
+| `--config-dir DIR` | Directory camera configs live in. Default: the platform's standard config directory. Ignored when `--camera-host` is given. |
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--host HOST` | Address to listen on. Default: 127.0.0.1 - this is a personal, run-when-you-want-it tool, not meant to sit reachable by anyone else on the network. |
 | `--port PORT` | Port to listen on. Default: 8100 (different from `bv-web`'s own default 19373, so both can run at once). |
@@ -52,7 +55,7 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 | Code | Meaning |
 |---|---|
 | 0 | OK (only reached after the server is stopped, e.g. Ctrl-C). |
-| 1 | Config error (missing/invalid camera config, or no endpoints configured). |
+| 1 | Config error (missing/invalid camera config, or no endpoints configured) - only reachable via `ID`, never `--camera-host`. |
 | 2 | Camera unreachable on every configured endpoint. |
 | 3 | fastapi/uvicorn aren't installed (`pip install beyond-video[web]`). |
 
@@ -72,6 +75,12 @@ Open `http://127.0.0.1:8100/` in a browser to see the dashboard. A wider map, fo
 bv-live Kirby --map-zoom 60
 ```
 
+Probe a raw IP directly, no `bv-config` setup needed:
+
+```
+bv-live --camera-host 192.168.1.42
+```
+
 ## SEE ALSO
 
-`bv-config(1)` to set up the camera this connects to, `bv-gps(1)` for a one-shot live GPS reading instead of a persistent dashboard, `bv-export(1)`'s `--map`/`--map-zoom` for the equivalent rendered-once-per-trip map on already-downloaded recordings.
+`bv-config(1)` to set up the camera this connects to, `bv-gps(1)` for a one-shot live GPS reading instead of a persistent dashboard (and its own `--host` for the identical quick-connect pattern), `bv-export(1)`'s `--map`/`--map-zoom` for the equivalent rendered-once-per-trip map on already-downloaded recordings.

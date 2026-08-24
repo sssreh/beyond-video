@@ -50,6 +50,43 @@ def test_parse_args_rejects_an_unknown_browser_choice():
         bv_live_module.parse_args(["mycar", "--browser", "safari"])
 
 
+def test_parse_args_camera_host_alone():
+    args = bv_live_module.parse_args(["--camera-host", "192.168.1.42"])
+
+    assert args.id is None
+    assert args.camera_host == "192.168.1.42"
+
+
+def test_parse_args_camera_host_accepts_a_port():
+    args = bv_live_module.parse_args(["--camera-host", "192.168.1.42:8080"])
+
+    assert args.camera_host == "192.168.1.42:8080"
+
+
+def test_parse_args_requires_id_or_camera_host(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        bv_live_module.parse_args([])
+
+    assert "required" in capsys.readouterr().err
+
+
+def test_parse_args_rejects_both_id_and_camera_host(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        bv_live_module.parse_args(["mycar", "--camera-host", "192.168.1.42"])
+
+    assert "not allowed" in capsys.readouterr().err
+
+
+def test_parse_args_camera_host_default_is_none():
+    args = bv_live_module.parse_args(["mycar"])
+
+    assert args.camera_host is None
+
+
 class _FakeConfig:
     name = "MyCar"
     endpoints = [Endpoint(name="home", address="10.99.77.1")]
@@ -690,3 +727,80 @@ def test_run_opens_localhost_instead_of_a_wildcard_bind_address(monkeypatch, cap
 
     assert code == bv_live_module.EXIT_OK
     assert opened == [("http://127.0.0.1:9000/", "default")]
+
+
+def _forbid_camera_config_lookup(monkeypatch):
+    """Assert --camera-host never touches bv-config's own file lookup -
+    if it did, this would fail loudly instead of silently reading (or
+    failing to read) some real path. Mirrors test_bv_gps.py's own
+    identical helper for its --host."""
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("--camera-host must not touch camera_config lookups")
+
+    monkeypatch.setattr(bv_live_module, "load_camera_config", _unexpected)
+    monkeypatch.setattr(bv_live_module, "config_path", _unexpected)
+
+
+def test_run_with_camera_host_skips_camera_config_entirely(monkeypatch, capsys):
+    import sys
+    import types
+
+    _forbid_camera_config_lookup(monkeypatch)
+
+    seen_endpoints = []
+
+    def _fake_connect(endpoints, timeout):
+        seen_endpoints.extend(endpoints)
+        return endpoints[0], object()
+
+    monkeypatch.setattr(bv_live_module, "connect", _fake_connect)
+
+    fake_uvicorn = types.ModuleType("uvicorn")
+    uvicorn_calls = []
+    fake_uvicorn.run = lambda app, **kwargs: uvicorn_calls.append((app, kwargs))
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+
+    fake_live_app = types.ModuleType("blackvue.live.app")
+    create_calls = []
+    fake_live_app.create_live_app = lambda *a, **kw: create_calls.append(kw) or "FAKE_APP"
+    monkeypatch.setitem(sys.modules, "blackvue.live.app", fake_live_app)
+
+    monkeypatch.setattr(bv_live_module, "_open_browser_soon", lambda url, browser="default": None)
+
+    args = bv_live_module.parse_args(
+        ["--camera-host", "192.168.1.42:8080", "--config-dir", "/tmp/cfgdir"]
+    )
+    code = bv_live_module._run(args)
+
+    assert code == bv_live_module.EXIT_OK
+    assert len(seen_endpoints) == 1
+    assert seen_endpoints[0].address == "192.168.1.42:8080"
+    assert seen_endpoints[0].name == "192.168.1.42:8080"
+
+    out = capsys.readouterr().out
+    assert "192.168.1.42:8080" in out
+
+    assert len(create_calls) == 1
+    assert create_calls[0]["camera_name"] == "192.168.1.42:8080"
+    assert create_calls[0]["osm_cache_dir"] == Path("/tmp/.osm_cache")
+
+
+def test_run_with_camera_host_reports_unreachable_cleanly(monkeypatch, capsys):
+    _forbid_camera_config_lookup(monkeypatch)
+
+    def _fake_connect(endpoints, timeout):
+        from blackvue.core.connection import CameraUnreachableError
+
+        raise CameraUnreachableError(
+            f"no configured endpoint could be reached: "
+            f"{endpoints[0].name} ({endpoints[0].address}): timed out"
+        )
+
+    monkeypatch.setattr(bv_live_module, "connect", _fake_connect)
+
+    args = bv_live_module.parse_args(["--camera-host", "192.168.1.99"])
+    code = bv_live_module._run(args)
+
+    assert code == bv_live_module.EXIT_UNREACHABLE
+    assert "192.168.1.99" in capsys.readouterr().err

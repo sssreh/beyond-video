@@ -23,6 +23,7 @@ from ..core.camera_config import default_config_dir
 from ..core.camera_config import load_camera_config
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
+from ..core.endpoint import Endpoint
 from ..live.gsensor_stream import DEFAULT_WINDOW_SECONDS
 from ..live.map_stream import DEFAULT_ZOOM_METERS
 
@@ -42,8 +43,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "camera: its own front/rear video feed (switchable), a "
             "scrolling map following its current position, and a "
             "scrolling g-sensor strip - all fed live from the "
-            "camera's own endpoints (see bv-config(1)) for as long as "
-            "this command keeps running."
+            "camera's own endpoints (see bv-config(1)), or a bare "
+            "--camera-host for a camera that hasn't been set up with "
+            "bv-config yet, for as long as this command keeps running."
         ),
         # See bv_export.py's own ArgumentParser for why: argparse's
         # default prefix-abbreviation matching silently breaks the
@@ -51,16 +53,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         allow_abbrev=False,
     )
 
-    parser.add_argument(
+    # Exactly one of these two ways to say "which camera" - id (looked
+    # up via bv-config's own .cfg file, tried endpoint by endpoint) or
+    # a bare --camera-host (skips bv-config entirely). Named
+    # --camera-host rather than plain --host (the shape bv-gps/
+    # bv-download already use for this) because bv-live's own --host
+    # below is a different thing entirely - the address this command's
+    # *own* web server listens on - and reusing the same flag name for
+    # two unrelated meanings would be exactly the kind of ambiguity
+    # Christer hit ("why does bv-live need an id when i used --host").
+    # required=True here is what turns "neither given" and "both
+    # given" into the same clean argparse usage error, instead of a
+    # second manual check in _run() - see bv_gps.py's own identical
+    # group for the precedent this mirrors.
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument(
         "id",
+        nargs="?",
+        default=None,
         help="Camera system id (see bv-config).",
+    )
+    target_group.add_argument(
+        "--camera-host",
+        metavar="HOST[:PORT]",
+        default=None,
+        help=(
+            "Connect directly to this IP (or host:port) instead of a "
+            "bv-config'd camera id - no --config-dir lookup, no "
+            "[[endpoint]] fallback list, just this one address. "
+            "Mutually exclusive with id. Not to be confused with "
+            "--host below, which is the address this command's own "
+            "web server listens on, not the camera's."
+        ),
     )
 
     parser.add_argument(
         "--config-dir",
         type=Path,
         default=default_config_dir(),
-        help="Directory camera configs live in (default: %(default)s).",
+        help=(
+            "Directory camera configs live in (default: %(default)s). "
+            "Ignored when --camera-host is given."
+        ),
     )
 
     parser.add_argument(
@@ -411,23 +445,37 @@ def _open_browser_soon(url: str, browser: str = "default") -> None:
 def _run(args: argparse.Namespace) -> int:
     """Run bv-live for already-parsed arguments."""
 
-    path = config_path(args.config_dir, args.id)
+    if args.camera_host is not None:
+        # Skip bv-config entirely - a single synthetic Endpoint whose
+        # name is just the host itself (see bv_gps.py's own identical
+        # branch), and no archive directory to derive an OSM cache
+        # location from, so that falls back to a shared cache next to
+        # config_dir itself (see osm_cache_dir below).
+        endpoints = [Endpoint(name=args.camera_host, address=args.camera_host)]
+        camera_name = args.camera_host
+        osm_cache_dir = args.config_dir.parent / ".osm_cache"
+    else:
+        path = config_path(args.config_dir, args.id)
+
+        try:
+            config = load_camera_config(path)
+        except CameraConfigError as exc:
+            print(f"bv-live: {exc}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+
+        if not config.endpoints:
+            print(
+                f"bv-live: {path}: no [[endpoint]] entries found",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
+
+        endpoints = config.endpoints
+        camera_name = config.name
+        osm_cache_dir = config.archive / ".osm_cache"
 
     try:
-        config = load_camera_config(path)
-    except CameraConfigError as exc:
-        print(f"bv-live: {exc}", file=sys.stderr)
-        return EXIT_CONFIG_ERROR
-
-    if not config.endpoints:
-        print(
-            f"bv-live: {path}: no [[endpoint]] entries found",
-            file=sys.stderr,
-        )
-        return EXIT_CONFIG_ERROR
-
-    try:
-        endpoint, client = connect(config.endpoints, timeout=args.timeout)
+        endpoint, client = connect(endpoints, timeout=args.timeout)
     except CameraUnreachableError as exc:
         print(f"bv-live: {exc}", file=sys.stderr)
         return EXIT_UNREACHABLE
@@ -450,15 +498,15 @@ def _run(args: argparse.Namespace) -> int:
 
     app = create_live_app(
         client,
-        camera_name=config.name,
-        osm_cache_dir=config.archive / ".osm_cache",
+        camera_name=camera_name,
+        osm_cache_dir=osm_cache_dir,
         map_zoom_meters=args.map_zoom,
         gsensor_window_seconds=args.gsensor_window,
     )
 
     url = f"http://{args.host}:{args.port}/"
     print(
-        f"bv-live: serving {config.name} (via {endpoint.name}) at {url} - "
+        f"bv-live: serving {camera_name} (via {endpoint.name}) at {url} - "
         "press Ctrl-C to stop"
     )
 
