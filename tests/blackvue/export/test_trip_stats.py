@@ -645,3 +645,41 @@ def test_compute_trip_stats_elevation_change_is_negative_for_a_net_descent():
     assert stats.min_altitude_meters == 40.0
     assert stats.max_altitude_meters == 100.0
     assert stats.elevation_change_meters == -60.0
+
+
+def test_compute_trip_stats_elevation_rejects_a_self_corroborating_glitch_cluster():
+    # Real-archive report (Christer, 2026-08-24, on the same
+    # Kirby_2025 archive whose speed readings motivated
+    # _SPEED_IMPLAUSIBLE_CEILING_KMH): archive-wide elevation change
+    # for the year was -10513 m - "some oddballs destroys it." Traced
+    # to 20250409_122447_E (elevation_change_m: -7397.4). Its raw
+    # .gps file shows four consecutive $GPGGA altitude readings
+    # (7479.4/7475.9/7467.8/7462.4m, gently decaying, mutually
+    # self-corroborating rather than spiking-and-snapping-back) during
+    # a brief mode='A'/status='V' window in the middle of what's
+    # otherwise a real ~45-second dropout, immediately before the
+    # receiver reacquires properly at the correct, mundane ~80m
+    # altitude. Because the four bad readings agree with each other,
+    # _reject_altitude_outliers() (single-tick spike-and-snap-back)
+    # never flags any of them - proven by this exact fixture: without
+    # _reject_implausible_altitudes(), _hysteresis_altitude_stats()
+    # would treat 7479.4m as the reference's peak and net_change would
+    # come out strongly negative once it settled back to ~80m, the
+    # same shape as the real -7397.4m report.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=7479.4),
+        _fix(1, 59.301, 18.0001, altitude=7475.9),
+        _fix(2, 59.302, 18.0002, altitude=7467.8),
+        _fix(3, 59.303, 18.0003, altitude=7462.4),
+        _fix(4, None, None, None, valid=False),
+        _fix(5, None, None, None, valid=False),
+        _fix(6, 59.28, 17.930, altitude=80.0),
+        _fix(7, 59.281, 17.931, altitude=80.5),
+        _fix(8, 59.282, 17.932, altitude=83.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 80.0
+    assert stats.max_altitude_meters == 83.0
+    assert stats.elevation_change_meters == 3.0

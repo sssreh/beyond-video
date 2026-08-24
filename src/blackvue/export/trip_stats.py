@@ -101,6 +101,40 @@ _ALTITUDE_OUTLIER_JUMP_METERS = 30.0
 # get" and "did it end up net higher or lower" stay two separate,
 # equally answerable questions.
 #
+# Fifth real-archive report (Christer, 2026-08-24, on the same
+# Kirby_2025 archive whose speed readings motivated
+# _SPEED_IMPLAUSIBLE_CEILING_KMH above): archive-wide elevation change
+# for the year was -10513 m - Christer, after two prior rounds of
+# oddball recordings each dominating an aggregate: "I start to feel
+# that the stats are 99% good for every recordingid, but when you
+# summarize over a year, some oddballs destroys it." Traced to
+# 20250409_122447_E (elevation_change_m: -7397.4) - its raw .gps file
+# shows the exact same failure mechanism as the speed ceiling's own
+# report, just on altitude instead: four consecutive $GPGGA readings
+# (7479.4/7475.9/7467.8/7462.4m, decaying gently, mutually
+# self-corroborating rather than spiking-and-snapping-back) arrive
+# during a brief mode='A'/status='V' window in the middle of what's
+# otherwise a ~45-second real dropout, before the receiver reacquires
+# properly moments later at the correct, mundane ~80m altitude.
+# _reject_altitude_outliers() (single-tick spike-and-snap-back) can't
+# catch a self-corroborating cluster any more than
+# _reject_speed_outliers() could for speed - see that function's own
+# docstring for why - and unlike speed, altitude has no settle-window
+# pass at all yet, so this cluster sailed straight into the dead-band
+# re-basing pass and became the "highest" reading the whole trip's
+# elevation_change_meters got measured against.
+#
+# Same fix as the speed ceiling, for the same reason: rather than
+# build a dropout-relative settle window for altitude too (chasing
+# this shape specifically), reject any single altitude reading that's
+# flatly impossible for a car to be on, regardless of what its
+# neighbors say. 3000m is safely above the highest paved road in
+# Europe a car could plausibly be driven on (~2802m, Col de la Bonette
+# in the French Alps - Norway's highest, Sognefjellsvegen, tops out
+# around 1434m) while comfortably rejecting this cluster's ~7460-7480m
+# glitch outright.
+_ALTITUDE_IMPLAUSIBLE_CEILING_METERS = 3000.0
+#
 # Real-archive report (Christer, 2026-08-23): the Stats dashboard
 # showed a max_speed_kmh of 322.3 km/h for a trip in a car whose real
 # electronic limiter caps it at 250 km/h - obviously a spurious
@@ -312,6 +346,27 @@ def _reject_altitude_outliers(altitudes: list[float]) -> list[float]:
     accepted.append(altitudes[-1])
 
     return accepted
+
+
+def _reject_implausible_altitudes(altitudes: list[float]) -> list[float]:
+    """Drop any altitude reading above _ALTITUDE_IMPLAUSIBLE_CEILING_METERS
+    outright, regardless of what its neighbors look like - the
+    altitude counterpart to _reject_implausible_speeds(), for the same
+    reason: see _ALTITUDE_IMPLAUSIBLE_CEILING_METERS' own docstring for
+    the real-archive report of a self-corroborating cluster of ~7470m
+    readings that _reject_altitude_outliers()'s single-tick
+    spike-and-snap-back check couldn't catch, mirroring the speed
+    ceiling's own report exactly. Runs before _reject_altitude_outliers()
+    gets a chance to look at the sequence - a reading this
+    implausible shouldn't get to seed the dead-band reference or
+    "confirm" a neighbor's jump either.
+    """
+
+    return [
+        altitude
+        for altitude in altitudes
+        if altitude <= _ALTITUDE_IMPLAUSIBLE_CEILING_METERS
+    ]
 
 
 def _reject_speed_outliers(speeds: list[float]) -> list[float]:
@@ -604,9 +659,14 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     filtering this applies and why - a naive raw-reading sum badly
     overstates "change" from ordinary GPS altitude noise, and a single
     badly-wrong altitude fix can overstate it far worse still, both
-    confirmed against real archives). `elevation_change_meters` is the
-    net change (final dead-banded altitude minus starting altitude,
-    can be positive, negative, or zero) - see
+    confirmed against real archives). Before that, the altitude
+    sequence also passes through _reject_implausible_altitudes() -
+    same "several self-corroborating but physically impossible
+    readings" shape and fix as speed's own
+    _reject_implausible_speeds(), see _ALTITUDE_IMPLAUSIBLE_CEILING_METERS'
+    own docstring for the real-archive report. `elevation_change_meters`
+    is the net change (final dead-banded altitude minus starting
+    altitude, can be positive, negative, or zero) - see
     _hysteresis_altitude_stats()'s own docstring for the two earlier
     definitions this field has had and why each was abandoned. The
     altitude sequence fed into it is every present
@@ -688,6 +748,7 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     altitudes = [
         fix.altitude_meters for fix in positioned if fix.altitude_meters is not None
     ]
+    altitudes = _reject_implausible_altitudes(altitudes)
     if altitudes:
         min_altitude_meters, max_altitude_meters, elevation_change_meters = (
             _hysteresis_altitude_stats(altitudes)
