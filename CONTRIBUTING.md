@@ -42,6 +42,8 @@ This project started with a question: how can I replace my bash scripts that dow
 
 ### The early collaboration with Charlie
 
+<img src="images/contributor_charlie.png" alt="Charlie" width="150">
+
 Before Beyond Video became the application it is today, I worked with **ChatGPT ("Charlie")** on the basic architecture and some of the fundamental ideas behind the project.
 
 Charlie was particularly useful during the early design phase. We spent a lot of time discussing how the archive should be represented, how recordings, recording IDs and assets should relate to each other, and how to keep the filesystem-based design simple without introducing unnecessary abstractions or a database.
@@ -142,6 +144,8 @@ Second      > 59 → 59
 This allowed the lexical search language to remain extremely simple while the human-facing representation remained sensible.
 
 ### What happened afterwards
+
+<img src="images/contributor_klaad.png" alt="Klåd" width="150">
 
 After the basic architecture and lexical timestamp work had been established, I got tired of the workflow with Charlie and continued development with **Claude ("Klåd")**, who turned out to be far more implementation-oriented.
 
