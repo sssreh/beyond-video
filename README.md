@@ -13,10 +13,13 @@ The project was inspired by a BlackVue DR900S installed in a vehicle named Kirby
 | `bv-ls` | List and inspect recordings in an archive. |
 | `bv-generate` | Generate derived assets per recording: audio, real duration, transcript, translation, subtitles, scene description. |
 | `bv-lang` | Manage the offline translation packages `bv-generate --translate` uses. |
+| `bv-lock` | Mark a time range in an archive as already generated, so `bv-generate` skips it on future runs. |
 | `bv-export` | Detect trips in an archive and assemble each one into its own folder - video, GPX, map overlay, g-sensor overlay, a combined "stitch" video. |
 | `bv-scribe` | Describe what's happening in a recording (or raw video file) using a vision-language model - scene description and/or on-screen text (signs, plates) via OCR. |
 | `bv-search` | Search an archive by text (transcript/translation/scene description) and/or GPS proximity to a point or place name. |
+| `bv-stats` | Aggregate an archive's per-recording Stats assets into a summary report, grouped by calendar period. |
 | `bv-gps` | Fetch a camera's current GPS reading live, one-shot. |
+| `bv-snap` | Grab one live snapshot per camera direction (Front/Rear/Interior). |
 | `bv-live` | Serve a live browser dashboard for a camera: live video, a scrolling map, a scrolling g-sensor strip. |
 | `bv-web` | A small multi-user web app for browsing trips `bv-export` has already produced (a separate side project - see `docs/WEB_ARCHITECTURE.md`). |
 
