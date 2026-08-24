@@ -230,6 +230,49 @@ def test_compute_trip_stats_max_speed_excludes_post_reacquisition_decay():
     assert stats.max_speed_kmh == 32.0
 
 
+def test_compute_trip_stats_max_speed_rejects_a_pre_dropout_glitch_cluster():
+    # Real-archive report (Christer, 2026-08-24, on a separate archive
+    # from a year earlier - 2025 - freshly stats'd for the first
+    # time): archive-wide max speed was 305.9 km/h, again in the same
+    # car with the same 250 km/h electronic limiter. Tracing the
+    # culprit recording (20250730_070613_E) found a third shape: its
+    # own first four $GPRMC readings (163.4/163.4/165.1/164.1 knots =
+    # ~302.7/302.6/305.9/304.0 km/h) all mutually agree with EACH
+    # OTHER - not a lone spike that jumps away and snaps back
+    # (_reject_speed_outliers()'s shape, see
+    # test_compute_trip_stats_max_speed_rejects_a_lone_bad_gps_fix)
+    # and not a decay after a dropout ends
+    # (_speeds_excluding_reacquisition_settle()'s shape, see the test
+    # above this one) - immediately followed by a genuine ~45-second
+    # dropout, after which the receiver reacquires at the *correct*
+    # position with normal speeds. Because all four bad readings
+    # corroborate each other, neither existing neighbor-relative
+    # filter flags any of them (proven by this exact fixture: without
+    # _reject_implausible_speeds(), the filtered max here would still
+    # be ~305.9). This is why the ceiling fix is a flat cap rather
+    # than another neighbor-relative heuristic - a fourth or fifth new
+    # shape would just defeat those too.
+    fixes = (
+        _fix(0, 56.19158, 13.48568, 302.68),
+        _fix(1, 56.19199, 13.48603, 302.57),
+        _fix(2, 56.19242, 13.48637, 305.86),
+        _fix(3, 56.19283, 13.48672, 304.02),
+        _fix(4, None, None, None, valid=False),
+        _fix(5, None, None, None, valid=False),
+        _fix(6, None, None, None, valid=False),
+        _fix(7, 59.25820, 18.08299, 0.42),
+        _fix(8, 59.25819, 18.08300, 4.01),
+        _fix(9, 59.25822, 18.08307, 10.62),
+        _fix(10, 59.25826, 18.08319, 16.30),
+        _fix(11, 59.25831, 18.08337, 21.72),
+        _fix(12, 59.25837, 18.08359, 24.09),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.max_speed_kmh == 24.09
+
+
 def test_compute_trip_stats_splits_moving_and_idle_time_by_speed_threshold():
     below = DEFAULT_SPEED_THRESHOLD_KMH - 1.0
     above = DEFAULT_SPEED_THRESHOLD_KMH + 20.0

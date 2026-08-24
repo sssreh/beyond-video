@@ -124,6 +124,42 @@ _ALTITUDE_OUTLIER_JUMP_METERS = 30.0
 # can produce.
 _SPEED_OUTLIER_JUMP_KMH = 100.0
 
+# Real-archive report (Christer, 2026-08-24, on a separate 2025 archive
+# freshly stats'd for the first time): archive-wide max speed was
+# 305.9 km/h - his car's own electronic limiter caps it at 250 km/h
+# (see this constant's own report above), so this is implausible on
+# its face regardless of shape. Traced to 20250730_070613_E: the
+# recording's own first four $GPRMC readings (163.4/163.4/165.1/164.1
+# knots = ~302.7/302.6/305.9/304.0 km/h) are all mutually consistent
+# with EACH OTHER - not a lone spike that jumps away and snaps back
+# (_reject_speed_outliers()'s shape) and not a decay after a dropout
+# ends (_speeds_excluding_reacquisition_settle()'s shape) - immediately
+# followed by a genuine ~45-second dropout (mode 'N'), after which the
+# receiver reacquires at the *correct* real position with normal,
+# plausible speeds. The real position barely moves across those four
+# ticks (a few meters), so this is the receiver's speed-over-ground
+# estimate hallucinating a sustained high value for several seconds
+# right as it's about to lose lock entirely - the mirror image of the
+# post-dropout settle problem, but *before* the dropout instead of
+# after, and self-corroborating rather than decaying, so neither
+# existing filter's "does the neighbor confirm or contradict" logic
+# catches it.
+#
+# Rather than extend the neighbor-relative heuristics with a third
+# shape (and inevitably a fourth, a fifth, ... every time the real
+# archive produces a new glitch pattern), this adds a simple, absolute
+# ceiling instead: any single reading above what Christer's actual car
+# can physically do is rejected outright, independent of what its
+# neighbors look like. 260 km/h - 10 km/h of headroom above the car's
+# own 250 km/h limiter, since GPS speed-over-ground can overshoot
+# slightly even during real fast driving - catches this shape (and the
+# original 322.3 km/h single-spike report) directly, while staying
+# purely complementary to the existing neighbor-based filters below,
+# which remain necessary for glitches that land under this ceiling but
+# are still wrong for their surrounding context (the 174.3/80.4 km/h
+# settle-window decay, for instance, both comfortably under 260).
+_SPEED_IMPLAUSIBLE_CEILING_KMH = 260.0
+
 # Real-archive report (Christer, 2026-08-23, second follow-up after the
 # lone-bad-fix filter above and its leading/trailing-edge extension
 # both shipped): the Stats dashboard's archive-wide max speed was
@@ -417,6 +453,28 @@ def _speeds_excluding_reacquisition_settle(
     return speeds
 
 
+def _reject_implausible_speeds(speeds: list[float]) -> list[float]:
+    """Drop any reading above _SPEED_IMPLAUSIBLE_CEILING_KMH outright,
+    regardless of what its neighbors look like - see that constant's
+    own docstring for the real-archive report this fixes.
+
+    Unlike _reject_speed_outliers() and
+    _speeds_excluding_reacquisition_settle() above, this isn't
+    relative to the surrounding readings at all - it's a flat
+    plausibility cap. That's deliberate: those two filters were each
+    built to catch one specific *shape* of bad reading (a lone spike
+    that snaps back, a decay after a dropout ends), and a real archive
+    has already produced a third shape neither one catches - several
+    consecutive readings that agree with *each other* but are still
+    physically impossible. Rather than keep chasing new shapes with
+    more neighbor-relative logic, this closes off the general case:
+    nothing this car has ever done, or will ever do, needs a
+    neighbor's corroboration to be rejected.
+    """
+
+    return [speed for speed in speeds if speed <= _SPEED_IMPLAUSIBLE_CEILING_KMH]
+
+
 def _hysteresis_altitude_stats(altitudes: list[float]) -> tuple[float, float, float]:
     """min/max/net-elevation-change over a sequence of raw altitude
     readings, using outlier rejection then dead-band re-basing rather
@@ -495,16 +553,20 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     reading. Both are None if no fix in the trip has a `speed_kmh`
     reading at all (some GPS sentence types don't carry one). Both are
     computed over _reject_speed_outliers()'s filtered readings, which
-    in turn run on _speeds_excluding_reacquisition_settle()'s own
-    output rather than the raw sequence directly - two independent
-    passes, since a real archive produced two different shapes of bad
-    reading: a single tick that spikes and snaps straight back
-    (_reject_speed_outliers()), and a multi-tick decay right after a
-    GPS dropout ends (_speeds_excluding_reacquisition_settle()) - see
-    both functions' and _SPEED_OUTLIER_JUMP_KMH's/the comment above
-    _GPS_REACQUISITION_SETTLE_READINGS' own real-archive reports (both
-    a reported max_speed_kmh of 322.3 km/h in a car limited to 250)
-    each one fixes.
+    in turn run on _reject_implausible_speeds()'s output, which in
+    turn runs on _speeds_excluding_reacquisition_settle()'s own
+    output rather than the raw sequence directly - three independent
+    passes, since a real archive produced three different shapes of
+    bad reading: a single tick that spikes and snaps straight back
+    (_reject_speed_outliers()), a multi-tick decay right after a GPS
+    dropout ends (_speeds_excluding_reacquisition_settle()), and
+    several consecutive readings that agree with each other but are
+    still physically impossible for the car
+    (_reject_implausible_speeds()) - see each function's and
+    _SPEED_OUTLIER_JUMP_KMH's/the comment above
+    _GPS_REACQUISITION_SETTLE_READINGS'/
+    _SPEED_IMPLAUSIBLE_CEILING_KMH's own real-archive reports (322.3
+    km/h and 305.9 km/h, both in a car limited to 250) each one fixes.
 
     `moving_seconds`/`idle_seconds` split the time between consecutive
     positioned fixes into "the vehicle was moving" vs. "it wasn't",
@@ -616,6 +678,7 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
             moving_seconds += elapsed_seconds
 
     speeds = _speeds_excluding_reacquisition_settle(fixes)
+    speeds = _reject_implausible_speeds(speeds)
     filtered_speeds = _reject_speed_outliers(speeds)
     average_speed_kmh = (
         sum(filtered_speeds) / len(filtered_speeds) if filtered_speeds else None
