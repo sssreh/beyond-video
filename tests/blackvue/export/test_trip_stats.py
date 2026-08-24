@@ -233,8 +233,7 @@ def test_compute_trip_stats_max_speed_excludes_post_reacquisition_decay():
 def test_compute_trip_stats_max_speed_rejects_a_pre_dropout_glitch_cluster():
     # Real-archive report (Christer, 2026-08-24, on a separate archive
     # from a year earlier - 2025 - freshly stats'd for the first
-    # time): archive-wide max speed was 305.9 km/h, again in the same
-    # car with the same 250 km/h electronic limiter. Tracing the
+    # time): archive-wide max speed was 305.9 km/h. Tracing the
     # culprit recording (20250730_070613_E) found a third shape: its
     # own first four $GPRMC readings (163.4/163.4/165.1/164.1 knots =
     # ~302.7/302.6/305.9/304.0 km/h) all mutually agree with EACH
@@ -245,18 +244,23 @@ def test_compute_trip_stats_max_speed_rejects_a_pre_dropout_glitch_cluster():
     # (_speeds_excluding_reacquisition_settle()'s shape, see the test
     # above this one) - immediately followed by a genuine ~45-second
     # dropout, after which the receiver reacquires at the *correct*
-    # position with normal speeds. Because all four bad readings
-    # corroborate each other, neither existing neighbor-relative
-    # filter flags any of them (proven by this exact fixture: without
-    # _reject_implausible_speeds(), the filtered max here would still
-    # be ~305.9). This is why the ceiling fix is a flat cap rather
-    # than another neighbor-relative heuristic - a fourth or fifth new
-    # shape would just defeat those too.
+    # position with normal speeds. The receiver's own real position
+    # barely moved across those four ticks (well under a meter each,
+    # per the raw .gps file) while its speed-over-ground estimate
+    # hallucinated a sustained ~305 km/h - exactly the shape
+    # _reject_speed_position_mismatches() is built to catch, since the
+    # readings corroborate each other's *speed* field but not the
+    # vehicle's own *position*. The four fixes below use near-
+    # stationary coordinates (well under a meter of drift tick to
+    # tick, matching the real recording) rather than the earlier,
+    # not-to-scale version of this fixture, which accidentally implied
+    # ~180 km/h of real movement and so slipped past the position
+    # cross-check undetected.
     fixes = (
         _fix(0, 56.19158, 13.48568, 302.68),
-        _fix(1, 56.19199, 13.48603, 302.57),
-        _fix(2, 56.19242, 13.48637, 305.86),
-        _fix(3, 56.19283, 13.48672, 304.02),
+        _fix(1, 56.191583, 13.485684, 302.57),
+        _fix(2, 56.191578, 13.485677, 305.86),
+        _fix(3, 56.191581, 13.485682, 304.02),
         _fix(4, None, None, None, valid=False),
         _fix(5, None, None, None, valid=False),
         _fix(6, None, None, None, valid=False),
@@ -411,10 +415,10 @@ def test_compute_trip_stats_elevation_fields_are_none_without_any_altitude_data(
 
 
 def test_compute_trip_stats_min_max_altitude():
-    # Deltas (15m, -25m) stay comfortably under
-    # _ALTITUDE_OUTLIER_JUMP_METERS (30m) so none of these are treated
-    # as a bad-fix spike - see the outlier-rejection tests below for
-    # that case specifically.
+    # Deltas (15m, -25m) over 1-second ticks stay comfortably under
+    # _ALTITUDE_IMPLAUSIBLE_RATE_MPS (30 m/s) so none of these are
+    # treated as a bad-fix spike - see the outlier-rejection tests
+    # below for that case specifically.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
         _fix(1, 59.31, 18.001, altitude=115.0),
@@ -500,15 +504,22 @@ def test_compute_trip_stats_elevation_bridges_gaps_missing_a_reading():
     # fields' own carry-forward fix (moving/idle above), altitude
     # simply drops any fix with no reading from the sequence fed into
     # _hysteresis_altitude_stats() rather than fragmenting into
-    # disconnected segments around it, so offsets 0 and 2 are treated
+    # disconnected segments around it, so offsets 0 and 6 are treated
     # as consecutive real readings 100m apart - contributing to the net
     # change, not None. See compute_trip_stats()'s own docstring for why (same
     # "bridge across gaps, don't silently drop the span" philosophy as
-    # moving_seconds/idle_seconds).
+    # moving_seconds/idle_seconds). The real elapsed time across the
+    # bridged gap (6s, not the 2s an earlier version of this fixture
+    # used) keeps the implied vertical rate (100m/6s ~ 16.7 m/s) under
+    # _ALTITUDE_IMPLAUSIBLE_RATE_MPS (30) - otherwise
+    # _reject_altitude_outliers() would read the bridged gap itself as
+    # an implausible jump and split the two readings into separate
+    # segments instead of bridging them, which isn't what this test is
+    # about.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
-        _fix(1, 59.31, 18.001, altitude=None),
-        _fix(2, 59.32, 18.002, altitude=200.0),
+        _fix(2, 59.31, 18.001, altitude=None),
+        _fix(6, 59.32, 18.002, altitude=200.0),
     )
 
     stats = compute_trip_stats(fixes)
@@ -531,6 +542,32 @@ def test_compute_trip_stats_elevation_change_none_with_only_one_reading():
 
     assert stats.min_altitude_meters == 100.0
     assert stats.max_altitude_meters == 100.0
+    assert stats.elevation_change_meters is None
+
+
+def test_compute_trip_stats_elevation_change_none_when_outlier_rejection_leaves_only_one():
+    # Two *raw* altitude readings, but one is a ceiling-implausible
+    # glitch (see _ALTITUDE_IMPLAUSIBLE_CEILING_METERS' own docstring) -
+    # _reject_altitude_outliers() splits them into two 1-reading
+    # segments (the implied rate between 80m and 7000m in one second is
+    # absurd), pass 1 discards both as lone spikes, and the ceiling
+    # fallback then keeps only the plausible one. That leaves exactly
+    # one *real* reading behind even though two were passed in, which
+    # has no delta to measure "change" from - same as the
+    # single-reading case above, just arrived at after filtering rather
+    # than because only one reading ever existed. This needs checking
+    # against the post-filter count, not len(altitude_fixes): an
+    # earlier version of this check only looked at the raw count and
+    # would have reported a spurious 0.0 here instead of None.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=80.0),
+        _fix(1, 59.301, 18.0001, altitude=7000.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 80.0
+    assert stats.max_altitude_meters == 80.0
     assert stats.elevation_change_meters is None
 
 
@@ -581,10 +618,11 @@ def test_compute_trip_stats_elevation_rejects_a_lone_bad_gps_fix():
     # geometry, not a real 250m jump and drop in under two seconds)
     # used to blow elevation_change_meters up to roughly the size of the
     # bad jump, since it cleared the dead-band and got treated as a
-    # real climb. The lone-spike check (jumps away, next reading snaps
-    # straight back) should drop the 300m reading entirely before it
-    # ever reaches the dead-band pass, leaving only the genuine
-    # sub-deadband wobble around ~50m.
+    # real climb. The implausible-rate split (see
+    # _reject_altitude_outliers()'s own docstring) isolates the 300m
+    # reading as its own 1-reading segment - implausible rate both into
+    # and out of it - which pass 1 then drops outright, leaving only
+    # the genuine sub-deadband wobble around ~50m.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=50.0),
         _fix(1, 59.301, 18.0001, altitude=50.5),
@@ -604,12 +642,14 @@ def test_compute_trip_stats_elevation_keeps_a_real_sustained_jump():
     # A genuinely large, *sustained* change (every reading after the
     # first big jump keeps climbing further, none of them snap back to
     # the earlier baseline) must not be mistaken for a lone bad fix -
-    # only a jump that nothing afterward confirms gets dropped. Here
-    # the jump from ~50m to 90m is itself bigger than
-    # _ALTITUDE_OUTLIER_JUMP_METERS, same as the bad-fix case above,
-    # but the two readings after it (95m, 100m) keep moving the same
-    # direction instead of snapping back - confirmation the outlier
-    # check requires before rejecting anything.
+    # only an isolated single reading (surrounded by an implausible
+    # rate on both sides) gets dropped. Here the jump from ~50m to 90m
+    # over one second (39.5 m/s) is itself well above
+    # _ALTITUDE_IMPLAUSIBLE_RATE_MPS, same as the bad-fix case above,
+    # so it does split the sequence into two segments - but the second
+    # segment (90m, 95m, 100m) has 3 readings, not 1, so it survives
+    # pass 1 as a genuine segment rather than getting discarded as a
+    # lone spike.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=50.0),
         _fix(1, 59.301, 18.0001, altitude=50.5),
@@ -649,23 +689,29 @@ def test_compute_trip_stats_elevation_change_is_negative_for_a_net_descent():
 
 def test_compute_trip_stats_elevation_rejects_a_self_corroborating_glitch_cluster():
     # Real-archive report (Christer, 2026-08-24, on the same
-    # Kirby_2025 archive whose speed readings motivated
-    # _SPEED_IMPLAUSIBLE_CEILING_KMH): archive-wide elevation change
-    # for the year was -10513 m - "some oddballs destroys it." Traced
-    # to 20250409_122447_E (elevation_change_m: -7397.4). Its raw
-    # .gps file shows four consecutive $GPGGA altitude readings
+    # Kirby_2025 archive whose speed readings motivated the position
+    # cross-check above): archive-wide elevation change for the year
+    # was -10513 m - "some oddballs destroys it." Traced to
+    # 20250409_122447_E (elevation_change_m: -7397.4). Its raw .gps
+    # file shows four consecutive $GPGGA altitude readings
     # (7479.4/7475.9/7467.8/7462.4m, gently decaying, mutually
     # self-corroborating rather than spiking-and-snapping-back) during
     # a brief mode='A'/status='V' window in the middle of what's
     # otherwise a real ~45-second dropout, immediately before the
     # receiver reacquires properly at the correct, mundane ~80m
-    # altitude. Because the four bad readings agree with each other,
-    # _reject_altitude_outliers() (single-tick spike-and-snap-back)
-    # never flags any of them - proven by this exact fixture: without
-    # _reject_implausible_altitudes(), _hysteresis_altitude_stats()
-    # would treat 7479.4m as the reference's peak and net_change would
-    # come out strongly negative once it settled back to ~80m, the
-    # same shape as the real -7397.4m report.
+    # altitude. Because the four bad readings agree with each other
+    # (each tick-to-tick rate among them is well under
+    # _ALTITUDE_IMPLAUSIBLE_RATE_MPS), pass 1 of
+    # _reject_altitude_outliers() alone would keep this whole 4-reading
+    # segment intact as a plausible-looking run - proven by this exact
+    # fixture: without pass 2's _ALTITUDE_IMPLAUSIBLE_CEILING_METERS
+    # fallback, _hysteresis_altitude_stats() would treat 7479.4m as the
+    # reference's peak and net_change would come out strongly negative
+    # once it settled back to ~80m, the same shape as the real
+    # -7397.4m report. Pass 2 catches it because every reading in this
+    # segment sits far above the ceiling (higher than any road on
+    # Earth reaches), while the good segment after the dropout does
+    # not.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=7479.4),
         _fix(1, 59.301, 18.0001, altitude=7475.9),
@@ -683,3 +729,35 @@ def test_compute_trip_stats_elevation_rejects_a_self_corroborating_glitch_cluste
     assert stats.min_altitude_meters == 80.0
     assert stats.max_altitude_meters == 83.0
     assert stats.elevation_change_meters == 3.0
+
+
+def test_compute_trip_stats_elevation_keeps_both_segments_across_a_real_dropout():
+    # Pass 1 of _reject_altitude_outliers() splits on implausible rate
+    # alone - a real GPS dropout between two genuinely different
+    # altitude bands (a mountain road climbing during a tunnel/dropout,
+    # say) produces exactly the same shape as the glitch-cluster tests
+    # above (a rate-implausible boundary with a real gap in between),
+    # but here BOTH sides are real, ordinary multi-reading segments,
+    # neither one a lone spike and neither exceeding
+    # _ALTITUDE_IMPLAUSIBLE_CEILING_METERS. The ceiling fallback must
+    # never trigger here (nothing in either segment is even close to
+    # implausible on its own), so both segments should survive pass 1
+    # intact and both contribute to min/max/elevation_change - not just
+    # whichever one happens to be longer or last.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=100.0),
+        _fix(1, 59.301, 18.0001, altitude=110.0),
+        _fix(2, 59.302, 18.0002, altitude=120.0),
+        _fix(3, None, None, None, valid=False),
+        _fix(4, None, None, None, valid=False),
+        _fix(5, None, None, None, valid=False),
+        _fix(6, 59.40, 18.100, altitude=300.0),
+        _fix(7, 59.401, 18.1001, altitude=310.0),
+        _fix(8, 59.402, 18.1002, altitude=320.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 100.0
+    assert stats.max_altitude_meters == 320.0
+    assert stats.elevation_change_meters == 220.0
