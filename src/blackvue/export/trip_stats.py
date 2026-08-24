@@ -387,11 +387,47 @@ _SPEED_POSITION_CROSS_CHECK_MARGIN_KMH = 20.0
 # this ever shipped. Checking for an actually-invalid fix in between,
 # rather than just a time gap, is what tells the two cases apart.
 #
-# Position/altitude are untouched by this - only speed_kmh sampling.
-# Simulated against the real culprit recording's raw .gps file before
-# shipping: this drops its own max_speed_kmh from 322.3 to a
-# plausible 41.9 km/h, matching the range every neighboring recording
-# that same day already showed.
+# Position (distance/moving/idle time) was left untouched by this
+# originally - only speed_kmh sampling. Simulated against the real
+# culprit recording's raw .gps file before shipping: this drops its
+# own max_speed_kmh from 322.3 to a plausible 41.9 km/h, matching the
+# range every neighboring recording that same day already showed.
+#
+# Sixth real-archive report (Christer, 2026-08-24, same conversation as
+# the fifth report above): having just been shown that both the
+# max_speed_kmh and elevation_change_meters bugs traced back to the
+# exact same mode='A'/status='V' disagreement window this settle
+# -window mechanism was built to work around for speed, Christer asked
+# directly: "could our stats problem be related to using non-confirmed
+# positions?" - and then, once shown yes: "maybe only use confirmed
+# positions for stats." Two changes followed from that. First,
+# GpsFix.confirmed (see its own docstring in gps_reader.py) exposes the
+# status field this module always had access to but never used -
+# _is_positioned() (this module's own shared "can this fix be used at
+# all" predicate) now requires it everywhere a fix needs to be
+# positioned for trip_stats.py's own purposes: distance/moving/idle
+# time, the speed pipeline, and the altitude pipeline alike, not just
+# speed on its own as before this report. This is scoped to
+# trip_stats.py specifically - GpsFix.valid itself stays mode-based
+# everywhere else in the codebase (map rendering, live GPS, trip
+# building, gap detection, ...), since that's what task #143 originally
+# fixed status field alone from underreporting. trip_stats.py's own job
+# - a handful of aggregate numbers people read and trust - just turned
+# out to need the stricter of the two signals, not the more permissive
+# one every other consumer wants.
+#
+# Second, altitude now gets this exact settle-window exclusion too
+# (_altitude_fixes_excluding_reacquisition_settle(), see its own
+# docstring) - previously it only had _reject_altitude_outliers()'s
+# rate-and-ceiling filter, which happened to catch the -7397m bug by
+# luck (that particular glitch cluster was large enough to clear the
+# ceiling), not by design. Both changes are complementary, not
+# redundant: `confirmed` directly excludes the exact readings whose own
+# status field admits they're not yet confirmed, while the settle
+# -window additionally excludes a few readings *after* reacquisition
+# regardless of what they claim about themselves - the receiver's
+# speed/position estimate needs physical time to reconverge even once
+# it starts reporting itself as confirmed again.
 _GPS_REACQUISITION_SETTLE_READINGS = 3
 
 
@@ -441,6 +477,43 @@ def _haversine_distance_meters(
     c = 2 * math.asin(min(1.0, math.sqrt(a)))
 
     return _EARTH_RADIUS_METERS * c
+
+
+def _is_positioned(fix: GpsFix) -> bool:
+    """True for a fix trip_stats.py can actually use: a real position
+    (`valid`) that has also cleared the receiver's own stricter
+    internal accuracy check (`confirmed`), plus the lat/lon to go with
+    it.
+
+    Requiring `confirmed` here - not just `valid` - is deliberate and
+    specific to this module. Christer, after being shown that two
+    separate real-archive bugs (the 305.9 km/h max_speed_kmh spike and
+    the -7397m elevation_change_meters plunge - see both fields' own
+    comments above) traced back to the exact same mode='A'/status='V'
+    disagreement window: "could our stats problem be related to using
+    non-confirmed positions?" - yes. `GpsFix.valid` alone (mode
+    indicator only) is what task #143 deliberately chose for most of
+    this codebase, specifically because requiring the stricter status
+    field there discarded a large, genuinely usable stretch of real
+    track (see gps_reader.py's own module docstring) - that decision
+    stands unchanged everywhere else (map rendering, live GPS, trip
+    building, gap detection, ...). But trip_stats.py's job is
+    different: it's reporting a handful of aggregate numbers people
+    read and trust (distance, speed, altitude), not preserving as much
+    raw track as possible - and both real bugs above happened
+    precisely because a reading was trusted for being valid without
+    also being confirmed. Every "positioned fix" trip_stats.py works
+    with - distance/moving/idle time, the speed pipeline, the altitude
+    pipeline - goes through this one predicate, so the policy is
+    applied consistently rather than piecemeal.
+    """
+
+    return (
+        fix.valid
+        and fix.confirmed
+        and fix.latitude is not None
+        and fix.longitude is not None
+    )
 
 
 def _reject_altitude_outliers(
@@ -668,9 +741,7 @@ def _speeds_excluding_reacquisition_settle(
     saw_invalid_since_last_positioned = False
 
     for index, fix in enumerate(fixes):
-        is_positioned = (
-            fix.valid and fix.latitude is not None and fix.longitude is not None
-        )
+        is_positioned = _is_positioned(fix)
         if not is_positioned:
             saw_invalid_since_last_positioned = True
             continue
@@ -690,6 +761,65 @@ def _speeds_excluding_reacquisition_settle(
             speeds.append(fix.speed_kmh)
 
     return speeds
+
+
+def _altitude_fixes_excluding_reacquisition_settle(
+    fixes: tuple[GpsFix, ...],
+) -> list[tuple[datetime, float]]:
+    """Return the trip's positioned fixes' own (timestamp,
+    altitude_meters) readings, with the first
+    _GPS_REACQUISITION_SETTLE_READINGS of them excluded after any real
+    gap in GPS validity - the altitude counterpart to
+    _speeds_excluding_reacquisition_settle() above, added for the same
+    real-archive reason that function exists (Christer: "could our
+    stats problem be related to using non-confirmed positions?").
+
+    Speed got this settle-window protection first (the 322.3 km/h
+    real-archive report - see _GPS_REACQUISITION_SETTLE_READINGS' own
+    docstring), altitude didn't - it only ever had
+    _reject_altitude_outliers()'s rate-and-ceiling filter, which
+    happened to catch the -7397m elevation_change_meters bug (see that
+    field's own comment above) because that particular glitch cluster
+    was large and far outside the ceiling. But that was luck, not
+    protection: a smaller, more subtle glitch landing in the exact same
+    post-dropout settle window - the receiver's own reported position
+    still reconverging, same as speed's own estimate needs a moment to
+    reconverge - could easily be small enough to clear the rate check
+    and low enough to clear the ceiling, and would sail straight into
+    the dead-band re-basing pass uncaught. This closes that gap the
+    same way speed's own settle-window already does: unconditionally,
+    regardless of what the readings inside the window claim about
+    their own validity or confirmation status.
+
+    See _speeds_excluding_reacquisition_settle()'s own docstring for
+    the full reasoning on why this is gated on an actual invalid fix
+    appearing in between (not just elapsed time) and why the exclusion
+    is unconditional rather than confirmation-based - both apply here
+    unchanged, just against altitude_meters instead of speed_kmh.
+    """
+
+    altitude_fixes: list[tuple[datetime, float]] = []
+    settle_remaining = 0
+    saw_invalid_since_last_positioned = False
+
+    for fix in fixes:
+        is_positioned = _is_positioned(fix)
+        if not is_positioned:
+            saw_invalid_since_last_positioned = True
+            continue
+
+        if saw_invalid_since_last_positioned:
+            settle_remaining = _GPS_REACQUISITION_SETTLE_READINGS
+        saw_invalid_since_last_positioned = False
+
+        if settle_remaining > 0:
+            settle_remaining -= 1
+            continue
+
+        if fix.altitude_meters is not None:
+            altitude_fixes.append((fix.timestamp, fix.altitude_meters))
+
+    return altitude_fixes
 
 
 def _reject_speed_position_mismatches(fixes: tuple[GpsFix, ...]) -> frozenset[int]:
@@ -723,9 +853,7 @@ def _reject_speed_position_mismatches(fixes: tuple[GpsFix, ...]) -> frozenset[in
     """
 
     positioned_indices = [
-        index
-        for index, fix in enumerate(fixes)
-        if fix.valid and fix.latitude is not None and fix.longitude is not None
+        index for index, fix in enumerate(fixes) if _is_positioned(fix)
     ]
 
     poisoned: set[int] = set()
@@ -840,11 +968,16 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     fixes.
 
     Distance is the sum of the great-circle distance between each pair
-    of consecutive valid, positioned fixes - a straight-line
-    approximation between fixes, not the road-following distance a
-    routing engine would give, but fixes are frequent enough (roughly
-    1Hz - see telemetry/gps_reader.py) that the difference is
-    negligible for any normal driving speed.
+    of consecutive positioned fixes - a straight-line approximation
+    between fixes, not the road-following distance a routing engine
+    would give, but fixes are frequent enough (roughly 1Hz - see
+    telemetry/gps_reader.py) that the difference is negligible for any
+    normal driving speed. "Positioned" here (and everywhere else in
+    this function) means _is_positioned()'s own definition - `valid`
+    AND `confirmed`, not just `valid` - see that function's own
+    docstring and the comment above _GPS_REACQUISITION_SETTLE_READINGS
+    for why this module specifically requires the stricter of the two
+    signals GpsFix carries.
 
     `average_speed_kmh` is the mean of each fix's own instantaneous
     `speed_kmh` reading (not distance/duration) - deliberately, so a
@@ -859,15 +992,18 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     itself already stripped of any reading
     _reject_speed_position_mismatches() flagged as disagreeing
     implausibly with the vehicle's own real GPS position movement -
-    rather than the raw sequence directly. Three independent passes,
-    since a real archive produced three different shapes of bad
-    reading: a single tick that spikes and snaps straight back
-    (_reject_speed_outliers()), a multi-tick decay right after a GPS
-    dropout ends (_speeds_excluding_reacquisition_settle()), and
-    several consecutive readings that agree with each other but
-    disagree with how far the vehicle's position actually moved
-    (_reject_speed_position_mismatches()) - see each function's own
-    docstring, and _SPEED_OUTLIER_JUMP_KMH's/the comment above
+    rather than the raw sequence directly, and already restricted to
+    `_is_positioned()`'s stricter, confirmed-only definition before any
+    of that (see this function's own opening paragraph). Three
+    independent rejection passes on top of that baseline, since a real
+    archive produced three different shapes of bad reading a `confirmed`
+    check alone doesn't catch on its own: a single tick that spikes and
+    snaps straight back (_reject_speed_outliers()), a multi-tick decay
+    right after a GPS dropout ends (_speeds_excluding_reacquisition
+    _settle()), and several consecutive readings that agree with each
+    other but disagree with how far the vehicle's position actually
+    moved (_reject_speed_position_mismatches()) - see each function's
+    own docstring, and _SPEED_OUTLIER_JUMP_KMH's/the comment above
     _GPS_REACQUISITION_SETTLE_READINGS'/
     _SPEED_POSITION_CROSS_CHECK_MAX_ELAPSED_SECONDS' own real-archive
     reports (322.3 km/h and 305.9 km/h, both in a car limited to 250)
@@ -915,33 +1051,35 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     change (final dead-banded altitude minus starting altitude, can be
     positive, negative, or zero) - see _hysteresis_altitude_stats()'s
     own docstring for the earlier definitions this field has had and
-    why each was abandoned. The altitude sequence fed into it is every
-    present `altitude_meters` reading among the trip's positioned
-    fixes, paired with that fix's own timestamp (used by the rate
-    check), in order, with any fix that lacks a reading simply dropped
-    from the sequence rather than fragmenting it into disconnected
-    segments around each gap - the same "bridge across gaps using the
-    nearest real reading, don't silently drop the span" philosophy
-    `moving_seconds`/`idle_seconds` above already use for missing speed
-    readings, applied here to missing altitude readings instead.
-    `elevation_change_meters` additionally needs at least *two* present
-    readings to mean anything (a single reading has no delta to
+    why each was abandoned. The altitude sequence fed into it comes
+    from _altitude_fixes_excluding_reacquisition_settle() (see its own
+    docstring) - every present `altitude_meters` reading among the
+    trip's positioned fixes, paired with that fix's own timestamp (used
+    by the rate check), in order, with any fix that lacks a reading
+    simply dropped from the sequence rather than fragmenting it into
+    disconnected segments around each gap (the same "bridge across gaps
+    using the nearest real reading, don't silently drop the span"
+    philosophy `moving_seconds`/`idle_seconds` above already use for
+    missing speed readings, applied here to missing altitude readings
+    instead) - and with the first few readings after any real GPS
+    dropout additionally excluded, the same settle-window protection
+    speed's own pipeline already had (see the comment above
+    _GPS_REACQUISITION_SETTLE_READINGS for why altitude needed this
+    too). `elevation_change_meters` additionally needs at least *two*
+    present readings to mean anything (a single reading has no delta to
     measure) - `min_altitude_meters`/`max_altitude_meters` only need
     one. All three are None if there's no altitude_meters reading
     anywhere in the trip at all (see GpsFix.altitude_meters's own
     docstring for when that's the case).
 
-    Returns None if there are fewer than two valid, positioned fixes -
-    not enough to measure any distance from, the same "nothing to
+    Returns None if there are fewer than two positioned fixes (see this
+    function's own opening paragraph for what "positioned" means here)
+    - not enough to measure any distance from, the same "nothing to
     work with" convention render_map_video() and write_gpx() already
     use.
     """
 
-    positioned = tuple(
-        fix
-        for fix in fixes
-        if fix.valid and fix.latitude is not None and fix.longitude is not None
-    )
+    positioned = tuple(fix for fix in fixes if _is_positioned(fix))
 
     if len(positioned) < 2:
         return None
@@ -992,11 +1130,7 @@ def compute_trip_stats(fixes: tuple[GpsFix, ...]) -> TripStats | None:
     )
     max_speed_kmh = max(filtered_speeds) if filtered_speeds else None
 
-    altitude_fixes = [
-        (fix.timestamp, fix.altitude_meters)
-        for fix in positioned
-        if fix.altitude_meters is not None
-    ]
+    altitude_fixes = _altitude_fixes_excluding_reacquisition_settle(fixes)
     if altitude_fixes:
         min_altitude_meters, max_altitude_meters, elevation_change_meters, filtered_count = (
             _hysteresis_altitude_stats(altitude_fixes)

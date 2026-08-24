@@ -40,6 +40,25 @@ has the exact same blind spot (also shows no movement there), so
 this isn't a deliberate design choice being second-guessed, just an
 already-present signal in the sentence that wasn't being read.
 
+Status is not thrown away, though - it's exposed separately as
+GpsFix.confirmed (see that field's own docstring). Two real bugs
+(2026-08-24, on trip_stats.py's max_speed_kmh and
+elevation_change_meters - see that module's own comments) traced back
+to exactly the mode='A'/status='V' disagreement window this docstring
+already describes: a reading counts as `valid` (a real position was
+computed) while still not being `confirmed` (the receiver's own
+stricter internal check hasn't caught up yet), and both times the
+readings inside that window turned out to be garbage. Christer, after
+being shown this: "could our stats problem be related to using
+non-confirmed positions?" - yes, exactly. `valid` stays mode-based
+everywhere it already was (map rendering, live GPS, trip building,
+gap detection, ...), since discarding that ~11 minutes of real track
+was the whole reason it moved off status in the first place. But
+trip_stats.py's own aggregate numbers (distance, speed, altitude) now
+additionally require `confirmed`, on top of `valid` - see that
+module's own comments for the "only use confirmed positions for
+stats" policy this motivated.
+
 Camera clock note: the bracket timestamp (a real Unix epoch, so UTC)
 was found to match the recording's filename timestamp
 (RecordingId.timestamp, which is naive/local) to the second in a real
@@ -81,6 +100,24 @@ class GpsFix:
     field ('A'/'V', right after the time) - see gps_reader.py's own
     module docstring for why that field alone turned out to
     underreport real, usable GPS data on a real archive.
+
+    `confirmed` reflects that older status field instead ('A' ->
+    True, anything else, usually 'V' -> False) - kept separate from
+    `valid` rather than replacing it, since the two answer different
+    questions: `valid` is "did the receiver compute a position at
+    all," `confirmed` is "has the receiver's own stricter internal
+    accuracy check caught up to that position yet." A fix can be
+    valid but not confirmed (mode='A', status still 'V') - the exact
+    disagreement window behind two real trip_stats.py bugs (a 305.9
+    km/h speed spike, a -7397m elevation plunge - see that module's
+    own comments) that only showed up because both readings were
+    trusted for being `valid` without also being `confirmed`.
+    Defaults to True so every pre-existing GpsFix(...) call site
+    across the codebase (tests, container_gps.py, exif.py, gpmf.py,
+    ...) that never had a real NMEA status field to read from keeps
+    behaving exactly as before - only gps_reader.py's own
+    _parse_rmc(), which has a real status field to read, ever sets
+    this False.
     """
 
     timestamp: datetime
@@ -89,6 +126,10 @@ class GpsFix:
     longitude: float | None
     speed_kmh: float | None
     course: float | None
+    # See `confirmed`'s own docstring above for why this defaults to
+    # True (same "pre-existing call sites keep working unchanged"
+    # reasoning altitude_meters' own default below already uses).
+    confirmed: bool = True
     # None whenever no $GPGGA sentence shared this fix's exact bracket
     # timestamp (see module docstring's "Altitude" paragraph) - has a
     # default so every pre-existing GpsFix(...) call site across the
@@ -189,13 +230,16 @@ def _parse_rmc(
     if len(fields) != 13:
         return None
 
-    _, _time, _status, lat, ns, lon, ew, speed_knots, course, _date, _mv, _mvd, mode = fields
+    _, _time, status, lat, ns, lon, ew, speed_knots, course, _date, _mv, _mvd, mode = fields
 
     try:
         timestamp = datetime.utcfromtimestamp(int(timestamp_ms) / 1000)
         # See GpsFix.valid's own docstring - deliberately the mode
-        # indicator, not the older `_status` field.
+        # indicator, not the older `status` field.
         valid = mode != "N"
+        # See GpsFix.confirmed's own docstring - the older status
+        # field, now exposed rather than discarded.
+        confirmed = status == "A"
 
         latitude = (
             _nmea_coordinate_to_decimal(lat, ns) if lat and ns else None
@@ -215,6 +259,7 @@ def _parse_rmc(
         longitude=longitude,
         speed_kmh=speed_kmh,
         course=course_value,
+        confirmed=confirmed,
         altitude_meters=altitude_meters,
     )
 

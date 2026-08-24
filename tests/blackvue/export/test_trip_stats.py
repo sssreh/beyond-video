@@ -5,7 +5,16 @@ from blackvue.telemetry.gps_reader import GpsFix
 from blackvue.telemetry.movement import DEFAULT_SPEED_THRESHOLD_KMH
 
 
-def _fix(offset_seconds, lat, lon, speed_kmh=None, *, valid=True, altitude=None):
+def _fix(
+    offset_seconds,
+    lat,
+    lon,
+    speed_kmh=None,
+    *,
+    valid=True,
+    confirmed=True,
+    altitude=None,
+):
     return GpsFix(
         timestamp=datetime(2026, 7, 15, 13, 0, 0) + timedelta(seconds=offset_seconds),
         valid=valid,
@@ -13,6 +22,7 @@ def _fix(offset_seconds, lat, lon, speed_kmh=None, *, valid=True, altitude=None)
         longitude=lon,
         speed_kmh=speed_kmh,
         course=45.0,
+        confirmed=confirmed,
         altitude_meters=altitude,
     )
 
@@ -35,6 +45,34 @@ def test_compute_trip_stats_skips_invalid_and_unpositioned_fixes():
     assert stats is not None
     # Only the two valid, positioned fixes (offsets 0 and 3) count.
     assert stats.distance_km > 0
+
+
+def test_compute_trip_stats_skips_valid_but_unconfirmed_fixes():
+    # Christer, after two real bugs (max_speed_kmh's 305.9 km/h spike
+    # and elevation_change_meters' -7397m plunge - see this module's
+    # own comments) both traced to the mode='A'/status='V'
+    # disagreement window: "could our stats problem be related to
+    # using non-confirmed positions?" - yes, and _is_positioned() now
+    # requires GpsFix.confirmed on top of valid everywhere in this
+    # module. A fix that's valid (a position was computed) but not
+    # confirmed (the receiver's own stricter internal check hasn't
+    # caught up) must be excluded the same way an outright invalid fix
+    # already is - proven here with a fix that would otherwise
+    # obviously corrupt distance if it were counted (a huge, implied
+    # jump nothing else corroborates).
+    fixes = (
+        _fix(0, 59.30, 18.000, 40.0),
+        _fix(1, 65.00, 25.000, 40.0, confirmed=False),  # unconfirmed - excluded
+        _fix(2, 59.301, 18.0001, 40.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats is not None
+    # If the unconfirmed fix had been counted, distance would include
+    # a ~700km jump to/from 65N,25E and back - many times larger than
+    # the short, real (~110m) 0->2 hop this asserts instead.
+    assert stats.distance_km < 1.0
 
 
 def test_compute_trip_stats_distance_matches_known_geography():
@@ -712,6 +750,18 @@ def test_compute_trip_stats_elevation_rejects_a_self_corroborating_glitch_cluste
     # segment sits far above the ceiling (higher than any road on
     # Earth reaches), while the good segment after the dropout does
     # not.
+    #
+    # Six readings sit after the dropout, not three - offsets 6-8 fall
+    # inside _GPS_REACQUISITION_SETTLE_READINGS' own post-dropout
+    # settle window (see _altitude_fixes_excluding_reacquisition
+    # _settle()) and are excluded before the rate/ceiling filter ever
+    # sees them, same as this fixture's real speed-side counterpart
+    # above; only offsets 9-11 (85/90/95/100m... well, 85-100m here)
+    # actually reach _reject_altitude_outliers(). Their exact values
+    # don't matter for what this test is checking (the glitch cluster
+    # still gets rejected via the ceiling fallback either way) - they
+    # exist purely so the settle window has something plausible to
+    # trim, and so the surviving segment is unambiguously real.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=7479.4),
         _fix(1, 59.301, 18.0001, altitude=7475.9),
@@ -719,16 +769,20 @@ def test_compute_trip_stats_elevation_rejects_a_self_corroborating_glitch_cluste
         _fix(3, 59.303, 18.0003, altitude=7462.4),
         _fix(4, None, None, None, valid=False),
         _fix(5, None, None, None, valid=False),
-        _fix(6, 59.28, 17.930, altitude=80.0),
-        _fix(7, 59.281, 17.931, altitude=80.5),
-        _fix(8, 59.282, 17.932, altitude=83.0),
+        _fix(6, 59.28, 17.930, altitude=80.0),  # settle-window excluded
+        _fix(7, 59.281, 17.931, altitude=80.5),  # settle-window excluded
+        _fix(8, 59.282, 17.932, altitude=81.0),  # settle-window excluded
+        _fix(9, 59.283, 17.933, altitude=85.0),
+        _fix(10, 59.284, 17.934, altitude=90.0),
+        _fix(11, 59.285, 17.935, altitude=95.0),
+        _fix(12, 59.286, 17.936, altitude=100.0),
     )
 
     stats = compute_trip_stats(fixes)
 
-    assert stats.min_altitude_meters == 80.0
-    assert stats.max_altitude_meters == 83.0
-    assert stats.elevation_change_meters == 3.0
+    assert stats.min_altitude_meters == 85.0
+    assert stats.max_altitude_meters == 100.0
+    assert stats.elevation_change_meters == 15.0
 
 
 def test_compute_trip_stats_elevation_keeps_both_segments_across_a_real_dropout():
@@ -744,6 +798,17 @@ def test_compute_trip_stats_elevation_keeps_both_segments_across_a_real_dropout(
     # implausible on its own), so both segments should survive pass 1
     # intact and both contribute to min/max/elevation_change - not just
     # whichever one happens to be longer or last.
+    #
+    # Six readings sit after the dropout, not three - offsets 6-8 fall
+    # inside the post-dropout settle window
+    # (_altitude_fixes_excluding_reacquisition_settle(), the altitude
+    # counterpart to speed's own _GPS_REACQUISITION_SETTLE_READINGS
+    # protection) and are excluded before this function's own rate/
+    # ceiling filter ever sees them - only offsets 9-11 actually reach
+    # it. Their own altitude values don't matter (they're never used),
+    # so long as offset 9's is far enough from offset 2's (120m) to
+    # still register as an implausible-rate jump once the excluded
+    # readings in between are gone.
     fixes = (
         _fix(0, 59.30, 18.000, altitude=100.0),
         _fix(1, 59.301, 18.0001, altitude=110.0),
@@ -751,13 +816,60 @@ def test_compute_trip_stats_elevation_keeps_both_segments_across_a_real_dropout(
         _fix(3, None, None, None, valid=False),
         _fix(4, None, None, None, valid=False),
         _fix(5, None, None, None, valid=False),
-        _fix(6, 59.40, 18.100, altitude=300.0),
-        _fix(7, 59.401, 18.1001, altitude=310.0),
-        _fix(8, 59.402, 18.1002, altitude=320.0),
+        _fix(6, 59.40, 18.100, altitude=300.0),  # settle-window excluded
+        _fix(7, 59.401, 18.1001, altitude=310.0),  # settle-window excluded
+        _fix(8, 59.402, 18.1002, altitude=320.0),  # settle-window excluded
+        _fix(9, 59.403, 18.1003, altitude=400.0),
+        _fix(10, 59.404, 18.1004, altitude=410.0),
+        _fix(11, 59.405, 18.1005, altitude=420.0),
     )
 
     stats = compute_trip_stats(fixes)
 
     assert stats.min_altitude_meters == 100.0
-    assert stats.max_altitude_meters == 320.0
-    assert stats.elevation_change_meters == 220.0
+    assert stats.max_altitude_meters == 420.0
+    assert stats.elevation_change_meters == 320.0
+
+
+def test_compute_trip_stats_elevation_excludes_a_subtle_post_reacquisition_glitch():
+    # The altitude counterpart to
+    # test_compute_trip_stats_max_speed_excludes_post_reacquisition_decay
+    # above - proving _altitude_fixes_excluding_reacquisition_settle()
+    # earns its keep independently of _reject_altitude_outliers()'s own
+    # rate/ceiling filter, not just alongside it. A glitch shaped like
+    # the real -7397m report (see the self-corroborating-cluster test
+    # above) is large enough to blow past the ceiling and get caught
+    # regardless. This fixture is deliberately the opposite: a *small*
+    # ~40m dip right after a real dropout - a shape neither the rate
+    # check (well under 30 m/s: 40m/4s = 10 m/s) nor the ceiling
+    # (nowhere near 6500m) would ever flag on its own, so only the
+    # settle window stands between it and elevation_change_meters.
+    #
+    # Without the settle-window exclusion this test is checking, the
+    # 60/65/70m dip would still land as this trip's own minimum
+    # (jumping min_altitude_meters down to ~60 and skewing
+    # elevation_change_meters well below the true, small ~3m real
+    # change) - see this fixture's own real-archive precedent for why
+    # a receiver's reported position needs a moment to reconverge after
+    # reacquiring a dropout, same physical cause as speed's own
+    # settling estimate.
+    fixes = (
+        _fix(0, 59.30, 18.000, altitude=100.0),
+        _fix(1, 59.301, 18.0001, altitude=101.0),
+        _fix(2, 59.302, 18.0002, altitude=102.0),
+        _fix(3, None, None, None, valid=False),
+        _fix(4, None, None, None, valid=False),
+        _fix(5, None, None, None, valid=False),
+        _fix(6, 59.303, 18.0003, altitude=60.0),  # settle-window excluded
+        _fix(7, 59.304, 18.0004, altitude=65.0),  # settle-window excluded
+        _fix(8, 59.305, 18.0005, altitude=70.0),  # settle-window excluded
+        _fix(9, 59.306, 18.0006, altitude=103.0),
+        _fix(10, 59.307, 18.0007, altitude=104.0),
+        _fix(11, 59.308, 18.0008, altitude=105.0),
+    )
+
+    stats = compute_trip_stats(fixes)
+
+    assert stats.min_altitude_meters == 100.0
+    assert stats.max_altitude_meters == 103.0
+    assert stats.elevation_change_meters == 3.0

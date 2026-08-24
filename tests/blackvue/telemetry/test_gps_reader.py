@@ -49,6 +49,9 @@ def test_read_gps_parses_a_valid_fix(tmp_path):
 
     assert fix.timestamp == datetime.utcfromtimestamp(1700000001.0)
     assert fix.valid is True
+    # status='A' in the fixture above (right after the time field) -
+    # both signals agree here, the common/expected case.
+    assert fix.confirmed is True
     assert fix.latitude == 48 + 7.038 / 60
     assert fix.longitude == 11 + 31 / 60
     # 10.00 knots -> km/h.
@@ -77,6 +80,9 @@ def test_read_gps_treats_no_fix_mode_as_invalid_with_no_position(
     fix = fixes[0]
 
     assert fix.valid is False
+    # status='V' agrees with mode='N' here too - a genuine no-fix, not
+    # the disagreement case the next test covers.
+    assert fix.confirmed is False
     assert fix.latitude is None
     assert fix.longitude is None
     assert fix.speed_kmh is None
@@ -94,6 +100,14 @@ def test_read_gps_treats_void_status_with_a_computed_position_as_valid(
     # continuous, non-jumping GPS data, not noise. GpsFix.valid must
     # follow the mode indicator here, not the older status field, or
     # this entire stretch of a real drive's track goes missing.
+    #
+    # This is also the exact disagreement shape (valid but not
+    # confirmed) that two later real trip_stats.py bugs - a 305.9 km/h
+    # speed spike, a -7397m elevation plunge - traced back to (see
+    # trip_stats.py's own comments); GpsFix.confirmed exposes the
+    # status field this test's fixture disagrees on, rather than
+    # discarding it, specifically so trip_stats.py could require it on
+    # top of `valid` without this docstring's own real fix regressing.
     path = tmp_path / "sample.gps"
     path.write_text(
         "[1700000001000]$GPRMC,120001.00,V,4807.038,N,01131.000,E,"
@@ -106,6 +120,7 @@ def test_read_gps_treats_void_status_with_a_computed_position_as_valid(
     fix = fixes[0]
 
     assert fix.valid is True
+    assert fix.confirmed is False
     assert fix.latitude == 48 + 7.038 / 60
     assert fix.longitude == 11 + 31 / 60
     assert round(fix.speed_kmh, 3) == round(10.00 * 1.852, 3)
@@ -126,6 +141,11 @@ def test_read_gps_uses_the_mode_indicator_not_the_status_field(tmp_path):
     fixes = read_gps(path)
 
     assert fixes[0].valid is False
+    # `confirmed` follows the status field independently of `valid` -
+    # status='A' here means confirmed is True even though valid is
+    # False, proving the two fields are read separately rather than
+    # one being derived from the other.
+    assert fixes[0].confirmed is True
 
 
 def test_read_gps_handles_sentences_concatenated_without_a_newline(
