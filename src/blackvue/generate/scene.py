@@ -166,10 +166,34 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import Sequence
 
 from ..archive.photo import is_photo_path
 from .media import MediaToolError
+
+if TYPE_CHECKING:
+    # Deferred (see _build_adaptive_content()'s own comment below) -
+    # adaptive_sampling.py itself imports telemetry.gps_reader/
+    # gsensor_reader, and telemetry.gps_reader imports back into
+    # generate.media, which - if pulled in at this module's own
+    # top level - forces Python to finish loading generate/__init__.py
+    # before it's actually finished loading *this* file, a genuine
+    # circular import (confirmed by direct testing: `import
+    # blackvue.telemetry.gps_reader` before `import blackvue.generate`,
+    # or `import blackvue.adapters.base` at all, both raised "cannot
+    # import name 'GpsFix' from partially initialized module" here).
+    # generate/stats.py hit this exact same trap for the same reason -
+    # see its own module docstring/WORKING_CONTEXT.md entry - and this
+    # follows its established fix: annotation-only imports (safe under
+    # `from __future__ import annotations`, which makes every
+    # annotation a lazy string) under TYPE_CHECKING, and the modules
+    # that are actually *called* deferred into the function body that
+    # needs them.
+    from ..telemetry.gps_reader import GpsFix
+    from ..telemetry.gsensor_reader import GSensorSample
 
 # Was Qwen/Qwen2.5-VL-7B-Instruct (the standalone scene-scribe
 # prototype's own original default, ported straight over when this
@@ -426,6 +450,20 @@ class SceneOptions:
     # quantize - see _load_scene_model()'s own contradiction check
     # against force_cpu.
     gpu_memory_fraction: float | None = None
+    # See adaptive_sampling.py's module docstring and describe_scene()'s
+    # own gps_fixes/gsensor_samples/recording_start params below. False
+    # (default) keeps today's behavior completely unchanged - a single
+    # "video" content element handed to qwen_vl_utils, which does its
+    # own internal evenly-spaced fps/max_frames sampling, exactly as
+    # this project's real-footage tuning (see this class's own 2026-08-19
+    # docstring note) was calibrated against. True switches to an
+    # explicit multi-image message instead, built from timestamps
+    # compute_adaptive_timestamps() picks - biased toward this
+    # recording's own most eventful spans (speed changes, turns,
+    # g-force) rather than evenly spaced - degrading gracefully back to
+    # ~evenly-spaced whenever the caller has no GPS/g-sensor telemetry
+    # to offer (see that function's own docstring).
+    adaptive_sampling: bool = False
 
 
 def vision_gpu_available() -> bool:
@@ -843,6 +881,30 @@ def build_prompt(task: str) -> str:
     return COMBINED_PROMPT
 
 
+def _extract_raw_section(output_text: str, header_keyword: str) -> str:
+    """Pull just the section under a '##' heading containing
+    `header_keyword` (case-insensitive) out of a per-recording result,
+    verbatim - dropping every other section, but not otherwise touching
+    the content. Shared by _extract_raw_description_section() (keyword
+    "description") and extract_sampled_frame_timestamps() (keyword
+    "sampled frames") below - both need the same kind of section-slice-
+    by-heading, just for different headings."""
+
+    lines = output_text.splitlines()
+    section = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#") and header_keyword in stripped.lower():
+            in_section = True
+            continue
+        if stripped.startswith("#") and in_section:
+            break
+        if in_section:
+            section.append(line)
+    return "\n".join(section).strip()
+
+
 def _extract_raw_description_section(output_text: str) -> str:
     """Pull just the '## Description' section out of a per-recording
     result, verbatim - dropping the on-screen-text/zoomed-sign-reads
@@ -852,19 +914,7 @@ def _extract_raw_description_section(output_text: str) -> str:
     real per-event timestamps back out of it) below - both need the
     exact same raw slice, just processed differently."""
 
-    lines = output_text.splitlines()
-    section = []
-    in_description = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("#") and "description" in stripped.lower():
-            in_description = True
-            continue
-        if stripped.startswith("#") and in_description:
-            break
-        if in_description:
-            section.append(line)
-    return "\n".join(section).strip()
+    return _extract_raw_section(output_text, "description")
 
 
 # Matches a "- [t=12.4s]" bullet marker anywhere in the text - not
@@ -1008,6 +1058,33 @@ def extract_description_events(output_text: str) -> list[DescriptionEvent]:
 
     raw = _extract_raw_description_section(output_text)
     return _parse_timed_events(raw)
+
+
+def extract_sampled_frame_timestamps(output_text: str) -> list[float]:
+    """Real per-frame timestamps describe_scene() actually sampled,
+    parsed back out of the '## Sampled frames' section its
+    adaptive_sampling=True path appends to its own output (see that
+    section's own comment right before it's appended, further below in
+    this module). [] if this scene.txt has no such section - either
+    adaptive_sampling wasn't used for this recording, or it's an older
+    scene.txt written before this feature existed - which callers
+    should treat exactly like extract_description_events() returning []:
+    "nothing real to sync against, fall back to your own even-spacing
+    approximation" (see web/app.py's archive_recording_frames /
+    archive_recording_frame_image routes, which prefer these real
+    timestamps over _nominal_frame_timestamps()'s guess whenever
+    they're available).
+
+    Reuses _BULLET_START_RE/_parse_timed_events() - the "## Sampled
+    frames" section is deliberately written in the exact same
+    '- [t=X.Ys] text' bullet shape the '## Description' section uses,
+    specifically so no new parsing logic was needed here. Each bullet's
+    own text ("sampled frame") is discarded; only the timestamps
+    matter to a caller of this function."""
+
+    raw = _extract_raw_section(output_text, "sampled frames")
+    events = _parse_timed_events(raw)
+    return [event.timestamp_seconds for event in events]
 
 
 def _fetch_vision_inputs(process_vision_info, messages):
@@ -1204,6 +1281,148 @@ def _extract_full_res_frames(video_path: Path, count: int):
         frame_np = vr[idx].asnumpy()
         frames.append((idx / fps, PILImage.fromarray(frame_np)))
     return frames
+
+
+def _extract_frames_at_timestamps(video_path: Path, timestamps: list[float]):
+    """Grab the frame nearest each of `timestamps` (seconds from the
+    start of the clip) - the adaptive-sampling counterpart to
+    _extract_full_res_frames()'s evenly-spaced extraction above, same
+    decord mechanism, just driven by an explicit timestamp list instead
+    of a plain count. Returns a list of (timestamp_seconds, PIL.Image)
+    tuples in the same order as `timestamps` (already ascending -
+    compute_adaptive_timestamps() guarantees that). Not used for a
+    still photo - describe_scene() never reaches this branch for one
+    (see is_photo_path() gate at its own call site)."""
+
+    import decord
+    from PIL import Image as PILImage
+
+    vr = decord.VideoReader(str(video_path.resolve()))
+    total = len(vr)
+    if total == 0:
+        return []
+    fps = vr.get_avg_fps() or 30.0
+
+    frames = []
+    for timestamp in timestamps:
+        idx = max(0, min(total - 1, int(round(timestamp * fps))))
+        frame_np = vr[idx].asnumpy()
+        frames.append((timestamp, PILImage.fromarray(frame_np)))
+    return frames
+
+
+def _video_duration_seconds(video_path: Path) -> float:
+    """Cheap decord-only duration probe for the adaptive-sampling
+    path - total frame count over average fps. Doesn't need to be
+    exact (compute_adaptive_timestamps() only uses it to know the span
+    to spread/bias timestamps across), so this deliberately doesn't
+    reach for media.py's own heavier ffprobe/box-parser duration chain
+    (see get_span()/probe()) - decord is already being opened for the
+    frame extraction that follows regardless."""
+
+    import decord
+
+    vr = decord.VideoReader(str(video_path.resolve()))
+    total = len(vr)
+    if total == 0:
+        return 0.0
+    fps = vr.get_avg_fps() or 30.0
+    return total / fps
+
+
+# Prefixes each frame the adaptive-sampling path shows the model with
+# its own real elapsed-clip time, and tells the model to use those
+# real values instead of estimating - the direct answer to the
+# WORKING_CONTEXT.md note's second flagged cost ("the existing frame-
+# sampling-lag calibration curves ... calibrated assuming uniform 1fps
+# sampling ... would need the sync to lean on the model's own real
+# per-event timestamps instead of an assumed-uniform position"): rather
+# than retrofit a second, adaptive-sampling-specific lag curve, simply
+# give the model ground truth for where each frame it's shown actually
+# sits in the clip, so its own "[t=Xs]" bullets (see DESCRIBE_PROMPT)
+# should already be close without needing any position-based
+# correction on top - see web/archive_browser.py's own handling of the
+# "## Sampled frames" section this path appends to its output.
+ADAPTIVE_FRAME_INTRO_PROMPT = (
+    "The frames below are NOT evenly spaced in time - they were chosen "
+    "from the moments most likely to matter in this specific clip, so "
+    "some spans of the video got more frames and some got fewer. Each "
+    "frame is preceded by a text label giving its own real elapsed "
+    "time from the start of the clip in seconds - use those exact "
+    "given values, not an assumed even spacing, when writing the "
+    "'[t=Xs]' timestamps requested below."
+)
+
+
+def _build_adaptive_message_content(
+    video_path: Path,
+    opts: SceneOptions,
+    gps_fixes: Sequence[GpsFix],
+    gsensor_samples: Sequence[GSensorSample],
+    recording_start: datetime | None,
+    *,
+    warn,
+) -> tuple[list[dict], list[float]]:
+    """Build the adaptive-sampling counterpart to describe_scene()'s
+    normal single `{"type": "video", ...}` content element: an explicit
+    list of per-frame `{"type": "text", ...}`/`{"type": "image", ...}`
+    pairs (see ADAPTIVE_FRAME_INTRO_PROMPT above for why each frame
+    gets its own real-timestamp label) at timestamps
+    compute_adaptive_timestamps() picks from `gps_fixes`/
+    `gsensor_samples`. Returns (content_elements, used_timestamps) -
+    the caller appends used_timestamps to the output as a "## Sampled
+    frames" section (see describe_scene()) so a downstream consumer
+    like web/archive_browser.py's frame viewer can recover the real,
+    non-uniform sampling instead of assuming even spacing.
+
+    Falls back to describe_scene()'s normal single "video" element
+    (returning `([], [])` to signal this) if decord can't even
+    determine a usable duration for `video_path` - the same "graceful
+    degradation, never a hard failure" contract
+    compute_adaptive_timestamps() itself already has for missing
+    telemetry, extended here to a missing/unreadable video too."""
+
+    # Deferred for the same reason GpsFix/GSensorSample are TYPE_CHECKING-
+    # only above: adaptive_sampling.py's own top-level imports reach
+    # back into telemetry.gps_reader, which reaches back into
+    # generate.media - a genuine circular import if pulled in while
+    # generate/__init__.py is still mid-load (confirmed by direct
+    # testing - see this module's own import-block comment). Safe here:
+    # this function only ever runs at real describe_scene() call time,
+    # long after every package involved has finished loading.
+    from .adaptive_sampling import compute_adaptive_timestamps
+
+    try:
+        duration_seconds = _video_duration_seconds(video_path)
+    except Exception as exc:  # noqa: BLE001 - adaptive mode is a bonus, not core
+        warn(f"  adaptive-sampling: couldn't probe duration ({exc}), falling back to uniform sampling.")
+        return [], []
+
+    if duration_seconds <= 0:
+        warn("  adaptive-sampling: couldn't determine a usable duration, falling back to uniform sampling.")
+        return [], []
+
+    timestamps = compute_adaptive_timestamps(
+        duration_seconds, gps_fixes, gsensor_samples, recording_start, opts.max_frames
+    )
+    if not timestamps:
+        return [], []
+
+    frames = _extract_frames_at_timestamps(video_path, timestamps)
+
+    content: list[dict] = [{"type": "text", "text": ADAPTIVE_FRAME_INTRO_PROMPT}]
+    for timestamp, frame in frames:
+        frame = _crop_overlay_from_image(frame, opts.crop_top, opts.crop_bottom)
+        image_ele = {"type": "image", "image": frame}
+        if opts.resized_width and opts.resized_height:
+            image_ele["resized_width"] = opts.resized_width
+            image_ele["resized_height"] = opts.resized_height
+        else:
+            image_ele["max_pixels"] = opts.max_pixels
+        content.append({"type": "text", "text": f"[Frame at t={timestamp:.1f}s]"})
+        content.append(image_ele)
+
+    return content, [timestamp for timestamp, _ in frames]
 
 
 def _crop_overlay_from_image(image, crop_top: float, crop_bottom: float):
@@ -1468,6 +1687,9 @@ def describe_scene(
     *,
     opts: SceneOptions | None = None,
     warn=None,
+    gps_fixes: Sequence[GpsFix] = (),
+    gsensor_samples: Sequence[GSensorSample] = (),
+    recording_start: datetime | None = None,
     **overrides,
 ) -> str:
     """Describe video_path's contents and/or read its on-screen text
@@ -1498,6 +1720,16 @@ def describe_scene(
     that branch; everything else (prompt, resized_width/height, the
     zoom-signs sub-pipeline, the disclaimer footer) works identically
     either way.
+
+    gps_fixes/gsensor_samples/recording_start are only consulted when
+    opts.adaptive_sampling is True (default False - see that field's
+    own docstring) - the caller (cli/bv_generate.py) is responsible for
+    fetching them via adapters/telemetry_bridge.py first, since this
+    module deliberately has no adapter/Recording knowledge of its own.
+    Passing none of the three (the default) with adaptive_sampling=True
+    still works - compute_adaptive_timestamps() degrades to ~evenly-
+    spaced sampling with no telemetry to bias toward, rather than
+    erroring - it just won't be adaptive to anything in that case.
     """
 
     if opts is None:
@@ -1516,6 +1748,8 @@ def describe_scene(
 
     prompt = build_prompt(opts.task)
 
+    sampled_frame_timestamps: list[float] = []
+
     if is_photo_path(video_path):
         photo_image = _photo_as_pil_image(video_path)
         photo_image = _crop_overlay_from_image(photo_image, opts.crop_top, opts.crop_bottom)
@@ -1523,20 +1757,37 @@ def describe_scene(
         if opts.resized_width and opts.resized_height:
             content_ele["resized_width"] = opts.resized_width
             content_ele["resized_height"] = opts.resized_height
+        message_content = [content_ele, {"type": "text", "text": prompt}]
     else:
-        content_ele = {
-            "type": "video",
-            "video": str(video_path.resolve()),
-            "fps": opts.fps,
-            "max_frames": opts.max_frames,
-        }
-        if opts.resized_width and opts.resized_height:
-            content_ele["resized_width"] = opts.resized_width
-            content_ele["resized_height"] = opts.resized_height
-        else:
-            content_ele["max_pixels"] = opts.max_pixels
+        adaptive_content: list[dict] = []
+        if opts.adaptive_sampling:
+            adaptive_content, sampled_frame_timestamps = _build_adaptive_message_content(
+                video_path, opts, gps_fixes, gsensor_samples, recording_start, warn=warn
+            )
 
-    messages = [{"role": "user", "content": [content_ele, {"type": "text", "text": prompt}]}]
+        if adaptive_content:
+            message_content = adaptive_content + [{"type": "text", "text": prompt}]
+        else:
+            # Either opts.adaptive_sampling is False (today's default,
+            # unchanged behavior), or it's True but
+            # _build_adaptive_message_content() itself gracefully
+            # degraded (an unreadable/zero-duration video) - both cases
+            # fall back to the same plain "video" element qwen_vl_utils
+            # samples internally.
+            content_ele = {
+                "type": "video",
+                "video": str(video_path.resolve()),
+                "fps": opts.fps,
+                "max_frames": opts.max_frames,
+            }
+            if opts.resized_width and opts.resized_height:
+                content_ele["resized_width"] = opts.resized_width
+                content_ele["resized_height"] = opts.resized_height
+            else:
+                content_ele["max_pixels"] = opts.max_pixels
+            message_content = [content_ele, {"type": "text", "text": prompt}]
+
+    messages = [{"role": "user", "content": message_content}]
     text = loaded.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
@@ -1613,6 +1864,22 @@ def describe_scene(
 
     if opts.zoom_signs:
         output_text += _zoom_into_signs(video_path, loaded, opts, warn=warn)
+
+    if sampled_frame_timestamps:
+        # Records the real, non-uniform timestamps adaptive sampling
+        # actually used - reusing the same "- [t=X.Ys]" bullet shape
+        # DESCRIBE_PROMPT already asks the model for (so
+        # _BULLET_START_RE/_parse_timed_events() can parse this section
+        # too, with no new format needed) so a downstream consumer like
+        # web/archive_browser.py's frame viewer can recover exactly
+        # which frames this recording's description was written from,
+        # instead of assuming even fps/max_frames spacing (see
+        # ADAPTIVE_FRAME_INTRO_PROMPT's own comment for why that
+        # assumption would otherwise be wrong here).
+        frame_lines = "\n".join(
+            f"- [t={timestamp:.1f}s] sampled frame" for timestamp in sampled_frame_timestamps
+        )
+        output_text += "\n\n## Sampled frames\n" + frame_lines
 
     return output_text + DISCLAIMER
 

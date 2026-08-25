@@ -59,6 +59,7 @@ from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
 from .archive_browser import _SCENE_ASSET_BY_DIRECTION
+from .archive_browser import _frame_viewer_timestamps
 from .archive_browser import _nominal_frame_timestamps
 from .archive_browser import filter_recordings
 from .archive_browser import find_recording
@@ -110,7 +111,6 @@ from ..generate.media import MediaToolError
 from ..generate.media import extract_video_thumbnail
 from ..generate.media import load_or_compute_duration
 from ..generate.mp4_repair import load_or_repair_parking_video
-from ..generate.scene import SceneOptions
 from ..generate.speech import transcribe
 from ..lexicaltimeparser import LexicalTimeParser
 from ..stats_report import DEFAULT_FIELDS
@@ -1238,8 +1238,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
         duration_seconds = float(duration_seconds)
 
-        max_frames = SceneOptions().max_frames
-        timestamps = _nominal_frame_timestamps(duration_seconds, max_frames)
+        timestamps = _frame_viewer_timestamps(recording, direction, duration_seconds)
 
         cues = _parse_srt_cues(recording.description_srt(direction) or "")
         frames = []
@@ -1307,8 +1306,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="no usable duration"
             )
-        max_frames = SceneOptions().max_frames
-        timestamps = _nominal_frame_timestamps(float(duration_seconds), max_frames)
+        timestamps = _frame_viewer_timestamps(recording, direction, float(duration_seconds))
         if index < 0 or index >= len(timestamps):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="frame index out of range"

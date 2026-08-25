@@ -127,6 +127,9 @@ def _base_args(**overrides):
         srt=False,
         describe_scene=False,
         scene_model=SCENE_DEFAULT_MODEL,
+        scene_quantize="auto",
+        scene_gpu_memory_fraction=None,
+        adaptive_sampling=False,
         camera="front",
         overwrite=False,
         dry_run=False,
@@ -2199,8 +2202,8 @@ def test_do_describe_scene_skips_parking_mode_ok(monkeypatch, tmp_path):
     # real file (even for a P-mode recording) should proceed normally.
     calls = []
 
-    def fake_describe_scene(source, *, model, force_cpu):
-        calls.append((source, model, force_cpu))
+    def fake_describe_scene(source, **kwargs):
+        calls.append((source, kwargs["model"], kwargs["force_cpu"]))
         return "## Description\nParked, nothing notable.\n\n---\ndisclaimer"
 
     monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
@@ -2219,7 +2222,7 @@ def test_do_describe_scene_skips_parking_mode_ok(monkeypatch, tmp_path):
 
     args = _base_args(describe_scene=True, cpu=True)
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert calls == [(video, SCENE_DEFAULT_MODEL, True)]
@@ -2238,7 +2241,7 @@ def test_do_describe_scene_repairs_parking_video_before_describing(monkeypatch, 
     calls = []
     repair_calls = []
 
-    def fake_describe_scene(source, *, model, force_cpu):
+    def fake_describe_scene(source, **kwargs):
         calls.append(source)
         return "## Description\nnothing notable"
 
@@ -2256,7 +2259,7 @@ def test_do_describe_scene_repairs_parking_video_before_describing(monkeypatch, 
 
     args = _base_args(describe_scene=True)
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert repair_calls == [(video, bv_generate.default_config_dir() / ".parking_repair_cache")]
@@ -2269,7 +2272,7 @@ def test_do_describe_scene_does_not_repair_non_parking_video(monkeypatch, tmp_pa
     # the repair helper should not even be called for it.
     calls = []
 
-    def fake_describe_scene(source, *, model, force_cpu):
+    def fake_describe_scene(source, **kwargs):
         calls.append(source)
         return "## Description\nnothing notable"
 
@@ -2283,7 +2286,7 @@ def test_do_describe_scene_does_not_repair_non_parking_video(monkeypatch, tmp_pa
 
     args = _base_args(describe_scene=True)
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert calls == [video]
@@ -2295,7 +2298,7 @@ def test_do_describe_scene_no_source_is_an_error(monkeypatch, tmp_path):
     recording = Recording(id=RecordingId("20260715_134010_N"))
     args = _base_args(describe_scene=True)
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is True
     assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
@@ -2311,14 +2314,14 @@ def test_do_describe_scene_dry_run_writes_nothing(monkeypatch, tmp_path):
 
     args = _base_args(describe_scene=True, dry_run=True)
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
 
 
 def test_do_describe_scene_propagates_media_tool_error(monkeypatch, tmp_path):
-    def fake_describe_scene(source, *, model, force_cpu):
+    def fake_describe_scene(source, **kwargs):
         raise MediaToolError("out of VRAM")
 
     monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
@@ -2330,7 +2333,7 @@ def test_do_describe_scene_propagates_media_tool_error(monkeypatch, tmp_path):
 
     args = _base_args(describe_scene=True)
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is True
     assert not (tmp_path / "20260715_134010_N.scene.txt").exists()
@@ -2381,7 +2384,7 @@ def test_do_describe_scene_camera_front_is_unchanged_default(monkeypatch, tmp_pa
     recording = _make_front_rear_recording("20260715_134010_N", tmp_path)
     args = _base_args(describe_scene=True, camera="front")
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert len(calls) == 1
@@ -2402,7 +2405,7 @@ def test_do_describe_scene_camera_rear_only(monkeypatch, tmp_path):
     recording = _make_front_rear_recording("20260715_134010_N", tmp_path)
     args = _base_args(describe_scene=True, camera="rear")
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert len(calls) == 1
@@ -2419,7 +2422,7 @@ def test_do_describe_scene_camera_rear_errors_without_rear_video(monkeypatch, tm
     recording = _make_front_rear_recording("20260715_134010_N", tmp_path, rear=False)
     args = _base_args(describe_scene=True, camera="rear")
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is True
     assert not (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
@@ -2437,7 +2440,7 @@ def test_do_describe_scene_camera_both_writes_front_and_rear_bonus(monkeypatch, 
     recording = _make_front_rear_recording("20260715_134010_N", tmp_path)
     args = _base_args(describe_scene=True, camera="both")
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert len(calls) == 2
@@ -2462,12 +2465,115 @@ def test_do_describe_scene_camera_both_skips_bonus_without_distinct_rear(monkeyp
     recording = _make_front_rear_recording("20260715_134010_N", tmp_path, front=False)
     args = _base_args(describe_scene=True, camera="both")
 
-    had_error = bv_generate._do_describe_scene(recording, tmp_path, args)
+    had_error = bv_generate._do_describe_scene(recording, tmp_path, args, adapter=object())
 
     assert had_error is False
     assert len(calls) == 1
     assert (tmp_path / "20260715_134010_N.scene.txt").exists()
     assert not (tmp_path / "20260715_134010_N.rear.scene.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# --adaptive-sampling (task #1229-1234): telemetry-weighted frame sampling
+# for --describe-scene, opt-in and off by default.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_adaptive_sampling_defaults_to_off():
+    args = parse_args(["/some/path", "--describe-scene"])
+
+    assert args.adaptive_sampling is False
+
+
+def test_parse_args_adaptive_sampling_flag():
+    args = parse_args(["/some/path", "--describe-scene", "--adaptive-sampling"])
+
+    assert args.adaptive_sampling is True
+
+
+def test_do_describe_scene_adaptive_sampling_off_does_not_fetch_telemetry(
+    monkeypatch, tmp_path
+):
+    # The whole point of gating telemetry fetch behind the flag (see
+    # _run_describe_scene_pass()'s own comment) - a real per-recording
+    # GPS/g-sensor read is not free, and describe_scene() never
+    # consults gps_fixes/gsensor_samples/recording_start unless
+    # adaptive_sampling=True, so there's no reason to pay for it here.
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append(kwargs)
+        return "## Description\nnothing notable"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+    monkeypatch.setattr(bv_generate, "read_recording_gps", _refuse)
+    monkeypatch.setattr(bv_generate, "read_recording_gsensor", _refuse)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    video = tmp_path / "20260715_134010_NF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True, adaptive_sampling=False)
+
+    had_error = bv_generate._do_describe_scene(
+        recording, tmp_path, args, adapter=object()
+    )
+
+    assert had_error is False
+    assert len(calls) == 1
+    assert calls[0]["adaptive_sampling"] is False
+    assert "gps_fixes" not in calls[0]
+    assert "gsensor_samples" not in calls[0]
+    assert "recording_start" not in calls[0]
+
+
+def test_do_describe_scene_adaptive_sampling_on_fetches_telemetry(
+    monkeypatch, tmp_path
+):
+    calls = []
+    fetch_calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append(kwargs)
+        return "## Description\nnothing notable"
+
+    def fake_read_gps(adapter, recording):
+        fetch_calls.append(("gps", adapter, recording))
+        return ("fixA", "fixB")
+
+    def fake_read_gsensor(adapter, recording):
+        fetch_calls.append(("gsensor", adapter, recording))
+        return ("sampA",)
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+    monkeypatch.setattr(bv_generate, "read_recording_gps", fake_read_gps)
+    monkeypatch.setattr(bv_generate, "read_recording_gsensor", fake_read_gsensor)
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    video = tmp_path / "20260715_134010_NF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(describe_scene=True, adaptive_sampling=True)
+    adapter = object()
+
+    had_error = bv_generate._do_describe_scene(
+        recording, tmp_path, args, adapter=adapter
+    )
+
+    assert had_error is False
+    assert len(calls) == 1
+    assert calls[0]["adaptive_sampling"] is True
+    assert calls[0]["gps_fixes"] == ("fixA", "fixB")
+    assert calls[0]["gsensor_samples"] == ("sampA",)
+    assert calls[0]["recording_start"] == recording.id.timestamp
+    # Both telemetry reads used the real adapter/recording passed through,
+    # not placeholders.
+    assert fetch_calls == [
+        ("gps", adapter, recording),
+        ("gsensor", adapter, recording),
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ from ..generate.scene import DescriptionEvent
 from ..generate.scene import SceneOptions
 from ..generate.scene import extract_description_events
 from ..generate.scene import extract_description_section
+from ..generate.scene import extract_sampled_frame_timestamps
 from ..generate.speech import SpeechSegment
 from ..generate.subtitles import format_srt
 from ..lexicaltimeparser import TimeInterval
@@ -690,6 +691,41 @@ def _nominal_frame_timestamps(
     if duration_seconds <= 0 or max_frames <= 0:
         return []
     return [duration_seconds * i / max_frames for i in range(max_frames)]
+
+
+def _frame_viewer_timestamps(
+    recording: ArchiveRecording, direction: str, duration_seconds: float
+) -> list[float]:
+    """The timestamps the frame-viewer route pair (app.py's
+    archive_recording_frames and archive_recording_frame_image) both use
+    to decide what a given frame `index` means - real per-frame
+    timestamps parsed from this recording's own '## Sampled frames'
+    section when its scene.txt has one (i.e. it was generated with
+    --adaptive-sampling - see extract_sampled_frame_timestamps()'s own
+    docstring), otherwise _nominal_frame_timestamps()'s even-spacing
+    approximation, same as before this preference existed.
+
+    Factored out to a single shared helper specifically so both routes
+    can never disagree about what timestamp a given `index` refers to -
+    the frame list page computes these once to build its own frame
+    list, and the per-frame image route recomputes the exact same list
+    independently (no shared cache keyed by more than index) to know
+    which second to extract; if the two ever picked a different
+    timestamp for the same index, the frame shown next to a caption
+    would silently stop matching the frame actually downloaded for it.
+
+    Lives here in archive_browser.py rather than app.py, alongside
+    ArchiveRecording/_nominal_frame_timestamps, specifically so it can
+    be unit-tested without needing to import FastAPI at all (this
+    module has no FastAPI dependency of its own) - app.py's routes stay
+    thin one-line calls into this."""
+
+    raw_scene_text = recording.scene_raw_text(direction)
+    timestamps = extract_sampled_frame_timestamps(raw_scene_text) if raw_scene_text else []
+    if timestamps:
+        return timestamps
+    max_frames = SceneOptions().max_frames
+    return _nominal_frame_timestamps(duration_seconds, max_frames)
 
 
 def _apply_frame_sampling_lag(

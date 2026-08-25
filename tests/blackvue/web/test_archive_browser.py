@@ -22,8 +22,10 @@ from blackvue.archive.asset import Asset
 from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
+from blackvue.generate.scene import SceneOptions
 from blackvue.web.archive_browser import ArchiveRecording
 from blackvue.web.archive_browser import ArchiveRecordingCache
+from blackvue.web.archive_browser import _frame_viewer_timestamps
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
 from blackvue.web.archive_browser import first_valid_gps_fix
@@ -885,6 +887,95 @@ def test_scene_raw_text_none_when_no_scene_file_for_direction(tmp_path):
 
     # front-only scene file - rear has none.
     assert recording.scene_raw_text("rear") is None
+
+
+# ---------------------------------------------------------------------------
+# _frame_viewer_timestamps() - adaptive frame sampling (--adaptive-sampling).
+# Shared by app.py's archive_recording_frames (frame list page) and
+# archive_recording_frame_image (per-frame JPG route) so both routes can
+# never disagree about what second a given frame `index` refers to (see
+# the function's own docstring). Lives here rather than in app.py
+# specifically so it can be tested without pulling in FastAPI.
+# ---------------------------------------------------------------------------
+
+_SAMPLED_FRAMES_SCENE_TEXT = (
+    "## Description\n"
+    "- [t=0.0s] Clear weather, light traffic.\n"
+    "- [t=12.4s] A red bus passes on the left.\n"
+    "\n"
+    "## Sampled frames\n"
+    "- [t=0.0s] sampled frame\n"
+    "- [t=3.4s] sampled frame\n"
+    "- [t=12.0s] sampled frame\n"
+)
+
+
+def test_frame_viewer_timestamps_prefers_real_sampled_frames(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_SAMPLED_FRAMES_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    timestamps = _frame_viewer_timestamps(recording, "front", duration_seconds=60.0)
+
+    # The real per-frame timestamps, not an even-spacing approximation -
+    # and specifically not influenced by the Description section's own
+    # (differently-timed) t=12.4s event.
+    assert timestamps == [0.0, 3.4, 12.0]
+
+
+def test_frame_viewer_timestamps_falls_back_to_nominal_without_scene_file(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    timestamps = _frame_viewer_timestamps(recording, "front", duration_seconds=16.0)
+
+    # No scene.txt at all for this recording - falls back to
+    # _nominal_frame_timestamps()'s even-spacing guess, one entry per
+    # SceneOptions().max_frames, starting at t=0.0.
+    assert len(timestamps) == SceneOptions().max_frames
+    assert timestamps[0] == 0.0
+
+
+def test_frame_viewer_timestamps_falls_back_to_nominal_for_old_format_scene_file(
+    tmp_path,
+):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.scene.txt",
+        content=_COMBINED_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    # _COMBINED_SCENE_TEXT has a "## Description" section but no
+    # "## Sampled frames" section - i.e. an older scene.txt written
+    # before --adaptive-sampling existed. Must fall back gracefully
+    # rather than returning [].
+    timestamps = _frame_viewer_timestamps(recording, "front", duration_seconds=16.0)
+
+    assert len(timestamps) == SceneOptions().max_frames
+    assert timestamps[0] == 0.0
+
+
+def test_frame_viewer_timestamps_matches_direction_case_insensitively(tmp_path):
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+    _write(
+        archive, "20260715_140212_N.rear.scene.txt",
+        content=_SAMPLED_FRAMES_SCENE_TEXT.encode("utf-8"),
+    )
+
+    recording = scan_archive(archive, "kirby")[0]
+
+    assert _frame_viewer_timestamps(recording, "Rear", 60.0) == [0.0, 3.4, 12.0]
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,8 @@ from pathlib import Path
 
 from ..adapters import registry
 from ..adapters.base import CameraAdapter
+from ..adapters.telemetry_bridge import read_recording_gps
+from ..adapters.telemetry_bridge import read_recording_gsensor
 from ..archive import Asset
 from ..archive.photo import recording_is_photo
 from ..archive.recording import Recording
@@ -421,6 +423,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "as its own fallback) - a rear-camera description would "
             "mostly just restate the front one's, so only plates/signs "
             "are worth the extra inference call."
+        ),
+    )
+
+    parser.add_argument(
+        "--adaptive-sampling",
+        action="store_true",
+        help=(
+            "For --describe-scene: pick which video frames to show the "
+            "model based on this recording's own GPS/g-sensor "
+            "telemetry, instead of evenly spaced frames - a long "
+            "stopped stretch (a red light, a queue) gets fewer frames, "
+            "a turn or hard brake/accel gets more. Falls back to "
+            "today's even spacing on its own whenever a recording has "
+            "no usable GPS/g-sensor data (or its adapter doesn't "
+            "support either) - always safe to leave on. Off by "
+            "default (today's fixed even-spacing sampling, unchanged)."
         ),
     )
 
@@ -1042,6 +1060,7 @@ def _run_describe_scene_pass(
     destination: Path,
     args: argparse.Namespace,
     *,
+    adapter: CameraAdapter,
     task: str | None = None,
     say=print,
     warn=_default_warn,
@@ -1065,9 +1084,28 @@ def _run_describe_scene_pass(
         "force_cpu": args.cpu,
         "quantize": args.scene_quantize,
         "gpu_memory_fraction": args.scene_gpu_memory_fraction,
+        "adaptive_sampling": args.adaptive_sampling,
     }
     if task is not None:
         kwargs["task"] = task
+
+    # Only fetched when actually requested - both are real per-
+    # recording reads (a sidecar file parse, or an adapter-specific
+    # equivalent), not free, and describe_scene() itself only ever
+    # consults them when adaptive_sampling=True (see its own
+    # docstring) - no point paying the cost otherwise. Missing/no
+    # telemetry (empty tuples either way) is not an error here -
+    # read_recording_gps()/read_recording_gsensor() already treat
+    # "no GPS/g-sensor support, no sidecar file, or a parse failure" as
+    # "no telemetry, not fatal" (see adapters/telemetry_bridge.py's own
+    # docstrings), and describe_scene()'s own adaptive_sampling path
+    # degrades gracefully to ~even spacing with nothing to bias toward
+    # in that case - exactly the "always safe to leave on" behavior
+    # --adaptive-sampling's own help text promises.
+    if args.adaptive_sampling:
+        kwargs["gps_fixes"] = read_recording_gps(adapter, recording)
+        kwargs["gsensor_samples"] = read_recording_gsensor(adapter, recording)
+        kwargs["recording_start"] = recording.id.timestamp
 
     # Parking-mode video has an empty, broken audio track that trips
     # strict container validation - ffmpeg/libavformat then log
@@ -1104,6 +1142,7 @@ def _do_describe_scene(
     archive_path: Path,
     args: argparse.Namespace,
     *,
+    adapter: CameraAdapter,
     say=print,
     warn=_default_warn,
 ) -> bool:
@@ -1132,7 +1171,7 @@ def _do_describe_scene(
             had_error |= _run_describe_scene_pass(
                 recording, source_file.path,
                 archive_path / f"{recording.id}.scene.txt",
-                args, say=say, warn=warn,
+                args, adapter=adapter, say=say, warn=warn,
             )
 
     if args.camera in ("rear", "both"):
@@ -1160,7 +1199,7 @@ def _do_describe_scene(
                 archive_path / f"{recording.id}.rear.scene.txt",
                 args,
                 task="ocr" if args.camera == "both" else None,
-                say=say, warn=warn,
+                adapter=adapter, say=say, warn=warn,
             )
 
     return had_error
@@ -1963,7 +2002,7 @@ def _run(
 
             if args.describe_scene:
                 had_error |= _do_describe_scene(
-                    recording, archive_path, args, say=say, warn=warn
+                    recording, archive_path, args, adapter=adapter, say=say, warn=warn
                 )
 
             # Advance and persist the cursor after every single

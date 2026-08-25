@@ -192,6 +192,80 @@ def test_extract_description_events_skips_a_bullet_with_an_unparseable_timestamp
     ]
 
 
+# ---------------------------------------------------------------------------
+# extract_sampled_frame_timestamps() - added for adaptive frame sampling
+# (--adaptive-sampling). describe_scene()'s adaptive path appends a
+# "## Sampled frames" section listing the real per-second timestamps it
+# actually asked the vision-language model to look at, in the exact same
+# "- [t=X.Ys] text" bullet shape the "## Description" section already
+# uses - so this reuses _BULLET_START_RE/_parse_timed_events() via
+# _extract_raw_section() rather than needing any new parsing logic. The
+# frame-viewer (web/app.py's _frame_viewer_timestamps()) prefers these
+# real timestamps over its own even-spacing guess whenever they're
+# present.
+# ---------------------------------------------------------------------------
+
+_TEXT_WITH_SAMPLED_FRAMES = (
+    "## Description\n"
+    "- [t=0.0s] Clear weather, light traffic on a two-lane suburban road.\n"
+    "- [t=12.4s] A red bus passes on the left, driving in the opposite "
+    "direction.\n"
+    "\n"
+    "## On-screen text\n"
+    "- 42 km/h\n"
+    "\n"
+    "## Sampled frames\n"
+    "- [t=0.0s] sampled frame\n"
+    "- [t=3.4s] sampled frame\n"
+    "- [t=5.2s] sampled frame\n"
+    "- [t=12.0s] sampled frame\n"
+)
+
+
+def test_extract_sampled_frame_timestamps_parses_the_section():
+    timestamps = scene.extract_sampled_frame_timestamps(_TEXT_WITH_SAMPLED_FRAMES)
+
+    assert timestamps == [0.0, 3.4, 5.2, 12.0]
+
+
+def test_extract_sampled_frame_timestamps_ignores_the_description_section():
+    # Regression guard for the shared-heading-boundary logic: a "## Sampled
+    # frames" extraction must not accidentally also pick up the
+    # "## Description" section's own (differently-timed) bullets.
+    timestamps = scene.extract_sampled_frame_timestamps(_TEXT_WITH_SAMPLED_FRAMES)
+
+    assert 12.4 not in timestamps
+
+
+def test_extract_description_events_unaffected_by_sampled_frames_section():
+    # And the reverse: extract_description_events() must still return only
+    # the Description section's own events, not bleed into Sampled frames.
+    events = scene.extract_description_events(_TEXT_WITH_SAMPLED_FRAMES)
+
+    assert events == [
+        scene.DescriptionEvent(
+            0.0, "Clear weather, light traffic on a two-lane suburban road."
+        ),
+        scene.DescriptionEvent(
+            12.4,
+            "A red bus passes on the left, driving in the opposite direction.",
+        ),
+    ]
+
+
+def test_extract_sampled_frame_timestamps_returns_empty_for_old_format():
+    # A recording generated without --adaptive-sampling (or before this
+    # feature existed) has no "## Sampled frames" section at all - callers
+    # must treat this identically to "nothing real to sync against, fall
+    # back to your own even-spacing approximation" (see
+    # web/app.py's _frame_viewer_timestamps()).
+    assert scene.extract_sampled_frame_timestamps(_TIMED_DESCRIPTION_TEXT) == []
+
+
+def test_extract_sampled_frame_timestamps_returns_empty_when_heading_missing():
+    assert scene.extract_sampled_frame_timestamps("no headings here") == []
+
+
 def test_extract_description_section_strips_timestamps_into_clean_prose():
     # This is the "please keep the old output" guarantee: every caller
     # of extract_description_section() (trip-summary input, the
