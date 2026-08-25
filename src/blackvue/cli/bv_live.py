@@ -24,6 +24,8 @@ from ..core.camera_config import load_camera_config
 from ..core.connection import CameraUnreachableError
 from ..core.connection import connect
 from ..core.endpoint import Endpoint
+from ..export.osm_roads import MAP_ZOOM_PRESETS
+from ..export.osm_roads import parse_map_zoom
 from ..live.gsensor_stream import DEFAULT_WINDOW_SECONDS
 from ..live.map_stream import DEFAULT_ZOOM_METERS
 
@@ -127,12 +129,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--map-zoom",
-        type=float,
+        type=parse_map_zoom,
         default=DEFAULT_ZOOM_METERS,
         metavar="METERS",
         help=(
             "Live map follow-camera radius in meters (default: "
-            "%(default)s)."
+            "%(default)s). Also accepts a named preset instead of a "
+            "number - closeup (30m)/medium (60m)/overview (120m) - "
+            "for expressing framing intent instead of guessing a "
+            "number (see bv-export's own --map-zoom for the same idea)."
         ),
     )
 

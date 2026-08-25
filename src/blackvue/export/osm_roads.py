@@ -33,6 +33,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 from dataclasses import dataclass
@@ -77,6 +78,41 @@ DEFAULT_ZOOM_RADIUS_METERS = 60.0
 # --map-zoom of 0 (or a negative/tiny value) can't produce a
 # degenerate, near-zero-area view.
 MIN_ZOOM_RADIUS_METERS = 5.0
+
+# Named --map-zoom presets (bv-export, bv-live), expressing framing
+# *intent* instead of a bare METERS number - the follow-up idea from
+# the same "no single --map-zoom default is really right" note that
+# settled on 60.0 above: Christer, "Overview, close up or something in
+# between" - a tight radius reads as close-up/detailed, a wide one as
+# more of an overview, and there's no one number that's right for
+# every use case. "medium" intentionally matches DEFAULT_ZOOM_RADIUS_METERS,
+# so --map-zoom medium and today's plain default agree.
+MAP_ZOOM_PRESETS: dict[str, float] = {
+    "closeup": 30.0,
+    "medium": DEFAULT_ZOOM_RADIUS_METERS,
+    "overview": 120.0,
+}
+
+
+def parse_map_zoom(value: str) -> float:
+    """argparse `type=` for --map-zoom: accepts a plain METERS number
+    (e.g. "45") or one of MAP_ZOOM_PRESETS's named presets, case-
+    insensitive - lets a user express framing intent ("overview")
+    instead of guessing a number. Raises argparse.ArgumentTypeError on
+    anything else, matching the message a bad plain `type=float` would
+    have produced, plus the list of valid preset names."""
+
+    key = value.strip().lower()
+    if key in MAP_ZOOM_PRESETS:
+        return MAP_ZOOM_PRESETS[key]
+
+    try:
+        return float(value)
+    except ValueError:
+        presets = "/".join(MAP_ZOOM_PRESETS)
+        raise argparse.ArgumentTypeError(
+            f"{value!r} - expected a number of meters, or one of: {presets}"
+        ) from None
 
 
 @dataclass(frozen=True)

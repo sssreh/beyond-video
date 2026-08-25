@@ -39,6 +39,8 @@ from blackvue.export.map_video import DEFAULT_INTRO_SECONDS
 from blackvue.export.map_video import DEFAULT_MAP_ICON_PATH
 from blackvue.export.mirror_icon import DEFAULT_MIRROR_ICON_PATH
 from blackvue.export.osm_roads import DEFAULT_ZOOM_RADIUS_METERS
+from blackvue.export.osm_roads import MAP_ZOOM_PRESETS
+from blackvue.export.osm_roads import parse_map_zoom
 from blackvue.export.stitch import ALL_LAYOUTS
 from blackvue.export.stitch import AUTO_LAYOUT
 from blackvue.export.stitch import DEFAULT_GRAPH_SIZE_PERCENT
@@ -1304,7 +1306,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--map-zoom",
         dest="map_zoom_meters",
-        type=float,
+        type=parse_map_zoom,
         nargs="?",
         const=DEFAULT_ZOOM_RADIUS_METERS,
         default=None,
@@ -1315,8 +1317,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "vehicle's current position every frame, scrolling/panning "
             "as it moves - a separate file from --map's static "
             "whole-trip overview, and independent of it (works with or "
-            "without --map given too). Defaults to "
-            f"{DEFAULT_ZOOM_RADIUS_METERS:g}m if given with no value."
+            "without --map given too). METERS also accepts a named "
+            "preset instead of a number - " +
+            "/".join(f"{name} ({meters:g}m)" for name, meters in MAP_ZOOM_PRESETS.items()) +
+            " - for expressing framing intent (there's no single "
+            "radius that's right for every trip) instead of guessing a "
+            f"number. Defaults to {DEFAULT_ZOOM_RADIUS_METERS:g}m if "
+            "given with no value at all."
         ),
     )
 

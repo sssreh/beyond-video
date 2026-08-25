@@ -308,9 +308,14 @@
       <div class="field">
         <label class="field-label" for="map_zoom_meters">
           Map follow-camera radius (meters) (--map-zoom)
-          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also render a scrolling follow-camera map view of this real-world half-width in meters, independent of Include map above. Leave blank to skip. Default when enabled with no value: 120.</span></span>
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Also render a scrolling follow-camera map view of this real-world half-width in meters, independent of Include map above. Leave blank to skip. Also accepts a named preset instead of a number - closeup (30), medium (60), or overview (120) - for expressing framing intent instead of guessing a number. Default when enabled with no value: 60.</span></span>
         </label>
-        <input type="number" id="map_zoom_meters" name="map_zoom_meters" min="1" step="1" value="{{ defaults.get('map_zoom_meters', '') }}" placeholder="skip">
+        <input type="text" id="map_zoom_meters" name="map_zoom_meters" list="map_zoom_presets" value="{{ defaults.get('map_zoom_meters', '') }}" placeholder="skip, e.g. 60 or overview">
+        <datalist id="map_zoom_presets">
+          <option value="closeup">
+          <option value="medium">
+          <option value="overview">
+        </datalist>
       </div>
       <div class="field">
         <label class="field-label" for="map_intro_seconds">

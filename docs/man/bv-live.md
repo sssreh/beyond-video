@@ -44,7 +44,7 @@ Endpoints configured in `bv-config` are tried in order; the first one that respo
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--host HOST` | Address to listen on. Default: 127.0.0.1 - this is a personal, run-when-you-want-it tool, not meant to sit reachable by anyone else on the network. |
 | `--port PORT` | Port to listen on. Default: 8100 (different from `bv-web`'s own default 19373, so both can run at once). |
-| `--map-zoom METERS` | Live map follow-camera radius in meters. Default: 100. |
+| `--map-zoom METERS` | Live map follow-camera radius in meters. Default: 100. Also accepts a named preset instead of a number - `closeup` (30m), `medium` (60m), or `overview` (120m) - same idea as `bv-export`'s own `--map-zoom`. |
 | `--gsensor-window SECONDS` | How many seconds of live g-sensor history the scrolling strip shows at once. Default: 60. |
 | `--no-browser` | Don't automatically open a browser window once the server starts - just print the URL. |
 | `--browser {default,chrome,edge,firefox,brave}` | Which browser to open. Default: `default` - auto-detect the OS-level default browser, falling back to a fixed Edge/Chrome/Firefox search if that can't be determined. Set this if the OS-level default keeps resolving to a browser you don't want (`brave` is explicit-only - it isn't part of the auto-detect fallback search). |
