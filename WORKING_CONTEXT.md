@@ -19037,3 +19037,37 @@ Task #1260's original bug report ("`--frames` N seems to have no
 effect") and this whole multi-follow-up bracket-corruption chain (23,
 25, 26, 27) are now confirmed fixed and clean on real hardware, on
 both the adaptive and plain paths.
+
+### Follow-up 28 (task #1260): real-hardware --frames 8 timing - zoom-signs is now the dominant, --frames-independent cost
+
+Christer tried `--frames 8` on the plain (non-adaptive) path as a speed
+experiment: 118.8s total (down from 246.2s at the implicit `--frames
+16` default two runs earlier), model load 22.5s / vision decode 8.4s /
+main `generate()` 30.5s / zoom-signs 56.9s. All 8 bullets parsed with
+clean, correctly-ordered `[t=X.Ys]` brackets (0.0s through 180.2s) -
+further real-hardware confirmation the follow-up 25/26/27 corruption
+fixes hold at a different `--frames` value too, no code change needed
+here.
+
+The interesting finding: `generate()` dropped from ~157-161s to 30.5s
+(roughly 5x, not just 2x, for half the frames - fewer bullets requested
+means a smaller `max_new_tokens` budget too, compounding the win) but
+`zoom-signs` stayed essentially flat (56.9s vs the 56-59s seen at
+`--frames` 16). Root cause, confirmed by reading `_zoom_into_signs()`:
+it calls `_extract_full_res_frames(video_path, opts.zoom_frames)` -
+`opts.zoom_frames` (default 4) is a completely separate setting from
+`opts.max_frames`/`--frames`, so shrinking `--frames` has no effect on
+it at all. The real per-recording sign-read timestamps this run
+produced (0.0s, 60.1s, 120.2s, 180.2s) confirm exactly 4 zoom passes
+ran, matching that default.
+
+Practical consequence for Christer's "speed up further" goal: at
+`--frames 8`, zoom-signs is now the single largest cost (56.9s of
+118.8s, ~48% of total) - `--frames` has nothing left to give there.
+The next lever, if he wants to go faster still, is `--zoom-frames`
+(fewer full-res zoom passes) or disabling zoom-signs entirely
+(`--no-zoom-signs`, if the sign/plate reads matter less than
+sub-2-minute end-to-end time for a given recording) - not `--frames`,
+which has already done its job on the `generate()` side. Not
+implemented or suggested as a change yet - Christer hasn't asked for
+one, this is just the diagnosis to report back.
