@@ -450,6 +450,51 @@ def test_describe_scene_realigns_corrupted_plain_timestamps_by_position(monkeypa
     assert [e.timestamp_seconds for e in events] == [0.0, 1.0, 2.0, 3.0]
 
 
+# 2026-08-26 (task #1260 follow-up 27): Christer's next real run (same clip,
+# after follow-up 25/26 shipped) confirmed the timestamp fixes worked - all
+# 16 bullets now parse with clean, correctly-ordered "[t=X.Ys]" brackets, no
+# drops, no mistiming. But 5 of those 16 bullets showed a NEW leftover:
+# "- [t=48.1s]\" A large billboard..." - a stray quote character surviving
+# immediately *after* the bullet's own "]" close, becoming the description
+# text's own leading character once parsed ('" A large billboard...'). This
+# is the tail end of the same quote-drift corruption (follow-up 8) that used
+# to land *inside* the bracket - this time it landed just outside it. Left
+# alone, this stray character would be visible on the recording detail page
+# and read aloud verbatim by TTS. This is a trimmed reproduction of two of
+# the five affected real bullets.
+_STRAY_QUOTE_AFTER_BRACKET_TEXT = (
+    "## Description\n"
+    "- [t=48.1s]\" A large billboard advertising \"Fraschtlage mot...\" appears on the right.\n"
+    "- [t=60.1s]' The vehicle slows at an intersection with a yellow traffic light.\n"
+    "- [t=72.1s] The car proceeds along a tree-lined road, passing a red bus on the left.\n"
+)
+
+
+def test_extract_description_events_strips_stray_quote_immediately_after_bracket():
+    events = scene.extract_description_events(_STRAY_QUOTE_AFTER_BRACKET_TEXT)
+
+    assert [e.timestamp_seconds for e in events] == [48.1, 60.1, 72.1]
+    assert events[0].text.startswith("A large billboard advertising")
+    assert events[1].text.startswith("The vehicle slows")
+    # The unaffected third bullet (no leading stray quote to begin with)
+    # must be completely unchanged by this fix.
+    assert events[2].text.startswith("The car proceeds along a tree-lined road")
+
+
+def test_extract_description_events_keeps_a_real_leading_quoted_word():
+    # A bullet that legitimately opens with a quoted word (e.g. quoting
+    # signage text) must keep its quote - only a stray quote character that
+    # stands completely alone as its own "word" gets dropped, distinguishing
+    # real content from the corruption artifact above.
+    text = '## Description\n- [t=0.0s] "BESIKTA" sign is visible on a shopfront.\n'
+
+    events = scene.extract_description_events(text)
+
+    assert events == [
+        scene.DescriptionEvent(0.0, '"BESIKTA" sign is visible on a shopfront.'),
+    ]
+
+
 def test_describe_scene_realigns_corrupted_adaptive_timestamps_by_position(monkeypatch, tmp_path):
     # Wiring-level test: describe_scene() itself must apply the
     # realignment to the adaptive path's raw model output before zoom-

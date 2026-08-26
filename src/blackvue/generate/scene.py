@@ -1480,7 +1480,27 @@ def _parse_timed_events(section_text: str) -> list[DescriptionEvent]:
             continue
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(section_text)
-        text = " ".join(section_text[start:end].split())
+        tokens = section_text[start:end].split()
+        # 2026-08-26 (task #1260 follow-up 27): real hardware after
+        # follow-up 25/26's bracket fixes showed the timestamps
+        # themselves now parsing cleanly, but a stray leftover quote
+        # character (a bare '"' or "'") landing immediately *after* the
+        # bullet's own "]" close on 5 of 16 real bullets - e.g.
+        # "- [t=48.1s]\" A large billboard..." - the tail end of the
+        # same quote-drift corruption (follow-up 8), just relocated
+        # outside the bracket instead of inside it this time. Left
+        # alone, that stray character became the description's own
+        # leading character: '" A large billboard advertising...' -
+        # visible on the recording detail page and read aloud verbatim
+        # by TTS. Only drops a leading token that is *exactly* one bare
+        # quote character on its own (not a quote that opens a real
+        # quoted word, e.g. '"BESIKTA" sign' keeps its quote) - split()
+        # already turned a standalone stray quote into its own token,
+        # so this is a precise, low-risk check rather than a blanket
+        # strip of leading punctuation.
+        if tokens and tokens[0] in ('"', "'"):
+            tokens = tokens[1:]
+        text = " ".join(tokens)
         if text:
             events.append(DescriptionEvent(timestamp_seconds=seconds, text=text))
 
