@@ -1639,7 +1639,7 @@ ADAPTIVE_FRAME_INTRO_PROMPT = (
 )
 
 
-def _adaptive_video_intro_text(timestamps: list[float]) -> str:
+def _adaptive_video_intro_text(highlight_timestamps: list[float], total_frame_count: int) -> str:
     """Build the text element that precedes the adaptive-sampling
     synthetic clip's `{"type": "video", ...}` element (see
     _write_frames_as_temp_video()), telling the model each of that
@@ -1709,25 +1709,72 @@ def _adaptive_video_intro_text(timestamps: list[float]) -> str:
     corruption escalate from mangled digit-spacing all the way to the
     "t" itself mutating through a couple dozen unrelated characters as
     generation went on. See SceneOptions.adaptive_repetition_penalty/
-    adaptive_no_repeat_ngram_size for the fix that finally went in."""
+    adaptive_no_repeat_ngram_size for the fix that finally went in.
 
-    times = ", ".join(f"{timestamp:.1f}s" for timestamp in timestamps)
-    return (
+    Update, task #1245 follow-up 7: follow-up 5 fixed the corruption and
+    follow-up 6 fixed the resulting truncation, but the real output
+    those two follow-ups fixed still wasn't what Christer originally
+    asked for. His own words, once he saw the (corruption-free,
+    complete) 80-bullet result: "The idea was to add some frames
+    around, but only look for 16 of them, maybe the model would have
+    peeked around a little to get a fuller description, never to look
+    att more frames from our side." I.e. context frames were only ever
+    meant as extra visual input to help the model write a FULLER
+    description of each of the 16 original highlights - not as 64 more
+    things to separately describe. Every earlier version of this
+    function (all the way back to the version above this update) handed
+    the model the full expanded frame list (highlights + context) as
+    "these are the moments to describe", which is exactly what made it
+    write one bullet per frame instead. This version is called with
+    `highlight_timestamps` - the original, un-expanded list
+    compute_adaptive_timestamps() picked - even though
+    _build_adaptive_message_content() still extracts and stitches every
+    context frame into the actual clip the model sees. The extra frames
+    are still real visual input (so the model's video-native temporal-
+    merging can still use them - see this module's own architecture
+    notes on why real video input over independent images matters here
+    at all), they're just no longer listed as separate things to
+    caption. Untested against a real model - it's possible the model
+    still doesn't follow the "one bullet per highlight, not per frame"
+    instruction any better than it followed the earlier "synthesize
+    instead of captioning each frame" instruction for the widely-spaced
+    highlights case (see this function's own note on that, above) -
+    Christer needs to reinstall and re-test to find out."""
+
+    times = ", ".join(f"{timestamp:.1f}s" for timestamp in highlight_timestamps)
+    text = (
         "The clip below was assembled by sampling "
-        f"{len(timestamps)} separate highlighted moments out of a "
-        "longer recording, shown in order - it is NOT continuous "
-        "motion the way an ordinary video clip is. Consecutive frames "
-        "here are often several seconds or more apart in the original "
-        "recording, so don't assume smooth visual continuity between "
-        "neighboring frames; treat each as a distinct moment, but "
+        f"{len(highlight_timestamps)} separate highlighted moments out "
+        "of a longer recording, shown in order - it is NOT continuous "
+        "motion the way an ordinary video clip is. Consecutive "
+        "highlighted moments are often several seconds or more apart in "
+        "the original recording, so don't assume smooth visual "
+        "continuity between them; treat each as a distinct moment, but "
         "still synthesize them into one connected description of what "
-        "happened over the whole recording, rather than describing "
-        "each frame in isolation. In playback order, these frames' "
-        "real elapsed times from the start of the original recording "
-        f"are: {times}. Use these exact given values, not an assumed "
-        "even spacing across this short clip's own length, when "
+        "happened over the whole recording, rather than describing each "
+        "one in isolation. In playback order, these highlighted "
+        "moments' real elapsed times from the start of the original "
+        f"recording are: {times}. Use these exact given values, not an "
+        "assumed even spacing across this short clip's own length, when "
         "writing the '[t=Xs]' timestamps requested below."
     )
+    if total_frame_count > len(highlight_timestamps):
+        text += (
+            " This clip actually contains more individual frames than "
+            f"that ({total_frame_count} in total) - a few extra real "
+            "frames from just before and after each highlighted moment "
+            "are included too, so the moments right around each "
+            "highlight play as brief, genuinely continuous motion "
+            "instead of one isolated snapshot, letting you get a fuller "
+            "read on what's happening there (direction of travel, "
+            "what's approaching or receding, and so on). These extra "
+            "frames are only there to inform your description - do NOT "
+            f"write a separate bullet for each one. Write exactly "
+            f"{len(highlight_timestamps)} bullets total, one per "
+            "highlighted moment listed above, each timestamped at that "
+            "moment's own value."
+        )
+    return text
 
 
 def _expand_with_context_frames(
@@ -1845,14 +1892,31 @@ def _build_adaptive_message_content(
     normal single `{"type": "video", ...}` content element: the chosen
     frames stitched into their own small throwaway clip (see
     _write_frames_as_temp_video()), preceded by one text element (see
-    _adaptive_video_intro_text()) spelling out each frame's real
-    elapsed-clip time, at timestamps compute_adaptive_timestamps()
+    _adaptive_video_intro_text()) spelling out each highlighted moment's
+    real elapsed-clip time, at timestamps compute_adaptive_timestamps()
     picks from `gps_fixes`/`gsensor_samples`. Returns
-    (content_elements, used_timestamps, cleanup_paths) -
-    describe_scene() appends used_timestamps to the output as a "##
-    Sampled frames" section, and deletes each of cleanup_paths (the
-    temp clip's parent directory) once its model call has finished
-    reading it.
+    (content_elements, highlight_timestamps, cleanup_paths) -
+    describe_scene() appends highlight_timestamps to the output as a
+    "## Sampled frames" section (also uses its length to scale
+    max_new_tokens - see SceneOptions.adaptive_max_new_tokens_per_frame),
+    and deletes each of cleanup_paths (the temp clip's parent directory)
+    once its model call has finished reading it.
+
+    Task #1245 follow-up 7: `highlight_timestamps` is the original,
+    un-expanded list from compute_adaptive_timestamps() - NOT every real
+    frame this function extracts and stitches into the clip. When
+    `opts.adaptive_context_frames > 0`, more frames than that get pulled
+    in and shown to the model (see _expand_with_context_frames()), but
+    only the original highlight count is what the model is told to
+    write one bullet per (see _adaptive_video_intro_text()) and what
+    gets reported/budgeted for here. Before this follow-up,
+    highlight_timestamps and the expanded frame list were the same
+    variable, which is exactly what made the model write one bullet per
+    real frame (up to 80 for a 16-highlight clip) instead of one fuller
+    bullet per highlight informed by its neighboring context frames -
+    see _adaptive_video_intro_text()'s own docstring for the real-output
+    evidence and Christer's own description of what this was supposed
+    to do instead.
 
     Task #1245: this used to build content_elements as a list of one
     `{"type": "image", ...}` element per chosen frame instead (see
@@ -1901,18 +1965,30 @@ def _build_adaptive_message_content(
         warn("  adaptive-sampling: couldn't determine a usable duration, falling back to uniform sampling.")
         return [], [], []
 
-    timestamps = compute_adaptive_timestamps(
+    highlight_timestamps = compute_adaptive_timestamps(
         duration_seconds, gps_fixes, gsensor_samples, recording_start, opts.max_frames
     )
-    if not timestamps:
+    if not highlight_timestamps:
         return [], [], []
 
+    # Task #1245 follow-up 7: frame_timestamps (what actually gets
+    # extracted and stitched into the clip the model sees) and
+    # highlight_timestamps (what the model is told to write one bullet
+    # per) deliberately diverge once context frames are on -
+    # highlight_timestamps must NOT be reassigned to the expanded list
+    # here, or _adaptive_video_intro_text() below goes back to listing
+    # every context frame as its own thing to describe, which is
+    # exactly the bug this follow-up fixes. See that function's own
+    # docstring for the full story (Christer: "The idea was to add some
+    # frames around, but only look for 16 of them... never to look att
+    # more frames from our side").
+    frame_timestamps = highlight_timestamps
     if opts.adaptive_context_frames > 0:
-        timestamps = _expand_with_context_frames(
-            timestamps, duration_seconds, opts.adaptive_context_frames, opts.adaptive_context_offset_seconds
+        frame_timestamps = _expand_with_context_frames(
+            highlight_timestamps, duration_seconds, opts.adaptive_context_frames, opts.adaptive_context_offset_seconds
         )
 
-    frames = _extract_frames_at_timestamps(vr, timestamps)
+    frames = _extract_frames_at_timestamps(vr, frame_timestamps)
     if not frames:
         return [], [], []
 
@@ -1922,8 +1998,6 @@ def _build_adaptive_message_content(
     except MediaToolError as exc:
         warn(f"  adaptive-sampling: couldn't build temp clip ({exc}), falling back to uniform sampling.")
         return [], [], []
-
-    used_timestamps = [timestamp for timestamp, _ in frames]
 
     video_ele = {
         "type": "video",
@@ -1938,11 +2012,11 @@ def _build_adaptive_message_content(
         video_ele["max_pixels"] = opts.max_pixels
 
     content: list[dict] = [
-        {"type": "text", "text": _adaptive_video_intro_text(used_timestamps)},
+        {"type": "text", "text": _adaptive_video_intro_text(highlight_timestamps, len(frames))},
         video_ele,
     ]
 
-    return content, used_timestamps, [clip_path.parent]
+    return content, highlight_timestamps, [clip_path.parent]
 
 
 def _crop_overlay_from_image(image, crop_top: float, crop_bottom: float):

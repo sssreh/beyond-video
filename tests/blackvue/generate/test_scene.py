@@ -1546,7 +1546,10 @@ def test_adaptive_video_intro_text_lists_every_frames_real_timestamp():
     spacing corruption in real output Christer reported - see
     _adaptive_video_intro_text()'s own docstring for the full story."""
 
-    text = scene._adaptive_video_intro_text([0.0, 12.5, 30.0])
+    # total_frame_count == len(highlight_timestamps): no context frames,
+    # so the "extra frames, don't caption them separately" paragraph
+    # (task #1245 follow-up 7) should NOT appear.
+    text = scene._adaptive_video_intro_text([0.0, 12.5, 30.0], 3)
 
     assert "3 separate highlighted moments" in text
     assert "0.0s, 12.5s, 30.0s" in text
@@ -1555,6 +1558,29 @@ def test_adaptive_video_intro_text_lists_every_frames_real_timestamp():
     # exactly what structurally resembled the model's own output format.
     assert "- frame" not in text
     assert "\n" not in text
+    assert "extra real frames" not in text
+
+
+def test_adaptive_video_intro_text_explains_context_frames_when_present():
+    """Task #1245 follow-up 7: Christer's clarification after seeing the
+    corrected, complete-but-still-verbose 80-bullet output - "The idea
+    was to add some frames around, but only look for 16 of them...
+    never to look att more frames from our side." When
+    total_frame_count exceeds the highlight count (context frames were
+    expanded in), the intro text must still list only the highlight
+    timestamps as the timeline to write bullets for, but should also
+    tell the model extra real frames are present for context and that
+    it should NOT write one bullet per frame - see
+    _adaptive_video_intro_text()'s own docstring for the full story."""
+
+    text = scene._adaptive_video_intro_text([10.0, 30.0], 10)
+
+    assert "2 separate highlighted moments" in text
+    assert "10.0s, 30.0s" in text
+    assert "extra real frames" in text
+    assert "10 in total" in text
+    assert "do NOT" in text
+    assert "Write exactly 2 bullets total" in text
 
 
 # --- context frames around adaptive highlights (task #1245 follow-up,
