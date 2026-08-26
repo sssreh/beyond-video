@@ -447,6 +447,36 @@ class SceneOptions:
     max_new_tokens: int = 768
     repetition_penalty: float = 1.15
     no_repeat_ngram_size: int = 3
+    # Task #1245 follow-up 5: real-hardware confirmation that
+    # no_repeat_ngram_size=3 (tuned for the normal, non-adaptive describe
+    # call, which the project's real-footage tuning shows tends to write
+    # a handful of longer bullets) actively corrupts output once
+    # adaptive sampling asks the model to write one "[t=Xs]" bullet per
+    # sampled frame - Christer's real --adaptive-context-frames 2 output
+    # (~80 sampled frames after context expansion, vs. 16 without it)
+    # showed the "t" in "[t=" mutating letter-by-letter as generation
+    # went on - t, T, F, f, r, R, E, e, -, L, l, I, i, o, O, Q, q, w, W,
+    # X, x - the no-repeat-ngram ban forcing ever-more-desperate token
+    # substitutions to dodge an exact-3-gram-repeat rule once ~80 near-
+    # identical bullet openings have already appeared in the sequence.
+    # Same mechanism diagnosed (at a much milder, digit-spacing-only
+    # severity) in _adaptive_video_intro_text()'s own docstring, before
+    # context frames existed to make it this much worse.
+    #
+    # These two fields replace repetition_penalty/no_repeat_ngram_size
+    # for the main describe call specifically when adaptive_sampling is
+    # True (see the generate() call in describe_scene()) - mirroring
+    # zoom_repetition_penalty=1.0/zoom_no_repeat_ngram_size=0 just below,
+    # which already disables both for exactly this shape of problem
+    # (many short structured per-item outputs in one completion, there
+    # one line per sign/plate crop instead of one bullet per frame) and
+    # has been running safely in production. Scoped to the
+    # adaptive_sampling path only - the normal non-adaptive describe
+    # call keeps its own tuned repetition_penalty/no_repeat_ngram_size
+    # values untouched, since it was never observed to have this
+    # problem and there's no reason to gamble on it.
+    adaptive_repetition_penalty: float = 1.0
+    adaptive_no_repeat_ngram_size: int = 0
     do_sample: bool = False
     temperature: float = 0.7
     top_p: float = 0.8
@@ -1640,7 +1670,17 @@ def _adaptive_video_intro_text(timestamps: list[float]) -> str:
     doesn't, the next lever worth trying is loosening
     no_repeat_ngram_size/repetition_penalty specifically for this call,
     which this change deliberately avoids gambling on without being
-    able to test it against a real model from this sandbox."""
+    able to test it against a real model from this sandbox.
+
+    Update, task #1245 follow-up 5: that next lever got pulled.
+    Adding real context frames (see _expand_with_context_frames()) made
+    this same corruption dramatically worse - roughly 5x more sampled
+    frames means roughly 5x more "[t=" bullet-openings competing for the
+    same limited 3-gram space, and real hardware output showed the
+    corruption escalate from mangled digit-spacing all the way to the
+    "t" itself mutating through a couple dozen unrelated characters as
+    generation went on. See SceneOptions.adaptive_repetition_penalty/
+    adaptive_no_repeat_ngram_size for the fix that finally went in."""
 
     times = ", ".join(f"{timestamp:.1f}s" for timestamp in timestamps)
     return (
@@ -2371,8 +2411,12 @@ def describe_scene(
         generated_ids = loaded.model.generate(
             **inputs,
             max_new_tokens=opts.max_new_tokens,
-            repetition_penalty=opts.repetition_penalty,
-            no_repeat_ngram_size=opts.no_repeat_ngram_size,
+            repetition_penalty=(
+                opts.adaptive_repetition_penalty if opts.adaptive_sampling else opts.repetition_penalty
+            ),
+            no_repeat_ngram_size=(
+                opts.adaptive_no_repeat_ngram_size if opts.adaptive_sampling else opts.no_repeat_ngram_size
+            ),
             **_sampling_kwargs(opts),
         )
     except Exception as exc:

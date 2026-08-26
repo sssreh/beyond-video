@@ -964,6 +964,130 @@ def test_describe_scene_output_includes_disclaimer(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Task #1245 follow-up 5: adaptive-sampling-specific repetition/ngram
+# settings. Real hardware output at --adaptive-context-frames 2 (~80 sampled
+# frames after context expansion) showed the "[t=" bullet-opening token
+# progressively mutating through unrelated characters as generation went on
+# - t, T, F, f, r, R, E, e, -, L, l, I, i, o, O, Q, q, w, W, X, x - the
+# no_repeat_ngram_size=3 exact-3-gram ban forcing ever more desperate token
+# substitutions once ~80 near-identical bullet openings had already
+# appeared. Christer chose "loosen ngram/repetition settings for this call"
+# over capping frame count or reverting context frames to 0. See
+# SceneOptions.adaptive_repetition_penalty/adaptive_no_repeat_ngram_size -
+# mirrors the zoom_repetition_penalty=1.0/zoom_no_repeat_ngram_size=0
+# precedent already running safely for the same "many short structured
+# outputs in one completion" shape of problem.
+# ---------------------------------------------------------------------------
+
+
+def test_describe_scene_uses_relaxed_repetition_settings_when_adaptive_sampling_is_on(
+    monkeypatch, tmp_path
+):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\n- [t=70.0s] A red bus passes on the left."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [{"type": "text", "text": "intro"}, {"type": "video", "video": "x"}],
+            [70.0],
+            [],
+        ),
+    )
+
+    scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+
+    assert captured_kwargs["repetition_penalty"] == scene.SceneOptions().adaptive_repetition_penalty
+    assert captured_kwargs["no_repeat_ngram_size"] == scene.SceneOptions().adaptive_no_repeat_ngram_size
+
+
+def test_describe_scene_keeps_normal_repetition_settings_when_adaptive_sampling_is_off(
+    monkeypatch, tmp_path
+):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\nRoutine driving, nothing notable happened."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+
+    scene.describe_scene(video_path, zoom_signs=False)
+
+    assert captured_kwargs["repetition_penalty"] == scene.SceneOptions().repetition_penalty
+    assert captured_kwargs["no_repeat_ngram_size"] == scene.SceneOptions().no_repeat_ngram_size
+
+
+# ---------------------------------------------------------------------------
 # describe_scene()'s adaptive-sampling fallback detection (task #1238) - a
 # real-archive bug report: "20220927_132155_E"'s adaptive-sampling retry
 # produced a short, generic 4-bullet description bunched near t=0s, with
