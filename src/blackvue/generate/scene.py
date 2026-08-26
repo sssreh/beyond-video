@@ -1262,11 +1262,33 @@ def extract_sampled_frame_timestamps(output_text: str) -> list[float]:
     return [event.timestamp_seconds for event in events]
 
 
-def _fetch_vision_inputs(process_vision_info, messages):
+def _fetch_vision_inputs(process_vision_info, messages, *, is_qwen3: bool = False):
     """process_vision_info() wrapper that requests
     return_video_kwargs=True when supported (needed for Qwen3-VL to
     know the sampling rate of an already-extracted video tensor), and
     degrades gracefully on older qwen_vl_utils that don't accept it.
+
+    2026-08-26 (task #1260 follow-up 3): confirmed via QwenLM/Qwen3-VL's
+    own README that Qwen3-VL needs a *different* call shape than
+    Qwen2.5-VL, not just the same return_video_kwargs=True this
+    function already requested. Real hardware crashed with:
+    `Field 'fps' with value [0.355...] doesn't match any type in
+    (int, float, NoneType)` - process_vision_info()'s default video_
+    kwargs shape (`{'do_sample_frames': False, 'fps': [sample_fps]}`,
+    explicitly commented "BC for qwen2.5vl" in qwen_vl_utils' own
+    source) flattens fps into a list for Qwen2.5-VL's older video
+    processor, which Qwen3-VL's newer, stricter one rejects outright.
+    The README's own Qwen3-VL example instead passes
+    return_video_metadata=True (returning each video as a
+    (tensor, metadata) tuple instead) and image_patch_size=16 (vs
+    Qwen2.5-VL's 14 - matches _PATCH_FACTOR_3_VL/_PATCH_FACTOR_2_5_VL
+    above), then unpacks the tuples and feeds metadata to the
+    processor via its own video_metadata= kwarg rather than folding it
+    into video_kwargs. video_inputs is unpacked back down to a plain
+    list of tensors here (not left as (tensor, metadata) pairs) so
+    every existing call site - and _crop_top_bottom(), which indexes
+    video_inputs[0] expecting a plain (T, C, H, W) tensor - keeps
+    working unchanged; video_metadata travels back separately.
 
     2026-08-26 (task #1258 follow-up): real hardware showed
     video_kwargs coming back as `{}` even on a real 180s clip at
@@ -1282,19 +1304,58 @@ def _fetch_vision_inputs(process_vision_info, messages):
     symptom. Logging the real exception here so the next real run
     shows which one it actually is, instead of continuing to guess."""
 
+    kwargs = {"return_video_kwargs": True}
+    if is_qwen3:
+        kwargs["return_video_metadata"] = True
+        kwargs["image_patch_size"] = 16
+
     try:
         image_inputs, video_inputs, video_kwargs = process_vision_info(
-            messages, return_video_kwargs=True
+            messages, **kwargs
         )
     except TypeError as exc:
         print(
-            f"bv-generate: return_video_kwargs=True unsupported/failed "
-            f"({exc}), falling back to no video sampling metadata",
+            f"bv-generate: process_vision_info({', '.join(kwargs)}) "
+            f"unsupported/failed ({exc}), falling back to no video "
+            "sampling metadata",
             file=sys.stderr,
         )
         image_inputs, video_inputs = process_vision_info(messages)
-        video_kwargs = {}
-    return image_inputs, video_inputs, video_kwargs
+        return image_inputs, video_inputs, {}, None
+
+    video_metadata = None
+    if is_qwen3 and video_inputs is not None:
+        videos, metadatas = zip(*video_inputs)
+        video_inputs = list(videos)
+        video_metadata = list(metadatas)
+
+    return image_inputs, video_inputs, video_kwargs, video_metadata
+
+
+def _processor_call_kwargs(video_kwargs: dict, video_metadata) -> dict:
+    """Merges _fetch_vision_inputs()'s video_kwargs with the two extra
+    kwargs every processor() call site below now needs, per QwenLM/
+    Qwen3-VL's own README example (see _fetch_vision_inputs()'s
+    docstring):
+
+    - do_resize=False unconditionally - qwen_vl_utils' process_vision_
+      info() already resizes images/videos itself (smart_resize()), so
+      leaving the processor's own default do_resize=True on would
+      silently resize a second time.
+    - video_metadata=... only when not None (Qwen3-VL video calls) -
+      Qwen2.5-VL's processor was never confirmed to accept a
+      video_metadata kwarg at all (the README's Qwen2.5-VL example
+      never passes one), and this project's real Qwen3-VL fps crash
+      just showed HF processors can validate kwargs strictly enough to
+      reject an unexpected shape outright - safer to omit it entirely
+      for the non-Qwen3/no-video cases than risk the same failure mode
+      for a kwarg with no evidence it's even accepted there."""
+
+    kwargs = dict(video_kwargs)
+    kwargs["do_resize"] = False
+    if video_metadata is not None:
+        kwargs["video_metadata"] = video_metadata
+    return kwargs
 
 
 def _sampling_kwargs(opts: SceneOptions, *, force_sample: bool = False) -> dict:
@@ -1366,12 +1427,13 @@ def _run_single_image_prompt(
     text = loaded.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
-        loaded.process_vision_info, messages
+    image_inputs, video_inputs, video_kwargs, video_metadata = _fetch_vision_inputs(
+        loaded.process_vision_info, messages, is_qwen3=loaded.is_qwen3
     )
     inputs = loaded.processor(
         text=[text], images=image_inputs, videos=video_inputs,
-        padding=True, return_tensors="pt", **video_kwargs,
+        padding=True, return_tensors="pt",
+        **_processor_call_kwargs(video_kwargs, video_metadata),
     )
     inputs = inputs.to(loaded.model.device)
     generated_ids = loaded.model.generate(
@@ -1447,12 +1509,13 @@ def _run_batch_image_prompt(
     text = loaded.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
-        loaded.process_vision_info, messages
+    image_inputs, video_inputs, video_kwargs, video_metadata = _fetch_vision_inputs(
+        loaded.process_vision_info, messages, is_qwen3=loaded.is_qwen3
     )
     inputs = loaded.processor(
         text=[text], images=image_inputs, videos=video_inputs,
-        padding=True, return_tensors="pt", **video_kwargs,
+        padding=True, return_tensors="pt",
+        **_processor_call_kwargs(video_kwargs, video_metadata),
     )
     inputs = inputs.to(loaded.model.device)
     generated_ids = loaded.model.generate(
@@ -2611,8 +2674,8 @@ def describe_scene(
         # like every other describe_scene() failure, which _run_scene_
         # pass() already knows how to handle per-recording. See
         # WORKING_CONTEXT.md.
-        image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
-            loaded.process_vision_info, messages
+        image_inputs, video_inputs, video_kwargs, video_metadata = _fetch_vision_inputs(
+            loaded.process_vision_info, messages, is_qwen3=loaded.is_qwen3
         )
         if video_inputs:
             video_inputs = _crop_top_bottom(
@@ -2640,7 +2703,8 @@ def describe_scene(
 
         inputs = loaded.processor(
             text=[text], images=image_inputs, videos=video_inputs,
-            padding=True, return_tensors="pt", **video_kwargs,
+            padding=True, return_tensors="pt",
+            **_processor_call_kwargs(video_kwargs, video_metadata),
         )
         inputs = inputs.to(loaded.model.device)
 
@@ -2771,13 +2835,14 @@ def summarize_trip(
     text = loaded.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
-        loaded.process_vision_info, messages
+    image_inputs, video_inputs, video_kwargs, video_metadata = _fetch_vision_inputs(
+        loaded.process_vision_info, messages, is_qwen3=loaded.is_qwen3
     )
     try:
         inputs = loaded.processor(
             text=[text], images=image_inputs, videos=video_inputs,
-            padding=True, return_tensors="pt", **video_kwargs,
+            padding=True, return_tensors="pt",
+            **_processor_call_kwargs(video_kwargs, video_metadata),
         )
         inputs = inputs.to(loaded.model.device)
         generated_ids = loaded.model.generate(
