@@ -290,6 +290,137 @@ def test_extract_description_events_skips_a_bullet_with_an_unparseable_timestamp
     ]
 
 
+# 2026-08-26 (task #1260 follow-up 25): a real --frames 16 adaptive-sampling
+# run showed corruption the quote-drift fix above doesn't cover - missing
+# "="s ("[t 84. 5s ]"), wrong closing characters (")"/"J"/"j" instead of
+# "]"), and letter-for-digit substitution ("l"/"I" for "1", e.g. "tll44. 5
+# S" meant to render "t=144.5s"). Christer's real pasted .scene.txt had 10
+# of 16 bullets - the entire back half of the clip - dropped outright by
+# the old strict _BULLET_START_RE, plus one more silently mistimed from
+# t=126.5s to t=26.5s by _parse_timestamp_token()'s digit-extraction
+# fallback skipping the corrupted leading "l". This is a trimmed
+# reproduction of that real output (6 originally-surviving bullets +
+# 4 originally-dropped/mistimed ones), used below both to prove the
+# widened _BULLET_START_RE now finds all 10 bullet boundaries, and to
+# prove _realign_bullet_timestamps() recovers the correct timestamps by
+# position rather than by (unreliable) digit parsing.
+_BRACKET_CORRUPTION_DESCRIPTION_TEXT = (
+    "## Description\n"
+    "- [t=9.5s] The car is stopped at a traffic light at an intersection.\n"
+    "- [t=30.5s] The car proceeds through the intersection.\n"
+    "- [t 84. 5s ] Traffic flows past a roadside advertisement billboard.\n"
+    "- [tl35. 5s) A white van and a black SUV pass on the right.\n"
+    "- [tll44. 5 S] The car maintains steady forward motion under signage.\n"
+    "- [t Il77. 5s j The vehicle continues past a large intersection.\n"
+)
+_BRACKET_CORRUPTION_KNOWN_TIMESTAMPS = [9.5, 30.5, 84.5, 135.5, 144.5, 177.5]
+
+
+def test_bullet_start_re_finds_every_bullet_despite_bracket_corruption():
+    matches = list(scene._BULLET_START_RE.finditer(_BRACKET_CORRUPTION_DESCRIPTION_TEXT))
+
+    assert len(matches) == len(_BRACKET_CORRUPTION_KNOWN_TIMESTAMPS)
+
+
+def test_realign_bullet_timestamps_recovers_real_values_by_position():
+    realigned = scene._realign_bullet_timestamps(
+        _BRACKET_CORRUPTION_DESCRIPTION_TEXT, _BRACKET_CORRUPTION_KNOWN_TIMESTAMPS
+    )
+
+    events = scene.extract_description_events(realigned)
+
+    assert [e.timestamp_seconds for e in events] == _BRACKET_CORRUPTION_KNOWN_TIMESTAMPS
+    # The unterminated last bullet's description text must survive too -
+    # confirming the "j" close-character match didn't eat real content.
+    assert events[-1].text.startswith("The vehicle continues past a large intersection")
+
+
+def test_realign_bullet_timestamps_leaves_text_untouched_on_count_mismatch():
+    # Reassigning the wrong number of bullets to a known-timestamps list of
+    # a different length would just be a new way to get this wrong - safer
+    # to leave the (still-corrupted) text for _parse_timed_events()'s own
+    # tolerant-but-imperfect fallback parsing to handle instead.
+    mismatched = _BRACKET_CORRUPTION_KNOWN_TIMESTAMPS[:-1]
+
+    realigned = scene._realign_bullet_timestamps(_BRACKET_CORRUPTION_DESCRIPTION_TEXT, mismatched)
+
+    assert realigned == _BRACKET_CORRUPTION_DESCRIPTION_TEXT
+
+
+def test_realign_bullet_timestamps_no_op_on_already_clean_text():
+    clean = (
+        "## Description\n"
+        "- [t=0.0s] Clear weather, light traffic.\n"
+        "- [t=12.4s] A red bus passes on the left.\n"
+    )
+
+    realigned = scene._realign_bullet_timestamps(clean, [0.0, 12.4])
+
+    events = scene.extract_description_events(realigned)
+    assert [e.timestamp_seconds for e in events] == [0.0, 12.4]
+
+
+def test_describe_scene_realigns_corrupted_adaptive_timestamps_by_position(monkeypatch, tmp_path):
+    # Wiring-level test: describe_scene() itself must apply the
+    # realignment to the adaptive path's raw model output before zoom-
+    # signs/sampled-frames get appended, using the real
+    # sampled_frame_timestamps it already computed pre-generation.
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return [
+                "## Description\n"
+                "- [t=9.5s] The car is stopped at a traffic light.\n"
+                "- [tl35. 5s) The vehicle continues past a large intersection.\n"
+            ]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [{"type": "text", "text": "intro"}, {"type": "video", "video": "x"}],
+            [9.5, 135.5],
+            [],
+        ),
+    )
+
+    output_text = scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+    events = scene.extract_description_events(output_text)
+
+    assert [e.timestamp_seconds for e in events] == [9.5, 135.5]
+
+
 # ---------------------------------------------------------------------------
 # extract_sampled_frame_timestamps() - added for adaptive frame sampling
 # (--adaptive-sampling). describe_scene()'s adaptive path appends a

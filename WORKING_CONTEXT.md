@@ -18838,3 +18838,99 @@ run (no `--adaptive-sampling`) should show the bus (or whatever event)
 landing closer to its real position, though this is still an
 approximation, not a promise of exactness - only `--adaptive-sampling`
 has genuinely code-verified per-frame timestamps.
+
+### Follow-up 25 (task #1260): new, more severe timestamp-bracket corruption on the adaptive-sampling path - fixed by trusting bullet position over the model's own digits
+
+While investigating why a real `--frames 16 --adaptive-sampling
+--debug` run took 271.1s total (28.8s model load / 24.4s adaptive
+frame extraction / 0.9s vision decode / 157.3s main `generate()` /
+58.7s zoom-signs), asked Christer for the real `.scene.txt` to check
+whether extra bullet count explained the slower `generate()` call. It
+didn't - exactly 16 bullets came back, matching `--frames 16` - but
+the pasted real output revealed a corruption pattern distinct from and
+worse than follow-up 8/21's quote-drift bug: missing `=` signs
+(`"[t 84. 5s ]"`), wrong closing-bracket characters standing in for
+`]` (`)`, `J`, `j`), and letter-for-digit substitution (`l`/`I` for
+`1`, e.g. `"[tll44. 5 S]"` meant to render `t=144.5s`). Tested directly
+against the real `extract_description_events()`: only 6 of 16 real
+bullets survived - the old `_BULLET_START_RE`'s literal `=`/`]`
+requirement dropped the other 10 outright (the entire back half of the
+clip, t=84.5s through t=177.5s), and one more (`"[t=l26. 5 s ]"`) was
+silently mistimed from t=126.5s to t=26.5s by `_parse_timestamp_token()`'s
+existing digit-extraction fallback skipping the corrupted leading `l`.
+
+Ruled out the previously-fixed root cause first: read the real
+`generate()` call site and confirmed `repetition_penalty`/
+`no_repeat_ngram_size` (task #1259 follow-up 12's unconditional
+relaxation) are `1.0`/`0` for this call - the old
+`no_repeat_ngram_size`-forced-substitution mechanism is fully disabled
+here, so this is a genuinely different corruption, not a recurrence.
+
+**Why not just patch the digit-parsing regex further.** Tried
+normalizing `l`/`I` -> `1` before parsing - it correctly recovers
+`"tl35.5"` -> `135.5`, but silently wrecks `"tll44.5"` -> `1144.5` (a
+bogus, out-of-range value) instead of failing loudly, because that
+`"ll"` isn't two substituted characters, it's one missing `1` plus one
+substituted `1` - not a clean 1:1 swap the regex can reason about.
+Confirmed via direct testing: naive letter-normalization "fixes" some
+bullets and quietly corrupts others with no error signal either way,
+which is worse than a bullet just failing to parse.
+
+**Fix, two parts.**
+
+1. Widened `_BULLET_START_RE` (scene.py, `_BULLET_START_RE`) to make
+   `=` optional and accept `)`/`J`/`j` alongside `]` as the closing
+   delimiter (capped at 40 characters of bracket content so a
+   genuinely-absent close can't swallow the rest of the section
+   looking for one). This only fixes *finding where each bullet starts
+   and ends* - every real corruption variant seen so far still has
+   *some* recognizable close character nearby, just not the exact
+   literal `]` the old pattern required. Benefits every caller
+   (adaptive and plain paths both), and even helps already-saved
+   corrupted `.scene.txt` files without regenerating them, since
+   `extract_description_events()` re-parses from the raw file each
+   time it's called.
+
+2. Added `_realign_bullet_timestamps(section_text, known_timestamps)`,
+   applied inside `describe_scene()`'s adaptive-sampling branch right
+   after `_truncate_repeated_lines()` and before zoom-signs/sampled-
+   frames get appended - the one point in the pipeline with both the
+   model's raw bulleted text and the real `sampled_frame_timestamps`
+   `compute_adaptive_timestamps()` already computed *before* the model
+   ever ran. `_adaptive_video_intro_text()` already tells the model to
+   write its bullets "in playback order ... one per highlighted moment
+   listed above, each timestamped at that moment's own value" - and
+   across every real corrupted sample seen, the model's bullet COUNT
+   and ORDER survived intact; only the in-bracket digit rendering
+   didn't. So when the number of bullets `_BULLET_START_RE` finds
+   exactly matches `len(known_timestamps)`, each bullet gets
+   reassigned its real known timestamp by POSITION, completely
+   bypassing the unreliable digit parsing rather than chasing further
+   corruption variants of it. Leaves `section_text` untouched on any
+   count mismatch (falls through to `_parse_timed_events()`'s existing
+   regex-tolerant parsing instead) - reassigning the wrong number of
+   bullets to a list of a different length would just be a new way to
+   get this wrong.
+
+Verified against a trimmed reproduction of Christer's real corrupted
+output (`_BRACKET_CORRUPTION_DESCRIPTION_TEXT` in test_scene.py,
+including the fully-unterminated `"[t Il77. 5s j ..."` bullet with no
+closing delimiter at all before the description text continues inline
+- recovered correctly via the `j` match): all bullets recovered with
+the correct known timestamps, in order, description text intact. Added
+5 new tests (`test_bullet_start_re_finds_every_bullet_despite_bracket_corruption`,
+`test_realign_bullet_timestamps_recovers_real_values_by_position`,
+`test_realign_bullet_timestamps_leaves_text_untouched_on_count_mismatch`,
+`test_realign_bullet_timestamps_no_op_on_already_clean_text`,
+`test_describe_scene_realigns_corrupted_adaptive_timestamps_by_position`
+- the last one wiring-level, faking `_build_adaptive_message_content()`'s
+known timestamps against a corrupted `batch_decode()` response and
+asserting `describe_scene()`'s own return value comes back clean).
+Verified via `/tmp/verify/full_sweep.py` - 99 passed (up from 94), same
+6 pre-existing unrelated failures, no new failures.
+
+Does not explain the 157.3s vs 137s baseline `generate()` cost gap on
+its own - that remains open. Whether the model "struggling" to render
+correct digit sequences correlates with slower/less confident token-
+by-token decoding is a plausible but unconfirmed follow-on hypothesis
+for a future investigation, not something this fix addresses.

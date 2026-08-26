@@ -1304,7 +1304,25 @@ def _extract_raw_description_section(output_text: str) -> str:
 # boundaries - handles both the one-bullet-per-line format the prompt
 # asks for and the single-line-crammed-together format the model
 # actually produced.
-_BULLET_START_RE = re.compile(r"-\s*\[\s*t\s*=\s*(?P<raw_seconds>[^\]]*)\]", re.IGNORECASE)
+#
+# 2026-08-26 (task #1260 follow-up 25): a real --frames 16 run showed
+# a *different*, more severe corruption than the quote-drift bug this
+# comment originally described - Christer's real .scene.txt had
+# bullets like "[t 84. 5s ]" (missing "=" entirely) and "[tl35. 5s)"
+# (closing ")"/"J"/"j" instead of "]"). The old pattern's literal
+# `\s*=\s*` and trailing literal `\]` both required exactly the
+# characters that were missing, so 10 of 16 real bullets - the entire
+# back half of the clip - were dropped outright, not just mistimed.
+# Made "=" optional and widened the closing delimiter to accept ")",
+# "J", or "j" as well as "]" (all four were observed standing in for
+# the real ")"/"]" close in real output), capped at 40 characters so a
+# genuinely absent close can't accidentally swallow the rest of the
+# section looking for one. This still only fixes *finding where each
+# bullet starts and ends* - see _realign_bullet_timestamps() below for
+# why the digits *inside* the brackets need a different fix entirely.
+_BULLET_START_RE = re.compile(
+    r"-\s*\[\s*t\s*=?\s*(?P<raw_seconds>[^\]\)Jj]{0,40}?)[\]\)Jj]", re.IGNORECASE
+)
 
 
 def _parse_timestamp_token(raw_seconds: str) -> float | None:
@@ -1345,6 +1363,61 @@ def _parse_timestamp_token(raw_seconds: str) -> float | None:
         return float(match.group())
     except ValueError:
         return None
+
+
+def _realign_bullet_timestamps(section_text: str, known_timestamps: list[float]) -> str:
+    """Rewrite every '- [t=...]' bullet's bracket to a clean canonical
+    '[t=X.Ys]' using known_timestamps by POSITION - not by trying to
+    parse whatever digits the model actually rendered inside the
+    brackets.
+
+    2026-08-26 (task #1260 follow-up 25): the same real run that
+    prompted _BULLET_START_RE's widening above also showed letter-for-
+    digit corruption inside the brackets that widening can't fix:
+    "tl35. 5s" for what should be t=135.5s, "tll44. 5 S" for what
+    should be t=144.5s. A tempting fix is normalizing look-alike
+    letters ('l'/'I' -> '1') before parsing, and that does happen to
+    recover "tl35.5" -> "135.5" correctly - but it silently WRECKS
+    "tll44.5" -> "1144.5" (a bogus, out-of-range value) instead of
+    failing loudly, because "ll" there isn't two substituted
+    characters, it's one missing "1" plus one substituted "1" - not a
+    clean 1:1 swap at all. Confirmed by testing both the old and a
+    naive letter-normalizing _parse_timestamp_token() against
+    Christer's real pasted output: the naive fix "fixes" some bullets
+    and quietly corrupts others with no error signal either way -
+    worse than leaving them broken, since a caller can't tell which
+    result to trust.
+
+    The adaptive-sampling path doesn't need to guess at all:
+    compute_adaptive_timestamps() already picked every highlighted
+    moment's real timestamp *before* the model ever ran, in ascending
+    order, and _adaptive_video_intro_text() told the model to write
+    its bullets "in playback order ... one per highlighted moment
+    listed above, each timestamped at that moment's own value." Across
+    every real corrupted sample seen so far the model's bullet COUNT
+    and ORDER survived intact - only the in-bracket digit rendering
+    didn't. So when the number of bullets _BULLET_START_RE finds
+    exactly matches len(known_timestamps), trusting bullet position
+    over the model's own unreliable digits sidesteps the whole parsing
+    problem rather than chasing further corruption variants. Leaves
+    section_text completely untouched whenever the counts don't match
+    - reassigning the wrong number of bullets to a known list of a
+    different length would just be a new way to get this wrong, and
+    _parse_timed_events()'s own regex-tolerant parsing downstream is a
+    safer fallback for that case than a mismatched realignment here."""
+
+    matches = list(_BULLET_START_RE.finditer(section_text))
+    if not matches or len(matches) != len(known_timestamps):
+        return section_text
+
+    pieces: list[str] = []
+    cursor = 0
+    for match, timestamp in zip(matches, known_timestamps):
+        pieces.append(section_text[cursor : match.start()])
+        pieces.append(f"- [t={timestamp:.1f}s]")
+        cursor = match.end()
+    pieces.append(section_text[cursor:])
+    return "".join(pieces)
 
 
 @dataclass(frozen=True)
@@ -3125,6 +3198,24 @@ def describe_scene(
     # generated zoom-signs/sampled-frames sections get appended below,
     # so this can't accidentally truncate content it didn't generate.
     output_text = _truncate_repeated_lines(output_text)
+
+    # 2026-08-26 (task #1260 follow-up 25): real hardware showed the
+    # adaptive-sampling path's own "## Description" bullets coming back
+    # with corrupted "[t=X.Ys]" brackets - missing "="s, wrong closing
+    # characters, letter-for-digit substitutions - severe enough that
+    # only 6 of 16 real bullets survived the old strict parser, with a
+    # 7th silently mistimed. _BULLET_START_RE above was widened to find
+    # bullet boundaries despite that corruption, but the digits inside
+    # still can't be trusted (see _realign_bullet_timestamps()'s own
+    # comment for why blind letter-normalization is unsafe). This is
+    # the one point in the whole pipeline that has both the model's raw
+    # bulleted text AND the real, already-computed sampled_frame_
+    # timestamps it was told to write one bullet per - applied here,
+    # before zoom-signs/sampled-frames get appended below, so it only
+    # ever touches the "## Description" bullets this call itself just
+    # generated.
+    if opts.adaptive_sampling and sampled_frame_timestamps:
+        output_text = _realign_bullet_timestamps(output_text, sampled_frame_timestamps)
 
     if opts.zoom_signs:
         zoom_start = time.monotonic() if debug else None
