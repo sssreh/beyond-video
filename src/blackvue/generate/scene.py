@@ -3197,20 +3197,24 @@ def describe_scene(
             # theory that max_new_tokens=768 - "16 frames * ~48 tokens/
             # bullet" - was a safe fixed budget for the plain path's own
             # tuned-for 16-frame case. Christer's real hardware proved
-            # that was never actually safe even there, and confirmed it
-            # twice: --frames 15 cut off mid-bullet after only 10 of the
-            # requested ~15 ("not showing much after 108s" on a clip
-            # that runs to 180s), and --frames 14 reproduced the exact
-            # same truncation-at-10-bullets pattern moments later, in
-            # under half the time (76.3s vs 123.2s) - ruling out "just a
-            # slow generation that happened to get cut off" and
-            # confirming this is a fixed token ceiling being hit, not a
-            # --frames-count coincidence. Both runs silently dropped the
-            # back half of the description AND the entire On-screen text
-            # section, with no error or truncation warning - the exact
-            # same silent-content-loss failure mode follow-up 6's own
-            # comment already described for the adaptive path before
-            # that fix. opts.max_frames is the plain path's own bullet-
+            # that was never actually safe even there: --frames 15 cut
+            # off mid-bullet after only 10 of the requested ~15 ("not
+            # showing much after 108s" on a clip that runs to 180s),
+            # silently dropping the back half of the description AND the
+            # entire On-screen text section, with no error or truncation
+            # warning - the exact same silent-content-loss failure mode
+            # follow-up 6's own comment already described for the
+            # adaptive path before that fix. (A --frames 14 run minutes
+            # later looked like a second confirmation at first - same
+            # ~10-bullet cutoff, in under half the time - but Christer
+            # then flagged it: the debug log shows "finished ... (76.3s)"
+            # immediately followed by "interrupted", meaning that run was
+            # Ctrl-C'd right after generate() returned, before the file
+            # write/zoom-signs steps - so its file output was very likely
+            # the stale --frames 15 file, not fresh --frames 14 content,
+            # and its fast time isn't real evidence of anything. Treat
+            # only the --frames 15 run as confirmed; it's sufficient on
+            # its own.) opts.max_frames is the plain path's own bullet-
             # count target (the sparse-sampling hint, task #1260
             # follow-up 4, asks the model to write "close to max_frames
             # bullets"), so it's the right proxy here. Uses dedicated

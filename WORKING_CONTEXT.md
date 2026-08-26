@@ -19079,11 +19079,22 @@ Christer reported the plain (non-adaptive) path's `--frames 15` output
 `## Description` section cut off mid-bullet after only ~10 of the
 requested ~15 bullets, with a dangling incomplete final `- [t` line,
 and the entire `## On-screen text` section missing outright - no error
-or truncation warning anywhere. He then independently reproduced the
-identical failure at `--frames 14` (76.3s total, well under half the
-`--frames 15` run's 123.2s), ruling out "just a slow generation that
-happened to run long" and confirming a fixed token ceiling being hit
-regardless of how long generation actually took.
+or truncation warning anywhere.
+
+A follow-up `--frames 14` run initially looked like independent
+confirmation of the same failure (same ~10-bullet cutoff, in under
+half the time - 76.3s vs 123.2s), but Christer later flagged that his
+"fast time must have been a fluke or a bug." Re-reading that run's own
+debug log supports him: it prints `bv-generate: finished ... (76.3s)`
+immediately followed by `bv-generate: interrupted` - i.e. that run was
+Ctrl-C'd right after `generate()` returned, before the write/zoom-signs
+steps could run, so the `.scene.txt` content Christer catted afterward
+was very likely the stale `--frames 15` file (its sign-read timestamps
+and the `BRH 567 [unverified...]` flag are identical to the `--frames
+15` run's own), not fresh `--frames 14` output. That run is **not**
+reliable evidence of anything and should not be cited as a second
+confirmation - the original `--frames 15` run stands on its own as the
+basis for this fix.
 
 Root cause: task #1245 follow-up 6 added `describe_max_new_tokens`
 scaling (`len(sampled_frame_timestamps) *
