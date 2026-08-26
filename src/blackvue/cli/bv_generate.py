@@ -458,7 +458,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--adaptive-sampling is also given. 0 (default) disables "
             "this and reproduces today's one-frame-per-highlight "
             "behavior exactly - it multiplies frame/decode count, so "
-            "it's a real speed/cost trade-off, opt in and compare."
+            "it's a real speed/cost trade-off, opt in and compare. "
+            "WARNING: keep this small (2-3) and time it before going "
+            "higher. Christer tested N=10 (up to 21 frames per "
+            "highlight, ~336 frames total for a 16-highlight clip) and "
+            "hit real VRAM exhaustion on real hardware - GPU shared "
+            "memory ballooned, the sustained-utilization pattern seen "
+            "at low N broke down into spikes, and it ended in a driver/"
+            "hypervisor crash that required a full reboot. There's no "
+            "in-code cap on N - this flag has no safety net."
         ),
     )
 

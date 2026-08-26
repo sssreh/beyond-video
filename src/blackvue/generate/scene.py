@@ -522,6 +522,18 @@ class SceneOptions:
     # default: it's untested against a real model from this sandbox,
     # and it multiplies frame/decode count - opt-in until Christer
     # confirms the quality/speed trade-off is worth it.
+    #
+    # DANGER, confirmed on real hardware: Christer tried 10 (up to 21
+    # frames per highlight, ~336 frames total for a 16-highlight clip)
+    # and hit real VRAM exhaustion - GPU shared memory ballooned, the
+    # sustained "big blocks" GPU-utilization pattern seen at low values
+    # broke down into spikes again, and the run ended in a driver/
+    # hypervisor crash that took down the whole machine and required a
+    # reboot. There is no in-code cap on this value - no clamp, no
+    # warning printed before the risky call, nothing. Keep it small
+    # (2-3) and time it before going higher; see bv-generate's own
+    # --adaptive-context-frames help text for the same warning at the
+    # CLI level.
     adaptive_context_frames: int = 0
     adaptive_context_offset_seconds: float = 0.5
 
