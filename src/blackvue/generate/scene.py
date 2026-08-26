@@ -1238,13 +1238,32 @@ def _fetch_vision_inputs(process_vision_info, messages):
     """process_vision_info() wrapper that requests
     return_video_kwargs=True when supported (needed for Qwen3-VL to
     know the sampling rate of an already-extracted video tensor), and
-    degrades gracefully on older qwen_vl_utils that don't accept it."""
+    degrades gracefully on older qwen_vl_utils that don't accept it.
+
+    2026-08-26 (task #1258 follow-up): real hardware showed
+    video_kwargs coming back as `{}` even on a real 180s clip at
+    --frames 32/64, matching the "Asked to sample fps frames per
+    second but no video metadata was provided ... Defaulting to
+    fps=24" warning - i.e. the except branch below IS being hit. But
+    this originally caught TypeError blindly with no logging, so there
+    was no way to tell *why* - "return_video_kwargs isn't a supported
+    kwarg on this qwen-vl-utils version" (the assumed reason) is one
+    possible cause, but any other TypeError raised anywhere inside
+    process_vision_info() (a torchvision/decord API mismatch, some
+    other argument issue) would silently produce the exact same
+    symptom. Logging the real exception here so the next real run
+    shows which one it actually is, instead of continuing to guess."""
 
     try:
         image_inputs, video_inputs, video_kwargs = process_vision_info(
             messages, return_video_kwargs=True
         )
-    except TypeError:
+    except TypeError as exc:
+        print(
+            f"bv-generate: return_video_kwargs=True unsupported/failed "
+            f"({exc}), falling back to no video sampling metadata",
+            file=sys.stderr,
+        )
         image_inputs, video_inputs = process_vision_info(messages)
         video_kwargs = {}
     return image_inputs, video_inputs, video_kwargs
