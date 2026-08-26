@@ -534,7 +534,35 @@ class SceneOptions:
     # repetition_penalty/no_repeat_ngram_size themselves (1.15/3) are
     # untouched and still used by summarize_trip()'s own separate
     # generate() call, which wasn't observed to have this problem.
-    adaptive_repetition_penalty: float = 1.0
+    #
+    # 2026-08-26 (task #1260 follow-up 5): adaptive_repetition_penalty
+    # raised from 1.0 (no penalty at all) to 1.1 after real hardware
+    # showed a real cost to zeroing BOTH knobs out together. Once
+    # follow-up 17's sparse-sampling hint got the plain describe call
+    # writing close to max_frames bullets again (14, for --frames 16),
+    # several came back as near-verbatim repeats of earlier ones -
+    # "The car approaches a traffic light, which is now green, and a
+    # white van is visible ahead." appeared 3 times at evenly-spaced
+    # timestamps, cycling through what looked like ~4 template
+    # sentences - and the same completion's "## On-screen text"
+    # section degenerated into the single word "LÄN" repeated 40+
+    # times. Both are the classic unconstrained-repetition failure
+    # mode `no_repeat_ngram_size` exists to catch - but that's the
+    # knob directly implicated in the "- [t=" bracket-corruption bug
+    # above, so it stays at 0 rather than risking that regression
+    # coming back. repetition_penalty is a separate, independent, soft
+    # per-token-logit mechanism - never actually implicated in the
+    # bracket-corruption report, just zeroed out alongside
+    # no_repeat_ngram_size as part of the same blunt "disable
+    # everything" fix. Restoring a modest amount of it (1.1, well
+    # under the original 1.15 that was tuned for a totally different -
+    # few-long-bullets - output shape) should discourage exact-phrase
+    # reuse across bullets/OCR lines without the hard n-gram ban that
+    # caused the original corruption. Untested against real hardware -
+    # next real run on this same clip should confirm both the cycling
+    # sentences and the LÄN loop are gone, and that "- [t=" formatting
+    # is still clean.
+    adaptive_repetition_penalty: float = 1.1
     adaptive_no_repeat_ngram_size: int = 0
     # Task #1245 follow-up 6: max_new_tokens=768 was never a real budget
     # decision - it just happens to equal 16 (the fixed highlight/frame
