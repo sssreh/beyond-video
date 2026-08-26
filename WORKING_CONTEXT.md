@@ -18777,3 +18777,64 @@ Verified via `ast.parse` on `scene.py` and `/tmp/verify/full_sweep.py`
 (90 passed, same 6 pre-existing unrelated failures, no new failures -
 this is a pure debug-print addition with nothing to unit-test beyond
 what's already covered).
+
+### Follow-up 24 (task #1260 follow-up 10): ground the plain path's own bullet timestamps instead of leaving them a guess
+
+Christer, right after follow-up 23's explanation that the plain
+(non-adaptive) path's "[t=Xs]" bullets are the model's own ungrounded
+guess: "split 301 s with 16, thats not to hard." Fair challenge, and
+correct - it isn't hard. `qwen_vl_utils`' own frame-sampling formula
+(`smart_nframes()`, read directly from source back in task #1260
+follow-up 13) is fully deterministic given `fps`/`max_frames` (both
+already `SceneOptions` fields, already passed into `content_ele`) and
+the clip's real duration (one cheap `ffprobe` call away via
+`probe_video()`, already imported and already used elsewhere in this
+project for `.duration.txt` self-healing) - `nframes =
+clamp(duration*fps, 4, max_frames)` rounded to the nearest even
+number, then that many frames evenly spaced start-to-end. Every input
+is knowable before the model call.
+
+**Fix.** Added `_plain_video_frame_timestamps(duration_seconds, fps,
+max_frames)`, replicating that formula to compute the approximate
+real-elapsed-time of each frame qwen_vl_utils is about to sample -
+verified against Christer's own example (301s/16 frames -> evenly
+spaced 0.0s to 301.0s, ~20.1s apart, exactly matching his mental math).
+Added `_plain_video_intro_text()`, styled like the adaptive path's own
+`_adaptive_video_intro_text()` (one flowing sentence, plain comma
+list, no dashed "- frame N: t=Xs" lines - avoiding the exact
+structural resemblance to the model's own "- [t=Xs]" output bullets
+that caused real `no_repeat_ngram_size` token-mangling corruption on
+the adaptive path, per that function's own docstring history). Wired
+into `describe_scene()`'s plain-video branch: `probe_video(video_path)`
+for real duration (wrapped in `try/except MediaToolError` - a probe
+failure just falls back to the old ungrounded behavior, not fatal),
+then the computed timestamp list gets prepended to `plain_prompt`,
+telling the model to use these given values instead of guessing.
+
+Not frame-exact - qwen_vl_utils samples by real frame index against
+the container's own frame count/fps, which can differ slightly from
+ffprobe's duration-based estimate on imperfectly-CFR footage. Same
+"nearest real frame, not a promise of exactness" trade-off already
+accepted for the adaptive path's own ffmpeg-seek timestamps (task
+#1260 follow-up 8's docstring makes the identical call) - good enough
+to replace a guess with a real, sourced number, which is the actual
+problem being fixed.
+
+Added 4 new tests: `test_plain_video_frame_timestamps_matches_christers_own_example`
+(the 301s/16 case above), `..._clamps_to_min_frames_for_short_clips`,
+`..._degenerate_inputs_return_empty`, and
+`test_plain_video_intro_text_lists_computed_timestamps`. Verified via
+`ast.parse` on both files and `/tmp/verify/full_sweep.py` - 94 passed
+(up from 90), same 6 pre-existing unrelated failures, no new failures;
+confirmed the existing plain-video `describe_scene()` tests
+(`test_describe_scene_still_builds_a_video_content_element_for_a_real_video`,
+`test_describe_scene_video_element_uses_fixed_resize`) still pass
+unchanged - `probe_video()` fails cleanly (`MediaToolError`) against
+their nonexistent tmp_path video files, caught, old behavior
+preserved.
+
+Real-hardware confirmation still needed - Christer's next plain-path
+run (no `--adaptive-sampling`) should show the bus (or whatever event)
+landing closer to its real position, though this is still an
+approximation, not a promise of exactness - only `--adaptive-sampling`
+has genuinely code-verified per-frame timestamps.

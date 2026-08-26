@@ -1798,6 +1798,68 @@ def test_adaptive_video_intro_text_explains_context_frames_when_present():
     assert "Write exactly 2 bullets total" in text
 
 
+def test_plain_video_frame_timestamps_matches_christers_own_example():
+    """Task #1260 follow-up 10: Christer's own challenge, verbatim -
+    "split 301 s with 16, thats not to hard." It isn't - qwen_vl_utils'
+    smart_nframes() picks max_frames evenly-spaced frames whenever
+    duration*fps exceeds it (confirmed via reading its source, task
+    #1260 follow-up 13), so this is knowable in advance. 16 frames
+    evenly spaced across 301s should start at 0.0s, end at 301.0s, and
+    land ~20.1s apart."""
+
+    timestamps = scene._plain_video_frame_timestamps(301.0, 2.0, 16)
+
+    assert len(timestamps) == 16
+    assert timestamps[0] == 0.0
+    assert timestamps[-1] == 301.0
+    # Evenly spaced - consecutive gaps should all be very close to
+    # 301.0 / 15 ~= 20.07s.
+    gaps = [round(b - a, 1) for a, b in zip(timestamps, timestamps[1:])]
+    assert all(abs(gap - 20.1) < 0.2 for gap in gaps)
+
+
+def test_plain_video_frame_timestamps_clamps_to_min_frames_for_short_clips():
+    """A clip short enough that duration*fps falls under
+    qwen_vl_utils' own FPS_MIN_FRAMES=4 floor should still get 4
+    timestamps, not fewer - mirrors smart_nframes()'s own clamp."""
+
+    timestamps = scene._plain_video_frame_timestamps(1.5, 2.0, 16)
+
+    assert len(timestamps) == 4
+    assert timestamps[0] == 0.0
+    assert timestamps[-1] == 1.5
+
+
+def test_plain_video_frame_timestamps_degenerate_inputs_return_empty():
+    """Zero/negative duration, fps, or max_frames means there's
+    nothing meaningful to ground - describe_scene() should fall back
+    to the old ungrounded behavior rather than crash or divide by
+    zero."""
+
+    assert scene._plain_video_frame_timestamps(0.0, 2.0, 16) == []
+    assert scene._plain_video_frame_timestamps(-5.0, 2.0, 16) == []
+    assert scene._plain_video_frame_timestamps(180.0, 0.0, 16) == []
+    assert scene._plain_video_frame_timestamps(180.0, 2.0, 0) == []
+
+
+def test_plain_video_intro_text_lists_computed_timestamps():
+    """Task #1260 follow-up 10: styled like
+    _adaptive_video_intro_text() (one flowing sentence, no dashed
+    bullet-shaped lines) for the same reason that function gives -
+    avoiding structural resemblance to the model's own '- [t=Xs]'
+    output that's already caused real no_repeat_ngram_size corruption
+    on the adaptive path (see that function's own docstring)."""
+
+    text = scene._plain_video_intro_text([0.0, 20.1, 301.0], 301.0)
+
+    assert "3 frames" in text
+    assert "301.0s" in text
+    assert "0.0s, 20.1s, 301.0s" in text
+    assert "computed fact" in text
+    assert "- frame" not in text
+    assert "\n" not in text
+
+
 # --- context frames around adaptive highlights (task #1245 follow-up,
 # Christer's direct request: "You could also add frames before and
 # after our specified friend, just to get more") --------------------------

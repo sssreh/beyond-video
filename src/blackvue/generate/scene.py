@@ -326,6 +326,96 @@ _SPARSE_SAMPLING_HINT_TEMPLATE = (
     "a shorter, sparser summary."
 )
 
+# 2026-08-26 (task #1260 follow-up 10): Christer, after being told the
+# plain (non-adaptive) path's "[t=Xs]" bullets are the model's own
+# guess rather than a code-computed value (task #1260 follow-up 23,
+# which explained why "the bus" stopped landing where he remembers it
+# from - see that WORKING_CONTEXT.md entry): "split 301 s with 16,
+# thats not to hard" - a fair challenge. It genuinely isn't hard: the
+# plain path already hands qwen_vl_utils real `fps`/`max_frames`
+# values (content_ele below) and lets it pick frames internally, but
+# qwen_vl_utils' own sampling (its `smart_nframes()`, read directly
+# from source back in task #1260 follow-up 13) is entirely
+# deterministic given those two numbers plus the clip's real duration
+# - `nframes = clamp(duration_seconds * fps, min_frames=4, max_frames)`,
+# rounded to the nearest even number, then that many frames evenly
+# spaced from the first frame to the last. Every one of those inputs
+# is knowable *before* the model call: `fps`/`max_frames` are already
+# `opts` fields, and duration is one cheap `ffprobe` call away via
+# `probe_video()` (already imported, already used elsewhere in this
+# module and project for exactly this - no full-file decord read
+# needed, unlike the adaptive path's old ~60s cost). So instead of
+# letting the model guess "elapsed time" from nothing (as it always
+# has on this path), compute the real approximate timestamp of each
+# frame qwen_vl_utils is about to sample and tell the model those
+# exact values up front - the same grounding trick
+# _adaptive_video_intro_text() already does for the adaptive path,
+# just computed instead of extracted. Not frame-exact (qwen_vl_utils
+# samples by real frame index against its own read of the container's
+# frame count/fps, which can differ very slightly from ffprobe's
+# duration-based estimate for imperfectly-CFR footage) - the same
+# "nearest real frame, not a promise of exactness" tolerance already
+# accepted for the adaptive path's own ffmpeg-seek timestamps (task
+# #1260 follow-up 8's own docstring makes the identical trade-off
+# explicitly). Good enough to replace a guess with a real, sourced
+# number, which is the actual problem being fixed here.
+_QWEN_VL_UTILS_FPS_MIN_FRAMES = 4
+_QWEN_VL_UTILS_FRAME_FACTOR = 2
+
+
+def _plain_video_frame_timestamps(
+    duration_seconds: float, fps: float, max_frames: int
+) -> list[float]:
+    """Approximate the real elapsed-clip timestamps qwen_vl_utils'
+    smart_nframes()/fetch_video() will sample for the plain (non-
+    adaptive) video branch, given the same fps/max_frames values this
+    module already passes it. See the long comment above this
+    function for why this is knowable in advance and where the
+    formula comes from. Returns an empty list for a degenerate
+    duration/fps/max_frames (nothing meaningful to ground)."""
+
+    if duration_seconds <= 0 or fps <= 0 or max_frames <= 0:
+        return []
+
+    raw_nframes = duration_seconds * fps
+    min_frames = _QWEN_VL_UTILS_FPS_MIN_FRAMES
+    nframes = max(min(raw_nframes, max_frames), min_frames)
+    nframes = round(nframes / _QWEN_VL_UTILS_FRAME_FACTOR) * _QWEN_VL_UTILS_FRAME_FACTOR
+    nframes = max(nframes, _QWEN_VL_UTILS_FRAME_FACTOR)
+    if nframes <= 1:
+        return [0.0]
+
+    step = duration_seconds / (nframes - 1)
+    return [round(i * step, 1) for i in range(nframes)]
+
+
+def _plain_video_intro_text(timestamps: list[float], duration_seconds: float) -> str:
+    """Build the grounding text prepended to the plain (non-adaptive)
+    video branch's prompt, telling the model the real approximate
+    elapsed-clip time of each frame it's about to see - see
+    _plain_video_frame_timestamps()'s own comment for why this is
+    computable in advance rather than left as a guess. Deliberately
+    styled like _adaptive_video_intro_text() (one flowing sentence
+    with a plain comma-separated list, not dashed bullet-shaped lines)
+    for the same reason that function gives: avoiding structural
+    resemblance to the model's own "- [t=Xs]" output bullets, which
+    that function's docstring traces to a real no_repeat_ngram_size
+    token-mangling bug on the adaptive path. Untested against a real
+    model from this sandbox - no GPU/qwen_vl_utils here."""
+
+    times = ", ".join(f"{timestamp:.1f}s" for timestamp in timestamps)
+    return (
+        f"This clip's {len(timestamps)} frames are sampled evenly "
+        f"across the real {duration_seconds:.1f}s recording, from the "
+        f"very start to the very end - not an assumption, a computed "
+        f"fact about how this clip was built. In order, their real "
+        f"elapsed times from the start of the recording are "
+        f"approximately: {times}. Use these exact given values, not "
+        "your own estimate of pacing or spacing, when writing the "
+        "'[t=Xs]' timestamps requested below - pick whichever listed "
+        "value is closest to what a bullet is actually describing."
+    )
+
 OCR_PROMPT = (
     "Read every piece of text visible anywhere in this frame - "
     "dashboard/overlay text (timestamp, speed, GPS coordinates), "
@@ -2865,6 +2955,30 @@ def describe_scene(
             # it; `prompt` itself stays untouched so the photo/adaptive
             # branches above are unaffected.
             plain_prompt = prompt + _SPARSE_SAMPLING_HINT_TEMPLATE.format(max_frames=opts.max_frames)
+            # 2026-08-26 (task #1260 follow-up 10): ground the plain
+            # path's own "[t=Xs]" bullets in a real, computed timestamp
+            # list instead of leaving the model to guess - see
+            # _plain_video_frame_timestamps()'s long comment for why
+            # this is knowable in advance. probe_video() is one cheap
+            # ffprobe metadata call (no full-file decode), same one
+            # this project already uses for .duration.txt self-healing
+            # elsewhere - failure here (corrupt/unreadable header) is
+            # not fatal, it just means this run falls back to the old
+            # ungrounded behavior exactly like before this follow-up.
+            try:
+                plain_duration = probe_video(video_path).duration_seconds
+            except MediaToolError:
+                plain_duration = None
+            if plain_duration:
+                plain_timestamps = _plain_video_frame_timestamps(
+                    plain_duration, opts.fps, opts.max_frames
+                )
+                if plain_timestamps:
+                    plain_prompt = (
+                        _plain_video_intro_text(plain_timestamps, plain_duration)
+                        + "\n\n"
+                        + plain_prompt
+                    )
             message_content = [content_ele, {"type": "text", "text": plain_prompt}]
 
     messages = [{"role": "user", "content": message_content}]
