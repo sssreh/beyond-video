@@ -807,8 +807,36 @@ def _load_scene_model(
             )
 
     try:
+        import os
         import torch
         import torchvision  # noqa: F401 - qwen_vl_utils needs this importable
+
+        # 2026-08-26 (task #1260 follow-up): qwen-vl-utils>=0.0.14
+        # (bumped from 0.0.8 to fix the --frames-ignored bug) picks its
+        # video reader backend by priority - torchcodec first if the
+        # package is merely importable, then decord, then torchvision -
+        # and its own fetch_video() falls back to torchvision
+        # unconditionally on any backend error, never to decord,
+        # regardless of what's installed (see qwen_vl_utils/
+        # vision_process.py's get_video_reader_backend()/fetch_video()).
+        # Real hardware hit exactly that: torchcodec is present but its
+        # native libtorchcodec DLL fails to load on Christer's Windows/
+        # conda setup (FFmpeg build mismatch), so it silently fell back
+        # to torchvision - whose installed version (paired with a very
+        # new torch/cu128 build) no longer has torchvision.io.read_video
+        # at all, a hard crash either way. This project's own `scene`
+        # extra pins qwen-vl-utils[decord] specifically so a working
+        # decord install is always present and was the sole, working
+        # backend for every real-hardware run before the 0.0.14 bump -
+        # forcing it via this env var (read once, at qwen_vl_utils' own
+        # import time, so it must be set before the import below)
+        # restores that known-good path and skips torchcodec/
+        # torchvision entirely. setdefault(), not direct assignment, so
+        # an operator who explicitly sets FORCE_QWENVL_VIDEO_READER
+        # themselves (e.g. to test torchcodec once its Windows DLL issue
+        # is sorted out) isn't overridden.
+        os.environ.setdefault("FORCE_QWENVL_VIDEO_READER", "decord")
+
         from qwen_vl_utils import process_vision_info
         from transformers import AutoProcessor
     except ImportError as exc:
