@@ -102,7 +102,26 @@ scene = [
     # from this version onward.
     "transformers>=4.57.0",
     "accelerate",
-    "qwen-vl-utils[decord]==0.0.8",
+    # >=0.0.14 (not 0.0.8, which this was pinned to until real
+    # hardware surfaced the bug) - process_vision_info(...,
+    # return_video_kwargs=True) is what tells the Qwen3-VL processor
+    # the real effective fps of an already-extracted N-frame video
+    # tensor; without it the processor has no video metadata at all
+    # and silently assumes 24fps (the "Asked to sample fps frames per
+    # second but no video metadata was provided ... Defaulting to
+    # fps=24" warning), so an N-frame clip reads as only N/24 seconds
+    # long regardless of the real clip duration - describe_scene()'s
+    # generated bullets clustered near t=0 no matter how high --frames
+    # was set. scene.py's _fetch_vision_inputs() already requests
+    # return_video_kwargs=True and degrades gracefully if unsupported,
+    # but 0.0.8 predates that kwarg entirely (confirmed via real
+    # hardware: TypeError: process_vision_info() got an unexpected
+    # keyword argument 'return_video_kwargs'), so the graceful-
+    # degradation path was the one silently running all along.
+    # qwen-vl-utils also moved its canonical repo to QwenLM/Qwen3-VL
+    # since 0.0.8 - 0.0.14 is the version documented there, alongside
+    # this project's Qwen3-VL-8B-Instruct default model (task #714).
+    "qwen-vl-utils[decord]>=0.0.14",
     "torchvision",
     # Only actually imported (BitsAndBytesConfig) when a scene job's
     # quantize resolves to something other than "none" - see
