@@ -283,6 +283,49 @@ DESCRIBE_PROMPT = (
     "it directly in a sentence or two."
 )
 
+# 2026-08-26 (task #1260 follow-up 4): appended (not baked into
+# DESCRIBE_PROMPT itself) to the plain non-adaptive video path's prompt
+# only - see the "else:" branch in describe_scene() below. Root cause
+# of a real regression Christer reported right after task #1260's fix
+# actually started working: DESCRIBE_PROMPT's own pacing guidance
+# ("roughly one bullet every 5-15 seconds ... less often during a long
+# uneventful stretch") was written before this project's video calls
+# ever reliably conveyed real clip duration to the model at all (see
+# task #1260's whole follow-up chain) - with --frames 16 sampled across
+# a real ~180s clip (~11s apart), the model now has enough correct
+# temporal grounding to actually follow that pacing literally, and
+# spacing-out + merging uneventful stretches per that instruction
+# produced only 7 bullets on Christer's real clip ("it only describes 7
+# frames, it used to talk much more before, remember my bus" - a real,
+# well-known bus event on this exact calibration clip, 20220927_132155_E,
+# see _write_frames_as_temp_video()'s docstring history). Before
+# task #1260's fix, the model had no coherent sense of real elapsed
+# time to pace bullets against at all, so it likely ignored the 5-15s
+# guidance and just described close to one bullet per frame instead -
+# denser, but not because it was smarter, because it had no timeline to
+# reconcile the instruction against. Christer's own historical
+# benchmark for this exact clip at 16 frames, non-adaptive, predating
+# any of this fix chain: 107s (see _build_adaptive_message_content()'s
+# docstring, "732s vs 107s"). Fix: explicitly tell the model how many
+# frames it was actually given and that per-frame density should win
+# over the general 5-15s pacing guidance when sampling is this sparse -
+# restores the old density without needing more --frames (which is
+# what actually costs VRAM - see WORKING_CONTEXT.md follow-up 16).
+# Scoped to the plain video branch only: adaptive sampling already has
+# its own purpose-built frame-count-aware intro text
+# (_adaptive_video_intro_text()), and a still photo has no frame count
+# to reference at all.
+_SPARSE_SAMPLING_HINT_TEMPLATE = (
+    "\n\nThis video was sampled down to about {max_frames} frames "
+    "spread evenly across its whole real duration, so consecutive "
+    "frames may be many seconds apart rather than a smooth sequence. "
+    "When sampling is this sparse, prioritize describing each visually "
+    "distinct frame over the 5-15-seconds-per-bullet pacing above - if "
+    "most of the {max_frames} frames show something worth mentioning, "
+    "write close to {max_frames} bullets instead of merging them into "
+    "a shorter, sparser summary."
+)
+
 OCR_PROMPT = (
     "Read every piece of text visible anywhere in this frame - "
     "dashboard/overlay text (timestamp, speed, GPS coordinates), "
@@ -2652,7 +2695,12 @@ def describe_scene(
                 content_ele["resized_height"] = opts.resized_height
             else:
                 content_ele["max_pixels"] = opts.max_pixels
-            message_content = [content_ele, {"type": "text", "text": prompt}]
+            # See _SPARSE_SAMPLING_HINT_TEMPLATE's own comment (task
+            # #1260 follow-up 4) - only this plain-video branch appends
+            # it; `prompt` itself stays untouched so the photo/adaptive
+            # branches above are unaffected.
+            plain_prompt = prompt + _SPARSE_SAMPLING_HINT_TEMPLATE.format(max_frames=opts.max_frames)
+            message_content = [content_ele, {"type": "text", "text": plain_prompt}]
 
     messages = [{"role": "user", "content": message_content}]
     text = loaded.processor.apply_chat_template(
