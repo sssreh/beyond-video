@@ -2572,6 +2572,25 @@ def describe_scene(
                 video_inputs, opts.crop_top, opts.crop_bottom, loaded.patch_factor
             )
 
+        # Task #1258 follow-up (Christer: "i run with frames 64, but it
+        # looks like it ignores me" - --frames 32 and 64 both only ever
+        # described the first few seconds of a 180s clip, unchanged by
+        # the frame count): diagnostic for the "Asked to sample fps
+        # frames per second but no video metadata was provided ...
+        # Defaulting to fps=24" warning qwen_vl_utils/transformers
+        # prints on this machine. Hypothesis: if the processor falls
+        # back to assuming 24fps for an already-extracted N-frame
+        # tensor, its own sense of "how much real time this covers" is
+        # N/24 seconds - ~1.3s at N=32, ~2.7s at N=64 - regardless of
+        # the real ~180s the frames were actually sampled across, which
+        # would fully explain bullets clustering near t=0 no matter how
+        # high --frames goes. This print surfaces exactly what
+        # video_kwargs _fetch_vision_inputs() got back (do_sample_frames
+        # present? what fps value?) so that hypothesis can be confirmed
+        # or ruled out against Christer's real installed qwen-vl-utils/
+        # transformers versions instead of guessed at further.
+        print(f"bv-generate: video_kwargs={video_kwargs!r}", file=sys.stderr)
+
         inputs = loaded.processor(
             text=[text], images=image_inputs, videos=video_inputs,
             padding=True, return_tensors="pt", **video_kwargs,
