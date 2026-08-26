@@ -464,17 +464,33 @@ class SceneOptions:
     # context frames existed to make it this much worse.
     #
     # These two fields replace repetition_penalty/no_repeat_ngram_size
-    # for the main describe call specifically when adaptive_sampling is
-    # True (see the generate() call in describe_scene()) - mirroring
-    # zoom_repetition_penalty=1.0/zoom_no_repeat_ngram_size=0 just below,
-    # which already disables both for exactly this shape of problem
-    # (many short structured per-item outputs in one completion, there
-    # one line per sign/plate crop instead of one bullet per frame) and
-    # has been running safely in production. Scoped to the
-    # adaptive_sampling path only - the normal non-adaptive describe
-    # call keeps its own tuned repetition_penalty/no_repeat_ngram_size
-    # values untouched, since it was never observed to have this
-    # problem and there's no reason to gamble on it.
+    # for the main describe call (see the generate() call in
+    # describe_scene()) - mirroring zoom_repetition_penalty=1.0/
+    # zoom_no_repeat_ngram_size=0 just below, which already disables
+    # both for exactly this shape of problem (many short structured
+    # per-item outputs in one completion, there one line per sign/plate
+    # crop instead of one bullet per frame) and has been running safely
+    # in production.
+    #
+    # 2026-08-26 (task #1258 follow-up): originally scoped to the
+    # adaptive_sampling path only, on the theory that the normal non-
+    # adaptive describe call's own handful-of-longer-bullets style
+    # wasn't at risk. Real hardware at `--frames 32` on the plain
+    # non-adaptive path (Christer: "No, i tried to get 32 frames from
+    # non adaptive") produced the same bracket-formatting drift on just
+    # 5 bullets - "- [ t=0s ]", "-[t=2.8s]", "-[-t=6.9s]", "- [-t=9.2s]"
+    # - as the original ~80-bullet adaptive-path corruption report, just
+    # milder since fewer repeats means less pressure against the
+    # no-repeat-3-gram ban. So repetition_penalty=1.15/
+    # no_repeat_ngram_size=3 were never actually a safe default for
+    # this output shape - raising max_frames on the plain path (this
+    # same follow-up chain) made it common enough to see. Applied
+    # unconditionally to the main describe call now, regardless of
+    # opts.adaptive_sampling.
+    #
+    # repetition_penalty/no_repeat_ngram_size themselves (1.15/3) are
+    # untouched and still used by summarize_trip()'s own separate
+    # generate() call, which wasn't observed to have this problem.
     adaptive_repetition_penalty: float = 1.0
     adaptive_no_repeat_ngram_size: int = 0
     # Task #1245 follow-up 6: max_new_tokens=768 was never a real budget
@@ -2576,12 +2592,20 @@ def describe_scene(
         generated_ids = loaded.model.generate(
             **inputs,
             max_new_tokens=describe_max_new_tokens,
-            repetition_penalty=(
-                opts.adaptive_repetition_penalty if opts.adaptive_sampling else opts.repetition_penalty
-            ),
-            no_repeat_ngram_size=(
-                opts.adaptive_no_repeat_ngram_size if opts.adaptive_sampling else opts.no_repeat_ngram_size
-            ),
+            # Task #1245 follow-up 5 originally scoped this relaxation to
+            # adaptive_sampling only. Real hardware at --frames 32 on the
+            # plain non-adaptive path (task #1258's follow-up) showed the
+            # same "[t=" bracket-formatting drift on just 5 bullets ("- [
+            # t=0s ]", "-[t=2.8s]", "-[-t=6.9s]") that the original bug
+            # report showed at ~80 bullets on the adaptive path - so the
+            # no_repeat_ngram_size=3/repetition_penalty=1.15 tuned values
+            # were never actually safe for this "many short near-
+            # identical bullet openings" shape of output in general, just
+            # less likely to visibly trigger with fewer bullets. Applied
+            # unconditionally now - see SceneOptions.adaptive_repetition_
+            # penalty/adaptive_no_repeat_ngram_size.
+            repetition_penalty=opts.adaptive_repetition_penalty,
+            no_repeat_ngram_size=opts.adaptive_no_repeat_ngram_size,
             **_sampling_kwargs(opts),
         )
     except Exception as exc:

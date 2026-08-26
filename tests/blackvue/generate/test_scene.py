@@ -964,19 +964,25 @@ def test_describe_scene_output_includes_disclaimer(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task #1245 follow-up 5: adaptive-sampling-specific repetition/ngram
-# settings. Real hardware output at --adaptive-context-frames 2 (~80 sampled
-# frames after context expansion) showed the "[t=" bullet-opening token
-# progressively mutating through unrelated characters as generation went on
-# - t, T, F, f, r, R, E, e, -, L, l, I, i, o, O, Q, q, w, W, X, x - the
-# no_repeat_ngram_size=3 exact-3-gram ban forcing ever more desperate token
-# substitutions once ~80 near-identical bullet openings had already
-# appeared. Christer chose "loosen ngram/repetition settings for this call"
-# over capping frame count or reverting context frames to 0. See
-# SceneOptions.adaptive_repetition_penalty/adaptive_no_repeat_ngram_size -
-# mirrors the zoom_repetition_penalty=1.0/zoom_no_repeat_ngram_size=0
-# precedent already running safely for the same "many short structured
-# outputs in one completion" shape of problem.
+# Task #1245 follow-up 5, extended by task #1258 follow-up: relaxed
+# repetition/ngram settings for the main describe call. Real hardware output
+# at --adaptive-context-frames 2 (~80 sampled frames after context expansion)
+# showed the "[t=" bullet-opening token progressively mutating through
+# unrelated characters as generation went on - t, T, F, f, r, R, E, e, -, L,
+# l, I, i, o, O, Q, q, w, W, X, x - the no_repeat_ngram_size=3 exact-3-gram
+# ban forcing ever more desperate token substitutions once ~80 near-identical
+# bullet openings had already appeared. Christer chose "loosen ngram/
+# repetition settings for this call" over capping frame count or reverting
+# context frames to 0.
+#
+# Originally scoped to opts.adaptive_sampling only - real hardware at
+# --frames 32 on the plain non-adaptive path later showed the same drift on
+# just 5 bullets ("- [ t=0s ]", "-[t=2.8s]", "-[-t=6.9s]"), so the relaxation
+# now applies unconditionally to the main describe call regardless of
+# adaptive_sampling. See SceneOptions.adaptive_repetition_penalty/
+# adaptive_no_repeat_ngram_size - mirrors the zoom_repetition_penalty=1.0/
+# zoom_no_repeat_ngram_size=0 precedent already running safely for the same
+# "many short structured outputs in one completion" shape of problem.
 # ---------------------------------------------------------------------------
 
 
@@ -1038,7 +1044,7 @@ def test_describe_scene_uses_relaxed_repetition_settings_when_adaptive_sampling_
     assert captured_kwargs["no_repeat_ngram_size"] == scene.SceneOptions().adaptive_no_repeat_ngram_size
 
 
-def test_describe_scene_keeps_normal_repetition_settings_when_adaptive_sampling_is_off(
+def test_describe_scene_uses_relaxed_repetition_settings_when_adaptive_sampling_is_off(
     monkeypatch, tmp_path
 ):
     video_path = tmp_path / "video.mp4"
@@ -1083,8 +1089,14 @@ def test_describe_scene_keeps_normal_repetition_settings_when_adaptive_sampling_
 
     scene.describe_scene(video_path, zoom_signs=False)
 
-    assert captured_kwargs["repetition_penalty"] == scene.SceneOptions().repetition_penalty
-    assert captured_kwargs["no_repeat_ngram_size"] == scene.SceneOptions().no_repeat_ngram_size
+    # Task #1258 follow-up: real hardware showed the same "[t=" bracket-
+    # formatting drift on the plain non-adaptive path at --frames 32 that
+    # originally motivated the adaptive-only relaxation - now applied
+    # unconditionally, so this path uses the relaxed values too, not the
+    # tuned repetition_penalty=1.15/no_repeat_ngram_size=3 defaults
+    # (those remain in use by summarize_trip()'s own separate call).
+    assert captured_kwargs["repetition_penalty"] == scene.SceneOptions().adaptive_repetition_penalty
+    assert captured_kwargs["no_repeat_ngram_size"] == scene.SceneOptions().adaptive_no_repeat_ngram_size
 
 
 # ---------------------------------------------------------------------------
