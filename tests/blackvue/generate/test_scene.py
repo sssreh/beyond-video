@@ -1538,6 +1538,112 @@ def test_write_frames_as_temp_video_raises_media_tool_error_on_ffmpeg_failure(
         scene._write_frames_as_temp_video(frames, fps=1.0)
 
 
+# ---------------------------------------------------------------------------
+# Task #1245 follow-up 8: _extract_frame_at_timestamp()/_extract_frames_at_
+# timestamps() - direct per-timestamp ffmpeg seeks, replacing a
+# decord.VideoReader() + get_batch() approach. Christer's real-hardware
+# report during --adaptive-context-frames testing: "it takes about 18
+# seconds before the model is loaded and about 60s before qwen-vl-utils
+# using decord to read video" - the 60s gap was _build_adaptive_message_
+# content()'s own decord.VideoReader() open, which needs to build a full
+# random-access frame index over the WHOLE source file to support
+# get_batch(), regardless of how few timestamps are actually being
+# sampled. `-ss` given before `-i` asks ffmpeg to seek at the container
+# level instead, so cost scales with how far into the file a timestamp is,
+# not with the file's total length. See _extract_frame_at_timestamp()'s
+# own docstring for the full story.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_frame_at_timestamp_grabs_a_real_frame_via_ffmpeg(tmp_path):
+    from PIL import Image
+
+    frames = [
+        (0.0, Image.new("RGB", (64, 48), color=(200, 40, 40))),
+        (1.0, Image.new("RGB", (64, 48), color=(40, 200, 40))),
+        (2.0, Image.new("RGB", (64, 48), color=(40, 40, 200))),
+    ]
+    video_path = scene._write_frames_as_temp_video(frames, fps=1.0)
+
+    try:
+        image = scene._extract_frame_at_timestamp(video_path, 1.0)
+
+        assert image is not None
+        assert image.mode == "RGB"
+        assert image.size == (64, 48)
+    finally:
+        shutil.rmtree(video_path.parent, ignore_errors=True)
+
+
+def test_extract_frame_at_timestamp_returns_none_on_ffmpeg_failure(monkeypatch, tmp_path):
+    class _FakeResult:
+        returncode = 1
+        stderr = b"ffmpeg exploded"
+        stdout = b""
+
+    monkeypatch.setattr(scene.subprocess, "run", lambda *a, **kw: _FakeResult())
+
+    result = scene._extract_frame_at_timestamp(tmp_path / "video.mp4", 5.0)
+
+    assert result is None
+
+
+def test_extract_frame_at_timestamp_raises_media_tool_error_when_ffmpeg_missing(
+    monkeypatch, tmp_path
+):
+    def _raise_not_found(*args, **kwargs):
+        raise FileNotFoundError("ffmpeg not found")
+
+    monkeypatch.setattr(scene.subprocess, "run", _raise_not_found)
+
+    with pytest.raises(MediaToolError):
+        scene._extract_frame_at_timestamp(tmp_path / "video.mp4", 5.0)
+
+
+def test_extract_frames_at_timestamps_skips_failed_frames(monkeypatch, tmp_path):
+    from PIL import Image
+
+    fake_image = Image.new("RGB", (10, 10))
+
+    def fake_extract(video_path, timestamp):
+        return None if timestamp == 5.0 else fake_image
+
+    monkeypatch.setattr(scene, "_extract_frame_at_timestamp", fake_extract)
+
+    frames = scene._extract_frames_at_timestamps(tmp_path / "video.mp4", [1.0, 5.0, 9.0])
+
+    assert [timestamp for timestamp, _ in frames] == [1.0, 9.0]
+
+
+def test_build_adaptive_message_content_falls_back_when_duration_probe_fails(
+    monkeypatch, tmp_path
+):
+    """No decord import remains in _build_adaptive_message_content() -
+    the duration probe now goes through media.py's ffprobe-based
+    probe() (imported here as probe_video), which raises MediaToolError
+    on failure instead of decord raising some arbitrary Exception on
+    open. Same graceful-degradation contract as before: fall back to
+    uniform sampling (signaled by the ([], [], []) return), never a
+    hard failure."""
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    def fake_probe(path):
+        raise MediaToolError("ffprobe failed")
+
+    monkeypatch.setattr(scene, "probe_video", fake_probe)
+
+    opts = scene.SceneOptions()
+    content, timestamps, cleanup = scene._build_adaptive_message_content(
+        video_path, opts, [], [], None, warn=lambda msg: None
+    )
+
+    assert content == []
+    assert timestamps == []
+    assert cleanup == []
+
+
 def test_adaptive_video_intro_text_lists_every_frames_real_timestamp():
     """Task #1245 follow-up: rewritten as one flowing comma list (not
     16 near-identical dashed '- frame N: t=Xs' lines) to stop the
