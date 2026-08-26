@@ -443,49 +443,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--adaptive-context-frames",
-        type=int,
-        default=0,
-        metavar="N",
-        help=(
-            "For --describe-scene --adaptive-sampling: also pull N "
-            "extra real frames on EACH side of every adaptively-chosen "
-            "highlight (spaced --adaptive-context-offset-seconds apart), "
-            "so every highlight sits in a short burst of genuinely "
-            "continuous motion instead of one isolated snapshot next to "
-            "other snapshots seconds or minutes away. N=2 turns one "
-            "highlight into 5 real frames. Ignored unless "
-            "--adaptive-sampling is also given. 0 (default) disables "
-            "this and reproduces today's one-frame-per-highlight "
-            "behavior exactly - it multiplies frame/decode count, so "
-            "it's a real speed/cost trade-off, opt in and compare. "
-            "WARNING: keep this small (2-3) and time it before going "
-            "higher. Christer tested N=10 (up to 21 frames per "
-            "highlight, ~336 frames total for a 16-highlight clip) and "
-            "hit real VRAM exhaustion on real hardware - GPU shared "
-            "memory ballooned, the sustained-utilization pattern seen "
-            "at low N broke down into spikes, and it ended in a driver/"
-            "hypervisor crash that required a full reboot. There's no "
-            "in-code cap on N - this flag has no safety net."
-        ),
-    )
-
-    parser.add_argument(
-        "--adaptive-context-offset-seconds",
-        type=float,
-        default=0.5,
-        metavar="SECONDS",
-        help=(
-            "Real-time spacing (in seconds) between each "
-            "--adaptive-context-frames context frame and its highlight "
-            "- e.g. --adaptive-context-frames 2 "
-            "--adaptive-context-offset-seconds 0.5 turns a highlight at "
-            "t=30.0s into frames at 29.0s, 29.5s, 30.0s, 30.5s, 31.0s. "
-            "Ignored unless --adaptive-context-frames is > 0. Default: 0.5."
-        ),
-    )
-
-    parser.add_argument(
         "--adaptive-max-frames",
         type=int,
         default=16,
@@ -494,13 +451,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "For --describe-scene --adaptive-sampling: how many "
             "highlighted moments compute_adaptive_timestamps() picks "
             "across the recording (default: 16 - one bullet per "
-            "highlight in the output, regardless of "
-            "--adaptive-context-frames). This is a DIFFERENT knob from "
-            "--adaptive-context-frames: this one changes how many "
-            "distinct moments get described; --adaptive-context-frames "
-            "adds extra real frames of visual context AROUND each one "
-            "without adding more described moments. Raising this was "
-            "tried once before (32, then 64) via a since-reverted "
+            "highlight in the output). Raising this was tried once "
+            "before (32, then 64) via a since-reverted "
             "total_pixels-budgeted video-sampling change and caused a "
             "real quality regression - per-frame resolution roughly "
             "halved because qwen_vl_utils' VIDEO_MAX_PIXELS ceiling got "
@@ -1155,8 +1107,6 @@ def _run_describe_scene_pass(
         "quantize": args.scene_quantize,
         "gpu_memory_fraction": args.scene_gpu_memory_fraction,
         "adaptive_sampling": args.adaptive_sampling,
-        "adaptive_context_frames": args.adaptive_context_frames,
-        "adaptive_context_offset_seconds": args.adaptive_context_offset_seconds,
         "max_frames": args.adaptive_max_frames,
     }
     if task is not None:

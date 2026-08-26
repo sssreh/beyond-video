@@ -130,8 +130,6 @@ def _base_args(**overrides):
         scene_quantize="auto",
         scene_gpu_memory_fraction=None,
         adaptive_sampling=False,
-        adaptive_context_frames=0,
-        adaptive_context_offset_seconds=0.5,
         adaptive_max_frames=16,
         camera="front",
         overwrite=False,
@@ -2579,75 +2577,16 @@ def test_do_describe_scene_adaptive_sampling_on_fetches_telemetry(
     ]
 
 
-# --- --adaptive-context-frames/--adaptive-context-offset-seconds (task
-# #1248-1249 follow-up): opt-in extra real frames around each adaptive
-# highlight, Christer's own request ("You could also add frames before
-# and after our specified friend, just to get more") --------------------
-
-
-def test_parse_args_adaptive_context_frames_defaults_to_off():
-    args = parse_args(["/some/path", "--describe-scene", "--adaptive-sampling"])
-
-    assert args.adaptive_context_frames == 0
-    assert args.adaptive_context_offset_seconds == 0.5
-
-
-def test_parse_args_adaptive_context_frames_flag():
-    args = parse_args(
-        [
-            "/some/path",
-            "--describe-scene",
-            "--adaptive-sampling",
-            "--adaptive-context-frames",
-            "2",
-            "--adaptive-context-offset-seconds",
-            "1.0",
-        ]
-    )
-
-    assert args.adaptive_context_frames == 2
-    assert args.adaptive_context_offset_seconds == 1.0
-
-
-def test_do_describe_scene_passes_adaptive_context_frames_through(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_describe_scene(source, **kwargs):
-        calls.append(kwargs)
-        return "## Description\nnothing notable"
-
-    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
-    monkeypatch.setattr(bv_generate, "read_recording_gps", lambda *a, **k: ())
-    monkeypatch.setattr(bv_generate, "read_recording_gsensor", lambda *a, **k: ())
-
-    recording = Recording(id=RecordingId("20260715_134010_N"))
-    video = tmp_path / "20260715_134010_NF.mp4"
-    video.write_bytes(b"x")
-    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
-
-    args = _base_args(
-        describe_scene=True,
-        adaptive_sampling=True,
-        adaptive_context_frames=2,
-        adaptive_context_offset_seconds=1.0,
-    )
-
-    had_error = bv_generate._do_describe_scene(
-        recording, tmp_path, args, adapter=object()
-    )
-
-    assert had_error is False
-    assert calls[0]["adaptive_context_frames"] == 2
-    assert calls[0]["adaptive_context_offset_seconds"] == 1.0
-
-
-# --- --adaptive-max-frames (task #1256): separate knob from
-# --adaptive-context-frames - controls how many highlighted moments
-# compute_adaptive_timestamps() picks, not how many extra real frames
-# surround each one. Christer's own clarification driving this: "I dont
-# mean to skip adaptive frames, just the extraframes around it" - he
-# wants --adaptive-context-frames backed off/skipped while testing a
-# higher highlight count (32) separately. -----------------------------
+# --- --adaptive-max-frames (task #1256): controls how many highlighted
+# moments compute_adaptive_timestamps() picks. Formerly paired with an
+# --adaptive-context-frames/--adaptive-context-offset-seconds knob
+# (extra real frames around each highlight, task #1248-1249) which was
+# removed entirely in task #1257 per Christer's explicit "no no no,
+# remove --adaptive-context-frames, --adaptive-context-offset-seconds"
+# - that feature's own real-hardware history (VRAM exhaustion at N=10,
+# a full driver crash requiring reboot; a mixed spikes/blocks pattern
+# and partial VRAM spillover even at N=5) made it not worth keeping
+# around as a CLI-reachable knob. -----------------------------
 
 
 def test_parse_args_adaptive_max_frames_defaults_to_16():
