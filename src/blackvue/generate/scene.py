@@ -161,6 +161,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1516,19 +1517,27 @@ def _video_duration_seconds(vr) -> float:
     return total / fps
 
 
-# Prefixes each frame the adaptive-sampling path shows the model with
-# its own real elapsed-clip time, and tells the model to use those
-# real values instead of estimating - the direct answer to the
-# WORKING_CONTEXT.md note's second flagged cost ("the existing frame-
-# sampling-lag calibration curves ... calibrated assuming uniform 1fps
-# sampling ... would need the sync to lean on the model's own real
-# per-event timestamps instead of an assumed-uniform position"): rather
-# than retrofit a second, adaptive-sampling-specific lag curve, simply
-# give the model ground truth for where each frame it's shown actually
-# sits in the clip, so its own "[t=Xs]" bullets (see DESCRIBE_PROMPT)
-# should already be close without needing any position-based
-# correction on top - see web/archive_browser.py's own handling of the
-# "## Sampled frames" section this path appends to its output.
+# Historical/superseded: this used to be prefixed as a literal text
+# element ahead of a `{"type": "image", ...}` list, one per adaptively-
+# chosen frame, each preceded by its own "[Frame at t=Xs]" text label.
+# That worked, but task #1245 found it was the actual cause of a real,
+# Christer-measured ~7x slowdown (732s adaptive vs 107s non-adaptive on
+# the identical 180s clip, both post the #1241/#1244 speed fixes):
+# feeding the model N independent `{"type": "image", ...}` elements
+# instead of one genuine `{"type": "video", ...}` element loses
+# whatever temporal-merging efficiency Qwen2.5-VL/Qwen3-VL-style models
+# apply to real video input (confirmed not a resolution difference -
+# both branches already used the same resized_width/resized_height).
+# _build_adaptive_message_content() below now stitches the chosen
+# frames into a small throwaway clip and feeds that in as a single
+# video element instead - see _write_frames_as_temp_video() and
+# _adaptive_video_intro_text(), which replaces this per-frame-label
+# approach with one text block listing frame-order -> real-timestamp
+# mapping up front (a video element can't carry an inline label per
+# frame the way a list of image elements could). Left defined (but no
+# longer used by _build_adaptive_message_content()) only because two
+# existing tests in test_scene.py reference it as a monkeypatch
+# sentinel value.
 ADAPTIVE_FRAME_INTRO_PROMPT = (
     "The frames below are NOT evenly spaced in time - they were chosen "
     "from the moments most likely to matter in this specific clip, so "
@@ -1540,6 +1549,87 @@ ADAPTIVE_FRAME_INTRO_PROMPT = (
 )
 
 
+def _adaptive_video_intro_text(timestamps: list[float]) -> str:
+    """Build the text element that precedes the adaptive-sampling
+    synthetic clip's `{"type": "video", ...}` element (see
+    _write_frames_as_temp_video()), telling the model each of that
+    clip's own frames' real elapsed-time in the ORIGINAL recording -
+    the video-native replacement for the old per-frame "[Frame at
+    t=Xs]" image labels (see ADAPTIVE_FRAME_INTRO_PROMPT's comment for
+    why that approach got dropped). There's nowhere left to interleave
+    a per-frame label once the frames are one video element instead of
+    a list of separate image elements, so this lists the whole
+    frame-order -> real-timestamp mapping up front instead, in the
+    same order the frames appear in the synthetic clip (ascending -
+    compute_adaptive_timestamps() guarantees that)."""
+
+    frame_list = "\n".join(
+        f"- frame {i + 1}: t={timestamp:.1f}s" for i, timestamp in enumerate(timestamps)
+    )
+    return (
+        "The short clip below was assembled by picking "
+        f"{len(timestamps)} individual moments out of a longer "
+        "recording - it is NOT the original recording played at its "
+        "own natural speed, and its own frames are NOT evenly spaced "
+        "in real time. In playback order, each of its frames "
+        "corresponds to this real elapsed time from the start of the "
+        f"original recording:\n{frame_list}\nUse these exact given "
+        "values, not an assumed even spacing across this short clip's "
+        "own length, when writing the '[t=Xs]' timestamps requested "
+        "below."
+    )
+
+
+def _write_frames_as_temp_video(frames: list[tuple[float, "PILImage.Image"]], fps: float) -> Path:
+    """Encode `frames` (already-ordered PIL Images, one per adaptively-
+    chosen timestamp) into a small throwaway .mp4 in a fresh temp
+    directory, one image per frame at `fps` frames/sec, via an ffmpeg
+    subprocess - the same tool _photo_as_pil_image() already leans on
+    elsewhere in this module for photo decode (see that function's own
+    docstring for why ffmpeg over a Python-native encoder: it's already
+    a hard dependency of this whole pipeline, no new one to add).
+
+    Returns the temp video's path. The caller (
+    _build_adaptive_message_content()) is responsible for handing the
+    parent temp directory back up to describe_scene() so it can be
+    deleted once the model call that reads this file has finished -
+    qwen_vl_utils' "video" content-element handling reads its input
+    from a real file on disk, not from memory, so the file has to
+    still exist well after this function returns (the model call
+    itself happens later, back in describe_scene())."""
+
+    import tempfile
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="bv-adaptive-clip-"))
+    for i, (_, frame) in enumerate(frames):
+        frame.convert("RGB").save(tmp_dir / f"frame_{i:04d}.png")
+
+    video_path = tmp_dir / "adaptive_clip.mp4"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-framerate", str(fps),
+                "-i", str(tmp_dir / "frame_%04d.png"),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                str(video_path),
+            ],
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+
+    if result.returncode != 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise MediaToolError(
+            "could not encode adaptive-sampling frames into a temp "
+            f"clip: {result.stderr.decode('utf-8', errors='replace')}"
+        )
+
+    return video_path
+
+
 def _build_adaptive_message_content(
     video_path: Path,
     opts: SceneOptions,
@@ -1548,25 +1638,38 @@ def _build_adaptive_message_content(
     recording_start: datetime | None,
     *,
     warn,
-) -> tuple[list[dict], list[float]]:
+) -> tuple[list[dict], list[float], list[Path]]:
     """Build the adaptive-sampling counterpart to describe_scene()'s
-    normal single `{"type": "video", ...}` content element: an explicit
-    list of per-frame `{"type": "text", ...}`/`{"type": "image", ...}`
-    pairs (see ADAPTIVE_FRAME_INTRO_PROMPT above for why each frame
-    gets its own real-timestamp label) at timestamps
-    compute_adaptive_timestamps() picks from `gps_fixes`/
-    `gsensor_samples`. Returns (content_elements, used_timestamps) -
-    the caller appends used_timestamps to the output as a "## Sampled
-    frames" section (see describe_scene()) so a downstream consumer
-    like web/archive_browser.py's frame viewer can recover the real,
-    non-uniform sampling instead of assuming even spacing.
+    normal single `{"type": "video", ...}` content element: the chosen
+    frames stitched into their own small throwaway clip (see
+    _write_frames_as_temp_video()), preceded by one text element (see
+    _adaptive_video_intro_text()) spelling out each frame's real
+    elapsed-clip time, at timestamps compute_adaptive_timestamps()
+    picks from `gps_fixes`/`gsensor_samples`. Returns
+    (content_elements, used_timestamps, cleanup_paths) -
+    describe_scene() appends used_timestamps to the output as a "##
+    Sampled frames" section, and deletes each of cleanup_paths (the
+    temp clip's parent directory) once its model call has finished
+    reading it.
+
+    Task #1245: this used to build content_elements as a list of one
+    `{"type": "image", ...}` element per chosen frame instead (see
+    ADAPTIVE_FRAME_INTRO_PROMPT's comment for the full story) - real,
+    Christer-measured hardware timing showed that was ~7x slower than
+    the plain non-adaptive path on the identical clip (732s vs 107s),
+    traced to feeding the model N independent images instead of one
+    genuine video input. Stitching the same frames into a real clip
+    and feeding that in as a single video element instead should let
+    the model apply whatever temporal-merging efficiency it gets for
+    real video input, matching the non-adaptive path's speed.
 
     Falls back to describe_scene()'s normal single "video" element
-    (returning `([], [])` to signal this) if decord can't even
-    determine a usable duration for `video_path` - the same "graceful
-    degradation, never a hard failure" contract
-    compute_adaptive_timestamps() itself already has for missing
-    telemetry, extended here to a missing/unreadable video too."""
+    (returning `([], [], [])` to signal this) if decord can't even
+    determine a usable duration for `video_path`, or if ffmpeg fails
+    to encode the temp clip - the same "graceful degradation, never a
+    hard failure" contract compute_adaptive_timestamps() itself
+    already has for missing telemetry, extended here to a missing/
+    unreadable video or a failed encode too."""
 
     # Deferred for the same reason GpsFix/GSensorSample are TYPE_CHECKING-
     # only above: adaptive_sampling.py's own top-level imports reach
@@ -1590,33 +1693,49 @@ def _build_adaptive_message_content(
         duration_seconds = _video_duration_seconds(vr)
     except Exception as exc:  # noqa: BLE001 - adaptive mode is a bonus, not core
         warn(f"  adaptive-sampling: couldn't probe duration ({exc}), falling back to uniform sampling.")
-        return [], []
+        return [], [], []
 
     if duration_seconds <= 0:
         warn("  adaptive-sampling: couldn't determine a usable duration, falling back to uniform sampling.")
-        return [], []
+        return [], [], []
 
     timestamps = compute_adaptive_timestamps(
         duration_seconds, gps_fixes, gsensor_samples, recording_start, opts.max_frames
     )
     if not timestamps:
-        return [], []
+        return [], [], []
 
     frames = _extract_frames_at_timestamps(vr, timestamps)
+    if not frames:
+        return [], [], []
 
-    content: list[dict] = [{"type": "text", "text": ADAPTIVE_FRAME_INTRO_PROMPT}]
-    for timestamp, frame in frames:
-        frame = _crop_overlay_from_image(frame, opts.crop_top, opts.crop_bottom)
-        image_ele = {"type": "image", "image": frame}
-        if opts.resized_width and opts.resized_height:
-            image_ele["resized_width"] = opts.resized_width
-            image_ele["resized_height"] = opts.resized_height
-        else:
-            image_ele["max_pixels"] = opts.max_pixels
-        content.append({"type": "text", "text": f"[Frame at t={timestamp:.1f}s]"})
-        content.append(image_ele)
+    fps = opts.fps if opts.fps and opts.fps > 0 else 1.0
+    try:
+        clip_path = _write_frames_as_temp_video(frames, fps)
+    except MediaToolError as exc:
+        warn(f"  adaptive-sampling: couldn't build temp clip ({exc}), falling back to uniform sampling.")
+        return [], [], []
 
-    return content, [timestamp for timestamp, _ in frames]
+    used_timestamps = [timestamp for timestamp, _ in frames]
+
+    video_ele = {
+        "type": "video",
+        "video": str(clip_path),
+        "fps": fps,
+        "max_frames": len(frames),
+    }
+    if opts.resized_width and opts.resized_height:
+        video_ele["resized_width"] = opts.resized_width
+        video_ele["resized_height"] = opts.resized_height
+    else:
+        video_ele["max_pixels"] = opts.max_pixels
+
+    content: list[dict] = [
+        {"type": "text", "text": _adaptive_video_intro_text(used_timestamps)},
+        video_ele,
+    ]
+
+    return content, used_timestamps, [clip_path.parent]
 
 
 def _crop_overlay_from_image(image, crop_top: float, crop_bottom: float):
@@ -2010,6 +2129,12 @@ def describe_scene(
     prompt = build_prompt(opts.task)
 
     sampled_frame_timestamps: list[float] = []
+    # Parent dir(s) of any temp clip _build_adaptive_message_content()
+    # wrote (see _write_frames_as_temp_video()) - deleted in the
+    # finally: block below, once the model call that reads it (if any)
+    # has finished. Stays empty for the plain-video/photo paths, which
+    # never write scratch files here.
+    adaptive_cleanup_paths: list[Path] = []
 
     if is_photo_path(video_path):
         photo_image = _photo_as_pil_image(video_path)
@@ -2022,7 +2147,7 @@ def describe_scene(
     else:
         adaptive_content: list[dict] = []
         if opts.adaptive_sampling:
-            adaptive_content, sampled_frame_timestamps = _build_adaptive_message_content(
+            adaptive_content, sampled_frame_timestamps, adaptive_cleanup_paths = _build_adaptive_message_content(
                 video_path, opts, gps_fixes, gsensor_samples, recording_start, warn=warn
             )
 
@@ -2140,6 +2265,15 @@ def describe_scene(
                 torch.cuda.empty_cache()
             except Exception:
                 pass
+        # Delete the adaptive-sampling temp clip (see
+        # _write_frames_as_temp_video()) now that the model call above
+        # has read it - it's genuine scratch data, not anything a
+        # caller could want to keep, and there's no other cleanup path
+        # for it (unlike video_path/photo inputs, which the caller
+        # owns). ignore_errors=True: a failed cleanup here shouldn't
+        # turn a successful describe_scene() call into a failed one.
+        for cleanup_path in adaptive_cleanup_paths:
+            shutil.rmtree(cleanup_path, ignore_errors=True)
 
     trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
     output_text = loaded.processor.batch_decode(

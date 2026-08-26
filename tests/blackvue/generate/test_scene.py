@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import pytest
@@ -1035,6 +1036,7 @@ def test_describe_scene_falls_back_to_plain_video_when_adaptive_frames_empty(
         lambda *args, **kwargs: (
             [{"type": "text", "text": scene.ADAPTIVE_FRAME_INTRO_PROMPT}],
             [],
+            [],
         ),
     )
 
@@ -1105,6 +1107,7 @@ def test_describe_scene_uses_adaptive_frames_when_extraction_succeeds(monkeypatc
                 {"type": "image", "image": object()},
             ],
             [70.0],
+            [],
         ),
     )
 
@@ -1116,6 +1119,131 @@ def test_describe_scene_uses_adaptive_frames_when_extraction_succeeds(monkeypatc
     types = [element.get("type") for element in message_content]
     assert "video" not in types
     assert "image" in types
+
+
+def test_describe_scene_deletes_adaptive_cleanup_paths_after_the_model_call(
+    monkeypatch, tmp_path
+):
+    """Task #1245: _build_adaptive_message_content() now writes the
+    adaptively-chosen frames into a real temp clip on disk (see
+    _write_frames_as_temp_video()) instead of building a list of
+    in-memory image elements, and hands describe_scene() back the temp
+    clip's parent directory as a cleanup path. describe_scene() must
+    delete it once the model call that reads it has finished - it's
+    disposable scratch data with no other owner."""
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    cleanup_dir = tmp_path / "adaptive-clip-scratch"
+    cleanup_dir.mkdir()
+    (cleanup_dir / "adaptive_clip.mp4").write_bytes(b"fake clip bytes")
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\n- [t=70.0s] A red bus passes on the left."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [{"type": "text", "text": "intro"}, {"type": "video", "video": "x"}],
+            [70.0],
+            [cleanup_dir],
+        ),
+    )
+
+    assert cleanup_dir.exists()
+
+    scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+
+    assert not cleanup_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# _write_frames_as_temp_video() / _adaptive_video_intro_text() (task #1245) -
+# real, Christer-measured hardware timing showed the old approach (feeding
+# the model N independent `{"type": "image", ...}` elements, one per
+# adaptively-chosen frame) was ~7x slower than the plain non-adaptive path
+# on the identical clip (732s vs 107s), traced to losing whatever temporal-
+# merging efficiency Qwen2.5-VL/Qwen3-VL-style models apply to real video
+# input. These stitch the chosen frames into a small throwaway clip instead,
+# fed in as a single `{"type": "video", ...}` element - see
+# _build_adaptive_message_content()'s own docstring for the full story.
+# ---------------------------------------------------------------------------
+
+
+def test_write_frames_as_temp_video_encodes_a_real_clip(tmp_path):
+    from PIL import Image
+
+    frames = [
+        (0.0, Image.new("RGB", (64, 48), color=(200, 40, 40))),
+        (12.5, Image.new("RGB", (64, 48), color=(40, 200, 40))),
+        (30.0, Image.new("RGB", (64, 48), color=(40, 40, 200))),
+    ]
+
+    video_path = scene._write_frames_as_temp_video(frames, fps=1.0)
+
+    try:
+        assert video_path.exists()
+        assert video_path.stat().st_size > 0
+    finally:
+        shutil.rmtree(video_path.parent, ignore_errors=True)
+
+
+def test_write_frames_as_temp_video_raises_media_tool_error_on_ffmpeg_failure(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    class _FakeResult:
+        returncode = 1
+        stderr = b"ffmpeg exploded"
+
+    monkeypatch.setattr(scene.subprocess, "run", lambda *a, **kw: _FakeResult())
+
+    frames = [(0.0, Image.new("RGB", (32, 32)))]
+
+    with pytest.raises(MediaToolError):
+        scene._write_frames_as_temp_video(frames, fps=1.0)
+
+
+def test_adaptive_video_intro_text_lists_every_frames_real_timestamp():
+    text = scene._adaptive_video_intro_text([0.0, 12.5, 30.0])
+
+    assert "3 individual moments" in text
+    assert "frame 1: t=0.0s" in text
+    assert "frame 2: t=12.5s" in text
+    assert "frame 3: t=30.0s" in text
 
 
 # --- photo support (Christer's real report: "pictures dont get scene
