@@ -562,8 +562,39 @@ class SceneOptions:
     # next real run on this same clip should confirm both the cycling
     # sentences and the LÄN loop are gone, and that "- [t=" formatting
     # is still clean.
+    # 2026-08-26 (task #1260 follow-up 6): adaptive_no_repeat_ngram_size
+    # raised from 0 to 5 after real hardware showed follow-up 5's
+    # repetition_penalty=1.1 bump wasn't enough on its own. Same
+    # --frames 16 clip, --scene-quantize int8 this time: the "## Description"
+    # section came back clean - 7 distinct bullets, no verbatim
+    # repeats, "- [t=" formatting intact - but "## On-screen text"
+    # degenerated into an alternating two-phrase loop, "Förbjudet att
+    # köra på gatan" / "Körselväg", repeated 25+ times each until
+    # max_new_tokens cut it off mid-word ("Förbjudet att köra på g").
+    # Same failure mode as follow-up 5's "LÄN" spam, just a longer
+    # repeating unit this time - a soft per-token penalty alone
+    # couldn't stop a determined exact-phrase loop once it started.
+    # `no_repeat_ngram_size` is the knob actually built for this (a
+    # hard "you may not repeat this exact N-token sequence again" rule)
+    # but it's also the knob that caused the original "- [t=" bracket
+    # corruption at its old value of 3 - a 3-token window is short
+    # enough to span just "- [t=" itself, which legitimately recurs at
+    # the start of every bullet. "Förbjudet att köra på gatan" is
+    # 6 real words (more once tokenized), so a large-enough N should
+    # still ban that repeat while a 3-token "- [t=" match, followed by
+    # a different digit each time, mostly won't line up as an identical
+    # N-token run once N is bigger than the shared prefix itself. 5 is
+    # a middle ground: bigger than the 3 that caused the original
+    # corruption, smaller than the ~8-10 tokens in the new repeating
+    # phrase pair, chosen by reasoning through the token-count math
+    # here rather than verified against a real tokenizer - real
+    # hardware is what will actually confirm it. Next real run on this
+    # same clip should check all three at once: no cycling Description
+    # bullets, no On-screen-text word/phrase loop, and clean "- [t="
+    # formatting (the thing this whole repetition-settings chain
+    # started from, task #1245 follow-up 5).
     adaptive_repetition_penalty: float = 1.1
-    adaptive_no_repeat_ngram_size: int = 0
+    adaptive_no_repeat_ngram_size: int = 5
     # Task #1245 follow-up 6: max_new_tokens=768 was never a real budget
     # decision - it just happens to equal 16 (the fixed highlight/frame
     # count this whole file was tuned against) times ~48 tokens/bullet.
