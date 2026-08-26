@@ -1283,46 +1283,58 @@ def _extract_full_res_frames(video_path: Path, count: int):
     return frames
 
 
-def _extract_frames_at_timestamps(video_path: Path, timestamps: list[float]):
+def _extract_frames_at_timestamps(vr, timestamps: list[float]):
     """Grab the frame nearest each of `timestamps` (seconds from the
-    start of the clip) - the adaptive-sampling counterpart to
-    _extract_full_res_frames()'s evenly-spaced extraction above, same
-    decord mechanism, just driven by an explicit timestamp list instead
-    of a plain count. Returns a list of (timestamp_seconds, PIL.Image)
-    tuples in the same order as `timestamps` (already ascending -
-    compute_adaptive_timestamps() guarantees that). Not used for a
-    still photo - describe_scene() never reaches this branch for one
-    (see is_photo_path() gate at its own call site)."""
+    start of the clip) from an already-open `decord.VideoReader` - the
+    adaptive-sampling counterpart to _extract_full_res_frames()'s
+    evenly-spaced extraction above. Returns a list of
+    (timestamp_seconds, PIL.Image) tuples in the same order as
+    `timestamps` (already ascending - compute_adaptive_timestamps()
+    guarantees that). Not used for a still photo - describe_scene()
+    never reaches this branch for one (see is_photo_path() gate at its
+    own call site).
 
-    import decord
+    Takes the reader itself rather than a path, and reads every
+    timestamp in one vr.get_batch() call rather than looping over
+    vr[idx] one frame at a time (task #1241: Christer measured 851s
+    for a 3-minute clip on a network-mounted archive drive - a real
+    cost, not a rounding error). Two things were making that slow: (1)
+    _video_duration_seconds() used to open its own separate
+    decord.VideoReader() on the same file just to read
+    total-frames/fps, so the container's seek index was built twice
+    per call instead of once; (2) frames were pulled one at a time via
+    vr[idx].asnumpy() in a Python loop - 16 separate random-access
+    decodes - instead of decord's batched get_batch(indices), which it
+    documents as the efficient way to grab several non-sequential
+    frames from a compressed video in one call. Both were free to fix:
+    neither this function nor _video_duration_seconds() is called from
+    anywhere outside this module, and neither is unit-tested by name
+    (only _build_adaptive_message_content(), which owns both calls
+    now, is monkeypatched in tests/blackvue/generate/test_scene.py)."""
+
     from PIL import Image as PILImage
 
-    vr = decord.VideoReader(str(video_path.resolve()))
     total = len(vr)
     if total == 0:
         return []
     fps = vr.get_avg_fps() or 30.0
 
-    frames = []
-    for timestamp in timestamps:
-        idx = max(0, min(total - 1, int(round(timestamp * fps))))
-        frame_np = vr[idx].asnumpy()
-        frames.append((timestamp, PILImage.fromarray(frame_np)))
-    return frames
+    indices = [max(0, min(total - 1, int(round(timestamp * fps)))) for timestamp in timestamps]
+    batch = vr.get_batch(indices).asnumpy()
+    return [(timestamp, PILImage.fromarray(batch[i])) for i, timestamp in enumerate(timestamps)]
 
 
-def _video_duration_seconds(video_path: Path) -> float:
-    """Cheap decord-only duration probe for the adaptive-sampling
-    path - total frame count over average fps. Doesn't need to be
-    exact (compute_adaptive_timestamps() only uses it to know the span
-    to spread/bias timestamps across), so this deliberately doesn't
-    reach for media.py's own heavier ffprobe/box-parser duration chain
-    (see get_span()/probe()) - decord is already being opened for the
-    frame extraction that follows regardless."""
+def _video_duration_seconds(vr) -> float:
+    """Cheap duration probe for the adaptive-sampling path - total
+    frame count over average fps, read from an already-open
+    `decord.VideoReader` (see _extract_frames_at_timestamps() above -
+    both now share the single reader _build_adaptive_message_content()
+    opens, instead of each opening/indexing the file separately).
+    Doesn't need to be exact (compute_adaptive_timestamps() only uses
+    it to know the span to spread/bias timestamps across), so this
+    deliberately doesn't reach for media.py's own heavier ffprobe/box-
+    parser duration chain (see get_span()/probe())."""
 
-    import decord
-
-    vr = decord.VideoReader(str(video_path.resolve()))
     total = len(vr)
     if total == 0:
         return 0.0
@@ -1393,7 +1405,15 @@ def _build_adaptive_message_content(
     from .adaptive_sampling import compute_adaptive_timestamps
 
     try:
-        duration_seconds = _video_duration_seconds(video_path)
+        # Opened once and reused for both the duration probe and the
+        # frame extraction below (see _extract_frames_at_timestamps()'s
+        # docstring - this used to be two separate decord.VideoReader()
+        # opens on the same file, doubling the seek-index-build cost on
+        # every adaptive-sampling call).
+        import decord
+
+        vr = decord.VideoReader(str(video_path.resolve()))
+        duration_seconds = _video_duration_seconds(vr)
     except Exception as exc:  # noqa: BLE001 - adaptive mode is a bonus, not core
         warn(f"  adaptive-sampling: couldn't probe duration ({exc}), falling back to uniform sampling.")
         return [], []
@@ -1408,7 +1428,7 @@ def _build_adaptive_message_content(
     if not timestamps:
         return [], []
 
-    frames = _extract_frames_at_timestamps(video_path, timestamps)
+    frames = _extract_frames_at_timestamps(vr, timestamps)
 
     content: list[dict] = [{"type": "text", "text": ADAPTIVE_FRAME_INTRO_PROMPT}]
     for timestamp, frame in frames:
