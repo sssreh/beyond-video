@@ -443,6 +443,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--adaptive-context-frames",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "For --describe-scene --adaptive-sampling: also pull N "
+            "extra real frames on EACH side of every adaptively-chosen "
+            "highlight (spaced --adaptive-context-offset-seconds apart), "
+            "so every highlight sits in a short burst of genuinely "
+            "continuous motion instead of one isolated snapshot next to "
+            "other snapshots seconds or minutes away. N=2 turns one "
+            "highlight into 5 real frames. Ignored unless "
+            "--adaptive-sampling is also given. 0 (default) disables "
+            "this and reproduces today's one-frame-per-highlight "
+            "behavior exactly - it multiplies frame/decode count, so "
+            "it's a real speed/cost trade-off, opt in and compare."
+        ),
+    )
+
+    parser.add_argument(
+        "--adaptive-context-offset-seconds",
+        type=float,
+        default=0.5,
+        metavar="SECONDS",
+        help=(
+            "Real-time spacing (in seconds) between each "
+            "--adaptive-context-frames context frame and its highlight "
+            "- e.g. --adaptive-context-frames 2 "
+            "--adaptive-context-offset-seconds 0.5 turns a highlight at "
+            "t=30.0s into frames at 29.0s, 29.5s, 30.0s, 30.5s, 31.0s. "
+            "Ignored unless --adaptive-context-frames is > 0. Default: 0.5."
+        ),
+    )
+
+    parser.add_argument(
         "--ignore-lock",
         action="store_true",
         help=(
@@ -1085,6 +1120,8 @@ def _run_describe_scene_pass(
         "quantize": args.scene_quantize,
         "gpu_memory_fraction": args.scene_gpu_memory_fraction,
         "adaptive_sampling": args.adaptive_sampling,
+        "adaptive_context_frames": args.adaptive_context_frames,
+        "adaptive_context_offset_seconds": args.adaptive_context_offset_seconds,
     }
     if task is not None:
         kwargs["task"] = task

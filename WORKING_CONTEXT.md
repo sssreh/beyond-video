@@ -18300,3 +18300,17 @@ Wired into `_build_adaptive_message_content()` right after `compute_adaptive_tim
 Added four new tests: no-op when disabled, correct before/after expansion for a single highlight, boundary clamping near `t=0`/`t=duration`, and dedup for two highlights whose context windows overlap. Verified via the same standalone `exec()`-based harness (no real pytest in this sandbox) - full `test_scene.py` sweep now 68 passed (up from 64) / 11 pre-existing unrelated failures, unchanged. `py_compile` clean on both files.
 
 Untested against a real model - Christer needs to reinstall and opt in via `adaptive_context_frames`/`adaptive_context_offset_seconds` (still `0` by default, so existing behavior is unaffected until he does) to see whether this actually restores fuller, less choppy descriptions, and what it costs in render time.
+
+### Follow-up 3: wire it into the bv-generate CLI
+
+The two new `SceneOptions` fields from follow-up 2 had no way to reach them from `bv-generate` - only reachable via the Python API. Added `--adaptive-context-frames N` (default `0`, matches the `SceneOptions` default) and `--adaptive-context-offset-seconds SECONDS` (default `0.5`) to `bv_generate.py`'s argument parser, next to `--adaptive-sampling`, and threaded both straight into `_run_describe_scene_pass()`'s `describe_scene()` kwargs (unconditionally, same as `scene_quantize`/`gpu_memory_fraction` - harmless when `adaptive_sampling` is off, since that code path is never reached without it).
+
+Added `_base_args()` test-fixture defaults for both, plus three new tests: parser defaults, parser flag parsing, and `_do_describe_scene()` passing both values through to `describe_scene()`'s kwargs. Verified via a fresh standalone harness for `test_bv_generate.py` (this test file had never been run through the harness pattern in this sandbox before - it needed a `tomllib` shim, since this sandbox runs Python 3.10 and `bv_generate.py`'s import chain reaches `camera_config.py`'s `import tomllib`, stdlib-only since 3.11; no network access to install the `tomli` backport, same proxy restriction as always). All three new tests passed; 17 pre-existing failures in the rest of the file trace to harness-shim gaps (missing `TOMLDecodeError` on the stub, a `monkeypatch.setattr` overload the shim doesn't cover, a couple of output-capture mismatches) rather than anything this change touched. `py_compile` clean on both files.
+
+Christer's command to try it (needs a reinstall first - code lands in the mounted repo immediately, but the running `bv-generate` won't see it without `pip install -e .` or equivalent):
+
+```
+bv-generate <archive-path> --describe-scene --adaptive-sampling --adaptive-context-frames 2 --adaptive-context-offset-seconds 0.5 --overwrite
+```
+
+`--adaptive-context-frames 2` turns each of the 16 highlights into 5 real frames (2 before, 2 after, 0.5s apart) - 80 real frames stitched into the synthetic clip instead of 16. Add `--timestamp <recording-id>` to target one specific recording instead of a whole archive, and drop `--overwrite` once he's not re-running the same recording repeatedly to compare outputs.
