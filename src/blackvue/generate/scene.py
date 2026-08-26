@@ -2735,15 +2735,23 @@ def describe_scene(
     erroring - it just won't be adaptive to anything in that case.
 
     debug=True prints wall-clock timing to stderr for each phase (model
-    load, vision-input decode, the main generate() call, and the
-    zoom-signs sub-pipeline if enabled) - same convention as bv-export's
-    own --debug. Added (task #1260 follow-up 9) after Christer described
+    load, adaptive frame extraction if opts.adaptive_sampling is on,
+    vision-input decode, the main generate() call, and the zoom-signs
+    sub-pipeline if enabled) - same convention as bv-export's own
+    --debug. Added (task #1260 follow-up 9) after Christer described
     watching a "small block, then long wait for big blocks" pattern in
     Task Manager's GPU graph during a normal-length run and asked what
     each part corresponded to - previously the only available timing was
     bv-generate's own single start/finished total, so answering that
     kind of question meant guessing from the code structure instead of
-    reading real numbers.
+    reading real numbers. The adaptive-extraction timer was added
+    separately, later the same follow-up, once it became clear the
+    original four timers didn't cover the ffmpeg-seek/temp-clip-stitch
+    work _build_adaptive_message_content() does before the model ever
+    sees a frame - exactly the phase Christer had separately measured at
+    ~60s with the old decord-based implementation (since replaced, task
+    #1260 follow-up 8 above) and asked to see confirmed against the new
+    one.
     """
 
     if opts is None:
@@ -2784,9 +2792,30 @@ def describe_scene(
     else:
         adaptive_content: list[dict] = []
         if opts.adaptive_sampling:
+            # 2026-08-26 (task #1260 follow-up 9, debug timing): this is
+            # the phase Christer specifically asked to see the cost of -
+            # "about 60 s before qwen-vl-utils using decord to read
+            # video" (follow-up 8 above, since replaced with direct
+            # ffmpeg seeks, real hardware not yet timed against this).
+            # Everything in here - the duration probe, picking
+            # timestamps, the per-timestamp ffmpeg seek-and-decode, and
+            # writing the small stitched temp clip via
+            # _write_frames_as_temp_video() - happens before the model
+            # ever sees a single frame, and is invisible inside the
+            # "vision-input decode" timer below (that one only wraps
+            # qwen_vl_utils' own read of the tiny already-stitched clip,
+            # which is a completely different, much smaller cost).
+            adaptive_extract_start = time.monotonic() if debug else None
             adaptive_content, sampled_frame_timestamps, adaptive_cleanup_paths = _build_adaptive_message_content(
                 video_path, opts, gps_fixes, gsensor_samples, recording_start, warn=warn
             )
+            if debug:
+                print(
+                    f"bv-generate: adaptive frame extraction (ffmpeg "
+                    f"seeks + temp clip stitch) took "
+                    f"{time.monotonic() - adaptive_extract_start:.1f}s",
+                    file=sys.stderr,
+                )
 
         if sampled_frame_timestamps:
             # Deliberately keyed on sampled_frame_timestamps, not

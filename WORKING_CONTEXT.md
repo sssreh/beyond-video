@@ -18700,3 +18700,80 @@ can.
 Verified: `ast.parse` on scene.py + bv_generate.py, plus
 `/tmp/verify/full_sweep.py` (90 passed, same 6 pre-existing unrelated
 failures as every prior run this task, no new failures).
+
+### Follow-up 23 (task #1260): bus timestamp regression is real, not noise - correcting follow-up 22, and adding the adaptive-extraction debug timer
+
+Christer pushed back on follow-up 22's framing, verbatim: "The bus used
+to appear at the right time." That correction is right and follow-up
+22 undersold it. Re-checked this file's own history: "the bus" is
+Christer's real, independently-verified calibration anchor (his own
+memory places it "70s in" - task #1102's "I AM MISSING MY RED BUS"
+section, task #1231's adaptive-sampling retry note "no bus anywhere
+near his own memory of '70s in'"), not just a number that happened to
+look plausible. "74s last week" was close to that real reference;
+today's plain-path numbers (12.4s, 95s, 126.2s across different runs
+this session) are not, and get worse, not better, as the plain-path
+code itself got more correct (real duration/fps metadata now reaching
+the model, per follow-up 15/16 above) - which only makes sense once you
+accept the plain path was never actually measuring anything. Retracted
+the "just estimation noise, not a bug" framing given to Christer
+earlier - the accuracy loss is real, it's just not fixable inside the
+plain path, because that path has no mechanism to be accurate: it was
+never fed real per-sampled-frame timestamps to ground a guess against,
+before or after any fix in this whole task #1260 chain.
+
+The one mode that is grounded: `--adaptive-sampling`, which extracts
+real frames at real timestamps and injects them directly (`##  Sampled
+frames`), and was already confirmed accurate on this exact calibration
+clip once its own bugs got fixed (full-duration coverage, correct sign
+reads - the "Speed up adaptive-sampling" entry above). Its cost is the
+real trade-off: last confirmed real-hardware numbers on this same clip
+are 137s at `--frames 16` and 189.6s at `--frames 32` (the "Stitch
+adaptive frames into a real temp video clip" entry and follow-up 11
+above) - both already close to plain mode's 107-185s, not the 732s
+figure follow-up 22 quoted, which predates the video-stitching fix.
+
+Asked Christer directly (three options: retry `--adaptive-sampling` as
+already-fast-enough, accept the plain-path estimate for speed, or
+invest further in speeding up adaptive-sampling specifically). He
+picked speeding up adaptive-sampling further - grounded correctness
+matters more than shaving the last bit off an already-fast path.
+
+**Debug timing gap found and fixed while investigating**: reviewing
+`describe_scene()` for where to add adaptive-specific timing surfaced
+that follow-up 9's four `--debug` timers (model load, vision-input
+decode, main `generate()`, zoom-signs) don't cover
+`_build_adaptive_message_content()` at all - it runs entirely before
+the "vision-input decode" timer starts, so the exact phase Christer
+asked about speeding up (the per-timestamp ffmpeg seek-and-decode plus
+`_write_frames_as_temp_video()`'s temp-clip stitch - what used to be a
+~60s decord `VideoReader` open before task #1260 follow-up 8 replaced
+it with direct ffmpeg seeks, never confirmed on real hardware) was
+invisible to `--debug` output. Added a fifth timer,
+`bv-generate: adaptive frame extraction (ffmpeg seeks + temp clip
+stitch) took N.Ns`, wrapping the `_build_adaptive_message_content()`
+call directly - only fires when `opts.adaptive_sampling` is on, since
+that function is never called otherwise. Updated `describe_scene()`'s
+own `debug=True` docstring paragraph to mention it and explain why it
+was added as a follow-up to follow-up 9 rather than folded in
+originally (the original four timers were designed before this
+specific investigation identified the gap).
+
+Christer's next real-hardware command:
+
+```
+bv-generate kirby_2022 --describe-scene --adaptive-sampling --frames 16 --overwrite --timestamp 20220927_132155 --debug
+```
+
+This will show, for the first time, where the adaptive path's total
+time actually splits across all five phases on his current (already
+partly-optimized) code - the number to watch is the new "adaptive
+frame extraction" line, since that's the one candidate phase nobody has
+confirmed sped up since the decord->ffmpeg replacement (follow-up 8),
+and it's the natural next target for further optimization if it's
+still a large fraction of the total.
+
+Verified via `ast.parse` on `scene.py` and `/tmp/verify/full_sweep.py`
+(90 passed, same 6 pre-existing unrelated failures, no new failures -
+this is a pure debug-print addition with nothing to unit-test beyond
+what's already covered).
