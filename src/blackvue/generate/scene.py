@@ -714,6 +714,32 @@ class SceneOptions:
     # Christer needs to reinstall and re-run to confirm this actually
     # stops the truncation.
     adaptive_max_new_tokens_per_frame: int = 64
+    # 2026-08-26 (task #1260 follow-up 29): the plain (non-adaptive)
+    # path's own equivalent of adaptive_max_new_tokens_per_frame above -
+    # kept as a separate, higher constant rather than reusing that one,
+    # because real hardware showed plain-path bullets run noticeably
+    # more verbose than the adaptive path's shorter per-highlight
+    # observations. Christer's real --frames 15 run hit the fixed
+    # max_new_tokens=768 ceiling after only ~10.5 of the requested 15
+    # bullets - back-computing from that (768 tokens / ~10.5 bullets)
+    # puts real consumption around ~73 tokens/bullet for this run's
+    # phrasing style alone, before the "## On-screen text" section (not
+    # even reached) gets any budget at all. 100/bullet plus
+    # plain_on_screen_text_reserve below is deliberately generous over
+    # that observed number, same "headroom is cheap, silent truncation
+    # is worse" reasoning as adaptive_max_new_tokens_per_frame's own
+    # comment - not empirically re-verified beyond this one real data
+    # point, next real run at a comparable or higher --frames should
+    # confirm the Description section completes AND On-screen text
+    # still appears.
+    plain_max_new_tokens_per_frame: int = 100
+    # Flat reserve added on top of max_frames * plain_max_new_tokens_per_
+    # frame for the "## On-screen text" section every plain-path
+    # completion also has to fit in the same budget - sized generously
+    # against the ~15-20 short OCR-style lines seen in real completed
+    # runs (e.g. the --frames 8 run that did finish: 12 short lines plus
+    # a model-added "Note:" sentence).
+    plain_on_screen_text_reserve: int = 300
     do_sample: bool = False
     temperature: float = 0.7
     top_p: float = 0.8
@@ -3164,6 +3190,49 @@ def describe_scene(
             describe_max_new_tokens = max(
                 opts.max_new_tokens,
                 len(sampled_frame_timestamps) * opts.adaptive_max_new_tokens_per_frame,
+            )
+        elif not is_photo_path(video_path) and not sampled_frame_timestamps:
+            # 2026-08-26 (task #1260 follow-up 29): follow-up 6 above
+            # scoped this scaling to the adaptive path only, on the
+            # theory that max_new_tokens=768 - "16 frames * ~48 tokens/
+            # bullet" - was a safe fixed budget for the plain path's own
+            # tuned-for 16-frame case. Christer's real hardware proved
+            # that was never actually safe even there, and confirmed it
+            # twice: --frames 15 cut off mid-bullet after only 10 of the
+            # requested ~15 ("not showing much after 108s" on a clip
+            # that runs to 180s), and --frames 14 reproduced the exact
+            # same truncation-at-10-bullets pattern moments later, in
+            # under half the time (76.3s vs 123.2s) - ruling out "just a
+            # slow generation that happened to get cut off" and
+            # confirming this is a fixed token ceiling being hit, not a
+            # --frames-count coincidence. Both runs silently dropped the
+            # back half of the description AND the entire On-screen text
+            # section, with no error or truncation warning - the exact
+            # same silent-content-loss failure mode follow-up 6's own
+            # comment already described for the adaptive path before
+            # that fix. opts.max_frames is the plain path's own bullet-
+            # count target (the sparse-sampling hint, task #1260
+            # follow-up 4, asks the model to write "close to max_frames
+            # bullets"), so it's the right proxy here. Uses dedicated
+            # plain_max_new_tokens_per_frame/plain_on_screen_text_reserve
+            # constants rather than reusing adaptive_max_new_tokens_per_
+            # frame - back-computing from the --frames 15 run (768
+            # tokens / ~10.5 bullets before hitting the ceiling) puts
+            # real per-bullet consumption around ~73 tokens for this
+            # style of plain-path output, noticeably higher than the
+            # adaptive path's shorter per-highlight bullets, and the
+            # plain path's completion also has to fit the entire
+            # On-screen text section afterward, which the adaptive
+            # formula never had to budget for. Guarded on `not
+            # sampled_frame_timestamps` (not opts.adaptive_sampling) so
+            # this also covers adaptive_sampling being requested but
+            # gracefully degrading to the plain branch - see the
+            # message_content fallback above for why that's the same
+            # code path either way.
+            describe_max_new_tokens = max(
+                opts.max_new_tokens,
+                opts.max_frames * opts.plain_max_new_tokens_per_frame
+                + opts.plain_on_screen_text_reserve,
             )
 
         generate_start = time.monotonic() if debug else None

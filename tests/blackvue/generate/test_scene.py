@@ -1593,12 +1593,23 @@ def test_describe_scene_keeps_default_max_new_tokens_for_small_adaptive_frame_co
     assert captured_kwargs["max_new_tokens"] == scene.SceneOptions().max_new_tokens
 
 
-def test_describe_scene_keeps_default_max_new_tokens_when_adaptive_sampling_is_off(monkeypatch, tmp_path):
-    video_path = tmp_path / "video.mp4"
-    video_path.write_bytes(b"x")
+# ---------------------------------------------------------------------------
+# Task #1260 follow-up 29: the plain (non-adaptive) path never got the same
+# token-budget scaling as follow-up 6 gave the adaptive path above, so it
+# always used the fixed max_new_tokens=768 ceiling regardless of --frames.
+# Real hardware reproduced the exact same silent-truncation failure mode
+# twice: --frames 15 cut off mid-bullet after ~10 of the requested 15
+# bullets, and --frames 14 reproduced the identical truncation pattern in
+# under half the generation time (76.3s vs 123.2s), confirming a fixed
+# token ceiling being hit rather than a --frames-count coincidence. Both
+# runs silently dropped the back half of the Description section AND the
+# entire "## On-screen text" section, with no error or truncation warning.
+# See SceneOptions.plain_max_new_tokens_per_frame /
+# plain_on_screen_text_reserve.
+# ---------------------------------------------------------------------------
 
-    captured_kwargs = {}
 
+def _make_fake_loaded_scene_model(captured_kwargs, description_text):
     class _FakeInputs(dict):
         def __init__(self):
             super().__init__()
@@ -1622,9 +1633,9 @@ def test_describe_scene_keeps_default_max_new_tokens_when_adaptive_sampling_is_o
             return _FakeInputs()
 
         def batch_decode(self, ids, **kwargs):
-            return ["## Description\nRoutine driving, nothing notable happened."]
+            return [description_text]
 
-    loaded = scene._LoadedSceneModel(
+    return scene._LoadedSceneModel(
         model=_FakeModel(),
         processor=_FakeProcessor(),
         process_vision_info=lambda messages, **kwargs: ([], [], {}),
@@ -1632,9 +1643,63 @@ def test_describe_scene_keeps_default_max_new_tokens_when_adaptive_sampling_is_o
         is_qwen3=False,
     )
 
+
+def test_describe_scene_scales_max_new_tokens_for_plain_path_with_default_max_frames(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+    loaded = _make_fake_loaded_scene_model(
+        captured_kwargs, "## Description\nRoutine driving, nothing notable happened."
+    )
     monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
 
     scene.describe_scene(video_path, zoom_signs=False)
+
+    opts = scene.SceneOptions()
+    expected = max(
+        opts.max_new_tokens,
+        opts.max_frames * opts.plain_max_new_tokens_per_frame + opts.plain_on_screen_text_reserve,
+    )
+    # Sanity: with the default max_frames=16, the scaled formula now wins
+    # over the old fixed 768 ceiling - that's the whole point of this fix.
+    assert expected > opts.max_new_tokens
+    assert captured_kwargs["max_new_tokens"] == expected
+
+
+def test_describe_scene_scales_max_new_tokens_with_frames_flag_on_plain_path(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+    loaded = _make_fake_loaded_scene_model(
+        captured_kwargs, "## Description\n- [t=0s] A red bus passes on the left."
+    )
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+
+    # Mirrors Christer's real --frames 15 run that triggered this fix.
+    scene.describe_scene(video_path, zoom_signs=False, max_frames=15)
+
+    opts = scene.SceneOptions()
+    expected = 15 * opts.plain_max_new_tokens_per_frame + opts.plain_on_screen_text_reserve
+    assert expected > opts.max_new_tokens  # sanity: the scaling actually matters here
+    assert captured_kwargs["max_new_tokens"] == expected
+
+
+def test_describe_scene_keeps_default_max_new_tokens_for_tiny_max_frames_on_plain_path(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+    loaded = _make_fake_loaded_scene_model(
+        captured_kwargs, "## Description\n- [t=0s] A red bus passes on the left."
+    )
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+
+    # max_frames=1: 1 * plain_max_new_tokens_per_frame + reserve is still
+    # well under the fixed default, so max() should keep the default,
+    # not scale it down below the historical floor.
+    scene.describe_scene(video_path, zoom_signs=False, max_frames=1)
 
     assert captured_kwargs["max_new_tokens"] == scene.SceneOptions().max_new_tokens
 

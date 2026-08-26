@@ -19071,3 +19071,75 @@ sub-2-minute end-to-end time for a given recording) - not `--frames`,
 which has already done its job on the `generate()` side. Not
 implemented or suggested as a change yet - Christer hasn't asked for
 one, this is just the diagnosis to report back.
+
+### Follow-up 29 (task #1260): fix plain-path generation truncation at higher --frames - the same silent-content-loss bug follow-up 6 already fixed on the adaptive path, never extended here
+
+Christer reported the plain (non-adaptive) path's `--frames 15` output
+"not showing much after 108s" on a clip that runs to 180s: the
+`## Description` section cut off mid-bullet after only ~10 of the
+requested ~15 bullets, with a dangling incomplete final `- [t` line,
+and the entire `## On-screen text` section missing outright - no error
+or truncation warning anywhere. He then independently reproduced the
+identical failure at `--frames 14` (76.3s total, well under half the
+`--frames 15` run's 123.2s), ruling out "just a slow generation that
+happened to run long" and confirming a fixed token ceiling being hit
+regardless of how long generation actually took.
+
+Root cause: task #1245 follow-up 6 added `describe_max_new_tokens`
+scaling (`len(sampled_frame_timestamps) *
+adaptive_max_new_tokens_per_frame`) to fix this exact silent-truncation
+failure mode - but scoped it to the adaptive-sampling path only, on the
+implicit assumption that the fixed `max_new_tokens=768` default (a
+number that was never a deliberate budget decision - it just happens to
+equal 16 frames * ~48 tokens/bullet, the historical tuned baseline) was
+a safe fixed ceiling for the plain path's own 16-frame-tuned case. It
+was already a marginal, coincidental fit even there - real per-bullet
+consumption for this style of output runs closer to ~73 tokens/bullet,
+back-computed from the `--frames 15` run exhausting the full 768-token
+budget after ~10.5 bullets - and any `--frames` value above the
+implicit ~10-bullet break-even point could silently truncate,
+independent of the flag's exact value.
+
+Fix: added a parallel `elif` branch to `describe_scene()`'s
+`describe_max_new_tokens` computation (in the `generate()` call site),
+active whenever the plain path is in use (`not
+sampled_frame_timestamps`, so it also covers `adaptive_sampling=True`
+gracefully degrading to the plain branch) and the input isn't a photo.
+It scales the budget as `opts.max_frames *
+opts.plain_max_new_tokens_per_frame + opts.plain_on_screen_text_reserve`,
+still floored at the historical default via `max()`. Two new dedicated
+`SceneOptions` fields back this rather than reusing
+`adaptive_max_new_tokens_per_frame` (64): `plain_max_new_tokens_per_frame
+= 100` (generously above the observed ~73 tokens/bullet, since the
+plain path's bullets run more verbose than the adaptive path's shorter
+per-highlight ones) and `plain_on_screen_text_reserve = 300` (a flat
+reserve for the `## On-screen text` section, which the plain path's
+completion always has to fit afterward and which the adaptive-path
+formula never had to budget for at all).
+
+As a side effect, this should also resolve the quote-drift-style
+bracket corruption (`[t="24.0 s"]`, `[t='"60.1 s"]`, etc.) seen in that
+same truncated `--frames 15` output: `_realign_bullet_timestamps()`
+(follow-ups 25-27) only activates when the bullet count found in the
+raw completion exactly matches the known `plain_timestamps` list
+length - a truncated completion never has the full count, so
+realignment silently no-ops and the model's own raw, still
+quote-drift-prone bracket text gets written through unmodified. Not
+verified against a fresh real-hardware run yet (should be, next time
+Christer runs `--describe-scene` on the plain path at a `--frames`
+value above ~10).
+
+Verified via a standalone harness (no pytest in this environment) at
+`/tmp/verify/check_plain_truncation_fix.py`, faking
+`_get_scene_model()`/`model.generate()` and asserting the computed
+`max_new_tokens` for: (1) the plain path's own default `--frames`
+(16 -> 1900, correctly above the 768 floor), (2) `--frames 15`
+(1800, matching Christer's real run), (3) a tiny `--frames 1` (400
+< 768, correctly floored at the historical default via `max()`), and
+(4) the adaptive path at 80 sampled frames (5120, unchanged from
+follow-up 6 - confirming this change doesn't regress the adaptive
+branch). Added three permanent regression tests to `test_scene.py`
+covering the same three plain-path scenarios (renamed/rewrote the
+stale `test_describe_scene_keeps_default_max_new_tokens_when_adaptive_
+sampling_is_off`, whose assertion no longer holds now that the plain
+path scales by default too).
