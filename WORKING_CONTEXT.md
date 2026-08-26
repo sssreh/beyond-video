@@ -18591,3 +18591,49 @@ something else running slower each retry (e.g. VRAM fragmentation across
 repeated in-process runs) rather than being a stable, repeatable cost.
 
 Commit: (pending)
+
+### Follow-up 21 (task #1260): timestamp bracket quote-drift parsing fix
+
+Real hardware, `20220927_132155_E.mp4`, `--frames 16`, no `--scene-quantize`:
+195.6s (back to the normal ~165-213s range), 9 Description bullets spanning
+the full clip (t=0s to t=155s, bus at t=95s), and no repeat-loop garbage in
+"## On-screen text" this run - confirms follow-up 7's structural safety net
+and dropping `--scene-quantize` were both the right calls.
+
+But a new formatting bug showed up in the bullet timestamps themselves:
+
+    - [t=0s] ...
+    - [t=19s] ...
+    - [t="35s"] ...
+    - [t='55s'] ...
+    - [t="'75s"] ...
+    - [t='"95s"] ...
+    - [t=""115s"] ...
+    - [t="""135s"] ...
+    - [t="#155s"] ...
+
+The model progressively wrapped each successive bullet's timestamp in extra
+stray quote characters as generation went on (classic autoregressive drift:
+a repeated template mutates a little more each time it's copied), ending
+with a stray "#" by the last bullet. `_parse_timestamp_token()`'s strict
+strip-whitespace-then-float parse couldn't handle any of these (the token
+no longer ends in a plain digit or "s"), so 7 of the 9 bullets were
+silently dropped from `extract_description_events()` - not corrupted
+content, just an invisible gap in description.srt/TTS sync and the frame
+viewer, since only the clean t=0s/t=19s bullets would have survived.
+
+Fixed by extending `_parse_timestamp_token()`: if the strict parse fails,
+fall back to pulling the first number-shaped substring (`-?\d+(?:\.\d+)?`)
+out of the token and using that. Same tolerance philosophy as the existing
+whitespace-stripping fallback documented in `_BULLET_START_RE`'s comment -
+just one layer further out, since the stray characters here are wrapping
+the whole token rather than sitting inside it. Verified all 9 real bullets
+from this run now parse with the correct timestamps
+(tests/blackvue/generate/test_scene.py:
+test_extract_description_events_survives_escalating_quote_corruption,
+test_parse_timestamp_token_still_rejects_genuinely_non_numeric_text - ran
+directly against the real module, no pytest available in this
+environment). ast.parse + /tmp/verify/full_sweep.py: 88 passed (up from
+84), same 6 pre-existing unrelated failures.
+
+Commit: (pending)

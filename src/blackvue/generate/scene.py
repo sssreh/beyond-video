@@ -1223,15 +1223,36 @@ def _parse_timestamp_token(raw_seconds: str) -> float | None:
     (including inside the number itself, e.g. '0 .9 s') and an
     optional trailing 's' unit, both observed in real output (see
     _BULLET_START_RE's own comment). Returns None for anything that
-    still isn't a number once whitespace is stripped, so one genuinely
-    malformed bullet is skipped rather than crashing the whole parse
-    or being silently treated as zero."""
+    still isn't a number even after the fallback below, so one
+    genuinely malformed bullet is skipped rather than crashing the
+    whole parse or being silently treated as zero."""
 
     token = re.sub(r"\s+", "", raw_seconds)
     if token.lower().endswith("s"):
         token = token[:-1]
     try:
         return float(token)
+    except ValueError:
+        pass
+    # 2026-08-26 (task #1260 follow-up 8): real hardware produced
+    # bullets like '- [t="35s"]', "- [t='55s']", even "- [t=\"#155s\"]"
+    # - the model progressively wrapped each successive bullet's
+    # timestamp in extra stray quote characters as generation went on
+    # (a classic autoregressive-drift pattern: a repeated template
+    # mutates a little more each time it's copied), with a `#` showing
+    # up by the last bullet. The strict strip-then-float attempt above
+    # can't handle that (the token no longer ends in a plain digit or
+    # "s"), so every one of those bullets was silently dropped from
+    # the timeline - not corrupted content, just an invisible gap in
+    # description.srt/TTS sync. Since the actual number is still in
+    # there untouched, pulling out the first number-shaped substring
+    # and using that is safe and general - same tolerance philosophy
+    # as the whitespace-stripping above, just one layer further out.
+    match = re.search(r"-?\d+(?:\.\d+)?", token)
+    if match is None:
+        return None
+    try:
+        return float(match.group())
     except ValueError:
         return None
 

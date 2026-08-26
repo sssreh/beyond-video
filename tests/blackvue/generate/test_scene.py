@@ -159,6 +159,43 @@ def test_extract_description_events_returns_empty_when_heading_missing():
     assert scene.extract_description_events("no headings here") == []
 
 
+# 2026-08-26 (task #1260 follow-up 8): real hardware produced bullets like
+# '- [t="35s"]', "- [t='55s']", up through '- [t="#155s"]" - the model
+# progressively wrapped each successive bullet's timestamp in extra stray
+# quote characters (and once a "#") as generation went on. The strict
+# strip-whitespace-then-float parse in _parse_timestamp_token() silently
+# dropped every one of those bullets from the timeline (not corrupted
+# content, just an invisible gap in description.srt/TTS sync) since the
+# token no longer ended in a plain digit or "s". Fixed by falling back to
+# pulling the first number-shaped substring out of the token.
+_QUOTE_DRIFT_DESCRIPTION_TEXT = (
+    "## Description\n"
+    '- [t=0s] A white truck with a blue container drives past on the left.\n'
+    "- [t=19s] The camera approaches a roundabout.\n"
+    '- [t="35s"] After navigating the roundabout, the vehicle enters a highway.\n'
+    "- [t='55s'] Traffic flows steadily on the highway.\n"
+    "- [t=\"'75s\"] The vehicle slows near a traffic light.\n"
+    "- [t='\"95s\"] A red bus travels in the opposite lane.\n"
+    '- [t=""115s"] The camera continues straight onto a wide highway.\n'
+    '- [t="""135s"] A large billboard spans across the roadway.\n'
+    '- [t="#155s"] The road curves slightly to the right.\n'
+)
+
+
+def test_extract_description_events_survives_escalating_quote_corruption():
+    events = scene.extract_description_events(_QUOTE_DRIFT_DESCRIPTION_TEXT)
+
+    assert [e.timestamp_seconds for e in events] == [
+        0.0, 19.0, 35.0, 55.0, 75.0, 95.0, 115.0, 135.0, 155.0,
+    ]
+    assert events[5].text.startswith("A red bus travels")
+
+
+def test_parse_timestamp_token_still_rejects_genuinely_non_numeric_text():
+    assert scene._parse_timestamp_token("not a number") is None
+    assert scene._parse_timestamp_token('"""') is None
+
+
 def test_extract_description_events_folds_a_multi_line_bullet():
     # Same defensive multi-line-continuation handling
     # web/archive_browser.py's _parse_sign_reads() already needed (see
