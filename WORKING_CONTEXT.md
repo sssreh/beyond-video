@@ -18529,3 +18529,65 @@ Content-wise: follow-up 18's `repetition_penalty=1.1` bump partially worked - th
 Fix: raised `adaptive_no_repeat_ngram_size` from 0 to 5 - reasoned as a middle ground between the 3 that caused the original corruption (a window short enough to span just the "- [t=" prefix, which legitimately recurs at the start of every bullet) and the much longer ~8-10 token span of the new "Förbjudet att köra på gatan"/"Körselväg" repeating pair. The theory: at N=5, a 5-token window starting at "- [t=" would include some of the following digits, which differ bullet-to-bullet, so it likely won't match a previously-seen 5-gram exactly and trigger the corruption-causing ban; but "Förbjudet att köra på gatan" repeating verbatim is long enough that even a 5-token subsequence of it would match a previous occurrence, so the ban should still catch and block that loop. This reasoning is built on token-count estimates, not a real tokenizer run - genuinely unverified until the next real-hardware test.
 
 Verified via `/tmp/verify/full_sweep.py` - 84 passed, same 6 pre-existing unrelated failures, no new failures. `ast.parse`-clean on `scene.py`. Real-hardware confirmation still needed on the same clip, checking all three at once: no cycling Description bullets, no On-screen-text word/phrase loop, and "- [t=" formatting still clean (the original bug this whole repetition-settings sub-chain, task #1245 follow-up 5 through this follow-up, has been chasing).
+
+### Follow-up 20 (task #1260): structural repeat-loop safety net + quantize timing verdict
+
+Real hardware, same `20220927_132155_E.mp4` calibration clip, `--frames 16`:
+follow-up 6's `adaptive_no_repeat_ngram_size=5` fix (raised from 0)
+successfully cleaned up the "## Description" section - 7 distinct bullets,
+no verbatim repeats, "- [t=" formatting intact, bus event present. But the
+"## On-screen text" section STILL degenerated into an exact-repeat loop, cut
+off mid-word by `max_new_tokens` - this time "LANGA"/"FORSTA" alternating
+~45+ times. This is the THIRD distinct real-hardware failure of this exact
+class, with a different specific repeated unit each time:
+
+1. Follow-up 5 (before any no_repeat_ngram_size fix): "LAN" x40+.
+2. Follow-up 6 (repetition_penalty=1.1 in place): "Forbjudet att kora pa
+   gatan"/"Korselvag" alternating x25+.
+3. This follow-up (no_repeat_ngram_size=5 also in place): "LANGA"/"FORSTA"
+   alternating x45+.
+
+Three consecutive real-hardware failures of the same fix strategy
+(adjusting `generate()`'s decoding parameters) is strong evidence that
+parameter tuning alone cannot reliably prevent this failure mode - it can
+only reduce the *odds* of a loop, not guarantee one won't happen. Rather
+than reach for a fourth parameter guess, this follow-up adds a structural
+safety net: `_truncate_repeated_lines()` in scene.py, called on the raw
+`batch_decode()` output before the separately-generated zoom-signs/
+sampled-frames sections get appended. It uses
+`_DEGENERATE_REPEAT_RE = re.compile(r"(.{1,80}?)\1{3,}", re.DOTALL)` to find
+any chunk of decoded text up to 80 chars that repeats 4+ times back to
+back, and truncates right before the loop starts. This is safe against
+false positives on real content: even the legitimate repeating "- [t="
+bullet prefix in "## Description" never matches, because each bullet's
+content after the prefix differs - only true decoding degeneration
+produces an *exact* contiguous repeat. Verified with 4 new unit tests in
+tests/blackvue/generate/test_scene.py covering all three real repeat
+shapes plus a check that clean text and content before a loop are left
+untouched (no pytest available in this environment; verified by running
+the test bodies directly against the real scene.py module - all 4 pass).
+ast.parse + /tmp/verify/full_sweep.py: 84 passed, same 6 pre-existing
+unrelated failures.
+
+Also, on `--scene-quantize int8`: three real-hardware timing runs now show
+it consistently costs more time than unquantized, with no confirmed
+benefit to the shared-GPU-memory/spikes symptom Christer originally raised
+it to address:
+
+- Unquantized baseline: 212.9s.
+- int8, run 1: 227.2s.
+- int8, run 2: 388.4s (Christer: "Look at the time first.").
+
+Each successive quantized run got slower, not faster, and there's no
+evidence from any of the three runs that shared-memory usage was actually
+reduced - quantization trades compute for memory, and on this workload
+(Qwen3-VL's video temporal encoder, not primarily the weight-heavy linear
+layers int8 targets) it's adding dequantization overhead without buying
+back any headroom. Recommendation: drop `--scene-quantize` for this
+workflow entirely - it has never shown a measured benefit across three
+tries, and the escalating runtime (388.4s vs 164.9s for the plain
+`--frames 16` run in follow-up 16) suggests it may be compounding with
+something else running slower each retry (e.g. VRAM fragmentation across
+repeated in-process runs) rather than being a stable, repeatable cost.
+
+Commit: (pending)

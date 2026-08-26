@@ -69,6 +69,66 @@ _TIMED_DESCRIPTION_TEXT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# _truncate_repeated_lines() - task #1260 follow-up 7. Added after three
+# consecutive real-hardware runs showed the "## On-screen text" section
+# degenerating into an exact-repeat loop even after two rounds of
+# generate()-parameter tuning (adaptive_repetition_penalty raised to 1.1 in
+# follow-up 5, adaptive_no_repeat_ngram_size raised to 5 in follow-up 6) -
+# each fix reduced repetition somewhere else but a different exact phrase
+# still looped: "LAN" x40+, then "Forbjudet att kora pa gatan"/"Korselvag"
+# alternating x25+, then "LANGA"/"FORSTA" alternating x45+. This is a
+# structural safety net instead of a fourth parameter guess.
+# ---------------------------------------------------------------------------
+
+
+def test_truncate_repeated_lines_leaves_clean_text_untouched():
+    text = (
+        "## Description\n"
+        "- [t=0.0s] The car passes a red bus on the left.\n"
+        "- [t=12.4s] The car continues through a quiet intersection.\n"
+        "\n"
+        "## On-screen text\n"
+        "- 42 km/h\n"
+        "- STOP\n"
+    )
+
+    assert scene._truncate_repeated_lines(text) == text
+
+
+def test_truncate_repeated_lines_cuts_off_single_word_loop():
+    # Real-hardware case: "LAN" repeated 40+ times.
+    text = "## On-screen text\n" + "LAN " * 45
+
+    result = scene._truncate_repeated_lines(text)
+
+    assert "LAN" not in result
+    assert result == "## On-screen text"
+
+
+def test_truncate_repeated_lines_cuts_off_alternating_phrase_loop():
+    # Real-hardware case: two Swedish phrases alternating 25+ times each,
+    # cut off mid-word by max_new_tokens.
+    text = "## On-screen text\n" + "Forbjudet att kora pa gatan Korselvag " * 30 + "Forbjudet att kora p"
+
+    result = scene._truncate_repeated_lines(text)
+
+    assert "Korselvag" not in result
+    assert result == "## On-screen text"
+
+
+def test_truncate_repeated_lines_only_truncates_at_loop_start_not_whole_text():
+    # A repeat loop appearing after otherwise-good content should only
+    # drop the looping tail, not the good content before it.
+    good = "## Description\n- [t=0.0s] Routine driving, nothing notable.\n\n"
+    text = good + "## On-screen text\n" + "STOP " * 10
+
+    result = scene._truncate_repeated_lines(text)
+
+    assert result.startswith(good.rstrip("\n"))
+    assert "STOP" not in result
+
+
 def test_extract_description_events_parses_bulleted_timestamps():
     events = scene.extract_description_events(_TIMED_DESCRIPTION_TEXT)
 

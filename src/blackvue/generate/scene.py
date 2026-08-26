@@ -2622,6 +2622,47 @@ def _zoom_into_signs(
     return "\n\n## Zoomed sign reads\n" + "\n".join(lines)
 
 
+# 2026-08-26 (task #1260 follow-up 7): a structural safety net, added
+# after generate()-parameter tuning alone failed to stop a degenerate
+# repeat loop across THREE separate real-hardware runs in a row. Each
+# time it was adaptive_repetition_penalty/adaptive_no_repeat_ngram_size
+# (see their own comments, follow-ups 5 and 6) that got adjusted first,
+# and each time the "## On-screen text" section still degenerated into
+# an exact-repeat loop cut off mid-word by max_new_tokens - just with
+# different specific content each run ("LAN" x40+; "Forbjudet att kora
+# pa gatan"/"Korselvag" alternating x25+; "LANGA"/"FORSTA" alternating
+# x45+). Three consecutive real-world failures of the same fix strategy
+# is strong evidence that decoding-parameter tuning can't reliably
+# prevent this failure mode - it can only make the model *less likely*
+# to fall into a loop, not guarantee it won't. So instead of trying a
+# fourth parameter, this catches the failure mode itself: any short
+# chunk of decoded text that repeats several times back to back is
+# unambiguously degenerate (real prose, and even the legitimate
+# repeating "- [t=" bullet prefix in "## Description", never repeats
+# the *same exact substring* 4+ times contiguously, since each bullet's
+# content after the prefix differs) and gets truncated before it
+# reaches Christer's .scene.txt file.
+_DEGENERATE_REPEAT_RE = re.compile(r"(.{1,80}?)\1{3,}", re.DOTALL)
+
+
+def _truncate_repeated_lines(text: str) -> str:
+    """Cut off a degenerate exact-repeat loop, if the decoded text has one.
+
+    See the comment directly above _DEGENERATE_REPEAT_RE for why this
+    exists and why a >=4x contiguous exact repeat is a safe signal
+    (real generated text, including the legitimate repeating "- [t="
+    bullet prefix, doesn't trigger this - only true decoding
+    degeneration does). Truncates at the start of the loop rather than
+    trying to keep one copy of the repeated chunk, since by the time
+    generation degenerates into a loop, nothing after that point in
+    the response is trustworthy content anyway.
+    """
+    match = _DEGENERATE_REPEAT_RE.search(text)
+    if match is None:
+        return text
+    return text[: match.start()].rstrip()
+
+
 def describe_scene(
     video_path: Path,
     *,
@@ -2887,6 +2928,11 @@ def describe_scene(
     output_text = loaded.processor.batch_decode(
         trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
+    # See _truncate_repeated_lines()'s own comment (task #1260 follow-up
+    # 7) - applied only to the raw model decode, before the separately-
+    # generated zoom-signs/sampled-frames sections get appended below,
+    # so this can't accidentally truncate content it didn't generate.
+    output_text = _truncate_repeated_lines(output_text)
 
     if opts.zoom_signs:
         output_text += _zoom_into_signs(video_path, loaded, opts, warn=warn)
