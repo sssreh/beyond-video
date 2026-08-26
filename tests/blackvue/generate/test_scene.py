@@ -360,6 +360,96 @@ def test_realign_bullet_timestamps_no_op_on_already_clean_text():
     assert [e.timestamp_seconds for e in events] == [0.0, 12.4]
 
 
+# 2026-08-26 (task #1260 follow-up 26): Christer's next real run - this time
+# the PLAIN (non-adaptive) path, no --adaptive-sampling - showed the same
+# corruption shapes as follow-up 25 above, plus one new variant:
+# "[t]='...168.3"]'"/"[t]=\"...180.3\"]" - a stray "]" landing immediately
+# after "t", before the "=". Without tolerating that, the old widened
+# _BULLET_START_RE still matched that stray "]" as the bullet's own close,
+# capturing raw_seconds as empty and dropping the timestamp outright (worse
+# than the quote-drift case, which at least left real digits to fall back
+# on). This is a trimmed reproduction of the two affected bullets from that
+# real output.
+def test_bullet_start_re_tolerates_stray_close_bracket_right_after_t():
+    text = (
+        "## Description\n"
+        "- [t]='\\\"\\\"168.3\"]' The final frame captures the car moving forward.\n"
+        "- [t]=\"\\\\\"180.3\"] The journey concludes with continued travel.\n"
+    )
+
+    matches = list(scene._BULLET_START_RE.finditer(text))
+
+    assert len(matches) == 2
+    # Even without realignment, the digit-extraction fallback in
+    # _parse_timestamp_token() should now recover real timestamps instead of
+    # an empty/unparseable raw_seconds capture.
+    events = scene.extract_description_events(text)
+    assert [e.timestamp_seconds for e in events] == [168.3, 180.3]
+
+
+def test_describe_scene_realigns_corrupted_plain_timestamps_by_position(monkeypatch, tmp_path):
+    # Wiring-level test mirroring the adaptive-path one above: the plain
+    # (non-adaptive) branch now has its own known-timestamps list too
+    # (_plain_video_frame_timestamps(), task #1260 follow-up 10) - when the
+    # model's bullet count happens to match it exactly (as it did in
+    # Christer's real run - 16 bullets, one per given grounding value),
+    # describe_scene() should realign by position here too, not just on the
+    # adaptive-sampling path.
+    import types
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return [
+                "## Description\n"
+                "- [t=0s] Bullet at the very start.\n"
+                "- [t]='\\\"\\\"1.0\"]' Bullet one, corrupted.\n"
+                "- [tl2. 0s) Bullet two, corrupted.\n"
+                "- [t=3.0s] Bullet at the very end.\n"
+            ]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(scene, "probe_video", lambda path: types.SimpleNamespace(duration_seconds=3.0))
+
+    # duration=3.0, fps=1.0, max_frames=4 -> _plain_video_frame_timestamps()
+    # returns exactly [0.0, 1.0, 2.0, 3.0] (min_frames floor of 4), matching
+    # the 4 bullets the fake model "generated" above one-for-one.
+    output_text = scene.describe_scene(video_path, zoom_signs=False, fps=1.0, max_frames=4)
+    events = scene.extract_description_events(output_text)
+
+    assert [e.timestamp_seconds for e in events] == [0.0, 1.0, 2.0, 3.0]
+
+
 def test_describe_scene_realigns_corrupted_adaptive_timestamps_by_position(monkeypatch, tmp_path):
     # Wiring-level test: describe_scene() itself must apply the
     # realignment to the adaptive path's raw model output before zoom-

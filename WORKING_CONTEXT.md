@@ -18934,3 +18934,65 @@ its own - that remains open. Whether the model "struggling" to render
 correct digit sequences correlates with slower/less confident token-
 by-token decoding is a plausible but unconfirmed follow-on hypothesis
 for a future investigation, not something this fix addresses.
+
+### Follow-up 26 (task #1260): same bracket corruption on the plain (non-adaptive) path, plus a new "[t]=" variant - extended the follow-up 25 fix to cover it
+
+Christer's next real run - explicitly flagged "before the lst fix," no
+`--adaptive-sampling` this time - showed the identical corruption shapes
+follow-up 25 fixed (missing `=`, quote-drift) still present on the
+plain path, plus a new one: `"[t]='...168.3"]'"` and
+`"[t]="...180.3"]"` - a stray `]` landing immediately after `t`, before
+the `=`. Without tolerating that, the widened `_BULLET_START_RE` from
+follow-up 25 matched that stray `]` itself as the bullet's own close -
+`raw_seconds` came back empty, dropping the timestamp entirely (worse
+than plain quote-drift, which at least leaves real digits to fall back
+on).
+
+Also noticed: the plain path's 16 real bullets landed suspiciously
+evenly-spaced (~12s apart, 0.0s through 180.3s) - matching
+`_plain_video_frame_timestamps()`'s own computed grounding list
+(follow-up 10) almost exactly. The model followed the given values
+literally, one bullet per listed timestamp, same behavior as the
+adaptive path's bullets-track-the-highlight-list pattern - just without
+an equally explicit prompt instruction demanding it (the plain
+intro text says "pick whichever listed value is closest," not "one per
+listed value").
+
+**Fix, two parts, both in scene.py.**
+
+1. Added an optional `\]?` to `_BULLET_START_RE` right after `t` (before
+   the optional `=`), absorbing one stray `]` without treating it as the
+   real close - the real close (found by the existing `]`/`)`/`J`/`j`
+   alternation) is still whichever comes next. Verified this alone (no
+   realignment needed) already recovers correct timestamps via the
+   existing digit-extraction fallback in `_parse_timestamp_token()` -
+   `raw_seconds` now captures the real corrupted-but-digit-bearing
+   content instead of an empty string.
+
+2. Extended `_realign_bullet_timestamps()`'s wiring in `describe_scene()`
+   to the plain-video branch too: added `plain_timestamps: list[float] =
+   []` alongside the existing `sampled_frame_timestamps` declaration
+   (both now declared before the photo/adaptive/plain branch so they're
+   always safely referenceable later regardless of which branch ran -
+   previously `plain_timestamps` only existed inside the `if
+   plain_duration:` block, which would have raised `NameError` here).
+   The realignment call site now picks `sampled_frame_timestamps` when
+   `opts.adaptive_sampling`, `plain_timestamps` otherwise - both go
+   through the same `_realign_bullet_timestamps()`, which only acts on
+   an exact bullet-count match, so a plain-path run where the model
+   didn't follow the grounding list 1:1 just falls through to the
+   existing tolerant parsing unchanged, no worse than before this
+   follow-up.
+
+Verified against a reproduction of Christer's real corrupted plain-path
+output (all 16 bullets, both new tests below): the widened regex alone
+already recovers all 16 real timestamps via fallback digit parsing,
+and realignment (when wired with matching known timestamps) recovers
+them exactly and cleanly. Added `test_bullet_start_re_tolerates_stray_close_bracket_right_after_t`
+and `test_describe_scene_realigns_corrupted_plain_timestamps_by_position`
+(the latter wiring-level, faking `probe_video()`'s duration against a
+corrupted `batch_decode()` response with a duration/fps/max_frames
+combination chosen so `_plain_video_frame_timestamps()` returns exactly
+4 known values matching the fake model's 4 bullets). Verified via
+`/tmp/verify/full_sweep.py` - 101 passed (up from 99), same 6
+pre-existing unrelated failures, no new failures.

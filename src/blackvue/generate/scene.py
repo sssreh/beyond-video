@@ -1320,8 +1320,20 @@ def _extract_raw_description_section(output_text: str) -> str:
 # section looking for one. This still only fixes *finding where each
 # bullet starts and ends* - see _realign_bullet_timestamps() below for
 # why the digits *inside* the brackets need a different fix entirely.
+#
+# 2026-08-26 (task #1260 follow-up 26): the plain (non-adaptive) path
+# showed a further variant - "[t]='...168.3"]'" and "[t]=\"...180.3\"]"
+# - a stray "]" landing immediately after "t", before the "=". Without
+# tolerating that, the closing-delimiter alternation above matched
+# that stray "]" itself as the bullet's own close (raw_seconds coming
+# back empty, the real digits left stranded as bullet *text* instead),
+# dropping the timestamp entirely rather than just reading it wrong.
+# Added an optional "\]?" right after "t" to absorb that one stray
+# character without treating it as the real close - the real close
+# (found by the existing alternation below) is still whichever of
+# "]"/")"/"J"/"j" comes next after that.
 _BULLET_START_RE = re.compile(
-    r"-\s*\[\s*t\s*=?\s*(?P<raw_seconds>[^\]\)Jj]{0,40}?)[\]\)Jj]", re.IGNORECASE
+    r"-\s*\[\s*t\s*\]?\s*=?\s*(?P<raw_seconds>[^\]\)Jj]{0,40}?)[\]\)Jj]", re.IGNORECASE
 )
 
 
@@ -2937,6 +2949,15 @@ def describe_scene(
     prompt = build_prompt(opts.task)
 
     sampled_frame_timestamps: list[float] = []
+    # 2026-08-26 (task #1260 follow-up 26): mirrors sampled_frame_
+    # timestamps above but for the plain (non-adaptive) video branch -
+    # the real, computed grounding list _plain_video_frame_timestamps()
+    # builds (task #1260 follow-up 10). Stays empty for the photo path
+    # and for any plain-video run where probe_video() fails. Declared
+    # up here (not just inside the branch that fills it in) so it's
+    # always safely referenceable below regardless of which branch ran
+    # - see _realign_bullet_timestamps()'s call site further down.
+    plain_timestamps: list[float] = []
     # Parent dir(s) of any temp clip _build_adaptive_message_content()
     # wrote (see _write_frames_as_temp_video()) - deleted in the
     # finally: block below, once the model call that reads it (if any)
@@ -3214,8 +3235,31 @@ def describe_scene(
     # before zoom-signs/sampled-frames get appended below, so it only
     # ever touches the "## Description" bullets this call itself just
     # generated.
-    if opts.adaptive_sampling and sampled_frame_timestamps:
-        output_text = _realign_bullet_timestamps(output_text, sampled_frame_timestamps)
+    #
+    # 2026-08-26 (task #1260 follow-up 26): Christer's next real run
+    # (no --adaptive-sampling, "before the lst fix") showed the exact
+    # same corruption shape on the PLAIN path - quote-drift plus a new
+    # "[t]='...'" variant that empties raw_seconds entirely (the "]"
+    # lands immediately after "t", before the widened regex ever sees
+    # a "="), silently dropping those bullets. The plain path has its
+    # own known-timestamps list too now (follow-up 10's plain_
+    # timestamps, computed before generation from real duration/fps/
+    # max_frames) - and in this real run the model wrote exactly one
+    # bullet per given value, in order (16 bullets, ~12s apart,
+    # matching plain_timestamps exactly), same as the adaptive path's
+    # bullets-track-the-highlight-list behavior. Unlike the adaptive
+    # prompt, _plain_video_intro_text() doesn't explicitly demand one
+    # bullet per listed value (the sparse-sampling hint still allows
+    # the model to merge quiet stretches) - so this is a weaker
+    # guarantee than the adaptive case. But _realign_bullet_
+    # timestamps() already refuses to act unless the bullet count
+    # matches exactly, so the risk is bounded: on a count mismatch nothing
+    # changes and the old tolerant-but-imperfect parsing still runs;
+    # on a match, trusting position over these same corrupted digits is
+    # no riskier here than it is on the adaptive path.
+    known_timestamps = sampled_frame_timestamps if opts.adaptive_sampling else plain_timestamps
+    if known_timestamps:
+        output_text = _realign_bullet_timestamps(output_text, known_timestamps)
 
     if opts.zoom_signs:
         zoom_start = time.monotonic() if debug else None
