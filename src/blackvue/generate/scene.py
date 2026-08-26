@@ -346,6 +346,46 @@ ZOOM_OCR_PLATE_PROMPT = (
     "\"not legible\" - don't guess a plausible-sounding replacement."
 )
 
+# Batched counterparts of the two prompts above - read several crops
+# in one model call instead of one call per crop (task #1244: Christer
+# counted ~34 separate sequential model calls processing one real
+# recording, almost all of them individual sign/plate reads from the
+# loop this used to be - each call carries its own fixed overhead
+# regardless of how small the crop is, which added up to most of the
+# recording's total processing time). {count} is filled in with the
+# number of images actually attached to the call - see
+# _run_batch_image_prompt(). JSON-list output rather than a numbered-
+# lines format to match this module's existing tolerant-JSON-parsing
+# style (see _parse_grounding_boxes()/_parse_batch_reads()).
+ZOOM_OCR_BATCH_PROMPT = (
+    "Each image above is a separate cropped, zoomed-in region of a "
+    "dashcam frame, centered on a sign - {count} images in total, in "
+    "the order shown. For each one, read the text on it exactly as "
+    "shown. If a given crop still isn't legible even at this zoom "
+    "level, use \"not legible\" for that one - don't guess a "
+    "plausible-sounding replacement. Output a JSON list of exactly "
+    "{count} strings, one per image, in the same order as the images "
+    "- nothing else, no commentary outside the list."
+)
+
+ZOOM_OCR_PLATE_BATCH_PROMPT = (
+    "Each image above is a separate cropped, zoomed-in region of a "
+    "dashcam frame, centered on a vehicle's license plate - {count} "
+    "images in total, in the order shown. Regular Swedish plates are 3 "
+    "letters, a space, then 2 digits and one more character that can "
+    "be either a digit or a letter. Personalized/vanity plates can "
+    "differ from this - they may run longer, and the space itself can "
+    "sometimes be a meaningful part of the plate rather than just a "
+    "separator. Read exactly what's on each plate as shown, don't "
+    "force it into the regular pattern if it doesn't fit. Return only "
+    "the plate characters for each one, nothing else - no description, "
+    "no commentary. If a given plate isn't legible even at this zoom "
+    "level, use \"not legible\" for that one - don't guess a "
+    "plausible-sounding replacement. Output a JSON list of exactly "
+    "{count} strings, one per image, in the same order as the images "
+    "- nothing else, no commentary outside the list."
+)
+
 TRIP_SUMMARY_PROMPT_TEMPLATE = (
     "Below are separate descriptions of consecutive dashcam recordings "
     "from a single trip, in chronological order. Each one covers a few "
@@ -1197,6 +1237,140 @@ def _run_single_image_prompt(
     )[0]
 
 
+def _run_batch_image_prompt(
+    images: list[tuple[int | None, int | None, "PILImage.Image"]],
+    prompt_template: str,
+    loaded: _LoadedSceneModel,
+    opts: SceneOptions,
+    *,
+    max_new_tokens: int | None = None,
+    repetition_penalty: float | None = None,
+    no_repeat_ngram_size: int | None = None,
+    force_sample: bool = False,
+) -> list[str]:
+    """Read several crops in ONE model call instead of one call per
+    crop - each element of `images` is (resized_width, resized_height,
+    image), same shape _run_single_image_prompt() takes for a single
+    image. `prompt_template` must accept a {count} placeholder (see
+    ZOOM_OCR_BATCH_PROMPT/ZOOM_OCR_PLATE_BATCH_PROMPT above). Returns
+    one string per image, same order and same length as `images`
+    regardless of how the model actually answered - see
+    _parse_batch_reads() for the tolerant-parsing contract that makes
+    that guarantee possible.
+
+    Exists to fix a real measured cost (task #1244): _zoom_into_signs()
+    used to call _run_single_image_prompt() once per detected sign/
+    plate crop, plus a second call per plate for the confidence check
+    - Christer counted ~34 separate sequential model calls processing
+    one real recording, watching GPU-usage spikes in Task Manager with
+    long idle gaps between them (each call pays its own fixed
+    overhead - rebuilding the chat template, re-running the vision
+    tower, an autoregressive decode from scratch - no matter how small
+    the crop is). Multiple images in one message is already proven
+    safe in this module: _build_adaptive_message_content() already
+    sends several independently-sized image elements in a single
+    call. Grouping every same-type crop from one frame into one call
+    here cuts _zoom_into_signs()'s OCR cost from one call per crop
+    down to at most one call per frame per crop-type (signs, plates,
+    plus one more for the plate confidence re-read) - the per-frame
+    sign/plate *detection* call above this in _zoom_into_signs() is
+    unchanged, since each frame is a genuinely different image and
+    can't be merged with the others."""
+
+    if not images:
+        return []
+
+    content: list[dict] = []
+    for resized_width, resized_height, image in images:
+        image_ele = {"type": "image", "image": image}
+        if resized_width and resized_height:
+            image_ele["resized_width"] = resized_width
+            image_ele["resized_height"] = resized_height
+        content.append(image_ele)
+    content.append({"type": "text", "text": prompt_template.format(count=len(images))})
+
+    messages = [{"role": "user", "content": content}]
+    text = loaded.processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs, video_kwargs = _fetch_vision_inputs(
+        loaded.process_vision_info, messages
+    )
+    inputs = loaded.processor(
+        text=[text], images=image_inputs, videos=video_inputs,
+        padding=True, return_tensors="pt", **video_kwargs,
+    )
+    inputs = inputs.to(loaded.model.device)
+    generated_ids = loaded.model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens or opts.max_new_tokens,
+        repetition_penalty=(
+            opts.repetition_penalty if repetition_penalty is None else repetition_penalty
+        ),
+        no_repeat_ngram_size=(
+            opts.no_repeat_ngram_size if no_repeat_ngram_size is None else no_repeat_ngram_size
+        ),
+        **_sampling_kwargs(opts, force_sample=force_sample),
+    )
+    trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+    raw = loaded.processor.batch_decode(
+        trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )[0]
+    return _parse_batch_reads(raw, len(images))
+
+
+def _parse_batch_reads(raw_text: str, expected_count: int) -> list[str]:
+    """Parse a batched OCR response (a JSON list of `expected_count`
+    strings, one per image, see ZOOM_OCR_BATCH_PROMPT/
+    ZOOM_OCR_PLATE_BATCH_PROMPT) - tolerant of markdown fences and
+    stray text around the list, same style as _parse_grounding_boxes()
+    just below. Always returns exactly `expected_count` strings:
+    padded with an '[unread - ...]' placeholder if the model returned
+    too few, truncated if it returned too many, and every entry comes
+    back as that same placeholder if the response couldn't be parsed
+    as a list at all. Batching trades a little robustness for many
+    fewer model calls (see _run_batch_image_prompt()'s own docstring),
+    so this stays conservative about silently mismatching an OCR read
+    to the wrong crop - a placeholder that's visibly a failure is
+    better than a plausible-looking read attached to the wrong sign."""
+
+    import json
+    import re
+
+    text = raw_text.strip()
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1)
+
+    items = None
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            items = data
+    except json.JSONDecodeError:
+        pass
+
+    if items is None:
+        span_match = re.search(r"\[.*\]", text, re.DOTALL)
+        if span_match:
+            try:
+                data = json.loads(span_match.group(0))
+                if isinstance(data, list):
+                    items = data
+            except json.JSONDecodeError:
+                pass
+
+    if items is None:
+        return ["[unread - batch response wasn't parseable]"] * expected_count
+
+    reads = [str(item).strip() if item is not None else "" for item in items]
+    if len(reads) < expected_count:
+        reads = reads + ["[unread - batch response was short]"] * (expected_count - len(reads))
+    elif len(reads) > expected_count:
+        reads = reads[:expected_count]
+    return reads
+
+
 def _photo_as_pil_image(path: Path):
     """Decode a still photo (any of archive/photo.py's PHOTO_EXTENSIONS
     - jpg/jpeg/png/heic/gpr) into a PIL Image via an ffmpeg subprocess,
@@ -1601,7 +1775,19 @@ def _zoom_into_signs(
         scale_y = native_height / detect_height
         qwen3 = loaded.is_qwen3
 
-        for det in boxes:
+        # Build every crop for this frame first (geometry only, no
+        # model calls yet), split into a sign bucket and a plate
+        # bucket - each bucket gets read in ONE batched model call
+        # below instead of one call per crop (task #1244: this used to
+        # call _run_single_image_prompt() once per crop here, plus a
+        # second call per plate for the confidence check - Christer
+        # counted ~34 sequential model calls total on one real
+        # recording, almost all of them from this loop). Geometry/
+        # cropping/debug-saving is unchanged, only how the OCR read
+        # itself gets requested.
+        sign_crops = []
+        plate_crops = []
+        for det_index, det in enumerate(boxes):
             x1, y1, x2, y2 = det["box"]
             if qwen3:
                 x1, x2 = x1 / 1000 * detect_width, x2 / 1000 * detect_width
@@ -1634,7 +1820,6 @@ def _zoom_into_signs(
                 continue
 
             is_plate = "plate" in det["label"].lower()
-            ocr_prompt = ZOOM_OCR_PLATE_PROMPT if is_plate else ZOOM_OCR_PROMPT
 
             debug_path = None
             if debug_dir is not None:
@@ -1652,45 +1837,101 @@ def _zoom_into_signs(
                     warn(f"  zoom: couldn't save debug crop to {debug_path} ({exc}).")
                     debug_path = None
 
+            entry = {
+                "det_index": det_index,
+                "label": det["label"],
+                "width": ocr_width,
+                "height": ocr_height,
+                "crop": crop,
+                "crop_native_width": crop_native_width,
+                "crop_native_height": crop_native_height,
+                "debug_path": debug_path,
+            }
+            (plate_crops if is_plate else sign_crops).append(entry)
+
+        # frame_results collects every crop's finished output line/
+        # manifest entry keyed by its original detection order, so the
+        # final append below can walk boxes in the same order the
+        # model detected them in - batching signs and plates
+        # separately (and reassembling here) shouldn't change what the
+        # output looks like, only how many model calls it took to get
+        # there.
+        frame_results: dict[int, tuple[str, str | None]] = {}
+
+        if sign_crops:
             try:
-                read_text = _run_single_image_prompt(
-                    crop, ocr_prompt, loaded, opts,
-                    resized_width=ocr_width, resized_height=ocr_height,
+                reads = _run_batch_image_prompt(
+                    [(item["width"], item["height"], item["crop"]) for item in sign_crops],
+                    ZOOM_OCR_BATCH_PROMPT, loaded, opts,
                     max_new_tokens=opts.zoom_max_new_tokens,
                     repetition_penalty=opts.zoom_repetition_penalty,
                     no_repeat_ngram_size=opts.zoom_no_repeat_ngram_size,
                 )
             except Exception as exc:  # noqa: BLE001
-                warn(f"  zoom: read failed for '{det['label']}' at t={timestamp:.1f}s ({exc}).")
-                continue
-
-            confidence_note = ""
-            if is_plate and opts.zoom_plate_confidence_check:
-                try:
-                    second_read = _run_single_image_prompt(
-                        crop, ocr_prompt, loaded, opts,
-                        resized_width=ocr_width, resized_height=ocr_height,
-                        max_new_tokens=opts.zoom_max_new_tokens,
-                        repetition_penalty=opts.zoom_repetition_penalty,
-                        no_repeat_ngram_size=opts.zoom_no_repeat_ngram_size,
-                        force_sample=True,
-                    )
-                except Exception as exc:  # noqa: BLE001 - confidence check is a bonus, not core
-                    warn(f"  zoom: plate confidence re-read failed ({exc}), reporting single read unverified.")
-                    confidence_note = " [unverified - confidence re-read failed]"
-                else:
-                    if _normalize_plate_text(read_text) != _normalize_plate_text(second_read):
-                        confidence_note = (
-                            " [unverified - two independent reads disagreed: "
-                            f"{read_text.strip()!r} vs {second_read.strip()!r}]"
+                warn(f"  zoom: batch sign read failed at t={timestamp:.1f}s ({exc}), skipping {len(sign_crops)} sign(s).")
+            else:
+                for item, read_text in zip(sign_crops, reads):
+                    line = f"- [t={timestamp:.1f}s] {item['label']}: {read_text.strip()}"
+                    manifest_entry = None
+                    if item["debug_path"] is not None:
+                        manifest_entry = (
+                            f"{item['debug_path'].name}\t{timestamp:.1f}\t{item['label']}\t"
+                            f"{item['crop_native_width']}x{item['crop_native_height']}\t{read_text.strip()}"
                         )
+                    frame_results[item["det_index"]] = (line, manifest_entry)
 
-            lines.append(f"- [t={timestamp:.1f}s] {det['label']}: {read_text.strip()}{confidence_note}")
-            if debug_path is not None:
-                debug_manifest.append(
-                    f"{debug_path.name}\t{timestamp:.1f}\t{det['label']}\t"
-                    f"{crop_native_width}x{crop_native_height}\t{read_text.strip()}{confidence_note}"
+        if plate_crops:
+            try:
+                reads = _run_batch_image_prompt(
+                    [(item["width"], item["height"], item["crop"]) for item in plate_crops],
+                    ZOOM_OCR_PLATE_BATCH_PROMPT, loaded, opts,
+                    max_new_tokens=opts.zoom_max_new_tokens,
+                    repetition_penalty=opts.zoom_repetition_penalty,
+                    no_repeat_ngram_size=opts.zoom_no_repeat_ngram_size,
                 )
+            except Exception as exc:  # noqa: BLE001
+                warn(f"  zoom: batch plate read failed at t={timestamp:.1f}s ({exc}), skipping {len(plate_crops)} plate(s).")
+            else:
+                second_reads = None
+                if opts.zoom_plate_confidence_check:
+                    try:
+                        second_reads = _run_batch_image_prompt(
+                            [(item["width"], item["height"], item["crop"]) for item in plate_crops],
+                            ZOOM_OCR_PLATE_BATCH_PROMPT, loaded, opts,
+                            max_new_tokens=opts.zoom_max_new_tokens,
+                            repetition_penalty=opts.zoom_repetition_penalty,
+                            no_repeat_ngram_size=opts.zoom_no_repeat_ngram_size,
+                            force_sample=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - confidence check is a bonus, not core
+                        warn(f"  zoom: plate confidence re-read failed ({exc}), reporting reads unverified.")
+
+                for i, item in enumerate(plate_crops):
+                    read_text = reads[i]
+                    confidence_note = ""
+                    if opts.zoom_plate_confidence_check:
+                        if second_reads is None:
+                            confidence_note = " [unverified - confidence re-read failed]"
+                        elif _normalize_plate_text(read_text) != _normalize_plate_text(second_reads[i]):
+                            confidence_note = (
+                                " [unverified - two independent reads disagreed: "
+                                f"{read_text.strip()!r} vs {second_reads[i].strip()!r}]"
+                            )
+                    line = f"- [t={timestamp:.1f}s] {item['label']}: {read_text.strip()}{confidence_note}"
+                    manifest_entry = None
+                    if item["debug_path"] is not None:
+                        manifest_entry = (
+                            f"{item['debug_path'].name}\t{timestamp:.1f}\t{item['label']}\t"
+                            f"{item['crop_native_width']}x{item['crop_native_height']}\t"
+                            f"{read_text.strip()}{confidence_note}"
+                        )
+                    frame_results[item["det_index"]] = (line, manifest_entry)
+
+        for det_index in sorted(frame_results):
+            line, manifest_entry = frame_results[det_index]
+            lines.append(line)
+            if manifest_entry is not None:
+                debug_manifest.append(manifest_entry)
 
     if debug_dir is not None and debug_manifest:
         manifest_path = debug_dir / "manifest.tsv"

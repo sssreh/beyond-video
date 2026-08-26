@@ -719,6 +719,45 @@ def test_parse_grounding_boxes_unparseable_returns_empty():
     assert scene._parse_grounding_boxes("not json at all") == []
 
 
+# ---------------------------------------------------------------------------
+# _parse_batch_reads() (task #1244) - the tolerant-parsing contract
+# _run_batch_image_prompt() relies on to always hand back exactly as
+# many strings as crops it was asked to read, regardless of how well
+# the model followed the "JSON list of N strings" instruction.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_batch_reads_clean_json_list():
+    raw = '["ETR734", "not legible", "BESIKTA"]'
+    assert scene._parse_batch_reads(raw, 3) == ["ETR734", "not legible", "BESIKTA"]
+
+
+def test_parse_batch_reads_tolerates_markdown_fence():
+    raw = '```json\n["ABC123"]\n```'
+    assert scene._parse_batch_reads(raw, 1) == ["ABC123"]
+
+
+def test_parse_batch_reads_pads_short_response():
+    # Model only returned 2 answers for 3 requested crops - the third
+    # comes back as a visibly-a-failure placeholder rather than
+    # silently reusing/duplicating one of the other two reads.
+    raw = '["ETR734", "BESIKTA"]'
+    result = scene._parse_batch_reads(raw, 3)
+    assert result[:2] == ["ETR734", "BESIKTA"]
+    assert "unread" in result[2]
+
+
+def test_parse_batch_reads_truncates_long_response():
+    raw = '["ETR734", "BESIKTA", "SHURGARD", "extra"]'
+    assert scene._parse_batch_reads(raw, 3) == ["ETR734", "BESIKTA", "SHURGARD"]
+
+
+def test_parse_batch_reads_unparseable_marks_every_entry_unread():
+    result = scene._parse_batch_reads("not a json list at all", 2)
+    assert len(result) == 2
+    assert all("unread" in r for r in result)
+
+
 def test_scene_options_defaults_match_tuned_values():
     opts = scene.SceneOptions()
 
@@ -779,20 +818,24 @@ def test_zoom_into_signs_flags_disagreeing_plate_reads(monkeypatch, tmp_path):
         scene, "_extract_full_res_frames", lambda video_path, count: [(1.0, frame)]
     )
 
-    call_count = {"n": 0}
-
+    # Detection (GROUND_PROMPT) still goes through
+    # _run_single_image_prompt() - only the crop-reading step below
+    # batches (task #1244), so this fake only ever sees the detection
+    # call now.
     def fake_run_single_image_prompt(image, prompt, loaded, opts, **kwargs):
-        call_count["n"] += 1
-        if prompt is scene.GROUND_PROMPT:
-            return '[{"bbox_2d": [10, 10, 60, 40], "label": "vehicle license plate"}]'
-        # First OCR call (greedy): "ETR734". Second (force_sample,
-        # the confidence check): a different read, "FTR78P" - the two
-        # should disagree.
+        assert prompt is scene.GROUND_PROMPT
+        return '[{"bbox_2d": [10, 10, 60, 40], "label": "vehicle license plate"}]'
+
+    # First OCR batch call (greedy): "ETR734". Second (force_sample,
+    # the confidence check): a different read, "FTR78P" - the two
+    # should disagree.
+    def fake_run_batch_image_prompt(images, prompt_template, loaded, opts, **kwargs):
         if kwargs.get("force_sample"):
-            return "FTR78P"
-        return "ETR734"
+            return ["FTR78P"]
+        return ["ETR734"]
 
     monkeypatch.setattr(scene, "_run_single_image_prompt", fake_run_single_image_prompt)
+    monkeypatch.setattr(scene, "_run_batch_image_prompt", fake_run_batch_image_prompt)
 
     loaded = _FakeLoadedModel()
     opts = scene.SceneOptions(zoom_plate_confidence_check=True)
@@ -813,11 +856,14 @@ def test_zoom_into_signs_no_note_when_plate_reads_agree(monkeypatch):
     )
 
     def fake_run_single_image_prompt(image, prompt, loaded, opts, **kwargs):
-        if prompt is scene.GROUND_PROMPT:
-            return '[{"bbox_2d": [10, 10, 60, 40], "label": "vehicle license plate"}]'
-        return "ABC123"
+        assert prompt is scene.GROUND_PROMPT
+        return '[{"bbox_2d": [10, 10, 60, 40], "label": "vehicle license plate"}]'
+
+    def fake_run_batch_image_prompt(images, prompt_template, loaded, opts, **kwargs):
+        return ["ABC123"]
 
     monkeypatch.setattr(scene, "_run_single_image_prompt", fake_run_single_image_prompt)
+    monkeypatch.setattr(scene, "_run_batch_image_prompt", fake_run_batch_image_prompt)
 
     loaded = _FakeLoadedModel()
     opts = scene.SceneOptions(zoom_plate_confidence_check=True)
@@ -839,22 +885,27 @@ def test_zoom_into_signs_skips_confidence_check_for_non_plate_signs(monkeypatch)
     calls = []
 
     def fake_run_single_image_prompt(image, prompt, loaded, opts, **kwargs):
-        calls.append((prompt is scene.GROUND_PROMPT, kwargs.get("force_sample", False)))
-        if prompt is scene.GROUND_PROMPT:
-            return '[{"bbox_2d": [10, 10, 60, 40], "label": "shop sign"}]'
-        return "OPEN 24 HOURS"
+        assert prompt is scene.GROUND_PROMPT
+        calls.append(("single", kwargs.get("force_sample", False)))
+        return '[{"bbox_2d": [10, 10, 60, 40], "label": "shop sign"}]'
+
+    def fake_run_batch_image_prompt(images, prompt_template, loaded, opts, **kwargs):
+        calls.append(("batch", kwargs.get("force_sample", False)))
+        return ["OPEN 24 HOURS"]
 
     monkeypatch.setattr(scene, "_run_single_image_prompt", fake_run_single_image_prompt)
+    monkeypatch.setattr(scene, "_run_batch_image_prompt", fake_run_batch_image_prompt)
 
     loaded = _FakeLoadedModel()
     opts = scene.SceneOptions(zoom_plate_confidence_check=True)
 
     result = scene._zoom_into_signs(Path("fake.mp4"), loaded, opts)
 
-    # Exactly one grounding call + one OCR call - no second
-    # (force_sample) confidence-check call for a non-plate label.
+    # Exactly one grounding call (single-image) + one batch OCR call -
+    # no second (force_sample) confidence-check batch call for a
+    # non-plate label.
     assert len(calls) == 2
-    assert not any(force_sample for _is_ground, force_sample in calls)
+    assert not any(force_sample for _kind, force_sample in calls)
     assert "unverified" not in result
 
 
