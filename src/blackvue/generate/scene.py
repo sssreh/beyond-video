@@ -1561,22 +1561,72 @@ def _adaptive_video_intro_text(timestamps: list[float]) -> str:
     a list of separate image elements, so this lists the whole
     frame-order -> real-timestamp mapping up front instead, in the
     same order the frames appear in the synthetic clip (ascending -
-    compute_adaptive_timestamps() guarantees that)."""
+    compute_adaptive_timestamps() guarantees that).
 
-    frame_list = "\n".join(
-        f"- frame {i + 1}: t={timestamp:.1f}s" for i, timestamp in enumerate(timestamps)
-    )
+    Task #1245 follow-up, Christer's real-output report: description
+    quality dropped two ways once this synthetic-clip approach shipped
+    - (1) far shorter, choppier sentences, closer to one bullet per
+    sampled frame than the fuller multi-frame prose the old image-list
+    approach tended to produce, and (2) the model's own "[t=Xs]"
+    timestamps came out visibly corrupted in the back half of longer
+    descriptions ("t = 1 4 4 . 1 s" instead of "t=144.1s"), getting
+    worse as the description went on. Christer's own diagnosis for (1):
+    "My guess is that it reads frames just before and just after to
+    get a more fully description, but now the frames are totaly
+    differen from the neighbours" - i.e. a real video's temporal-
+    merging machinery assumes neighboring frames are visually
+    continuous (adjacent moments in time), which is exactly what
+    adaptive sampling deliberately violates (that's the whole point -
+    picking the moments that matter, not evenly-spaced ones), so the
+    model has nothing to visually bridge between frames and falls back
+    to describing each one as its own isolated moment. (2) traces to a
+    second, independent mechanism: this function's first version built
+    that frame -> timestamp mapping as 16 near-identical dashed lines
+    ("- frame N: t=X.Xs"), structurally similar to the very "- [t=Xs]"
+    bullet format DESCRIBE_PROMPT asks the model to write - `generate()`
+    is called with `no_repeat_ngram_size=3` (SceneOptions default,
+    tuned against real footage and deliberately left untouched here),
+    which bans any 3-token sequence that's already appeared anywhere in
+    the sequence so far, prompt included; once the model has written
+    enough near-identical "[t=" bracket-openings (its own, and/or ones
+    that already appeared in the old dashed intro list), it has to
+    contort the exact token sequence to dodge the ban, which is
+    genuinely what token-level whitespace-mangling like this looks
+    like - and it compounds every time, matching the "gets worse deeper
+    into the description" pattern Christer reported.
+
+    This version addresses both without touching any tuned generation
+    parameter: the frame -> timestamp mapping is now one flowing
+    sentence (a plain comma list) instead of 16 dashed bullet-shaped
+    lines, removing the structural resemblance to the model's own
+    output format that was very likely feeding the ngram-block
+    mangling; and the text now explicitly tells the model these frames
+    are non-adjacent highlights, not continuous motion, and asks it to
+    synthesize them into a connected narrative rather than caption each
+    one in isolation - a direct, cheap (prompt-only) attempt at
+    Christer's hypothesis for the choppiness. Neither is guaranteed to
+    fully restore the old image-list version's prose quality - if it
+    doesn't, the next lever worth trying is loosening
+    no_repeat_ngram_size/repetition_penalty specifically for this call,
+    which this change deliberately avoids gambling on without being
+    able to test it against a real model from this sandbox."""
+
+    times = ", ".join(f"{timestamp:.1f}s" for timestamp in timestamps)
     return (
-        "The short clip below was assembled by picking "
-        f"{len(timestamps)} individual moments out of a longer "
-        "recording - it is NOT the original recording played at its "
-        "own natural speed, and its own frames are NOT evenly spaced "
-        "in real time. In playback order, each of its frames "
-        "corresponds to this real elapsed time from the start of the "
-        f"original recording:\n{frame_list}\nUse these exact given "
-        "values, not an assumed even spacing across this short clip's "
-        "own length, when writing the '[t=Xs]' timestamps requested "
-        "below."
+        "The clip below was assembled by sampling "
+        f"{len(timestamps)} separate highlighted moments out of a "
+        "longer recording, shown in order - it is NOT continuous "
+        "motion the way an ordinary video clip is. Consecutive frames "
+        "here are often several seconds or more apart in the original "
+        "recording, so don't assume smooth visual continuity between "
+        "neighboring frames; treat each as a distinct moment, but "
+        "still synthesize them into one connected description of what "
+        "happened over the whole recording, rather than describing "
+        "each frame in isolation. In playback order, these frames' "
+        "real elapsed times from the start of the original recording "
+        f"are: {times}. Use these exact given values, not an assumed "
+        "even spacing across this short clip's own length, when "
+        "writing the '[t=Xs]' timestamps requested below."
     )
 
 

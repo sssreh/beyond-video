@@ -1238,12 +1238,22 @@ def test_write_frames_as_temp_video_raises_media_tool_error_on_ffmpeg_failure(
 
 
 def test_adaptive_video_intro_text_lists_every_frames_real_timestamp():
+    """Task #1245 follow-up: rewritten as one flowing comma list (not
+    16 near-identical dashed '- frame N: t=Xs' lines) to stop the
+    structural resemblance to the model's own '- [t=Xs]' output bullets
+    that was very likely feeding no_repeat_ngram_size-driven digit-
+    spacing corruption in real output Christer reported - see
+    _adaptive_video_intro_text()'s own docstring for the full story."""
+
     text = scene._adaptive_video_intro_text([0.0, 12.5, 30.0])
 
-    assert "3 individual moments" in text
-    assert "frame 1: t=0.0s" in text
-    assert "frame 2: t=12.5s" in text
-    assert "frame 3: t=30.0s" in text
+    assert "3 separate highlighted moments" in text
+    assert "0.0s, 12.5s, 30.0s" in text
+    # The old dashed-bullet-per-frame format is gone - nothing in the
+    # intro text should look like a "- [t=" style bullet, since that's
+    # exactly what structurally resembled the model's own output format.
+    assert "- frame" not in text
+    assert "\n" not in text
 
 
 # --- photo support (Christer's real report: "pictures dont get scene
