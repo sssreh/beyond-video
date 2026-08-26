@@ -1765,15 +1765,38 @@ def describe_scene(
                 video_path, opts, gps_fixes, gsensor_samples, recording_start, warn=warn
             )
 
-        if adaptive_content:
+        if sampled_frame_timestamps:
+            # Deliberately keyed on sampled_frame_timestamps, not
+            # adaptive_content, even though they're built together by
+            # _build_adaptive_message_content() above - adaptive_content
+            # is a list that always starts with one intro-text element
+            # (see that function), so it's truthy even when zero real
+            # frames got extracted (e.g. a transient decord/network-read
+            # failure on _extract_frames_at_timestamps() that returns []
+            # without raising). A real bug: checking adaptive_content
+            # here used to let that empty-but-truthy case slip through
+            # as a text-only message with no images at all - the model
+            # then has nothing to actually look at and fabricates a
+            # plausible-sounding but ungrounded description instead of
+            # erroring or falling back (task #1238, a real-archive
+            # report: "20220927_132155_E"'s adaptive-sampling retry
+            # produced a generic 4-bullet description bunched at t~0s
+            # with none of that recording's known real content, while
+            # the separate zoom-signs pass - its own independent frame
+            # extraction - correctly read every sign across the whole
+            # clip). sampled_frame_timestamps is exactly as long as the
+            # frames actually extracted, so it's falsy in precisely the
+            # cases that should fall back to the plain "video" element
+            # below instead.
             message_content = adaptive_content + [{"type": "text", "text": prompt}]
         else:
-            # Either opts.adaptive_sampling is False (today's default,
+            # opts.adaptive_sampling is False (today's default,
             # unchanged behavior), or it's True but
             # _build_adaptive_message_content() itself gracefully
-            # degraded (an unreadable/zero-duration video) - both cases
-            # fall back to the same plain "video" element qwen_vl_utils
-            # samples internally.
+            # degraded (an unreadable/zero-duration video, or - see the
+            # comment above - zero frames actually extracted) - all
+            # cases fall back to the same plain "video" element
+            # qwen_vl_utils samples internally.
             content_ele = {
                 "type": "video",
                 "video": str(video_path.resolve()),

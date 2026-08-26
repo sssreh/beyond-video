@@ -911,6 +911,162 @@ def test_describe_scene_output_includes_disclaimer(monkeypatch, tmp_path):
     assert scene.DISCLAIMER in result
 
 
+# ---------------------------------------------------------------------------
+# describe_scene()'s adaptive-sampling fallback detection (task #1238) - a
+# real-archive bug report: "20220927_132155_E"'s adaptive-sampling retry
+# produced a short, generic 4-bullet description bunched near t=0s, with
+# none of that recording's known real content (a red bus, BESIKTA/BRH547
+# signage), while the separate zoom-signs pass read every sign correctly
+# across the whole clip. Root cause: _build_adaptive_message_content()
+# always seeds its `content` list with one intro-text element before it
+# ever adds real frame images (see that function), so `content` is truthy
+# even when frame extraction returns zero images (e.g. a transient
+# decord/network-read hiccup) - describe_scene() used to check
+# `if adaptive_content:` to decide whether to use it, which let a
+# text-only, image-less message through instead of falling back to the
+# dependable plain "video" element. The vision model, shown no pictures at
+# all, produced a plausible-sounding but entirely ungrounded description.
+# Fixed by checking `sampled_frame_timestamps` instead (empty exactly when
+# no real frames were extracted).
+# ---------------------------------------------------------------------------
+
+
+def test_describe_scene_falls_back_to_plain_video_when_adaptive_frames_empty(
+    monkeypatch, tmp_path
+):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_messages = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            captured_messages["messages"] = messages
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\nRoutine driving, nothing notable happened."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+
+    # Reproduces the exact bug shape: a non-empty content list (the intro
+    # text element _build_adaptive_message_content() always seeds first)
+    # but zero real timestamps, because frame extraction itself found
+    # nothing usable.
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [{"type": "text", "text": scene.ADAPTIVE_FRAME_INTRO_PROMPT}],
+            [],
+        ),
+    )
+
+    result = scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+
+    assert result.startswith("## Description")
+    message_content = captured_messages["messages"][0]["content"]
+    types = [element.get("type") for element in message_content]
+    # Fell back to the plain video element, not the empty adaptive one.
+    assert "video" in types
+    assert scene.ADAPTIVE_FRAME_INTRO_PROMPT not in [
+        element.get("text") for element in message_content
+    ]
+
+
+def test_describe_scene_uses_adaptive_frames_when_extraction_succeeds(monkeypatch, tmp_path):
+    """Sanity-check the other side of the same branch: when adaptive
+    sampling genuinely does extract real frames, describe_scene() must
+    still use them (not the plain video element) - this test would have
+    failed if the fix had instead been to always fall back."""
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_messages = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            captured_messages["messages"] = messages
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\n- [t=70.0s] A red bus passes on the left."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [
+                {"type": "text", "text": scene.ADAPTIVE_FRAME_INTRO_PROMPT},
+                {"type": "text", "text": "[Frame at t=70.0s]"},
+                {"type": "image", "image": object()},
+            ],
+            [70.0],
+        ),
+    )
+
+    result = scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+
+    assert "## Sampled frames" in result
+    assert "- [t=70.0s] sampled frame" in result
+    message_content = captured_messages["messages"][0]["content"]
+    types = [element.get("type") for element in message_content]
+    assert "video" not in types
+    assert "image" in types
+
+
 # --- photo support (Christer's real report: "pictures dont get scene
 # asset") ------------------------------------------------------------------
 #
@@ -1021,7 +1177,7 @@ def test_describe_scene_builds_an_image_content_element_for_a_photo(monkeypatch,
         return [], [], {}
 
     loaded = _fake_loaded_scene_model(fake_process_vision_info)
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
 
     # crop_top/crop_bottom off so the asserted size below reflects the
     # source photo exactly - describe_scene() applies the same overlay
@@ -1060,7 +1216,7 @@ def test_describe_scene_still_builds_a_video_content_element_for_a_real_video(
         return [], [], {}
 
     loaded = _fake_loaded_scene_model(fake_process_vision_info)
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
 
     scene.describe_scene(video_path, zoom_signs=False)
 
@@ -1090,7 +1246,7 @@ def test_describe_scene_video_element_uses_fixed_resize(monkeypatch, tmp_path):
         return [], [], {}
 
     loaded = _fake_loaded_scene_model(fake_process_vision_info)
-    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none": loaded)
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
 
     scene.describe_scene(video_path, zoom_signs=False)
 
