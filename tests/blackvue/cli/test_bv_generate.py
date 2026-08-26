@@ -132,6 +132,7 @@ def _base_args(**overrides):
         adaptive_sampling=False,
         adaptive_context_frames=0,
         adaptive_context_offset_seconds=0.5,
+        adaptive_max_frames=16,
         camera="front",
         overwrite=False,
         dry_run=False,
@@ -2638,6 +2639,65 @@ def test_do_describe_scene_passes_adaptive_context_frames_through(monkeypatch, t
     assert had_error is False
     assert calls[0]["adaptive_context_frames"] == 2
     assert calls[0]["adaptive_context_offset_seconds"] == 1.0
+
+
+# --- --adaptive-max-frames (task #1256): separate knob from
+# --adaptive-context-frames - controls how many highlighted moments
+# compute_adaptive_timestamps() picks, not how many extra real frames
+# surround each one. Christer's own clarification driving this: "I dont
+# mean to skip adaptive frames, just the extraframes around it" - he
+# wants --adaptive-context-frames backed off/skipped while testing a
+# higher highlight count (32) separately. -----------------------------
+
+
+def test_parse_args_adaptive_max_frames_defaults_to_16():
+    args = parse_args(["/some/path", "--describe-scene", "--adaptive-sampling"])
+
+    assert args.adaptive_max_frames == 16
+
+
+def test_parse_args_adaptive_max_frames_flag():
+    args = parse_args(
+        [
+            "/some/path",
+            "--describe-scene",
+            "--adaptive-sampling",
+            "--adaptive-max-frames",
+            "32",
+        ]
+    )
+
+    assert args.adaptive_max_frames == 32
+
+
+def test_do_describe_scene_passes_adaptive_max_frames_through(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_describe_scene(source, **kwargs):
+        calls.append(kwargs)
+        return "## Description\nnothing notable"
+
+    monkeypatch.setattr(bv_generate, "describe_scene", fake_describe_scene)
+    monkeypatch.setattr(bv_generate, "read_recording_gps", lambda *a, **k: ())
+    monkeypatch.setattr(bv_generate, "read_recording_gsensor", lambda *a, **k: ())
+
+    recording = Recording(id=RecordingId("20260715_134010_N"))
+    video = tmp_path / "20260715_134010_NF.mp4"
+    video.write_bytes(b"x")
+    recording.assets[Asset.FRONT] = AssetFile(asset=Asset.FRONT, path=video)
+
+    args = _base_args(
+        describe_scene=True,
+        adaptive_sampling=True,
+        adaptive_max_frames=32,
+    )
+
+    had_error = bv_generate._do_describe_scene(
+        recording, tmp_path, args, adapter=object()
+    )
+
+    assert had_error is False
+    assert calls[0]["max_frames"] == 32
 
 
 # ---------------------------------------------------------------------------

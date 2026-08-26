@@ -486,6 +486,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--adaptive-max-frames",
+        type=int,
+        default=16,
+        metavar="N",
+        help=(
+            "For --describe-scene --adaptive-sampling: how many "
+            "highlighted moments compute_adaptive_timestamps() picks "
+            "across the recording (default: 16 - one bullet per "
+            "highlight in the output, regardless of "
+            "--adaptive-context-frames). This is a DIFFERENT knob from "
+            "--adaptive-context-frames: this one changes how many "
+            "distinct moments get described; --adaptive-context-frames "
+            "adds extra real frames of visual context AROUND each one "
+            "without adding more described moments. Raising this was "
+            "tried once before (32, then 64) via a since-reverted "
+            "total_pixels-budgeted video-sampling change and caused a "
+            "real quality regression - per-frame resolution roughly "
+            "halved because qwen_vl_utils' VIDEO_MAX_PIXELS ceiling got "
+            "divided across more frames. That budgeting code is gone "
+            "now, so raising N here just asks for more highlights at "
+            "full per-frame resolution - a straightforward speed/cost "
+            "trade-off, not a known-bad path, but still untested at "
+            "higher values since the revert."
+        ),
+    )
+
+    parser.add_argument(
         "--ignore-lock",
         action="store_true",
         help=(
@@ -1130,6 +1157,7 @@ def _run_describe_scene_pass(
         "adaptive_sampling": args.adaptive_sampling,
         "adaptive_context_frames": args.adaptive_context_frames,
         "adaptive_context_offset_seconds": args.adaptive_context_offset_seconds,
+        "max_frames": args.adaptive_max_frames,
     }
     if task is not None:
         kwargs["task"] = task
