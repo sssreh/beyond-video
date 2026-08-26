@@ -1088,6 +1088,183 @@ def test_describe_scene_keeps_normal_repetition_settings_when_adaptive_sampling_
 
 
 # ---------------------------------------------------------------------------
+# Task #1245 follow-up 6: scale max_new_tokens with sampled-frame count for
+# adaptive sampling. Real hardware output at --adaptive-context-frames 2
+# (~80 sampled frames), after the follow-up-5 repetition-settings fix landed,
+# came out uncorrupted but truncated mid-sentence after ~20 bullets -
+# max_new_tokens=768 was only ever tuned against the 16-frame baseline (768 /
+# 16 = 48 tokens/bullet) and never scaled when adaptive_context_frames
+# multiplied the sampled-frame count. See
+# SceneOptions.adaptive_max_new_tokens_per_frame.
+# ---------------------------------------------------------------------------
+
+
+def test_describe_scene_scales_max_new_tokens_with_sampled_frame_count(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\n- [t=70.0s] A red bus passes on the left."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    # 80 sampled frames - matches Christer's real --adaptive-context-frames 2
+    # run (16 highlights x 5 frames each after context expansion).
+    fake_timestamps = [float(i) for i in range(80)]
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [{"type": "text", "text": "intro"}, {"type": "video", "video": "x"}],
+            fake_timestamps,
+            [],
+        ),
+    )
+
+    scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+
+    expected = len(fake_timestamps) * scene.SceneOptions().adaptive_max_new_tokens_per_frame
+    assert expected > scene.SceneOptions().max_new_tokens  # sanity: the scaling actually matters here
+    assert captured_kwargs["max_new_tokens"] == expected
+
+
+def test_describe_scene_keeps_default_max_new_tokens_for_small_adaptive_frame_counts(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\n- [t=70.0s] A red bus passes on the left."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    # A single sampled frame (e.g. adaptive sampling with no context frames
+    # and only one highlight) - len(timestamps) * 64 is well under 768, so
+    # the fixed default should win via max(), not the scaled-down value.
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+    monkeypatch.setattr(
+        scene,
+        "_build_adaptive_message_content",
+        lambda *args, **kwargs: (
+            [{"type": "text", "text": "intro"}, {"type": "video", "video": "x"}],
+            [70.0],
+            [],
+        ),
+    )
+
+    scene.describe_scene(video_path, zoom_signs=False, adaptive_sampling=True)
+
+    assert captured_kwargs["max_new_tokens"] == scene.SceneOptions().max_new_tokens
+
+
+def test_describe_scene_keeps_default_max_new_tokens_when_adaptive_sampling_is_off(monkeypatch, tmp_path):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"x")
+
+    captured_kwargs = {}
+
+    class _FakeInputs(dict):
+        def __init__(self):
+            super().__init__()
+            self.input_ids = [[1, 2, 3]]
+
+        def to(self, device):
+            return self
+
+    class _FakeModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [[1, 2, 3, 4, 5]]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt text"
+
+        def __call__(self, **kwargs):
+            return _FakeInputs()
+
+        def batch_decode(self, ids, **kwargs):
+            return ["## Description\nRoutine driving, nothing notable happened."]
+
+    loaded = scene._LoadedSceneModel(
+        model=_FakeModel(),
+        processor=_FakeProcessor(),
+        process_vision_info=lambda messages, **kwargs: ([], [], {}),
+        patch_factor=28,
+        is_qwen3=False,
+    )
+
+    monkeypatch.setattr(scene, "_get_scene_model", lambda model, *, force_cpu, quantize="none", **_: loaded)
+
+    scene.describe_scene(video_path, zoom_signs=False)
+
+    assert captured_kwargs["max_new_tokens"] == scene.SceneOptions().max_new_tokens
+
+
+# ---------------------------------------------------------------------------
 # describe_scene()'s adaptive-sampling fallback detection (task #1238) - a
 # real-archive bug report: "20220927_132155_E"'s adaptive-sampling retry
 # produced a short, generic 4-bullet description bunched near t=0s, with

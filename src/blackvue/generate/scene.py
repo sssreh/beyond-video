@@ -477,6 +477,35 @@ class SceneOptions:
     # problem and there's no reason to gamble on it.
     adaptive_repetition_penalty: float = 1.0
     adaptive_no_repeat_ngram_size: int = 0
+    # Task #1245 follow-up 6: max_new_tokens=768 was never a real budget
+    # decision - it just happens to equal 16 (the fixed highlight/frame
+    # count this whole file was tuned against) times ~48 tokens/bullet.
+    # Once adaptive_context_frames could multiply the sampled-frame count
+    # well past 16, that coincidence stopped holding: Christer's real
+    # --adaptive-context-frames 2 output (~80 sampled frames) got the
+    # repetition-corruption fix from follow-up 5, but still cut off
+    # mid-sentence after ~20 bullets, silently dropping the other ~75%
+    # of the sampled frames it never got to (only [t=8.5s]..[t=62.5s]
+    # covered out of an 80-frame span reaching to [t=178.5s]) - the
+    # fixed 768-token budget ran out before the model finished, and
+    # nothing detected or reported the truncation.
+    #
+    # Fix: when adaptive_sampling actually produced sampled frames, the
+    # describe call's max_new_tokens is the larger of the fixed
+    # max_new_tokens above and
+    # len(sampled_frame_timestamps) * adaptive_max_new_tokens_per_frame
+    # (see the generate() call in describe_scene()) - so the budget
+    # scales with how much the model is actually being asked to write
+    # instead of staying pinned to the 16-frame case. 64 tokens/bullet
+    # is a deliberately generous estimate (real output ran closer to
+    # ~38/bullet before truncating) - headroom costs a bit of generation
+    # time on a GPU that already has slack, but coming in under budget
+    # loses content outright with no error raised, which is worse. Not
+    # exposed as a CLI flag (same reasoning as adaptive_repetition_penalty/
+    # adaptive_no_repeat_ngram_size above) - untested against a real model,
+    # Christer needs to reinstall and re-run to confirm this actually
+    # stops the truncation.
+    adaptive_max_new_tokens_per_frame: int = 64
     do_sample: bool = False
     temperature: float = 0.7
     top_p: float = 0.8
@@ -2408,9 +2437,20 @@ def describe_scene(
         )
         inputs = inputs.to(loaded.model.device)
 
+        # Task #1245 follow-up 6: scale the token budget with how many
+        # bullets the model is actually being asked to write, instead of
+        # leaving it pinned at the 16-frame-tuned default - see
+        # SceneOptions.adaptive_max_new_tokens_per_frame.
+        describe_max_new_tokens = opts.max_new_tokens
+        if opts.adaptive_sampling and sampled_frame_timestamps:
+            describe_max_new_tokens = max(
+                opts.max_new_tokens,
+                len(sampled_frame_timestamps) * opts.adaptive_max_new_tokens_per_frame,
+            )
+
         generated_ids = loaded.model.generate(
             **inputs,
-            max_new_tokens=opts.max_new_tokens,
+            max_new_tokens=describe_max_new_tokens,
             repetition_penalty=(
                 opts.adaptive_repetition_penalty if opts.adaptive_sampling else opts.repetition_penalty
             ),
