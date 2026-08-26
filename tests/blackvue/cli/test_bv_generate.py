@@ -130,7 +130,7 @@ def _base_args(**overrides):
         scene_quantize="auto",
         scene_gpu_memory_fraction=None,
         adaptive_sampling=False,
-        adaptive_max_frames=16,
+        frames=16,
         camera="front",
         overwrite=False,
         dry_run=False,
@@ -2577,8 +2577,14 @@ def test_do_describe_scene_adaptive_sampling_on_fetches_telemetry(
     ]
 
 
-# --- --adaptive-max-frames (task #1256): controls how many highlighted
-# moments compute_adaptive_timestamps() picks. Formerly paired with an
+# --- --frames (task #1256, renamed from --adaptive-max-frames in task
+# #1258): controls how many frames get described. Applies on both the
+# plain non-adaptive path (even-spaced sampling handed to qwen_vl_utils)
+# and the --adaptive-sampling path (how many highlighted moments
+# compute_adaptive_timestamps() picks) - same underlying max_frames
+# field either way, so it was renamed off of "adaptive-max-frames" per
+# Christer's "I actually wanted a --frames 32 instead of
+# --adaptive-max-frames 32". Formerly paired with an
 # --adaptive-context-frames/--adaptive-context-offset-seconds knob
 # (extra real frames around each highlight, task #1248-1249) which was
 # removed entirely in task #1257 per Christer's explicit "no no no,
@@ -2589,27 +2595,27 @@ def test_do_describe_scene_adaptive_sampling_on_fetches_telemetry(
 # around as a CLI-reachable knob. -----------------------------
 
 
-def test_parse_args_adaptive_max_frames_defaults_to_16():
+def test_parse_args_frames_defaults_to_16():
     args = parse_args(["/some/path", "--describe-scene", "--adaptive-sampling"])
 
-    assert args.adaptive_max_frames == 16
+    assert args.frames == 16
 
 
-def test_parse_args_adaptive_max_frames_flag():
+def test_parse_args_frames_flag():
     args = parse_args(
         [
             "/some/path",
             "--describe-scene",
             "--adaptive-sampling",
-            "--adaptive-max-frames",
+            "--frames",
             "32",
         ]
     )
 
-    assert args.adaptive_max_frames == 32
+    assert args.frames == 32
 
 
-def test_do_describe_scene_passes_adaptive_max_frames_through(monkeypatch, tmp_path):
+def test_do_describe_scene_passes_frames_through(monkeypatch, tmp_path):
     calls = []
 
     def fake_describe_scene(source, **kwargs):
@@ -2628,7 +2634,7 @@ def test_do_describe_scene_passes_adaptive_max_frames_through(monkeypatch, tmp_p
     args = _base_args(
         describe_scene=True,
         adaptive_sampling=True,
-        adaptive_max_frames=32,
+        frames=32,
     )
 
     had_error = bv_generate._do_describe_scene(

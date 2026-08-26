@@ -443,24 +443,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--adaptive-max-frames",
+        "--frames",
         type=int,
         default=16,
         metavar="N",
         help=(
-            "For --describe-scene --adaptive-sampling: how many "
+            "For --describe-scene: how many frames get described "
+            "(default: 16). Without --adaptive-sampling this is the "
+            "plain even-spaced frame count handed to qwen_vl_utils' "
+            "own sampling. With --adaptive-sampling it's how many "
             "highlighted moments compute_adaptive_timestamps() picks "
-            "across the recording (default: 16 - one bullet per "
-            "highlight in the output). Raising this was tried once "
-            "before (32, then 64) via a since-reverted "
-            "total_pixels-budgeted video-sampling change and caused a "
-            "real quality regression - per-frame resolution roughly "
-            "halved because qwen_vl_utils' VIDEO_MAX_PIXELS ceiling got "
-            "divided across more frames. That budgeting code is gone "
-            "now, so raising N here just asks for more highlights at "
-            "full per-frame resolution - a straightforward speed/cost "
-            "trade-off, not a known-bad path, but still untested at "
-            "higher values since the revert."
+            "across the recording (one bullet per highlight in the "
+            "output). Applies either way - same underlying knob. "
+            "Raising this was tried once before (32, then 64) via a "
+            "since-reverted total_pixels-budgeted video-sampling "
+            "change and caused a real quality regression - per-frame "
+            "resolution roughly halved because qwen_vl_utils' "
+            "VIDEO_MAX_PIXELS ceiling got divided across more frames. "
+            "That budgeting code is gone now, so raising N here just "
+            "asks for more frames at full per-frame resolution - a "
+            "straightforward speed/cost trade-off, not a known-bad "
+            "path, but still untested at higher values since the "
+            "revert."
         ),
     )
 
@@ -1107,7 +1111,7 @@ def _run_describe_scene_pass(
         "quantize": args.scene_quantize,
         "gpu_memory_fraction": args.scene_gpu_memory_fraction,
         "adaptive_sampling": args.adaptive_sampling,
-        "max_frames": args.adaptive_max_frames,
+        "max_frames": args.frames,
     }
     if task is not None:
         kwargs["task"] = task
