@@ -18637,3 +18637,66 @@ environment). ast.parse + /tmp/verify/full_sweep.py: 88 passed (up from
 84), same 6 pre-existing unrelated failures.
 
 Commit: (pending)
+
+### Follow-up 22 (task #1260): --debug phase timing for bv-generate --describe-scene
+
+Christer, working out why Task Manager showed "not spikes but a small
+block, then long wait for big blocks" during --describe-scene, asked:
+"yes add debug timing." He also asked why the "bus" calibration event's
+reported timestamp had drifted between runs (74s last week, 95s/126.2s
+this week).
+
+**--debug timing added.** `describe_scene()` gained a `debug: bool =
+False` keyword-only parameter (not a SceneOptions field, so it doesn't
+interact with the existing overrides-vs-opts contract or any kwargs
+dict already passing SceneOptions field names). When True, it prints
+four phase timings to stderr with a `bv-generate:` prefix, mirroring
+bv-export's own `--debug` convention (`time.monotonic()` +
+`if debug: print(f"... took {elapsed:.1f}s", file=sys.stderr)`):
+
+- `model load` - wraps `_get_scene_model()`
+- `vision-input decode` - wraps `_fetch_vision_inputs()` + `_crop_top_bottom()`
+- `main describe+OCR generate() call` - wraps the primary `model.generate()` call
+- `zoom-signs pass` - wraps `_zoom_into_signs()`, only when `opts.zoom_signs` is on
+
+Wired a new `--debug` flag into bv-generate's CLI (placed after
+`--frames`, same style/help-text convention as the rest of the
+scene-description flags), threaded through as `"debug": args.debug` in
+`_run_describe_scene_pass()`'s kwargs dict. Not yet wired into
+bv-scribe (secondary priority, not requested).
+
+Re-running with `--debug` will show which of the four phases is
+producing the "small block, then long wait" pattern Christer saw in
+Task Manager - most likely the main generate() call, since that's the
+only phase doing iterative token-by-token autoregressive decoding
+(the "small block" being the fast fixed-cost passes - model load off
+disk/cache, vision decode - and the "long wait for big blocks" being
+generate() itself, whose per-token GPU bursts are lumpy rather than a
+steady load).
+
+**Bus-timestamp-variance explanation (not a bug).** In the plain
+(non-adaptive) video branch, `describe_scene()` hands qwen_vl_utils a
+`{"type": "video", ...}` content block with `fps`/`max_frames` and lets
+it sample frames *internally* - the code never learns which real-world
+timestamps got sampled. `DESCRIBE_PROMPT` instructs the model to prefix
+each bullet with its own "approximate elapsed time from the start of
+the clip in seconds" - so every `[t=Xs]` in the plain-video branch is
+the model's own estimate, not a code-computed ground truth. This is
+architecturally different from the adaptive-sampling branch, which
+extracts frames itself and knows their exact real timestamps
+(`sampled_frame_timestamps`, injected as a "## Sampled frames"
+ground-truth section).
+
+This explains both halves of Christer's observation: the 74s->95s
+shift is the pre-fix (broken duration/frame-count assumption, task
+#1260's root cause) vs. post-fix code, while the 95s vs. 126.2s spread
+between two *post-fix* runs is inherent LLM-estimation noise, not a
+regression - the model is guessing at elapsed time, not measuring it.
+Worth flagging since tasks #1083-1101's frame-viewer/calibration work
+uses the bus event as a fixed reference point; the plain-video branch
+can't offer the same timestamp precision the adaptive-sampling branch
+can.
+
+Verified: `ast.parse` on scene.py + bv_generate.py, plus
+`/tmp/verify/full_sweep.py` (90 passed, same 6 pre-existing unrelated
+failures as every prior run this task, no new failures).

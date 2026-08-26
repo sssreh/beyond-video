@@ -2692,6 +2692,7 @@ def describe_scene(
     gps_fixes: Sequence[GpsFix] = (),
     gsensor_samples: Sequence[GSensorSample] = (),
     recording_start: datetime | None = None,
+    debug: bool = False,
     **overrides,
 ) -> str:
     """Describe video_path's contents and/or read its on-screen text
@@ -2732,6 +2733,17 @@ def describe_scene(
     still works - compute_adaptive_timestamps() degrades to ~evenly-
     spaced sampling with no telemetry to bias toward, rather than
     erroring - it just won't be adaptive to anything in that case.
+
+    debug=True prints wall-clock timing to stderr for each phase (model
+    load, vision-input decode, the main generate() call, and the
+    zoom-signs sub-pipeline if enabled) - same convention as bv-export's
+    own --debug. Added (task #1260 follow-up 9) after Christer described
+    watching a "small block, then long wait for big blocks" pattern in
+    Task Manager's GPU graph during a normal-length run and asked what
+    each part corresponded to - previously the only available timing was
+    bv-generate's own single start/finished total, so answering that
+    kind of question meant guessing from the code structure instead of
+    reading real numbers.
     """
 
     if opts is None:
@@ -2741,12 +2753,15 @@ def describe_scene(
 
     warn = warn or (lambda msg: print(msg, file=sys.stderr))
 
+    load_start = time.monotonic() if debug else None
     loaded = _get_scene_model(
         opts.model,
         force_cpu=opts.force_cpu,
         quantize=opts.quantize,
         gpu_memory_fraction=opts.gpu_memory_fraction,
     )
+    if debug:
+        print(f"bv-generate: model load took {time.monotonic() - load_start:.1f}s", file=sys.stderr)
 
     prompt = build_prompt(opts.task)
 
@@ -2843,12 +2858,18 @@ def describe_scene(
         # like every other describe_scene() failure, which _run_scene_
         # pass() already knows how to handle per-recording. See
         # WORKING_CONTEXT.md.
+        decode_start = time.monotonic() if debug else None
         image_inputs, video_inputs, video_kwargs, video_metadata = _fetch_vision_inputs(
             loaded.process_vision_info, messages, is_qwen3=loaded.is_qwen3
         )
         if video_inputs:
             video_inputs = _crop_top_bottom(
                 video_inputs, opts.crop_top, opts.crop_bottom, loaded.patch_factor
+            )
+        if debug:
+            print(
+                f"bv-generate: vision-input decode took {time.monotonic() - decode_start:.1f}s",
+                file=sys.stderr,
             )
 
         # Task #1258 follow-up (Christer: "i run with frames 64, but it
@@ -2888,6 +2909,7 @@ def describe_scene(
                 len(sampled_frame_timestamps) * opts.adaptive_max_new_tokens_per_frame,
             )
 
+        generate_start = time.monotonic() if debug else None
         generated_ids = loaded.model.generate(
             **inputs,
             max_new_tokens=describe_max_new_tokens,
@@ -2907,6 +2929,12 @@ def describe_scene(
             no_repeat_ngram_size=opts.adaptive_no_repeat_ngram_size,
             **_sampling_kwargs(opts),
         )
+        if debug:
+            print(
+                f"bv-generate: main describe+OCR generate() took "
+                f"{time.monotonic() - generate_start:.1f}s",
+                file=sys.stderr,
+            )
     except Exception as exc:
         # torch is already guaranteed importable here in real usage -
         # _get_scene_model() above imports it before this point ever
@@ -2956,7 +2984,13 @@ def describe_scene(
     output_text = _truncate_repeated_lines(output_text)
 
     if opts.zoom_signs:
+        zoom_start = time.monotonic() if debug else None
         output_text += _zoom_into_signs(video_path, loaded, opts, warn=warn)
+        if debug:
+            print(
+                f"bv-generate: zoom-signs pass took {time.monotonic() - zoom_start:.1f}s",
+                file=sys.stderr,
+            )
 
     if sampled_frame_timestamps:
         # Records the real, non-uniform timestamps adaptive sampling

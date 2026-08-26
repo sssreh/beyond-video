@@ -469,6 +469,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "For --describe-scene: print per-phase wall-clock timing to "
+            "stderr (bv-generate: <phase> took N.Ns) - model load, "
+            "vision-input decode, the main describe+OCR generate() call, "
+            "and the zoom-signs pass if --zoom-signs is on. Added to "
+            "help diagnose GPU usage patterns (a small block of work "
+            "followed by a long wait before the big blocks) reported "
+            "against real hardware - same convention as bv-export's "
+            "own --debug flag."
+        ),
+    )
+
+    parser.add_argument(
         "--ignore-lock",
         action="store_true",
         help=(
@@ -1112,6 +1127,7 @@ def _run_describe_scene_pass(
         "gpu_memory_fraction": args.scene_gpu_memory_fraction,
         "adaptive_sampling": args.adaptive_sampling,
         "max_frames": args.frames,
+        "debug": args.debug,
     }
     if task is not None:
         kwargs["task"] = task
