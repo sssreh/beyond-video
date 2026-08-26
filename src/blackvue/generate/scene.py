@@ -505,6 +505,25 @@ class SceneOptions:
     # ~evenly-spaced whenever the caller has no GPS/g-sensor telemetry
     # to offer (see that function's own docstring).
     adaptive_sampling: bool = False
+    # Task #1245 follow-up: Christer's own diagnosis for why adaptive-
+    # sampling descriptions got choppier once frames were stitched into
+    # a real video clip - "it reads frames just before and just after
+    # to get a more fully description, but now the frames are totaly
+    # differen from the neighbours" - real video's temporal-merging
+    # assumes visually continuous neighbors, which adaptive sampling's
+    # whole point (picking the moments that matter, not evenly-spaced
+    # ones) deliberately violates. For each chosen highlight timestamp,
+    # also pull this many extra real frames on either side (spaced
+    # adaptive_context_offset_seconds apart) so every highlight sits in
+    # a short burst of genuinely continuous motion the model can anchor
+    # a fuller description to, instead of one isolated snapshot -
+    # see _expand_with_context_frames(). 0 disables this and reproduces
+    # exactly the original one-frame-per-highlight behavior. Off by
+    # default: it's untested against a real model from this sandbox,
+    # and it multiplies frame/decode count - opt-in until Christer
+    # confirms the quality/speed trade-off is worth it.
+    adaptive_context_frames: int = 0
+    adaptive_context_offset_seconds: float = 0.5
 
 
 def vision_gpu_available() -> bool:
@@ -1630,6 +1649,58 @@ def _adaptive_video_intro_text(timestamps: list[float]) -> str:
     )
 
 
+def _expand_with_context_frames(
+    timestamps: list[float],
+    duration_seconds: float,
+    context_frames: int,
+    offset_seconds: float,
+) -> list[float]:
+    """Task #1245 follow-up: Christer's direct request after seeing the
+    choppy-sentences fix ("You could also add frames before and after
+    our specified friend, just to get more") - a more substantive
+    version of the same fix as _adaptive_video_intro_text()'s rewrite.
+    That earlier fix only changed prompt wording; this one gives the
+    model real extra visual data to back it up. For each of the
+    adaptively-chosen highlight `timestamps`, add `context_frames`
+    extra real timestamps on either side, spaced `offset_seconds` apart
+    (e.g. context_frames=2, offset_seconds=0.5 turns one highlight at
+    t=30.0s into five frames: 29.0s, 29.5s, 30.0s, 30.5s, 31.0s) - so
+    every highlight sits inside a short burst of genuinely continuous
+    real motion the video model's temporal-merging can bridge, instead
+    of one isolated snapshot next to other snapshots seconds or minutes
+    away. See that function's own docstring for the full root-cause
+    story this builds on.
+
+    No-op (returns `timestamps` unchanged) when `context_frames <= 0`
+    (the default) or `offset_seconds <= 0` - callers gate on
+    `opts.adaptive_context_frames` before calling this, but the guard
+    is repeated here too so this function is safe to call unconditionally.
+
+    Context timestamps that would fall outside [0, duration_seconds]
+    are clamped into range rather than dropped, so a highlight near the
+    very start/end of the recording still gets as many context frames
+    as fit - they just pile up at the boundary instead of past it.
+    Highlights close enough together that their context windows
+    overlap, and any clamped duplicates, collapse naturally since the
+    result is built as a set before sorting - _extract_frames_at_timestamps()
+    would otherwise decode the same frame twice for no benefit."""
+
+    if context_frames <= 0 or offset_seconds <= 0:
+        return timestamps
+
+    expanded: set[float] = set()
+    for timestamp in timestamps:
+        expanded.add(round(timestamp, 3))
+        for step in range(1, context_frames + 1):
+            offset = step * offset_seconds
+            before = max(0.0, min(duration_seconds, timestamp - offset))
+            after = max(0.0, min(duration_seconds, timestamp + offset))
+            expanded.add(round(before, 3))
+            expanded.add(round(after, 3))
+
+    return sorted(expanded)
+
+
 def _write_frames_as_temp_video(frames: list[tuple[float, "PILImage.Image"]], fps: float) -> Path:
     """Encode `frames` (already-ordered PIL Images, one per adaptively-
     chosen timestamp) into a small throwaway .mp4 in a fresh temp
@@ -1754,6 +1825,11 @@ def _build_adaptive_message_content(
     )
     if not timestamps:
         return [], [], []
+
+    if opts.adaptive_context_frames > 0:
+        timestamps = _expand_with_context_frames(
+            timestamps, duration_seconds, opts.adaptive_context_frames, opts.adaptive_context_offset_seconds
+        )
 
     frames = _extract_frames_at_timestamps(vr, timestamps)
     if not frames:

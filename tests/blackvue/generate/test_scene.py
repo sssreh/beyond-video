@@ -1256,6 +1256,56 @@ def test_adaptive_video_intro_text_lists_every_frames_real_timestamp():
     assert "\n" not in text
 
 
+# --- context frames around adaptive highlights (task #1245 follow-up,
+# Christer's direct request: "You could also add frames before and
+# after our specified friend, just to get more") --------------------------
+#
+# _adaptive_video_intro_text()'s rewrite above only changed prompt
+# wording; this gives the model real extra visual data to back it up -
+# opt-in via SceneOptions.adaptive_context_frames (default 0, no-op).
+
+
+def test_expand_with_context_frames_is_a_noop_when_disabled():
+    timestamps = [10.0, 30.0]
+
+    result = scene._expand_with_context_frames(timestamps, duration_seconds=60.0, context_frames=0, offset_seconds=0.5)
+
+    assert result == timestamps
+
+
+def test_expand_with_context_frames_adds_before_and_after_each_highlight():
+    result = scene._expand_with_context_frames(
+        [30.0], duration_seconds=60.0, context_frames=2, offset_seconds=0.5
+    )
+
+    assert result == [29.0, 29.5, 30.0, 30.5, 31.0]
+
+
+def test_expand_with_context_frames_clamps_to_video_bounds():
+    # A highlight near the very start/end shouldn't produce negative or
+    # past-duration timestamps - context frames that would fall outside
+    # [0, duration_seconds] clamp to the boundary instead.
+    result = scene._expand_with_context_frames(
+        [0.2, 59.8], duration_seconds=60.0, context_frames=1, offset_seconds=0.5
+    )
+
+    assert min(result) == 0.0
+    assert max(result) == 60.0
+    assert 0.2 in result and 59.8 in result
+
+
+def test_expand_with_context_frames_dedupes_overlapping_windows():
+    # Two highlights close enough together that their context windows
+    # overlap shouldn't produce duplicate timestamps for
+    # _extract_frames_at_timestamps() to decode twice.
+    result = scene._expand_with_context_frames(
+        [10.0, 10.5], duration_seconds=60.0, context_frames=1, offset_seconds=0.5
+    )
+
+    assert result == sorted(set(result))
+    assert result == [9.5, 10.0, 10.5, 11.0]
+
+
 # --- photo support (Christer's real report: "pictures dont get scene
 # asset") ------------------------------------------------------------------
 #
