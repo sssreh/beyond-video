@@ -91,6 +91,62 @@ def _nvdec_available() -> bool:
     return _NVDEC_AVAILABLE
 
 
+# 2026-08-27: real-hardware report from Christer - plain H.264
+# recordings (the vast majority of his archive, never touched by the
+# transcode logic below at all) were slow to play via bv-web. Root
+# cause: both load_or_transcode_hevc_preview() and open_hevc_preview_
+# stream() unconditionally called probe_video_codec() - a fresh
+# ffprobe subprocess spawn - at the very top, on *every single call*,
+# before either function could even determine the source isn't HEVC
+# and bail out to a plain FileResponse. A browser issues many
+# overlapping Range requests per video while buffering/seeking (often
+# several per second), so scrubbing an H.264 recording meant re-
+# spawning ffprobe from scratch for every one of those - and since
+# open_hevc_preview_stream() is an async route handler while
+# probe_video_codec() calls the blocking subprocess.run() directly
+# (not asyncio.create_subprocess_exec()), each of those probes stalled
+# bv-web's single-threaded event loop for its full duration, queuing
+# up every other concurrent request behind it too - not just slow for
+# this one video, but for the whole server while it ran. Same class of
+# bug task #425 already fixed once for the archive-browser's own O(N)
+# rescan-per-request pattern, just resurfaced in this later HEVC-
+# preview code path (task #704+), which never got the same treatment.
+#
+# Fixed by caching the probe result per (resolved path, mtime_ns,
+# size) - same staleness-detection triple already used for this
+# module's own cache_path naming a few lines below, so a file
+# replaced/re-encoded in place still gets a fresh probe - and by
+# running a cache-miss probe via asyncio.to_thread() in the async
+# caller so it can't block the event loop even on the very first
+# request for a given file. A cache hit (every request after the
+# first, for the life of the process) costs a plain dict lookup -
+# no subprocess, no thread hop - which is what makes scrubbing fast
+# again regardless of codec.
+_CODEC_PROBE_CACHE: dict[tuple[str, int, int], str | None] = {}
+
+
+def _cached_probe_video_codec(source: Path) -> str | None:
+    """probe_video_codec(), memoized per (path, mtime, size) for the
+    life of this process - see _CODEC_PROBE_CACHE's own comment above.
+
+    Deliberately does NOT cache a MediaToolError (ffprobe missing or
+    erroring outright) - that's a systemic problem, not a per-file
+    fact, and should keep surfacing to the caller's own try/except
+    every time rather than being memoized as a permanent "unknown"
+    for one unlucky file.
+    """
+
+    stat = source.stat()
+    key = (str(source.resolve()), stat.st_mtime_ns, stat.st_size)
+
+    if key in _CODEC_PROBE_CACHE:
+        return _CODEC_PROBE_CACHE[key]
+
+    codec = probe_video_codec(source)
+    _CODEC_PROBE_CACHE[key] = codec
+    return codec
+
+
 # Arbitrary but consistent label for the one CUDA device this module's
 # (always single-source) transcodes are pinned to - see stitch.py's
 # own _shared_hw_device_args() docstring for why an explicit named
@@ -294,7 +350,9 @@ def load_or_transcode_hevc_preview(source: Path, cache_dir: Path) -> Path:
     """
 
     try:
-        codec = probe_video_codec(source)
+        # 2026-08-27: cached per (path, mtime, size) - see
+        # _CODEC_PROBE_CACHE's own comment near the top of this module.
+        codec = _cached_probe_video_codec(source)
     except MediaToolError as exc:
         print(
             f"HEVC preview: codec probe failed for {source.name}, "
@@ -738,7 +796,14 @@ async def open_hevc_preview_stream(
     """
 
     try:
-        codec = probe_video_codec(source)
+        # 2026-08-27: cached per (path, mtime, size), and hopped onto a
+        # worker thread so a cache miss's blocking ffprobe subprocess
+        # can't stall this coroutine's event loop - see
+        # _CODEC_PROBE_CACHE's own comment near the top of this module,
+        # and load_or_transcode_hevc_preview()'s sync counterpart above,
+        # which uses the same cache without the thread hop since it's
+        # already outside any event loop.
+        codec = await asyncio.to_thread(_cached_probe_video_codec, source)
     except MediaToolError as exc:
         print(
             f"HEVC preview: codec probe failed for {source.name}, "

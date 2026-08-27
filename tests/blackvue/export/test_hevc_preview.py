@@ -845,6 +845,197 @@ def test_open_hevc_preview_stream_dedupes_and_replays_history_for_a_late_joiner(
     assert len(spawn_calls) == 1  # dedup: only one real ffmpeg process
 
 
+# ---------------------------------------------------------------------------
+# Codec-probe caching (2026-08-27): Christer reported "Slow to play
+# vh264 videos ... via bv-web". Root cause: both
+# load_or_transcode_hevc_preview() and open_hevc_preview_stream() called
+# probe_video_codec() - a real ffprobe subprocess spawn - unconditionally
+# on every single call, even for plain H.264 sources that immediately
+# bail out unchanged. A browser issues many overlapping Range requests
+# per video while buffering/seeking, so every one of those re-spawned
+# ffprobe from scratch - and since open_hevc_preview_stream() is an
+# async route handler while probe_video_codec() blocks via
+# subprocess.run(), each probe stalled the whole event loop too. These
+# tests cover the fix: _cached_probe_video_codec() memoizes the result
+# per (resolved path, mtime_ns, size), and the async path hops the
+# cache-miss probe onto a worker thread via asyncio.to_thread() so it
+# can't block concurrent requests even on a cold cache.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_codec_probe_cache():
+    """_CODEC_PROBE_CACHE is a module-level dict so the cache survives
+    across calls within a real bv-web process (the whole point) - but
+    that means it must be reset between tests, or a cache entry left
+    behind by one test could mask a missing probe call in another."""
+
+    hevc_preview_module._CODEC_PROBE_CACHE.clear()
+    yield
+    hevc_preview_module._CODEC_PROBE_CACHE.clear()
+
+
+def test_cached_probe_video_codec_only_probes_once_for_repeated_calls(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path)
+
+    calls = []
+
+    def fake_probe(path):
+        calls.append(path)
+        return "h264"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", fake_probe)
+
+    first = hevc_preview_module._cached_probe_video_codec(source)
+    second = hevc_preview_module._cached_probe_video_codec(source)
+
+    assert first == "h264"
+    assert second == "h264"
+    assert len(calls) == 1  # second call was a cache hit, no subprocess spawn
+
+
+def test_cached_probe_video_codec_reprobes_after_the_file_changes(
+    monkeypatch, tmp_path
+):
+    source = _make_source(tmp_path, content=b"first version")
+
+    calls = []
+
+    def fake_probe(path):
+        calls.append(path)
+        return "h264"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", fake_probe)
+
+    hevc_preview_module._cached_probe_video_codec(source)
+
+    # Same path, different mtime/size - a re-encoded file landing in
+    # place must not serve a stale cached codec.
+    source.write_bytes(b"a very different, longer second version")
+    import os
+
+    stat = source.stat()
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+
+    hevc_preview_module._cached_probe_video_codec(source)
+
+    assert len(calls) == 2
+
+
+def test_cached_probe_video_codec_does_not_cache_a_probe_failure(
+    monkeypatch, tmp_path
+):
+    """A MediaToolError (ffprobe missing/erroring) is a systemic
+    problem, not a per-file fact - it must keep surfacing to the
+    caller every time, not get memorized as a permanent false answer
+    for one unlucky file that happened to be probed while ffprobe was
+    briefly broken."""
+
+    source = _make_source(tmp_path)
+
+    calls = []
+
+    def flaky_probe(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise MediaToolError("ffprobe not found on PATH")
+        return "h264"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", flaky_probe)
+
+    with pytest.raises(MediaToolError):
+        hevc_preview_module._cached_probe_video_codec(source)
+
+    result = hevc_preview_module._cached_probe_video_codec(source)
+
+    assert result == "h264"
+    assert len(calls) == 2  # the failed attempt was not cached
+
+
+def test_load_or_transcode_hevc_preview_only_probes_once_across_calls(
+    monkeypatch, tmp_path
+):
+    """Regression test for the real bug report: repeated calls for the
+    same H.264 source (mirroring repeated HTTP requests for the same
+    file) must only spawn ffprobe once."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    calls = []
+
+    def fake_probe(path):
+        calls.append(path)
+        return "h264"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", fake_probe)
+
+    for _ in range(5):
+        result = load_or_transcode_hevc_preview(source, cache_dir)
+        assert result == source
+
+    assert len(calls) == 1
+
+
+def test_open_hevc_preview_stream_only_probes_once_across_calls(
+    monkeypatch, tmp_path
+):
+    """Async counterpart of the sync test above - the actual hot path
+    for the reported bug (called on every browser Range request)."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    calls = []
+
+    def fake_probe(path):
+        calls.append(path)
+        return "h264"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", fake_probe)
+
+    async def scenario():
+        for _ in range(5):
+            result = await open_hevc_preview_stream(source, cache_dir)
+            assert result == source
+
+    asyncio.run(scenario())
+
+    assert len(calls) == 1
+
+
+def test_open_hevc_preview_stream_offloads_cache_miss_probe_to_a_thread(
+    monkeypatch, tmp_path
+):
+    """The cold-cache probe must run via asyncio.to_thread(), not a
+    direct blocking call inside the coroutine - otherwise the very
+    stall this fix exists to remove would just move from "every
+    request" to "every request for a file no one has requested yet",
+    still blocking the event loop for every other concurrent request
+    each time it happens."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "h264")
+
+    to_thread_calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def spying_to_thread(func, *args, **kwargs):
+        to_thread_calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(hevc_preview_module.asyncio, "to_thread", spying_to_thread)
+
+    result = asyncio.run(open_hevc_preview_stream(source, cache_dir))
+
+    assert result == source
+    assert to_thread_calls == [hevc_preview_module._cached_probe_video_codec]
+
+
 def test_nvenc_available_checks_ffmpeg_encoders_output(monkeypatch):
     """Mirrors media.py's own _nvenc_available() test - this module
     keeps its own private copy of the probe (see this module's own

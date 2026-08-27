@@ -19180,3 +19180,69 @@ explanation, since it's the same substitution mechanism) with the exact
 what makes `/data/archive/Kirby_2022` inside the container resolve to
 `/volume1/Dashcam/BEYOND-VIDEO/Kirby_2022` on the host, but the config
 file itself only ever sees the container-side path.
+
+## Fix slow video playback via bv-web: cache the per-file codec probe (2026-08-27)
+
+Christer reported "Slow to play vh264 videos" (H.264, not literally
+"vh264") - clarified as happening via bv-web specifically, not directly
+off the NAS share. Root cause, found by reading the request path: the
+archive browser's `archive_recording_file()` route in `web/app.py` calls
+`await open_hevc_preview_stream(path, preview_cache_dir)` unconditionally
+for *every* video-file HTTP request, HEVC or not - and that function's
+(and its sync counterpart `load_or_transcode_hevc_preview()`'s) very
+first operation was an **uncached** `probe_video_codec()` call, i.e. a
+fresh blocking `subprocess.run(["ffprobe", ...])` spawn, every single
+time. Plain H.264 files (the vast majority of Christer's archive, never
+touched by the actual transcode logic) paid this cost on every request
+only to immediately bail out to `return source` a few lines later - the
+ffprobe spawn was 100% wasted work in that case.
+
+This bites hardest during real playback specifically because a browser's
+`<video>` element issues many overlapping HTTP Range requests per video
+while buffering/seeking (often several per second) - so scrubbing one
+H.264 recording meant re-spawning ffprobe from scratch dozens of times.
+Worse, `open_hevc_preview_stream()` is an `async def` route handler, but
+`probe_video_codec()` calls the *blocking* `subprocess.run()` directly
+(not `asyncio.create_subprocess_exec()`), so each of those probes stalled
+bv-web's single-threaded event loop for its full duration - not just slow
+for the one video being watched, but for every other concurrent request
+on the server while each probe ran. Same class of bug as task #425 (O(N)
+archive rescan per thumbnail/video-range request) and task #431 (same for
+trip playback) - expensive per-request work re-executed on every HTTP
+Range request during video playback - just resurfaced in the later
+HEVC-preview code path (tasks #704+), which was added after those fixes
+and never got the same treatment.
+
+Fixed in `export/hevc_preview.py`: added `_CODEC_PROBE_CACHE`, a
+module-level `dict[(resolved-path, mtime_ns, size), codec-or-None]`
+cache (same staleness-key triple this module already used for its own
+transcode-output `cache_path` naming), and `_cached_probe_video_codec()`,
+a thin wrapper around `probe_video_codec()` that checks/populates it.
+Deliberately does **not** cache a `MediaToolError` (ffprobe missing or
+erroring outright) - that's a systemic problem, not a per-file fact, and
+must keep surfacing to the caller every time rather than getting
+memorized as a permanent false answer for one file that happened to be
+probed while ffprobe was briefly broken. Both call sites now go through
+this cache: `load_or_transcode_hevc_preview()` (sync) calls it directly;
+`open_hevc_preview_stream()` (async) calls it via
+`await asyncio.to_thread(_cached_probe_video_codec, source)` so a
+cache-miss's blocking subprocess spawn can't stall the event loop even on
+the very first request for a given file - only a cache hit (every request
+after the first, for the life of the process) is a plain dict lookup, no
+subprocess and no thread hop, which is what actually makes scrubbing fast
+regardless of codec.
+
+Verified via a standalone harness (no pytest in this environment, and no
+network access to install it either - this sandbox is stuck on Python
+3.10 without stdlib `tomllib`, worked around with a throwaway stub module
+just to satisfy `camera_config.py`'s import) covering: repeated calls for
+the same source only probe once; a changed mtime/size re-probes (no stale
+codec served after a file is replaced/re-encoded in place); a probe
+failure is never cached and reprobes on the next call; both
+`load_or_transcode_hevc_preview()` and `open_hevc_preview_stream()` only
+call `probe_video_codec()` once across 5 repeated calls each; and the
+async path's cache-miss probe genuinely goes through
+`asyncio.to_thread()`. Added the same six scenarios as permanent
+regression tests in `tests/blackvue/export/test_hevc_preview.py`, with an
+autouse fixture clearing `_CODEC_PROBE_CACHE` between tests so a cache
+entry from one test can't mask a missing probe call in another.
