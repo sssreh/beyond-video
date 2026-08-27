@@ -94,7 +94,23 @@ services:
       # (left of the colon) whether it's run from here, from bv-cli,
       # or from Christer's PC over SMB, so exported trips show up in
       # all three places.
-      - ./data/trips:/data/trips
+      #
+      # BEYOND_VIDEO_TRIPS_DIR/BEYOND_VIDEO_ARCHIVE_DIR (this mount and
+      # the one below) let the host side of these two mounts live
+      # anywhere on the NAS, not just under this repo checkout's own
+      # ./data - same `${VAR:-default}` substitution pattern already
+      # used for ELEVENLABS_API_KEY above, docker-compose resolves it
+      # from a .env file next to this one (no shell export/sudo -E
+      # needed, unlike a real env var - docker-compose reads .env on
+      # its own). Left unset, both fall back to ./data/trips and
+      # ./data/archive exactly as before, so a fresh deploy following
+      # docs/DEPLOY.md's section 4 needs no .env file at all. Christer
+      # set his to an existing pre-Docker archive
+      # (/volume1/Dashcam/BEYOND-VIDEO, with each camera-year's
+      # subfolder plus a trips/ subfolder already sitting there) rather
+      # than migrating years of recordings into this repo's own data/
+      # folder - see docs/DEPLOY.md's "Feeding it real trips" section.
+      - ${BEYOND_VIDEO_TRIPS_DIR:-./data/trips}:/data/trips
       # The raw camera archive - bv-download's target, i.e. every
       # camera .cfg's `target` field (see core/camera_config.py). The
       # archive-browser feature (app.py's /archive routes,
@@ -108,7 +124,7 @@ services:
       # read-only mount broke that with "Read-only file system" the
       # first time bv-generate was triggered from the web UI on the
       # NAS (see WORKING_CONTEXT.md).
-      - ./data/archive:/data/archive
+      - ${BEYOND_VIDEO_ARCHIVE_DIR:-./data/archive}:/data/archive
       # bv-web's accounts file (web-users.cfg) - read-write, and kept
       # outside the image so it survives `docker-compose build`/
       # container recreation. Created empty on first run; populate it
@@ -161,14 +177,18 @@ services:
       # PC also reaches over SMB (see docs/DEPLOY.md) and the SAME
       # host folder bv-web's own ./data/archive mount above now also
       # points at read-write, so all three ways of running
-      # bv-download/bv-generate see and write the same files.
-      - ./data/archive:/data/archive
+      # bv-download/bv-generate see and write the same files. See that
+      # mount's own comment for BEYOND_VIDEO_ARCHIVE_DIR - same .env
+      # override, must resolve to the same host path as bv-web's mount
+      # above or the two services would silently see different files.
+      - ${BEYOND_VIDEO_ARCHIVE_DIR:-./data/archive}:/data/archive
       # bv-export's --target - the SAME host folder bv-web's own
       # `./data/trips` mount above points at (also read-write now, for
       # the same reason) and that Christer's PC also reaches over SMB,
       # so a trip exported from any of the three places shows up in
-      # bv-web immediately.
-      - ./data/trips:/data/trips
+      # bv-web immediately. See that mount's own comment for
+      # BEYOND_VIDEO_TRIPS_DIR - same .env override.
+      - ${BEYOND_VIDEO_TRIPS_DIR:-./data/trips}:/data/trips
       # Camera .cfg files (bv-config --config-dir) - deliberately a
       # different host folder than bv-web's ./data/config above (that
       # one holds web-users.cfg, an unrelated file); both happen to

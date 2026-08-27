@@ -79,6 +79,15 @@ One environment variable in `docker-compose.yml` has no matching data folder: `E
 
 Leaving it unset entirely is also fine: Compose substitutes an empty string and the "Read aloud" button just hides itself with no error rather than failing.
 
+Two more optional overrides work the same substitution way, but read from a `.env` file placed next to `docker-compose.yml` (`/volume1/beyond-video/.env`) instead of the shell profile - Compose loads `.env` on its own, so no `sudo -E` gymnastics needed for these two: `BEYOND_VIDEO_ARCHIVE_DIR` and `BEYOND_VIDEO_TRIPS_DIR` repoint the `data/archive`/`data/trips` mounts at an existing folder elsewhere on the NAS instead of this checkout's own `./data/archive`/`./data/trips` - useful if, like Christer, you already have years of recordings sitting somewhere else (e.g. `/volume1/Dashcam/BEYOND-VIDEO`, with a `trips/` subfolder alongside the camera-year folders) and don't want to move them. A `.env` file with
+
+```
+BEYOND_VIDEO_ARCHIVE_DIR=/volume1/Dashcam/BEYOND-VIDEO
+BEYOND_VIDEO_TRIPS_DIR=/volume1/Dashcam/BEYOND-VIDEO/trips
+```
+
+is all that's needed - both `bv-web` and `bv-cli` read the same two variables, so they keep seeing the same files. Leaving the file out entirely (the common case for a fresh deploy) falls back to `./data/archive`/`./data/trips` exactly as before. Whichever path is in effect, each camera's own `.cfg` `archive` field still needs to point at the *in-container* path - `/data/archive/<subfolder>`, not the real host path - since that's what the config actually resolves inside the container regardless of what's bind-mounted there on the host side (see step 6).
+
 ## 4. Build and start bv-web
 
 Either through Container Manager's GUI (**Project** -> **Create** -> pick `/volume1/beyond-video` as the path; it auto-detects `docker-compose.yml`) or over SSH:

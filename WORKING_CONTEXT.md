@@ -19154,3 +19154,29 @@ covering the same three plain-path scenarios (renamed/rewrote the
 stale `test_describe_scene_keeps_default_max_new_tokens_when_adaptive_
 sampling_is_off`, whose assertion no longer holds now that the plain
 path scales by default too).
+
+## Add BEYOND_VIDEO_ARCHIVE_DIR/BEYOND_VIDEO_TRIPS_DIR .env override to docker-compose.yml (2026-08-27)
+
+Christer's real archive on the NAS lives at `/volume1/Dashcam/BEYOND-VIDEO`
+(per-year camera subfolders `Kirby`, `Kirby_2019` .. `Kirby_2025`, plus a
+`trips/` subfolder alongside them) - not under this repo checkout's own
+`./data/archive`/`./data/trips`, which `docker-compose.yml`'s volume mounts
+were hardcoded to. Rather than either migrating years of recordings into
+the checkout or hardcoding Christer's own NAS path into a tracked file,
+both mounts now read `${BEYOND_VIDEO_ARCHIVE_DIR:-./data/archive}` /
+`${BEYOND_VIDEO_TRIPS_DIR:-./data/trips}` - same `${VAR:-default}`
+substitution shape `ELEVENLABS_API_KEY` already used in this file, but
+resolved from a `.env` file next to `docker-compose.yml` rather than the
+shell profile, so no `sudo -E`/root-profile complication (Compose loads
+`.env` on its own). Left unset, both fall back to the original
+`./data/archive`/`./data/trips` paths, so a fresh deploy following
+docs/DEPLOY.md needs no `.env` file at all - purely additive.
+
+Documented in docs/DEPLOY.md step 3 (right after the `ELEVENLABS_API_KEY`
+explanation, since it's the same substitution mechanism) with the exact
+`.env` content Christer needs. Also noted there: each camera's `.cfg`
+`archive` field must still point at the *in-container* path
+(`/data/archive/<subfolder>`), not the real host path - the bind mount is
+what makes `/data/archive/Kirby_2022` inside the container resolve to
+`/volume1/Dashcam/BEYOND-VIDEO/Kirby_2022` on the host, but the config
+file itself only ever sees the container-side path.
