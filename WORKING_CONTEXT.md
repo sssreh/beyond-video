@@ -19246,3 +19246,98 @@ async path's cache-miss probe genuinely goes through
 regression tests in `tests/blackvue/export/test_hevc_preview.py`, with an
 autouse fixture clearing `_CODEC_PROBE_CACHE` between tests so a cache
 entry from one test can't mask a missing probe call in another.
+
+## Fix: every real trip's video/GPS/KML routes 404ing on the NAS - Starlette route-registration-order shadowing (2026-08-27)
+
+Christer migrated his real trips from `/data/trips` to
+`/volume1/Dashcam/BEYOND-VIDEO/trips` on the NAS and, once the `.env`
+mount fix (below) made them visible in the Trips list at all, found
+every single click into a trip - any video file, the GPS location page,
+the KML download - failed with `{"detail":"trip not found"}`. The plain
+trip detail page itself always loaded fine; only its sub-links were
+broken, for every trip, camera-prefixed or flat, not just ones with
+special characters in their names (an initial dead-end theory, ruled out
+once he reported "No one works" for plain-ASCII trip names too).
+
+Along the way to finding this, an unrelated but real prerequisite bug
+surfaced first: `.env` was simply missing on the NAS
+(`/volume1/beyond-video/.env` - `cat .env` -> "No such file or
+directory"), so `docker-compose.yml`'s
+`${BEYOND_VIDEO_TRIPS_DIR:-./data/trips}` substitution silently fell back
+to the old, now-empty default mount rather than the real trips directory
+- bv-web's Trips list was empty because it genuinely couldn't see the
+trips, not because of any code bug. Fixed by creating `.env` with
+`BEYOND_VIDEO_ARCHIVE_DIR`/`BEYOND_VIDEO_TRIPS_DIR` pointing at the real
+paths and `sudo docker-compose up -d --force-recreate bv-web` (`up -d`
+alone doesn't re-resolve a changed bind-mount source; recreation is
+required).
+
+With trips now visible, the deeper bug above showed up. Diagnosed by
+reading Christer's own `docker-compose logs -f bv-web` output while he
+reproduced the failure live: the plain trip page consistently returned
+`200 OK`, while every `/files/...` request consistently returned `404`
+for the same trip - too consistent to be data-dependent (a bad file, a
+missing sidecar), which pointed at routing rather than trip-scanning or
+camera-config resolution (both of which were investigated and ruled out
+first: `bv-web` runs as root in its container per the `Dockerfile`, no
+`USER` directive at all, so file permissions on the moved trip folders
+couldn't be it either).
+
+Root cause: task #759 changed the four
+`/trips/{trip_id}...` routes in `web/app.py` from a plain `{trip_id}` to
+`{trip_id:path}` so multi-segment, camera-prefixed trip ids
+(`kirby_2019/cirkel2_trip_...`) could round-trip through the URL. That
+converter compiles to a regex with no length limit - `trip_detail()`'s
+own route, a bare `"/trips/{trip_id:path}"`, compiles to
+`^/trips/(?P<trip_id>.*)$` with **no trailing literal**, so it matches
+*any* `/trips/...` URL, including ones meant for
+`trip_location()`, `trip_kml()`, and `trip_file()` (each
+`"/trips/{trip_id:path}/location"`, `"/trips/{trip_id:path}/kml"`,
+`"/trips/{trip_id:path}/files/{filename}"`). Starlette resolves routes
+by walking its route table **in registration order** and dispatching to
+the first one whose compiled regex fully matches - it never gives a
+later, more specific route a chance once an earlier one has already
+matched. `trip_detail()` was registered *first* among these four routes
+(the order they happened to be written in when task #759 touched them),
+so it silently swallowed every request meant for the other three before
+they were ever reached. Once `trip_detail()`'s handler ran for a URL like
+`/trips/kirby_2019/cirkel2_trip_.../files/front.mp4`, its own `trip_id`
+parameter held the *entire* URL tail after `/trips/` -
+`"kirby_2019/cirkel2_trip_.../files/front.mp4"` - a five-segment string,
+which `_find_trip()`'s own segment-count guard (added correctly by task
+#758/#768 to accept at most `camera_id/trip_folder`, two segments)
+rightly rejected as malformed. The guard wasn't the bug; it was
+correctly catching genuinely-malformed input that should never have
+reached it - the malformation itself was the routing bug feeding it
+garbage.
+
+Fixed by reordering registration only (no route-pattern changes): the
+three specific routes - `trip_location()`, `trip_kml()`, `trip_file()` -
+are now registered first, and `trip_detail()`'s bare catch-all is
+registered last, immediately before `/stats`. Comments at both ends of
+the group (above `trip_location()` and above `trip_detail()`) explain
+why the order matters and warn that any future
+`"/trips/{trip_id:path}/something"` route must be added above
+`trip_detail()` for the same reason, since nothing about Python/FastAPI
+syntax enforces this - it's purely a registration-order invariant that a
+future edit could easily and silently break again.
+
+Verified two ways, since neither pytest nor fastapi/starlette are
+installed in this sandbox (same recurring constraint as elsewhere in this
+file): (1) a standalone regex simulation of all four routes' compiled
+patterns confirmed each of a flat trip id, a camera-prefixed trip id, and
+their `/location`/`/kml`/`/files/...` sub-paths resolves to the intended
+route once the specific ones are tried before the catch-all; (2) a
+permanent regression test, `tests/blackvue/web/test_app_routes.py`
+(deliberately its own file, same reasoning as `test_app_reuse.py`'s own
+docstring - it imports `fastapi`, so it can only be collected where the
+`web` extra is installed, which CI has but this sandbox doesn't).  That
+test builds a real app via `create_app()` and replicates Starlette's own
+`Router.app()` dispatch logic exactly - walk `app.routes` in order, call
+each route's `.matches(scope)`, take the first `Match.FULL` - against
+both a flat and a camera-prefixed trip id's plain/`/location`/`/kml`/
+`/files/...` URLs (including a non-ASCII "Malmö"-named trip), asserting
+each resolves to the intended endpoint function; a second test asserts
+the four routes' registration order directly. Verified via `py_compile`
+and `ast.parse` only (cannot actually run it here, same constraint as
+above) - CI will run it for real once pushed.

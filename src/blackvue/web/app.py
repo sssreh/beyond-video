@@ -416,17 +416,34 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             request, "trip_list.html", {"user": user, "trips": trips}
         )
 
-    @app.get("/trips/{trip_id:path}", response_class=HTMLResponse)
-    async def trip_detail(
-        request: Request, trip_id: str, user: User = Depends(require_login)
-    ):
-        trip = _find_trip(
-            app.state.trip_cache, app.state.camera_config_cache, target, trip_id
-        )
-        return templates.TemplateResponse(
-            request, "trip_detail.html", {"user": user, "trip": trip}
-        )
-
+    # 2026-08-27: trip_detail() (the plain "/trips/{trip_id:path}"
+    # route) is deliberately registered LAST among the four
+    # "/trips/{trip_id:path}..." routes below, not first as it
+    # originally was when task #759 switched this from a plain
+    # {trip_id} to {trip_id:path}. FastAPI/Starlette tries routes in
+    # registration order and picks the first one whose compiled regex
+    # matches the request path - and a bare {trip_id:path} with no
+    # trailing literal compiles to `^/trips/(?P<trip_id>.*)$`, which
+    # (being fully greedy with nothing anchoring it short of the end)
+    # matches ANY "/trips/..." URL, including one that was meant for
+    # trip_location()'s "/location" suffix, trip_kml()'s "/kml"
+    # suffix, or trip_file()'s "/files/{filename}" suffix. With
+    # trip_detail() registered first (the original order), it silently
+    # swallowed every one of those requests before the more specific
+    # route ever got a chance - trip_id ended up including the literal
+    # "/files/stitch.mp4" tail as part of itself, which _find_trip()'s
+    # own segment-count guard then rejected as malformed, 404ing with
+    # "trip not found" for every single video/location/KML request on
+    # every trip, camera-prefixed or not (confirmed via Christer's real
+    # NAS logs: "/trips/kirby_2019/.../files/map_zoom_120m_tu.mp4"
+    # 404-ing while the plain trip page 200'd every time). Registering
+    # the three suffixed routes first means their own more specific
+    # patterns get tried - and match - before Starlette ever reaches
+    # this catch-all, while a genuinely bare trip_id (no "/location",
+    # "/kml", or "/files/..." tail) still falls through to here exactly
+    # as before, since it can't match any of the three specific
+    # patterns. Any *new* "/trips/{trip_id:path}/something" route added
+    # in the future must go above this one for the same reason.
     @app.get("/trips/{trip_id:path}/location", response_class=HTMLResponse)
     async def trip_location(
         request: Request, trip_id: str, user: User = Depends(require_login)
@@ -548,6 +565,20 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
 
         return FileResponse(path)
+
+    # Deliberately registered LAST among the "/trips/{trip_id:path}..."
+    # routes - see the comment above trip_location() (the first of the
+    # three specific ones) for why order matters here.
+    @app.get("/trips/{trip_id:path}", response_class=HTMLResponse)
+    async def trip_detail(
+        request: Request, trip_id: str, user: User = Depends(require_login)
+    ):
+        trip = _find_trip(
+            app.state.trip_cache, app.state.camera_config_cache, target, trip_id
+        )
+        return templates.TemplateResponse(
+            request, "trip_detail.html", {"user": user, "trip": trip}
+        )
 
     @app.get("/stats", response_class=HTMLResponse)
     async def stats_dashboard(
