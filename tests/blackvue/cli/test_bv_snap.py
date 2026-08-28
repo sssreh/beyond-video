@@ -70,6 +70,20 @@ def test_parse_args_direction_rejects_unknown_letters(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
+def test_parse_args_open_defaults_to_false():
+    args = bv_snap_module.parse_args(["mycar", "--output", "/tmp/snaps"])
+
+    assert args.open is False
+
+
+def test_parse_args_open_flag():
+    args = bv_snap_module.parse_args(
+        ["mycar", "--output", "/tmp/snaps", "--open"]
+    )
+
+    assert args.open is True
+
+
 class _FakeConfig:
     name = "MyCar"
     endpoints = [Endpoint(name="home", address="10.99.77.1")]
@@ -158,6 +172,56 @@ def test_run_honors_an_explicit_direction_subset(monkeypatch, capsys, tmp_path):
     assert "F: saved" in out
     assert "R: saved" not in out
     assert "I: saved" not in out
+
+
+def test_run_open_flag_opens_every_saved_file(monkeypatch, capsys, tmp_path):
+    _stub_connection(
+        monkeypatch, {"F": b"front-bytes", "R": b"rear-bytes"}
+    )
+    opened = []
+    monkeypatch.setattr(
+        bv_snap_module, "open_with_default_app", lambda path: opened.append(path) or True
+    )
+
+    args = bv_snap_module.parse_args(
+        ["mycar", "--output", str(tmp_path), "--open"]
+    )
+    code = bv_snap_module._run(args)
+
+    assert code == bv_snap_module.EXIT_OK
+    assert len(opened) == 2
+    assert all(p.suffix == ".jpg" for p in opened)
+
+
+def test_run_without_open_flag_never_opens_anything(monkeypatch, capsys, tmp_path):
+    _stub_connection(monkeypatch, {"F": b"front-bytes"})
+    opened = []
+    monkeypatch.setattr(
+        bv_snap_module, "open_with_default_app", lambda path: opened.append(path) or True
+    )
+
+    args = bv_snap_module.parse_args(["mycar", "--output", str(tmp_path)])
+    bv_snap_module._run(args)
+
+    assert opened == []
+
+
+def test_run_open_flag_warns_but_still_succeeds_when_open_fails(
+    monkeypatch, capsys, tmp_path
+):
+    # e.g. a headless NAS with no xdg-open - the snapshot is still
+    # saved and the run is still a success, only the auto-open failed.
+    _stub_connection(monkeypatch, {"F": b"front-bytes"})
+    monkeypatch.setattr(bv_snap_module, "open_with_default_app", lambda path: False)
+
+    args = bv_snap_module.parse_args(
+        ["mycar", "--output", str(tmp_path), "--open"]
+    )
+    code = bv_snap_module._run(args)
+
+    err = capsys.readouterr().err
+    assert code == bv_snap_module.EXIT_OK
+    assert "could not open" in err
 
 
 def test_run_exits_unreachable_cleanly(monkeypatch, capsys, tmp_path):

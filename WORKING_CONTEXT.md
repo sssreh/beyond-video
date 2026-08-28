@@ -19341,3 +19341,47 @@ each resolves to the intended endpoint function; a second test asserts
 the four routes' registration order directly. Verified via `py_compile`
 and `ast.parse` only (cannot actually run it here, same constraint as
 above) - CI will run it for real once pushed.
+
+## Add `bv-snap --open`: pop the saved snapshot open automatically (2026-08-28)
+
+Christer, after confirming bv-web's own snapshot preview works: "does
+cli bv-snap show snapshots" - no, it never did. `bv-snap` (and
+`bv-gps --snap`) only ever wrote `.jpg` files and printed
+`F: saved <path>` lines; nothing displayed the picture. bv-web's own
+snapshot UI (task #1123) shows the image inline in the browser because
+it's a web page that can render an `<img>` - a plain terminal
+invocation has no equivalent surface, so seeing what was actually
+captured meant manually going and opening the file yourself.
+Christer's own assessment once this was pointed out: "so its almost
+useless" for the interactive "let me see what the camera sees right
+now" use case (scripting/automation use, e.g. a cron'd periodic
+snapshot on a headless box, was unaffected - that never needed a
+viewer to pop up).
+
+Fixed by adding `open_with_default_app(path)` to `snap.py` (the module
+already shared between `bv-snap` and `bv-gps --snap`, alongside
+`save_snapshots()`) and a new `--open` flag on `bv-snap` (deliberately
+scoped to the standalone CLI for now, not also wired into
+`bv-gps --snap`, since that was the specific command Christer asked
+about). Cross-platform dispatch mirrors the three-way split
+`bv_live.py`'s own browser-launch code already uses for URLs, applied
+here to a single file instead: `os.startfile()` on Windows (a direct
+OS call, not a subprocess), `open` on macOS, `xdg-open` on Linux/BSD.
+Deliberately best-effort and never raises - a missing `xdg-open` on a
+headless NAS, or no default app registered for `.jpg`, isn't treated
+as a `bv-snap` failure (the file is still saved and still usable);
+`_run()` just warns per file that couldn't be opened and keeps the
+overall exit code at `EXIT_OK`.
+
+Verified via a standalone harness (no pytest in this environment, same
+constraint as elsewhere in this file) covering: each of the three OS
+branches dispatches the right call with the right arguments (mocking
+`sys.platform` and `subprocess.run`/`os.startfile`); a missing launcher
+(`FileNotFoundError`) and a non-zero exit (`CalledProcessError`) both
+return `False` without raising; `bv-snap --open` calls
+`open_with_default_app()` once per saved file; the flag defaults to
+off and opens nothing when omitted; and a failed open still warns
+while leaving the run's exit code at `EXIT_OK`. Added the same
+scenarios as permanent regression tests in `tests/blackvue/test_snap.py`
+and `tests/blackvue/cli/test_bv_snap.py`. Also updated
+`docs/man/bv-snap.md` for the new flag.

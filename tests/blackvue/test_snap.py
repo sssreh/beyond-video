@@ -12,6 +12,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import subprocess
+
+from blackvue.snap import open_with_default_app
 from blackvue.snap import save_snapshots
 
 
@@ -103,3 +106,94 @@ def test_save_snapshots_treats_an_empty_label_the_same_as_none(tmp_path):
     )
 
     assert paths["F"].name == "snap_20260821_180512_F.jpg"
+
+
+# ---------------------------------------------------------------------------
+# open_with_default_app() - the "let me actually see the picture" half of
+# `bv-snap --open` (Christer: bv-snap is "almost useless" without this,
+# since it otherwise only writes files and prints their paths).
+# ---------------------------------------------------------------------------
+
+
+def test_open_with_default_app_uses_startfile_on_windows(monkeypatch, tmp_path):
+    path = tmp_path / "snap_F.jpg"
+    path.write_bytes(b"data")
+
+    calls = []
+    monkeypatch.setattr("blackvue.snap.sys.platform", "win32")
+    # os.startfile only exists on real Windows - add it as an attribute
+    # so this test can run (and be meaningfully asserted) on any OS.
+    monkeypatch.setattr(
+        "blackvue.snap.os.startfile", lambda p: calls.append(p), raising=False
+    )
+
+    result = open_with_default_app(path)
+
+    assert result is True
+    assert calls == [str(path)]
+
+
+def test_open_with_default_app_uses_open_on_macos(monkeypatch, tmp_path):
+    path = tmp_path / "snap_F.jpg"
+    path.write_bytes(b"data")
+
+    calls = []
+    monkeypatch.setattr("blackvue.snap.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "blackvue.snap.subprocess.run",
+        lambda args, **kwargs: calls.append(args),
+    )
+
+    result = open_with_default_app(path)
+
+    assert result is True
+    assert calls == [["open", str(path)]]
+
+
+def test_open_with_default_app_uses_xdg_open_on_linux(monkeypatch, tmp_path):
+    path = tmp_path / "snap_F.jpg"
+    path.write_bytes(b"data")
+
+    calls = []
+    monkeypatch.setattr("blackvue.snap.sys.platform", "linux")
+    monkeypatch.setattr(
+        "blackvue.snap.subprocess.run",
+        lambda args, **kwargs: calls.append(args),
+    )
+
+    result = open_with_default_app(path)
+
+    assert result is True
+    assert calls == [["xdg-open", str(path)]]
+
+
+def test_open_with_default_app_returns_false_on_missing_launcher(
+    monkeypatch, tmp_path
+):
+    # e.g. xdg-open not installed on a headless NAS - shouldn't raise,
+    # just report failure so the caller can warn and move on.
+    path = tmp_path / "snap_F.jpg"
+    path.write_bytes(b"data")
+
+    monkeypatch.setattr("blackvue.snap.sys.platform", "linux")
+
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("xdg-open not found")
+
+    monkeypatch.setattr("blackvue.snap.subprocess.run", _raise)
+
+    assert open_with_default_app(path) is False
+
+
+def test_open_with_default_app_returns_false_on_nonzero_exit(monkeypatch, tmp_path):
+    path = tmp_path / "snap_F.jpg"
+    path.write_bytes(b"data")
+
+    monkeypatch.setattr("blackvue.snap.sys.platform", "linux")
+
+    def _raise(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr("blackvue.snap.subprocess.run", _raise)
+
+    assert open_with_default_app(path) is False

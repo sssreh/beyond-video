@@ -8,7 +8,7 @@
 
 ```
 bv-snap [--config-dir DIR] [--timeout SECONDS] --output DIR
-        [--direction {F,R,I}]... (ID | --host HOST[:PORT])
+        [--direction {F,R,I}]... [--open] (ID | --host HOST[:PORT])
 ```
 
 ## DESCRIPTION
@@ -22,6 +22,8 @@ The camera's own live-view feed can keep serving whatever direction was live a m
 Snapshots are saved as `snap_<id-or-host>_<timestamp>_<direction>.jpg` (one shared timestamp per run, `id-or-host` sanitized for filesystem safety - e.g. a `--host`'s `:PORT` becomes `_PORT`) into `--output`, a directory you choose - deliberately not the camera's own recording archive, since a snap is a one-off grab, not part of a recording. Including the id/host in the filename means a single `--output` directory shared across more than one camera still produces files that say which camera they came from.
 
 `ID` and `--host` are mutually exclusive - exactly one is required, same as `bv-gps`. See `bv-gps(1)` for a `--snap` mode that does the same capture from within an existing `bv-gps` invocation, if you'd rather not have a second command.
+
+By default `bv-snap` only writes files and prints their paths - fine for scripting, but there's no way to actually *see* a snapshot from a plain terminal run (bv-web's own snapshot UI shows the picture inline in the browser; this CLI has no equivalent surface on its own). `--open` closes that gap: after saving, each file is handed to the OS's default image viewer (`os.startfile()` on Windows, `open` on macOS, `xdg-open` on Linux/BSD). This is best-effort - on a headless server with no default app registered, `bv-snap` warns and moves on rather than failing; the snapshot is still saved either way.
 
 ## ARGUMENTS
 
@@ -38,6 +40,7 @@ Snapshots are saved as `snap_<id-or-host>_<timestamp>_<direction>.jpg` (one shar
 | `--timeout SECONDS` | Per-endpoint connection timeout. Default: 5. |
 | `--output DIR`, `-o DIR` | Directory to save the snapshot `.jpg` files into (created if it doesn't exist yet). Required. |
 | `--direction {F,R,I}` | Only snap this direction - repeatable (e.g. `--direction F --direction R`). Default: every direction. |
+| `--open` | Open each saved snapshot in the OS's default image viewer after saving. Best-effort: if no default app can be found, the snapshot is still saved and only the auto-open is skipped, with a warning. |
 | `-h`, `--help` | Show help and exit. |
 
 ## EXIT STATUS

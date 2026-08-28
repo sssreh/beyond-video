@@ -18,7 +18,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -88,3 +91,41 @@ def save_snapshots(
         paths[direction] = path
 
     return paths
+
+
+def open_with_default_app(path: Path) -> bool:
+    """Open `path` in the OS's default application for its file type
+    (a JPEG viewer, for a snapshot).
+
+    Standalone `bv-snap` just writes files and prints "saved <path>" -
+    fine for scripting, but next to useless for "let me see what the
+    camera sees right now" (Christer: "so its almost useless" once he
+    realized nothing pops the image up for him - bv-web's own snapshot
+    UI already shows the picture inline in the browser, but a plain
+    terminal invocation of bv-snap has no equivalent surface). This is
+    what `bv-snap --open` (see cli/bv_snap.py) calls per saved file to
+    close that gap for terminal use.
+
+    Cross-platform: `os.startfile()` on Windows (a direct OS call, not
+    a subprocess - the one platform that exposes this), `open` on
+    macOS, `xdg-open` on Linux/BSD - the same three-way split
+    bv_live.py's own browser-launch code documents doing for URLs,
+    applied here to a single file instead of a URL.
+
+    Returns whether the OS handed the file off successfully. Never
+    raises - a missing `xdg-open` on a headless server, or no default
+    app registered for `.jpg`, isn't a bv-snap failure in itself (the
+    file is still saved and still usable); it just means bv-snap
+    couldn't also pop a viewer open for it.
+    """
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=True)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=True)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False

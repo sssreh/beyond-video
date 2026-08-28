@@ -23,6 +23,7 @@ from ..core.connection import connect
 from ..core.endpoint import Endpoint
 from ..core.joblog import wrap_say
 from ..core.joblog import wrap_warn
+from ..snap import open_with_default_app
 from ..snap import save_snapshots
 
 EXIT_OK = 0
@@ -114,6 +115,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help=(
+            "Open each saved snapshot in the OS's default image viewer "
+            "after saving (Christer: bv-snap is \"almost useless\" "
+            "without a way to actually see the picture from a plain "
+            "terminal run - bv-web's own snapshot UI shows it inline "
+            "in the browser, but this CLI otherwise only writes files "
+            "and prints their paths). Best-effort: if no default app "
+            "can be found (e.g. a headless server with no GUI), the "
+            "snapshot is still saved - only the auto-open is skipped, "
+            "with a warning."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -185,6 +202,12 @@ def _run(
     paths = save_snapshots(snapshots, args.output, label=label)
     for direction, path in paths.items():
         say(f"{direction}: saved {path}")
+        if args.open and not open_with_default_app(path):
+            warn(
+                f"bv-snap: could not open {path} automatically "
+                "(no default app found for this file type) - open it "
+                "manually."
+            )
 
     missing = [
         d for d in directions if d not in snapshots and d not in failed_directions
