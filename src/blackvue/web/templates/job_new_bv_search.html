@@ -237,8 +237,15 @@ with bv-config</a> first.</p>
   var chunks = [];
   var recording = false;
 
-  function setStatus(text) {
+  function setStatus(text, transcribing) {
+    // `transcribing` (task #1308, Christer: "could that bi bigger, red
+    // and maybe blinking?") toggles .transcribing on the shared
+    // #voice-status element (see base.html's scoped CSS) - defaults to
+    // false so every other setStatus() call site (recording, errors,
+    // the final "Heard: ..." result) automatically clears it without
+    // needing its own cleanup call.
     if (!status) return;
+    status.classList.toggle('transcribing', !!transcribing);
     if (text) {
       status.textContent = text;
       status.hidden = false;
@@ -289,7 +296,7 @@ with bv-config</a> first.</p>
     formData.append('llm_model', llmModelSelect ? llmModelSelect.value : 'none');
 
     btn.disabled = true;
-    setStatus('Transcribing...');
+    setStatus('Transcribing...', true);
     if (llmPanel) llmPanel.hidden = true;
     if (llmApplyBtn) llmApplyBtn.hidden = true;
 

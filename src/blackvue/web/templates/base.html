@@ -392,6 +392,19 @@
     .tts-actions { display: flex; align-items: center; gap: 0.5rem; }
     .tts-download { display: inline-block; text-decoration: none; text-align: center; }
     .voice-status { margin-top: 0.35rem; }
+    /* Scoped to the "Transcribing..." state only (JS toggles this class
+       on/off around that one setStatus() call in
+       job_new_bv_search.html) - #voice-status is reused for
+       "Recording...", the final "Heard: ..." result, and error text
+       too, so the bigger/red/blinking treatment must not apply
+       unconditionally (Christer: "could that bi bigger, red and maybe
+       blinking?"). Reuses var(--error) rather than a new color, same
+       red already used for .voice-btn.recording above. */
+    .voice-status.transcribing {
+      color: var(--error); font-size: 1.05rem; font-weight: 600;
+      animation: voice-status-blink 1s step-start infinite;
+    }
+    @keyframes voice-status-blink { 50% { opacity: 0.25; } }
     button[type="submit"] {
       background: var(--link); color: white; border: none; padding: 0.55rem 1.25rem;
       border-radius: 4px; font: inherit; cursor: pointer;

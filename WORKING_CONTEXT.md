@@ -19848,3 +19848,36 @@ non-empty WAV came out the other side. Also ran `ast.parse()` on the
 whole file and the full 15-test `test_voice_asr.py` suite (all pass,
 unchanged - none of them exercise `_convert_to_wav()` directly since
 they predate it, but nothing it touches broke).
+
+## Bigger/red/blinking "Transcribing..." status (2026-08-29)
+
+Christer, right after reporting the webm bug above: "When the llm is
+transcribing, there is a little text saying 'Transcribing...' could
+that bi bigger, red and maybe blinking?" - the `#voice-status` element
+(job_new_bv_search.html) is shared across every voice-search status
+message ("Recording...", "Transcribing...", the final "Heard: ..."
+result, and error text) via one `setStatus(text)` JS helper, so the
+styling had to be scoped to only the transcribing state, not applied to
+the element permanently.
+
+**`base.html`**: new `.voice-status.transcribing` CSS rule - larger
+font-size (1.05rem), bold, `color: var(--error)` (the same red already
+used for `.voice-btn.recording`, not a new color), and a 1s
+`step-start` `@keyframes` blink (`voice-status-blink`, alternating
+opacity 1/0.25) - `step-start` rather than a smooth fade so it reads as
+a clear on/off blink instead of a subtle pulse.
+
+**`job_new_bv_search.html`**: `setStatus(text)` gained a second,
+default-`false` `transcribing` param that toggles the `.transcribing`
+class via `classList.toggle()` on every call - so passing `true` only
+at the one `setStatus('Transcribing...', true)` call site (in
+`sendRecording()`) is sufficient; every other `setStatus(...)` call
+elsewhere in the file (recording start, mic-denied error, no-speech,
+transcription-failed, the final result message) automatically clears
+the class again as a side effect of calling `setStatus` at all, with no
+separate cleanup call needed at each of those sites.
+
+Verified via `jinja2.Environment.parse()` on both templates and `node
+--check`-equivalent (`new Function()`) on the extracted `<script>`
+block - both clean. No visual/screenshot verification possible in this
+sandbox (no browser); Christer should confirm on his own hardware.
