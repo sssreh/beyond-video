@@ -749,7 +749,9 @@ def test_start_bv_generate_wires_say_warn_into_bv_generates_run(monkeypatch):
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
     assert status == JobStatus.SUCCEEDED
-    assert captured["path"] == "/archive/kirby"
+    # camera_id, not the resolved archive_path - see start_bv_drivers()'s
+    # own docstring for why.
+    assert captured["path"] == "kirby"
     assert "bv-generate: done" in output
     assert "(exit code 0)" in output
 
@@ -1045,7 +1047,9 @@ def test_start_bv_export_wires_say_warn_and_command_line_into_run(monkeypatch):
     _wait_until(lambda: job.snapshot()[0].is_finished)
     status, output, _ = job.snapshot()
     assert status == JobStatus.SUCCEEDED
-    assert captured["path"] == "/archive/kirby"
+    # camera_id, not the resolved archive_path - see start_bv_drivers()'s
+    # own docstring for why.
+    assert captured["path"] == "kirby"
     assert captured["target"] == "/trips"
     assert captured["command_line"].startswith("bv-export ")
     assert "bv-export: done" in output
@@ -1581,7 +1585,10 @@ def _ls_kwargs(**overrides):
 
 def test_start_bv_ls_wires_say_but_needs_no_ask_or_warn(monkeypatch):
     def fake_run(args, *, say):
-        assert args.path == "/archive/kirby"
+        # camera_id, not the resolved archive_path - see start_bv_ls()'s
+        # own docstring for why (resolve_archive_path() needs the real
+        # camera id to look up that camera's own CameraConfig).
+        assert args.path == "kirby"
         say("Recording          Front ...")
         return 0
 
@@ -1733,7 +1740,9 @@ def _lock_kwargs(**overrides):
 
 def test_start_bv_lock_lock_mode_reaches_parsed_args(monkeypatch):
     def fake_run(args, *, say, warn):
-        assert args.path == "/archive/kirby"
+        # camera_id, not the resolved archive_path - see
+        # start_bv_drivers()'s own docstring for why.
+        assert args.path == "kirby"
         assert args.lock_assets == ["get-duration"]
         assert args.unlock_assets is None
         assert args.list is False
@@ -1915,7 +1924,9 @@ def _scribe_kwargs(**overrides):
 
 def test_start_bv_scribe_wires_say_and_warn_into_bv_scribes_run(monkeypatch):
     def fake_run(args, *, say, warn):
-        assert args.path == "/archive/kirby"
+        # camera_id, not the resolved archive_path - see
+        # start_bv_drivers()'s own docstring for why.
+        assert args.path == "kirby"
         say("bv-scribe: started 12:00:00")
         return 0
 
@@ -2168,7 +2179,9 @@ def _search_kwargs(**overrides):
 
 def test_start_bv_search_wires_say_and_warn_into_bv_searchs_run(monkeypatch):
     def fake_run(args, *, say, warn):
-        assert args.path == "/archive/kirby"
+        # camera_id, not the resolved archive_path - see
+        # start_bv_drivers()'s own docstring for why.
+        assert args.path == "kirby"
         say("bv-search: started 12:00:00")
         return 0
 
@@ -2356,7 +2369,13 @@ def _drivers_kwargs(**overrides):
 
 def test_start_bv_drivers_reaches_parsed_args(monkeypatch):
     def fake_run(args, *, say, warn):
-        assert args.path == "/archive/kirby"
+        # camera_id, not the resolved archive_path - this is the actual
+        # bug Christer reported (missing video links on /drivers): with
+        # archive_path here, resolve_archive_path() inside bv_drivers.py's
+        # own _run() always got camera_config=None, so every trip's
+        # camera_id came back unset. See start_bv_drivers()'s own
+        # docstring for the full explanation.
+        assert args.path == "kirby"
         assert args.min_visits == 2
         assert args.from_ is None
         assert args.until is None

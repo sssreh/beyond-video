@@ -20784,3 +20784,79 @@ via the standalone Jinja2 render harness (extended with `away_place_
 key`/`smoothness_raw` fields on the fake `Trip` fixture and `smoothness_
 scores`/`closest_matches` context, asserting on the new column, the
 `N/9` score, the closest-match hint text, and the same-place tag).
+
+Fixed: video links missing everywhere on `/drivers` for a web-triggered
+build (Christer: "common place needs to show video if exist, now the top
+contender shows a stop where yo cant stop, should me sidecars for the the
+continuing trip" - a garbled two-part report; `AskUserQuestion` confirmed
+part one meant "video link is simply missing", not a placement preference).
+Traced the video-link half methodically: first ruled out a template bug by
+comparing the Common Places and Specific trips video-link Jinja gates side
+by side (byte-identical `{% if trip.camera_id and trip.first_recording_id
+%}`), then followed the data backward through `_raw_trip_knowledge()` ->
+`build_knowledge_base()`'s `camera_id` param -> `bv_drivers.py`'s `_run()`
+-> `resolve_archive_path()` -> and finally to `web/jobs.py`'s
+`start_bv_drivers()`, where the real defect was: `argv: list[str] =
+[str(archive_path)]` passed the already-resolved literal archive path
+instead of `camera_id`, even though `camera_id` was already an available
+parameter. `resolve_archive_path(path_or_id, config_dir)` in
+`core/camera_config.py` is built to accept either a bare camera id (looked
+up against that camera's own `CameraConfig`) or a literal path (used as-is,
+`camera_config=None`) - handing it the already-resolved path meant it
+always took the literal-path branch, so `camera_config` came back `None`
+for every web-triggered `bv-drivers` job, `TripKnowledge.camera_id` was
+`None` on every trip, and `drivers.html`'s video-link gate silently failed
+for the whole page - identical archive, identical trips, only broken when
+triggered from the browser instead of a real terminal.
+
+Checked whether this was unique to `start_bv_drivers()`: it wasn't.
+`start_bv_ls()`, `start_bv_lock()`, `start_bv_generate()`,
+`start_bv_export()`, `start_bv_scribe()`, and `start_bv_search()` all share
+the identical `camera_id` + `archive_path` parameter pair and the same
+`argv: list[str] = [str(archive_path)]` (or, for bv-export,
+`[str(archive_path), "--target", ...]`) construction - a systemic drift
+across every archive-based job-trigger method, not a bv-drivers-specific
+bug. Confirmed a second, independently real consequence: `bv_ls.py`'s own
+`_run()` uses `camera_config.adapter if camera_config is not None else
+DEFAULT_ADAPTER_ID` to pick the archive adapter, so a camera configured
+with a non-default adapter would silently fall back to the default one for
+any web-triggered `bv-ls` job too. `start_bv_download()`/`start_bv_gps()`/
+`start_bv_config()` were never affected - `grep` confirmed they already
+build `argv[0]`/`args[0]` from `camera_id`/`id_` directly, the correct
+pattern the other six had drifted away from. `archive_path` itself is
+never referenced anywhere in any of the six methods except building
+`argv[0]` (confirmed by grep across `web/jobs.py`), so the fix - `argv[0]`
+is `camera_id` in all six/seven - is a safe, mechanical one-line change per
+method, kept `archive_path` as an unused parameter only so the caller's
+`_find_camera_archive()` lookup (which also validates the camera id is
+real) still runs before the job-runner method is ever called.
+
+Verified: `test_bv_drivers.py`'s 11 tests (exercise `bv_drivers._run()`
+directly, not through the job runner) pass unchanged. `test_place_
+knowledge.py`'s 35 tests pass unchanged. `test_jobs.py`: 5 assertions
+(`args.path == "/archive/kirby"` / `captured["path"] == "/archive/kirby"`,
+across the bv-ls/bv-lock/bv-generate/bv-export/bv-drivers/bv-scribe/
+bv-search wiring tests) were asserting the buggy behavior and updated to
+`"kirby"`; ran the full 108-test `test_jobs.py` suite via a hand-rolled
+pytest-less runner (no network access in this sandbox to install pytest or
+a `tomllib` backport for Python 3.10 - built a minimal `pytest`/`tomllib`
+shim good enough to import and run the real test files unmodified) - 88
+passed, 20 failed, and every one of the 20 failures was confirmed
+pre-existing and unrelated to this fix (a `pytest.approx` shim gap in one
+test, and `_export_kwargs()`'s fixture missing `scene_quantize`/
+`scene_gpu_memory_fraction` - keyword-only params `start_bv_export()`
+already required before this change, never touched by it). `py_compile`
+clean on `web/jobs.py`. Documented in `docs/WEB_ARCHITECTURE.md`'s
+driver-knowledge-base section.
+
+Still open from the same report: the second half ("top contender shows a
+stop where yo cant stop") - a `CommonPlace` created at a spot that isn't a
+genuine stopping/parking destination (a traffic light, roundabout, or
+highway point briefly slowed at, not a real stop). Not yet investigated;
+likely involves `dwell_at_destination()`/`build_common_places()`/
+`STOP_THRESHOLD_MINUTES`/the same-place-radius heuristic in
+`place_knowledge.py`. Christer separately noted (unconfirmed how it
+relates, if at all): "Every side car should have been downloaded after
+july 6 2026" - worth checking whether missing GPS sidecars *before* that
+date could produce spurious stationary-looking gaps that get misread as a
+stop, when investigating.

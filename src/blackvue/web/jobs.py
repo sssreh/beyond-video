@@ -471,12 +471,26 @@ class JobRunner:
         bv-config/bv-gps's id-only triggers do.
 
         `archive_path` is resolved by the caller (app.py's route) the
-        same way start_bv_generate()'s own docstring explains.
+        same way start_bv_generate()'s own docstring explains -
+        `argv[0]` is `camera_id` rather than `archive_path` itself,
+        though: bv_ls.py's own `_run()` re-resolves `args.path` via
+        resolve_archive_path() to get both the archive path *and*
+        that camera's CameraConfig (needed for adapter_id - see
+        bv_ls.py's own `camera_config.adapter if camera_config is not
+        None else DEFAULT_ADAPTER_ID` line); passing the already
+        -resolved literal `archive_path` here instead of `camera_id`
+        would make resolve_archive_path() treat it as a bare
+        directory and always return `camera_config=None`, silently
+        forcing the default adapter even for a camera configured with
+        a non-default one. `archive_path` itself ends up unused here -
+        kept as a parameter anyway so the caller's `_find_camera_
+        archive()` lookup (which also validates the camera id is
+        real) still runs before this method is ever called.
         """
 
         from ..cli import bv_ls as bv_ls_cli
 
-        argv: list[str] = [str(archive_path)]
+        argv: list[str] = [camera_id]
 
         if all:
             argv.append("--all")
@@ -545,11 +559,25 @@ class JobRunner:
         .osm_cache usage), and --trace's dot-per-trip progress has
         nothing useful to show once it's just Job.output lines rather
         than a real terminal; --debug's phase timings are still
-        reachable from a real terminal run if Christer wants them."""
+        reachable from a real terminal run if Christer wants them.
+
+        `argv[0]` is `camera_id`, not `archive_path` - bv_drivers.py's
+        own `_run()` re-resolves `args.path` via resolve_archive_path()
+        to get that camera's CameraConfig, and stamps `CameraConfig.id`
+        onto every TripKnowledge.camera_id it builds (see place_
+        knowledge.py's `_raw_trip_knowledge()`), which /drivers then
+        uses to build each trip's video link. Passing the already
+        -resolved literal `archive_path` here instead would make
+        resolve_archive_path() treat it as a bare directory and always
+        return `camera_config=None`, silently leaving every trip's
+        `camera_id` unset and every video link on /drivers missing -
+        this was a real bug (Christer: "common place needs to show
+        video if exist"), fixed by using `camera_id` here instead.
+        `archive_path` itself ends up unused in this method."""
 
         from ..cli import bv_drivers as bv_drivers_cli
 
-        argv: list[str] = [str(archive_path)]
+        argv: list[str] = [camera_id]
         if from_:
             argv += ["--from", from_]
         if until:
@@ -606,11 +634,18 @@ class JobRunner:
         "lock"/"unlock") list of asset names or `["all"]` - app.py's
         route is responsible for that validation before calling this,
         same as it validates numeric fields before calling
-        start_bv_ls()."""
+        start_bv_ls().
+
+        `argv[0]` is `camera_id`, not `archive_path` - same "let
+        resolve_archive_path() do a real camera-id lookup instead of
+        being handed an already-resolved literal path" fix applied to
+        every other archive-based job-trigger method in this file
+        (see start_bv_drivers()'s own docstring for the concrete bug
+        this avoids). `archive_path` itself ends up unused here."""
 
         from ..cli import bv_lock as bv_lock_cli
 
-        argv: list[str] = [str(archive_path)]
+        argv: list[str] = [camera_id]
 
         if mode == "list":
             argv.append("--list")
@@ -695,11 +730,17 @@ class JobRunner:
         error instead of parse_args() raising SystemExit(2) - a
         subprocess-CLI concern, not something to let escape into a
         FastAPI route.
+
+        `argv[0]` is `camera_id`, not `archive_path` - same fix
+        applied to every other archive-based job-trigger method in
+        this file (see start_bv_drivers()'s own docstring for the
+        concrete bug this avoids). `archive_path` itself ends up
+        unused here.
         """
 
         from ..cli import bv_generate
 
-        argv: list[str] = [str(archive_path)]
+        argv: list[str] = [camera_id]
 
         if from_:
             argv += ["--from", from_]
@@ -864,11 +905,18 @@ class JobRunner:
         route catches it and re-renders the form, the same
         friendly-error pattern used for bv-generate's own required
         -action check.
+
+        `argv[0]` is `camera_id`, not `archive_path` - same fix
+        applied to every other archive-based job-trigger method in
+        this file (see start_bv_drivers()'s own docstring for the
+        concrete bug this avoids). `archive_path` itself ends up
+        unused here (`target` is still passed through as its own
+        `--target` flag, unrelated to this fix).
         """
 
         from ..cli import bv_export
 
-        argv: list[str] = [str(archive_path), "--target", str(target)]
+        argv: list[str] = [camera_id, "--target", str(target)]
 
         if prefix:
             argv += ["--prefix", prefix]
@@ -1198,11 +1246,17 @@ class JobRunner:
         read it back. Optional and otherwise ignored by this method -
         the actual job still runs from `argv` above, built from this
         method's own typed kwargs, not from `params`.
+
+        `argv[0]` is `camera_id`, not `archive_path` - same fix
+        applied to every other archive-based job-trigger method in
+        this file (see start_bv_drivers()'s own docstring for the
+        concrete bug this avoids). `archive_path` itself ends up
+        unused here.
         """
 
         from ..cli import bv_scribe
 
-        argv: list[str] = [str(archive_path)]
+        argv: list[str] = [camera_id]
 
         if from_:
             argv += ["--from", from_]
@@ -1335,11 +1389,17 @@ class JobRunner:
         `archive_path` is resolved by the caller (app.py's route, via
         `_find_camera_archive()`) the same way start_bv_generate()'s
         own docstring explains.
+
+        `argv[0]` is `camera_id`, not `archive_path` - same fix
+        applied to every other archive-based job-trigger method in
+        this file (see start_bv_drivers()'s own docstring for the
+        concrete bug this avoids). `archive_path` itself ends up
+        unused here.
         """
 
         from ..cli import bv_search as bv_search_cli
 
-        argv: list[str] = [str(archive_path)]
+        argv: list[str] = [camera_id]
 
         if from_:
             argv += ["--from", from_]
