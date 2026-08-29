@@ -1,0 +1,268 @@
+"""Tests for trip/driver_detect.py's route/dwell-time driver matcher.
+
+Coordinates below are fabricated stand-ins (not real geocoded points -
+match_driver() itself never geocodes anything, see resolve_known_points()
+for the real I/O wrapper this module keeps separate on purpose) chosen
+just far enough apart that DEFAULT_RADIUS_METERS/home_radius_meters
+cleanly separate "near" from "far". Scenarios mirror Christer's own
+verbatim route descriptions (see driver_detect.py's
+christers_driver_profiles()), including the Norra Stationsgatan
+same-place-opposite-dwell-time disambiguation between the two drivers.
+"""
+
+import json
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+from blackvue.trip.driver_detect import (
+    DriverProfile,
+    DriverProfiles,
+    RoutePattern,
+    TripFix,
+    christers_driver_profiles,
+    default_driver_profiles_path,
+    driver_profiles_from_dict,
+    driver_profiles_to_dict,
+    load_driver_profiles,
+    match_driver,
+    write_default_driver_profiles,
+)
+
+HOME = (59.3050, 18.1010)
+SOLNA = (59.3600, 18.0000)
+NORRA_STN = (59.3400, 18.0500)
+NEAR_HOME = (59.3055, 18.1020)
+FAR_AWAY_A = (10.0, 10.0)
+FAR_AWAY_B = (20.0, 20.0)
+
+KNOWN_POINTS = {
+    "home": HOME,
+    "Solna, Vintervägen 50": SOLNA,
+    "Norra Stationsgatan": NORRA_STN,
+}
+
+
+def ts(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+
+
+def test_christers_driver_profiles_uses_opaque_labels():
+    profiles = christers_driver_profiles()
+
+    assert profiles.drivers[0].label == "driver1"
+    assert profiles.drivers[0].display_name == "Fru"
+    assert profiles.drivers[1].label == "driver2"
+    assert profiles.drivers[1].display_name == "Christer"
+
+
+def test_simple_commute_match():
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=SOLNA,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:30:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    labels = {(m.driver_label, m.place) for m in matches}
+    assert ("driver2", "Solna, Vintervägen 50") in labels
+
+
+def test_min_stay_minutes_match_and_disambiguation():
+    """Wife's Norra Stationsgatan pattern requires >10 min dwell - a
+    15-minute stay should match her pattern at high confidence and
+    must NOT also match Christer's own (max_stay_minutes=10) pattern
+    at the same place."""
+
+    profiles = christers_driver_profiles()
+    leg1 = TripFix(
+        start=HOME,
+        end=NORRA_STN,
+        start_time=ts("2026-08-29 08:00:00"),
+        end_time=ts("2026-08-29 08:15:00"),
+    )
+    leg2 = TripFix(
+        start=NORRA_STN,
+        end=HOME,
+        start_time=ts("2026-08-29 08:30:00"),
+        end_time=ts("2026-08-29 08:45:00"),
+    )
+
+    matches = match_driver(leg1, None, leg2, profiles, KNOWN_POINTS)
+
+    wife_matches = [
+        m for m in matches if m.driver_label == "driver1" and m.place == "Norra Stationsgatan"
+    ]
+    christer_matches = [
+        m for m in matches if m.driver_label == "driver2" and m.place == "Norra Stationsgatan"
+    ]
+    assert wife_matches
+    assert wife_matches[0].confidence >= 0.85
+    assert christer_matches == []
+
+
+def test_max_stay_minutes_match_and_disambiguation():
+    """Christer's own Norra Stationsgatan pattern is a quick
+    turnaround (<=10 min) - a 5-minute stay should match his pattern
+    and must NOT match his wife's min-stay pattern at the same
+    place."""
+
+    profiles = christers_driver_profiles()
+    leg1 = TripFix(
+        start=HOME,
+        end=NORRA_STN,
+        start_time=ts("2026-08-29 09:00:00"),
+        end_time=ts("2026-08-29 09:15:00"),
+    )
+    leg2 = TripFix(
+        start=NORRA_STN,
+        end=HOME,
+        start_time=ts("2026-08-29 09:20:00"),
+        end_time=ts("2026-08-29 09:35:00"),
+    )
+
+    matches = match_driver(leg1, None, leg2, profiles, KNOWN_POINTS)
+
+    christer_matches = [
+        m for m in matches if m.driver_label == "driver2" and m.place == "Norra Stationsgatan"
+    ]
+    wife_matches = [
+        m for m in matches if m.driver_label == "driver1" and m.place == "Norra Stationsgatan"
+    ]
+    assert christer_matches
+    assert wife_matches == []
+
+
+def test_any_short_trip_in_home_area_matches():
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=NEAR_HOME,
+        start_time=ts("2026-08-29 12:00:00"),
+        end_time=ts("2026-08-29 12:10:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    local_matches = [m for m in matches if m.place == profiles.home_name]
+    assert local_matches
+
+
+def test_any_short_trip_in_home_area_respects_max_duration():
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=NEAR_HOME,
+        start_time=ts("2026-08-29 12:00:00"),
+        end_time=ts("2026-08-29 12:30:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    local_matches = [m for m in matches if m.place == profiles.home_name]
+    assert local_matches == []
+
+
+def test_no_match_for_unrelated_endpoints():
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=FAR_AWAY_A,
+        end=FAR_AWAY_B,
+        start_time=ts("2026-08-29 12:00:00"),
+        end_time=ts("2026-08-29 12:10:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    assert matches == ()
+
+
+def test_unverifiable_dwell_still_matches_at_reduced_confidence():
+    """No adjacent trip to compute dwell time from - both drivers'
+    Norra Stationsgatan patterns should still surface (a false 'no
+    match' would be worse than a low-confidence maybe), but capped at
+    reduced confidence and flagged as unverified."""
+
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=NORRA_STN,
+        start_time=ts("2026-08-29 08:00:00"),
+        end_time=ts("2026-08-29 08:15:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    unverified = [m for m in matches if m.place == "Norra Stationsgatan"]
+    assert unverified
+    assert all(m.confidence <= 0.5 for m in unverified)
+    assert all("unverified" in m.reason for m in unverified)
+
+
+def test_place_resolution_caching_via_known_points_dict():
+    """resolve_known_points() itself does real network I/O (forward
+    geocoding), so it isn't exercised here - but match_driver() must
+    never re-derive a place's point itself and must simply skip any
+    pattern whose place is missing from known_points (e.g. a name
+    load_or_forward_geocode() failed to resolve), not raise."""
+
+    profiles = DriverProfiles(
+        home_name="Home",
+        home_query="Home",
+        home_radius_meters=300.0,
+        drivers=(
+            DriverProfile(
+                label="driver1",
+                display_name="Someone",
+                patterns=(RoutePattern(place="Unresolvable Place"),),
+            ),
+        ),
+    )
+    trip = TripFix(
+        start=HOME,
+        end=SOLNA,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:30:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, {"home": HOME})
+
+    assert matches == ()
+
+
+def test_driver_profiles_json_round_trip():
+    profiles = christers_driver_profiles()
+
+    data = driver_profiles_to_dict(profiles)
+    json_text = json.dumps(data)
+    restored = driver_profiles_from_dict(json.loads(json_text))
+
+    assert restored.home_query == profiles.home_query
+    assert len(restored.drivers) == len(profiles.drivers)
+    assert restored.drivers[1].patterns[-1].max_stay_minutes == 10
+
+
+def test_write_default_driver_profiles_seeds_and_is_idempotent(tmp_path=None):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = default_driver_profiles_path(Path(tmp))
+        assert not path.exists()
+
+        written = write_default_driver_profiles(path)
+        assert path.exists()
+        assert written.drivers[1].display_name == "Christer"
+
+        loaded = load_driver_profiles(path)
+        assert loaded is not None
+        assert loaded.home_query == written.home_query
+
+        again = write_default_driver_profiles(path)
+        assert again.home_query == loaded.home_query
+
+
+def test_load_driver_profiles_returns_none_when_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = default_driver_profiles_path(Path(tmp))
+        assert load_driver_profiles(path) is None

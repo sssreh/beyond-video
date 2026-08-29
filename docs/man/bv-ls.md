@@ -9,7 +9,7 @@
 ```
 bv-ls [--all] [--full] [--from TIMESTAMP] [--until TIMESTAMP] [--timestamp TIMESTAMP]
       [--source PATTERN] [--trips] [--max-gap MINUTES] [--movement] [--gps-split] [--no-duration]
-      [--gap-tolerance SECONDS] [--config-dir DIR]
+      [--gap-tolerance SECONDS] [--drivers] [--config-dir DIR]
       [PATH]
 ```
 
@@ -44,6 +44,7 @@ By default, related recordings are grouped (e.g. an event recording and the cont
 | `--gps-split` | With `--trips`, force a split between two recordings whose GPS position implies an impossible jump, even for a gap well within `--max-gap` - e.g. a stock/downloaded clip mixed into a GoPro/folder-adapter archive that happens to land near real footage in time but was shot somewhere else entirely. Uses the same real-telemetry-then-EXIF/container-tag-fallback resolution as the GPS column below. **Off by default** - a real per-pair GPS probe (an EXIF read and/or an `ffprobe` subprocess) on every consecutive pair of recordings, not just ones near an already-ambiguous gap. |
 | `--no-duration` | With `--trips`, ignore `.duration.txt` files and measure gaps from each recording's start timestamp only, instead of folding in its real span first. |
 | `--gap-tolerance SECONDS` | With `--trips`, a small fixed margin added on top of `--max-gap` to absorb measurement noise, not a detection setting like `--max-gap` itself. Default: 10. |
+| `--drivers` | With `--trips`, add a **Driver** column: candidate driver matches from `driver_profiles.json` (seeded on first use with default route data, see OUTPUT below), based on each trip's start/end location and, where a pattern specifies one, how long the vehicle stayed at the far end. Read-only - "notice similar trips and ask later", not an automatic label. **Off by default** - forward-geocodes every place in `driver_profiles.json` (cached, but still real network I/O per unique place) and needs a GPS-capable adapter. |
 | `-h`, `--help` | Show help and exit. |
 
 ## OUTPUT
@@ -54,7 +55,9 @@ By default, an asset column with no `X` anywhere in the current output is droppe
 
 **GPS column:** unlike every other column, GPS is not a plain file-existence check. A recording marks `X` if it has a real adapter-read telemetry fix (a GoPro's own GPMF track), or - for a recording with no telemetry source at all, or a GoPro clip whose FRONT file has no real GPMF track (a stock/downloaded clip mixed into the archive) - a still photo's EXIF GPS tag or a video's own ISO 6709 container `location` tag. This makes the GPS column a genuine per-row probe (an EXIF read and/or an `ffprobe` subprocess per recording), not a free check like every other column, so a large `--all` listing takes measurably longer than it did before this column existed. Worth it: without it, a GoPro/folder archive's GPS column was always empty even for recordings that actually carry a usable position.
 
-**`--trips` view:** columns are Trip (label), Start, End, Duration, Recs (recording count), Size.
+**`--trips` view:** columns are Trip (label), Start, End, Duration, Recs (recording count), Size, plus a **Driver** column with `--drivers`.
+
+**Driver column (`--drivers`):** each entry is one or more `Name NN%` candidates (e.g. `Christer 90%`, or `Fru 90%/Christer 40%` when more than one driver's pattern plausibly matches), or `-` for a trip with no candidate at all. Candidates come from `driver_profiles.json` (created under `--config-dir` on first `--drivers` use, seeded with default example route/dwell-time patterns - hand-edit it afterward to describe your own drivers, places, and stay-time thresholds; see `trip/driver_detect.py`'s module docstring for the full schema). This is a first increment: it only *notices and reports* candidates for you to read - there's no write-back or confirmation step yet.
 
 ## EXAMPLES
 

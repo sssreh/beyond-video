@@ -20211,3 +20211,121 @@ LLM-primary voice search) or also reachable by typing a query directly
 into the web form.
 
 **Not implemented** - noted here for when Christer wants to build it.
+
+## Driver detection increment 1: route/dwell-time matcher + bv-ls --drivers column (2026-08-29)
+
+Resolves the long-standing "detect driver" note ("inbillar mig att det
+gar att identifiera forare via 3gf filen, da jag kor brutalare an min
+fru") - but not via the g-sensor after all. An earlier investigation
+this session confirmed raw `.3gf` data sits on a large, mount-angle-
+dependent baseline (one real sample: X 114-126, Y -12 to -2, Z 22-32)
+with only ~10-12 units of real wobble on top, so `max_gforce_*`/
+`avg_gforce_*` are baseline-dominated and not usable for driver
+classification as given. Christer's own follow-up request pivoted the
+whole approach: "Start building something around (notice similar
+trips and ask later)", then gave his and his wife's real route/timing
+habits verbatim (home base Hammarby Sjostad; several home<->place
+commute pairs each; two patterns disambiguated only by how long the
+car stays at the far end - his wife's Norra Stationsgatan drop-off
+waits >10 minutes, his own Norra Stationsgatan run is a <=10-minute
+quick turnaround, same destination, opposite condition).
+
+**Design**: classify a trip by *where it goes and how long it stays*
+instead of g-sensor data - GPS endpoints (already reliably resolved
+via `adapters/telemetry_bridge.py`'s `resolve_recording_gps_span()`)
+and inter-trip dwell time, both far more solid signals here than the
+g-sensor baseline problem above. Kept to the driver-detection design
+notes' existing conventions: opaque `driver1`/`driver2` labels in
+stored data (mirrors pyannote's `SPEAKER_00`/`SPEAKER_01`), a separate
+`display_name` for prose/UI, and confidence as a first-class float
+rather than a hard guess - a match that can't verify its dwell-time
+condition still surfaces (a false "no match" is worse than a low-
+confidence "maybe"), just capped at reduced confidence with a
+"(stay duration unverified)" note in its reason string.
+
+**New module**: `trip/driver_detect.py`. Config schema
+(`driver_profiles.json`, created under `default_config_dir()` on first
+use via `write_default_driver_profiles()`/`default_driver_profiles_
+path()`, hand-editable afterward): a shared `home` place (name/query/
+radius_meters) plus a `drivers` map of opaque label -> `{display_name,
+patterns}`. Each `RoutePattern` is either `kind="commute"` (a `place`
+name, forward-geocoded the same way bv-search's `--place` already is,
+paired with home - either direction) or `kind="short_local"` (both
+ends near home, gated by `max_duration_minutes` - Christer's "any
+short trip in Hammarby Sjostad"), with optional `min_stay_minutes`/
+`max_stay_minutes` on a commute pattern for the "how long did it wait
+at the far end" condition. `christers_driver_profiles()` seeds the
+file with his actual data verbatim: wife (`driver1`) with 5 patterns
+(Enskededalen, Skarpnack, Orminge, Norra Stationsgatan >10min,
+Hasselby Villastad >30min); Christer (`driver2`) with 7 (Solna, Varby
+Gard, Masmo, Vastberga, Sickla, any-short-local <=15min, Norra
+Stationsgatan <=10min quick turnaround).
+
+Matching itself (`match_driver()`) is deliberately pure/I-O-free so
+it's unit-testable without a real archive or network: it takes a
+`TripFix` (resolved start/end (lat, lon) + start/end timestamps - built
+by the I/O wrapper `resolve_trip_fix()` from `resolve_recording_gps_
+span()` on a trip's first/last recording) for the trip plus its
+chronologically-adjacent trips' own `TripFix`es (needed because a
+stay-duration condition is about the *other* leg of the same round
+trip - the gap between this trip's end and the next trip's start, or
+the previous trip's end and this trip's start, depending on direction)
+and a pre-resolved `known_points` dict (place name -> (lat, lon), built
+once per run by `resolve_known_points()` via the same `load_or_
+forward_geocode()` bv-search/the live coordinate-preview route already
+use, same on-disk cache convention). Returns a tuple of `DriverMatch`
+(driver_label, display_name, place, confidence, reason) - zero, one,
+or more than one candidate per trip.
+
+**Surfaced in `cli/bv_ls.py`** as an opt-in `--drivers` flag on
+`--trips` (not a new bv-web page): a real bv-web page for un-exported/
+raw `TripBuilder`-detected trips doesn't exist yet (bv-web's own
+"Trips" nav is entirely about already-`bv-export`ed `TripAssets`
+folders, a different concept - see `web/trips.py`), but `bv-ls --trips`
+is already wired into bv-web as a job that shows the CLI's own table
+output verbatim, so adding a Driver column here means "notice ... and
+ask later" appears in bv-web with zero new bv-web code. `--drivers`
+seeds/loads `driver_profiles.json`, resolves every place once via
+`resolve_known_points()`, resolves each trip's `TripFix` via
+`resolve_trip_fix()`, then calls `match_driver()` per trip with its
+chronological neighbors and formats each trip's best-per-driver
+matches as `Name NN%` (`_format_driver_matches()`, e.g. `Christer 90%`
+or `Fru 90%/Christer 40%` if disambiguation didn't resolve cleanly),
+`-` for no candidates. Off by default - real network geocoding (cached,
+but still a real request per unique place on first run) and a real
+per-recording GPS probe.
+
+Explicitly **not** built in this increment (flagged as a follow-up):
+any confirm/write-back loop - a way for Christer to accept a match and
+have it persist as a real label somewhere (likely `RECORDING_STATS`'s
+already-designed `driver.route`/`driver.total` fields from the
+original driver-detection notes). This increment is read-only by
+design, matching "notice ... and ask later" literally.
+
+**Tests**: `tests/blackvue/trip/test_driver_detect.py` (12 tests, pure
+- no real geocoding/GPS I/O) covers: opaque-label sanity, simple
+commute match, min-stay match with correct cross-driver disambiguation
+(wife's 15-minute Norra Stationsgatan stay must NOT also match
+Christer's <=10min pattern), max-stay match with the same
+disambiguation the other way, any-short-trip-in-home-area match and
+its max-duration rejection, no-match for unrelated endpoints,
+unverifiable-dwell reduced-confidence surfacing, unresolvable-place
+silent skip (never raises), `driver_profiles.json` JSON round-trip,
+and `write_default_driver_profiles()`/`load_driver_profiles()`
+persistence + idempotency. `tests/blackvue/cli/test_bv_ls.py` gained 4
+more: `_format_driver_matches()`'s best-per-driver-sorted-by-
+confidence formatting and its empty-tuple `-` case (both pure), plus
+two `bv_ls()`-level tests with `write_default_driver_profiles`/
+`resolve_known_points`/`resolve_trip_fix`/`match_driver` monkeypatched
+(to avoid real network/GPS I/O in a test) confirming the Driver column
+only appears with `--drivers`, shows one label per trip in order, and
+`-` for a trip with no candidate. All verified via standalone
+harnesses (this sandbox has neither `pytest` nor network access, and
+already has no `fastapi`/stdlib `tomllib` on Python 3.10 - same
+`tomllib`-stub workaround as every other session's verification
+here) reproducing each test function's body directly: all 12 plus all
+4 pass.
+
+Docs: `docs/man/bv-ls.md` gained `--drivers` in SYNOPSIS/OPTIONS and a
+new OUTPUT paragraph explaining the Driver column format and pointing
+at `driver_profiles.json`'s hand-editable nature.

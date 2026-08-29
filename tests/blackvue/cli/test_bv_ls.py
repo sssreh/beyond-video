@@ -498,6 +498,98 @@ def test_trips_defaults_to_a_five_minute_gap(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# --drivers - bv-ls --trips' opt-in Driver column (trip/driver_detect.py's
+# "notice similar trips and ask later" matcher). The real matcher does
+# network geocoding (resolve_known_points()) and a per-recording GPS
+# probe (resolve_trip_fix()), so these tests monkeypatch those two plus
+# match_driver() itself - the point here is to confirm bv_ls.py's own
+# wiring (column only appears with --drivers, one label per trip in
+# order, "-" for a trip with no candidate), not to re-test
+# driver_detect.py's matching logic (see test_driver_detect.py for
+# that).
+# ---------------------------------------------------------------------------
+
+
+def test_format_driver_matches_formats_best_per_driver_sorted_by_confidence():
+    from blackvue.cli.bv_ls import _format_driver_matches
+    from blackvue.trip.driver_detect import DriverMatch
+
+    matches = (
+        DriverMatch("driver1", "Fru", "Norra Stationsgatan", 0.4, "unverified"),
+        DriverMatch("driver2", "Christer", "Solna", 0.9, "home -> Solna"),
+        # A second, lower-confidence match for driver1 - only the best
+        # one per driver should show up in the formatted string.
+        DriverMatch("driver1", "Fru", "Norra Stationsgatan", 0.9, "verified"),
+    )
+
+    assert _format_driver_matches(matches) == "Fru 90%/Christer 90%"
+
+
+def test_format_driver_matches_empty_is_a_dash():
+    from blackvue.cli.bv_ls import _format_driver_matches
+
+    assert _format_driver_matches(()) == "-"
+
+
+def test_trips_drivers_flag_adds_driver_column(tmp_path, capsys, monkeypatch):
+    import blackvue.cli.bv_ls as bv_ls_module
+    from blackvue.trip.driver_detect import DriverMatch
+
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_110000_NF.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(
+        bv_ls_module, "write_default_driver_profiles", lambda path: object()
+    )
+    monkeypatch.setattr(
+        bv_ls_module, "resolve_known_points", lambda profiles, cache_dir: {}
+    )
+    # Faked to avoid a real GPS probe - returns the Trip itself, which
+    # fake_match_driver below keys off via its .label.
+    monkeypatch.setattr(
+        bv_ls_module, "resolve_trip_fix", lambda adapter, trip: trip
+    )
+
+    def fake_match_driver(trip_fix, prev_fix, next_fix, profiles, known_points):
+        if trip_fix.label.startswith("trip_20260715_100000"):
+            return (
+                DriverMatch("driver2", "Christer", "Solna", 0.9, "home -> Solna"),
+            )
+        return ()
+
+    monkeypatch.setattr(bv_ls_module, "match_driver", fake_match_driver)
+
+    exit_code = bv_ls_module.bv_ls(
+        str(tmp_path),
+        trips=True,
+        drivers=True,
+        config_dir=tmp_path / "cfg",
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Driver" in out
+    assert "Christer 90%" in out
+
+    rows = [line for line in out.splitlines() if line.startswith("trip_")]
+    assert len(rows) == 2
+    assert rows[0].rstrip().endswith("Christer 90%")
+    assert rows[1].rstrip().endswith("-")
+
+
+def test_trips_without_drivers_flag_has_no_driver_column(tmp_path, capsys):
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+
+    exit_code = bv_ls(str(tmp_path), trips=True)
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Driver" not in out
+
+
+# ---------------------------------------------------------------------------
 # adapter_id - bv-ls listing a "folder" adapter archive instead of the
 # default "blackvue" one (docs/CAMERA_ADAPTERS.md). Confirms the
 # adapter abstraction is really wired through bv_ls()/main(), not just

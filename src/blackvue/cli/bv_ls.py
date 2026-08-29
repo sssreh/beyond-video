@@ -21,6 +21,12 @@ from blackvue.generate.media import read_duration_seconds
 from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import gps_implies_impossible_jump
 from blackvue.telemetry.movement import movement_bridges_gap
+from blackvue.trip.driver_detect import DriverMatch
+from blackvue.trip.driver_detect import default_driver_profiles_path
+from blackvue.trip.driver_detect import match_driver
+from blackvue.trip.driver_detect import resolve_known_points
+from blackvue.trip.driver_detect import resolve_trip_fix
+from blackvue.trip.driver_detect import write_default_driver_profiles
 from blackvue.trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
 from blackvue.trip.trip_builder import TripBuilder
@@ -176,6 +182,8 @@ def print_trips(
     use_gps_split: bool = False,
     gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
     adapter: CameraAdapter | None = None,
+    show_drivers: bool = False,
+    config_dir: Path | None = None,
     say=print,
 ) -> None:
     """Print one row per detected trip instead of one row per
@@ -223,6 +231,21 @@ def print_trips(
     every other bv-* command's own core function accepts it - bv-ls
     has no warnings/prompts of its own, so unlike bv_gps.py's `_run()`
     there's no `warn`/`ask` to thread through here.
+
+    `show_drivers` (off by default - see --drivers) adds a Driver
+    column: for each trip, every candidate driver/pattern match from
+    trip/driver_detect.py's match_driver() - Christer's own "notice
+    similar trips and ask later" request, surfaced the same way every
+    other --trips column already is (read-only, no write-back; see
+    driver_detect.py's module docstring for why this increment stops
+    there). Needs `adapter` (for the GPS reads match_driver() itself
+    needs) and forward-geocodes every place name in driver_profiles.json
+    once per call via resolve_known_points() - real network I/O
+    (cached to `config_dir`/.osm_cache - see geocode_preview_voice_
+    search() in web/app.py for why that must be a writable location,
+    not archive_path), which is why this is opt-in rather than a
+    normal always-on column like Size or Recs. A trip with no
+    candidate match at all (or when `adapter` is None) prints "-".
     """
 
     bridge = movement_bridges_gap if use_movement else None
@@ -256,16 +279,29 @@ def print_trips(
         default=len("Size"),
     )
 
+    driver_labels: list[str] = []
+    if show_drivers and adapter is not None and trips:
+        driver_labels = _driver_column_labels(
+            trips, adapter=adapter, config_dir=config_dir or default_config_dir()
+        )
+
+    driver_width = max(
+        [len("Driver")] + [len(label) for label in driver_labels],
+        default=len("Driver"),
+    )
+
     header = (
         f'{"Trip":<{trip_width}}  {"Start":<19}  {"End":<19}  '
         f'{"Duration":>8}  {"Recs":>4}  {"Size":>{size_width}}'
     )
+    if show_drivers:
+        header += f'  {"Driver":<{driver_width}}'
     say(header)
     say("-" * len(header))
 
-    for trip in trips:
+    for index, trip in enumerate(trips):
         size = format_size(sum(r.size for r in trip))
-        say(
+        row = (
             f"{trip.label:<{trip_width}}  "
             f"{trip.start_timestamp:%Y-%m-%d %H:%M:%S}  "
             f"{trip.end_timestamp:%Y-%m-%d %H:%M:%S}  "
@@ -273,6 +309,63 @@ def print_trips(
             f"{len(trip):>4}  "
             f"{size:>{size_width}}"
         )
+        if show_drivers:
+            label = driver_labels[index] if index < len(driver_labels) else "-"
+            row += f"  {label:<{driver_width}}"
+        say(row)
+
+
+def _driver_column_labels(
+    trips,
+    *,
+    adapter: CameraAdapter,
+    config_dir: Path,
+) -> list[str]:
+    """Resolve one Driver-column string per trip in `trips` (same
+    order) for print_trips()'s `show_drivers` path - "Christer 90%",
+    "Fru 90%/Christer 40%" when a trip has more than one candidate
+    (see match_driver()'s own docstring for when that happens), or
+    "-" for a trip with no candidate at all.
+
+    Seeds driver_profiles.json with Christer's own real route data on
+    first use (write_default_driver_profiles()) rather than requiring
+    a separate setup step - the file is meant to be hand-edited
+    afterward (add places, retune stay minutes, add a third driver),
+    not regenerated.
+    """
+
+    profiles = write_default_driver_profiles(default_driver_profiles_path(config_dir))
+    known_points = resolve_known_points(profiles, config_dir / ".osm_cache")
+
+    fixes = [resolve_trip_fix(adapter, trip) for trip in trips]
+
+    labels: list[str] = []
+    for index, _trip in enumerate(trips):
+        prev_fix = fixes[index - 1] if index > 0 else None
+        next_fix = fixes[index + 1] if index + 1 < len(fixes) else None
+        matches = match_driver(fixes[index], prev_fix, next_fix, profiles, known_points)
+        labels.append(_format_driver_matches(matches))
+
+    return labels
+
+
+def _format_driver_matches(matches: tuple[DriverMatch, ...]) -> str:
+    """"Fru 90%/Christer 40%" (best match per driver, highest
+    confidence first) or "-" for no candidates - kept as its own
+    function so bv-web's job-page output (which just shows this same
+    text) doesn't need to know DriverMatch's shape."""
+
+    if not matches:
+        return "-"
+
+    best_per_driver: dict[str, DriverMatch] = {}
+    for match in matches:
+        current = best_per_driver.get(match.driver_label)
+        if current is None or match.confidence > current.confidence:
+            best_per_driver[match.driver_label] = match
+
+    ranked = sorted(best_per_driver.values(), key=lambda m: m.confidence, reverse=True)
+    return "/".join(f"{m.display_name} {m.confidence:.0%}" for m in ranked)
 
 
 def bv_ls(
@@ -289,6 +382,8 @@ def bv_ls(
     gps_split: bool = False,
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
+    drivers: bool = False,
+    config_dir: Path | None = None,
     adapter_id: str = DEFAULT_ADAPTER_ID,
     full: bool = False,
     say=print,
@@ -310,6 +405,12 @@ def bv_ls(
     archive/filter ever matches it (default: off - columns with zero
     matches across every displayed row are dropped, see
     _assets_with_any_match()'s own docstring for why).
+
+    `drivers` (only meaningful with `trips` - see --drivers) adds
+    print_trips()'s Driver column; see that function's own docstring
+    for the cost/why. `config_dir` selects where driver_profiles.json
+    and its geocode cache live - defaults to default_config_dir(),
+    the same directory --config-dir already governs for camera config.
 
     `source` is the reverse of `timestamp`: `timestamp`/`from_`/`until`
     filter by the (possibly synthesized) recording id, but for a
@@ -376,6 +477,8 @@ def bv_ls(
             use_gps_split=gps_split,
             gap_tolerance=gap_tolerance,
             adapter=adapter,
+            show_drivers=drivers,
+            config_dir=config_dir,
             say=say,
         )
         return 0
@@ -624,6 +727,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--drivers",
+        dest="drivers",
+        action="store_true",
+        default=False,
+        help=(
+            "With --trips, add a Driver column: candidate driver "
+            "matches from driver_profiles.json (seeded on first use "
+            "with Christer's own route data - see trip/driver_detect.py) "
+            "based on each trip's start/end location and, where a "
+            "pattern specifies one, how long the vehicle stayed at the "
+            "far end. Read-only - 'notice similar trips and ask "
+            "later', not an automatic label. Off by default: forward-"
+            "geocodes every place in driver_profiles.json (cached, but "
+            "still real network I/O) and needs a GPS-capable adapter."
+        ),
+    )
+
+    parser.add_argument(
         "--no-duration",
         dest="duration",
         action="store_false",
@@ -681,6 +802,8 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         gps_split=args.gps_split,
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
+        drivers=args.drivers,
+        config_dir=args.config_dir,
         adapter_id=adapter_id,
         full=args.full,
         say=say,
