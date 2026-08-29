@@ -2870,6 +2870,75 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             }
         )
 
+    @app.get("/jobs/bv-search/geocode-preview")
+    async def geocode_preview_voice_search(
+        place: str = Query(""),
+        user: User = Depends(require_viewer_or_owner),
+    ):
+        """Live coordinate preview for the bv-search form's Place field -
+        closes a real UX gap Christer hit twice in a row ("Solna showed
+        up in place, but no coordinates"), which turned out not to be a
+        backend bug at all: "Ok, i never pressed search, i just looked
+        at the coordinates". Until this route existed, Place was just
+        text - the only place --place ever actually got resolved to
+        real lat/lon was inside cli/bv_search.py's _run(), which only
+        runs once the whole job is submitted. So a place name could be
+        heard/typed correctly and still show nothing, because nothing
+        had tried to geocode it yet. This route lets the frontend fire
+        a quick, read-only lookup the moment Place is filled (by voice
+        or by hand) and show the answer immediately, without requiring
+        a full bv-search run.
+
+        Deliberately GET + query param, not POST - this is a read-only
+        lookup with no side effect on any job, same shape as
+        archive_recording_location()'s own reverse-geocode preview
+        below. Reuses load_or_forward_geocode() (export/geocoding.py),
+        the exact function cli/bv_search.py's _run() calls for the real
+        --place resolution, so the preview and the eventual real search
+        always agree.
+
+        Cache dir is default_config_dir() / ".osm_cache" - bv-web's own
+        writable scratch space, NOT archive_path / ".osm_cache" the way
+        cli/bv_search.py's _run() does it. That distinction matters here
+        for the same reason it mattered for the /location route's own
+        geocode_cache_dir (see that route's comment above): bv-web's
+        docker-compose.yml mounts /data/archive read-only, so writing a
+        cache under it 500s with "Read-only file system" on the NAS.
+
+        On a genuine resolve, also calls remember_known_place() - same
+        self-learning hook cli/bv_search.py's _run() uses (see that
+        function's own docstring), so a place typed/corrected here and
+        merely previewed - never actually searched - still gets
+        remembered for future ASR bias. Arguably an even better moment
+        to learn it than the full-search hook: this fires the instant
+        Christer confirms a place resolves, before he's decided whether
+        to run the search at all.
+        """
+
+        place = place.strip()
+        if not place:
+            return JSONResponse({"resolved": False, "error": None})
+
+        from ..export.geocoding import load_or_forward_geocode
+        from .voice_asr import remember_known_place
+
+        geocode_cache_dir = default_config_dir() / ".osm_cache"
+        try:
+            result = load_or_forward_geocode(place, geocode_cache_dir)
+        except MediaToolError as exc:
+            return JSONResponse({"resolved": False, "error": str(exc)})
+
+        if result is None:
+            return JSONResponse({"resolved": False, "error": None})
+
+        try:
+            remember_known_place(place, default_config_dir())
+        except OSError:
+            pass
+
+        lat, lon = result.point
+        return JSONResponse({"resolved": True, "lat": lat, "lon": lon, "error": None})
+
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_detail(
         request: Request, job_id: str, user: User = Depends(require_viewer_or_owner)

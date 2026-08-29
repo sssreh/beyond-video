@@ -20111,3 +20111,67 @@ real pytest, no stdlib `tomllib` on this box's Python 3.10) - all 4
 affected `test_bv_search.py` tests and all 24 `test_voice_asr.py`
 tests pass; `ast.parse()` clean on `app.py`, `voice_asr.py`, and
 `bv_search.py`.
+
+## Live coordinate preview for bv-search's Place field (2026-08-29)
+
+Follow-up to the known-places self-learning work above, from the same
+diagnostic thread. Christer reported two voice-search failures in a
+row that looked like backend bugs: "I tried Solna instead, still not
+filling in coordinates", then "Solna showed up in place, but no
+coordinates". Neither was an ASR mis-transcription or a place-
+extraction miss - place-name resolution was working correctly. The
+real cause came out through a clarifying question: "Ok, i never
+pressed search, i just looked at the coordinates." There was no bug -
+there was simply no feature. The Place field was always just a text
+box; the *only* place anything ever geocoded it was inside
+`cli/bv_search.py`'s `_run()`, which only runs once the whole search
+job is actually submitted. So a place name could be heard/typed
+correctly and Christer would still see nothing, because nothing had
+tried to resolve it yet - this likely explains a meaningful fraction
+of the confusion across this whole multi-session "coordinates not
+filling in" saga.
+
+Added a new read-only route, `GET /jobs/bv-search/geocode-preview`
+(`web/app.py`), that takes `place` as a query param and returns
+`{resolved, lat, lon, error}` via `export/geocoding.py`'s
+`load_or_forward_geocode()` - the exact same function
+`cli/bv_search.py`'s `_run()` calls for the real search, so the
+preview and the eventual real search always agree. Cache dir is
+`default_config_dir() / ".osm_cache"`, matching the existing
+`/archive/.../location` route's own reverse-geocode cache (**not**
+`archive_path / ".osm_cache"` the way `cli/bv_search.py` does it -
+that assumes a writable archive mount, true for bv-cli's container
+but not bv-web's, which mounts `/data/archive` read-only; see that
+route's own comment for the original bug this avoided). On a genuine
+resolve, the route also calls `remember_known_place()` - the same
+self-learning hook from the entry above - so a place merely previewed
+(never actually searched) still gets remembered for future ASR bias.
+
+Wired into `job_new_bv_search.html`: a debounced (600ms) listener on
+the Place field's `input` event fires the lookup, plus an immediate
+call from `applyParsed()` so a voice-filled Place previews right away
+without waiting out the debounce, plus a check on page load for
+prefilled values (the "reuse a previous run" panel). Results render
+in a `<p class="hint place-preview">` under the field: "Found:
+59.36000, 17.99300" in the link color, or a not-found/error message
+in the error color (`base.html`, `.place-preview-ok`/`.place-preview-
+fail`, reusing the existing `--link`/`--error` palette). A monotonic
+per-request token guards against a fast-typing user's earlier lookup
+resolving after a newer one and clobbering the display.
+
+**Tests**: this sandbox has neither `fastapi` nor stdlib `tomllib` on
+Python 3.10, so - matching this file's own established convention of
+not using TestClient/httpx anywhere in the suite (see
+`test_app_reuse.py`'s module-level comment) - the route wasn't given
+a TestClient test. Its logic is thin glue over two already fully
+unit-tested functions (`load_or_forward_geocode`,
+`remember_known_place`), so it was verified with a standalone harness
+that reproduces the route body exactly, monkeypatching
+`geocoding._forward_geocode_query` (the same seam
+`test_bv_search.py` patches) to avoid a real network call: confirmed
+resolve+remember, not-found, blank-input short-circuit (no lookup
+fired), and second-lookup cache reuse (no second fake call) all match
+expectations. Template verified via a real Jinja2 render
+(`place-preview`/`geocode-preview` markers present in output) and the
+new inline JS verified with `node --check`. `ast.parse()` clean on
+`app.py`.

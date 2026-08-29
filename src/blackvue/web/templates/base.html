@@ -405,6 +405,16 @@
       animation: voice-status-blink 1s step-start infinite;
     }
     @keyframes voice-status-blink { 50% { opacity: 0.25; } }
+    /* Live coordinate preview under the bv-search Place field (GET
+       /jobs/bv-search/geocode-preview) - closes the real UX gap behind
+       Christer's "Ok, i never pressed search, i just looked at the
+       coordinates": Place used to just be text, nothing ever geocoded
+       it until the whole search ran. .place-preview-ok/-fail reuse the
+       same --link/--error palette other status text on this page
+       already uses, no new colors introduced. */
+    .place-preview { margin: 0.35rem 0 0; }
+    .place-preview.place-preview-ok { color: var(--link); }
+    .place-preview.place-preview-fail { color: var(--error); }
     button[type="submit"] {
       background: var(--link); color: white; border: none; padding: 0.55rem 1.25rem;
       border-radius: 4px; font: inherit; cursor: pointer;

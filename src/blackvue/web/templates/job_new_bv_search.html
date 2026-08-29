@@ -141,6 +141,7 @@
           <span class="help-tip" tabindex="0">?<span class="tooltip-text">Same as Near, but geocodes a free-text place name first via OpenStreetMap Nominatim. Mutually exclusive with Near.</span></span>
         </label>
         <input type="text" id="place" name="place" value="{{ defaults.get('place', '') }}" placeholder="e.g. Slussen, Stockholm">
+        <p class="hint place-preview" id="place-preview" hidden></p>
       </div>
       <div class="field">
         <label class="field-label" for="radius">
@@ -211,6 +212,73 @@ with bv-config</a> first.</p>
   var llmSummary = document.getElementById('voice-llm-summary');
   var llmApplyBtn = document.getElementById('voice-llm-apply-btn');
   if (!btn || !textInput) return;
+
+  // Live coordinate preview for the Place field - GET
+  // /jobs/bv-search/geocode-preview (web/app.py), a quick read-only
+  // lookup separate from the voice-search machinery below. Added after
+  // two straight real reports that looked like backend bugs but
+  // weren't: "Solna showed up in place, but no coordinates", then "Ok,
+  // i never pressed search, i just looked at the coordinates". Until
+  // this existed, Place was just a text box - nothing ever geocoded it
+  // until the whole search actually ran (cli/bv_search.py's _run()).
+  // Wired here, above the mic-support check below, so it works
+  // whether Place got filled by voice, by the "reuse a previous run"
+  // prefill, or by typing - the geocode preview doesn't depend on
+  // MediaRecorder support at all.
+  var placePreview = document.getElementById('place-preview');
+  var placePreviewToken = 0;
+  var placePreviewTimer = null;
+
+  function clearPlacePreview() {
+    if (!placePreview) return;
+    placePreview.hidden = true;
+    placePreview.textContent = '';
+    placePreview.classList.remove('place-preview-ok', 'place-preview-fail');
+  }
+
+  function previewPlace(place) {
+    if (!placePreview) return;
+    place = (place || '').trim();
+    if (!place) {
+      clearPlacePreview();
+      return;
+    }
+    var token = ++placePreviewToken;
+    placePreview.hidden = false;
+    placePreview.textContent = 'Looking up "' + place + '"...';
+    placePreview.classList.remove('place-preview-ok', 'place-preview-fail');
+    fetch('/jobs/bv-search/geocode-preview?place=' + encodeURIComponent(place))
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (token !== placePreviewToken) return; // superseded by a newer lookup
+        if (data.resolved) {
+          placePreview.textContent = 'Found: ' + data.lat.toFixed(5) + ', ' + data.lon.toFixed(5);
+          placePreview.classList.add('place-preview-ok');
+        } else if (data.error) {
+          placePreview.textContent = 'Lookup failed: ' + data.error;
+          placePreview.classList.add('place-preview-fail');
+        } else {
+          placePreview.textContent = 'No match found for "' + place + '" - try a different spelling.';
+          placePreview.classList.add('place-preview-fail');
+        }
+      })
+      .catch(function () {
+        if (token !== placePreviewToken) return;
+        placePreview.textContent = 'Lookup failed - check your connection.';
+        placePreview.classList.add('place-preview-fail');
+      });
+  }
+
+  if (placeInput) {
+    placeInput.addEventListener('input', function () {
+      if (placePreviewTimer) clearTimeout(placePreviewTimer);
+      var value = placeInput.value;
+      placePreviewTimer = setTimeout(function () { previewPlace(value); }, 600);
+    });
+    // Covers the "reuse a previous run" prefill and any other
+    // server-rendered default value already sitting in the field.
+    if (placeInput.value.trim()) previewPlace(placeInput.value);
+  }
 
   function formatYmd(ymd) {
     // "20260715" -> "2026-07-15", for the human-readable status line
@@ -373,6 +441,11 @@ with bv-config</a> first.</p>
       // previously filled in.
       var nearInput = document.getElementById('near');
       if (parsed.place && nearInput) nearInput.value = '';
+      // Fire the live coordinate preview immediately rather than
+      // waiting for the debounced input-event handler above - a
+      // voice-filled Place is a discrete event, not keystrokes, so
+      // there's no typing-in-progress to wait out.
+      previewPlace(placeInput.value);
     }
     if (radiusInput && parsed.radius_meters) {
       radiusInput.value = Math.round(parsed.radius_meters);
