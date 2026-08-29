@@ -304,6 +304,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         # the ones that actually use --place. Same pattern speech.py/
         # scene.py already use for torch/ctranslate2.
         from ..export.geocoding import load_or_forward_geocode
+        from ..web.voice_asr import remember_known_place
 
         cache_dir = archive_path / ".osm_cache"
         try:
@@ -314,6 +315,21 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         if result is None:
             warn(f"bv-search: no place found matching {args.place!r}")
             return EXIT_HAD_ERRORS
+
+        # A --place that just resolved to real coordinates is proof
+        # it's a real, correctly-spelled place name - remember it for
+        # future voice-search ASR bias (web/voice_asr.py's
+        # known_places_from_learned()), so the *next* time anyone
+        # searches near it by voice, Qwen3-ASR is already biased
+        # toward hearing it correctly. Self-maintaining: no config file
+        # to create or edit by hand (see remember_known_place()'s own
+        # docstring for why that approach was dropped). Best-effort -
+        # a write failure here shouldn't fail the search itself.
+        try:
+            remember_known_place(args.place, args.config_dir)
+        except OSError:
+            pass
+
         target = result.point
         target_lines = result.lines
         geometry_note = (

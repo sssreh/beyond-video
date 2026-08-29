@@ -93,7 +93,7 @@ from .trips import first_gpx_point
 from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
-from .voice_asr import known_places_from_config
+from .voice_asr import known_places_from_learned
 from .voice_asr import known_places_from_params
 from .voice_asr import transcribe_voice_query
 from .voice_llm import VALID_MODEL_CHOICES as VOICE_LLM_MODEL_CHOICES
@@ -2661,12 +2661,16 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         investigation. Now uses web/voice_asr.py's Qwen3-ASR-1.7B
         integration instead, biased toward place names Christer has
         searched near before (known_places_from_params() below, built
-        from his own bv-search history) plus any manually configured
-        in a known_places.txt config file
-        (known_places_from_config() - added after the history-only
-        bias still wasn't enough to catch a repeat mis-transcription
-        of "Vårby gård", see that function's own docstring). Whisper
-        stays completely
+        from his own bv-search history) plus every place name that's
+        ever successfully geocoded via a --place lookup
+        (known_places_from_learned() - self-maintaining, written by
+        cli/bv_search.py's _run() the moment a place resolves to real
+        coordinates, no config file to hand-edit; replaced an earlier
+        manually-maintained known_places.txt after Christer's own
+        objection: "I dont like halfway fixes like known_places, that
+        needs to be updated for every single user" - see
+        remember_known_place()'s own docstring for the full story).
+        Whisper stays completely
         unchanged everywhere else in this project (bv-generate
         --transcribe/--translate, subtitle generation, bv-scribe) -
         Christer's own explicit scope decision when asked: "Replace
@@ -2740,22 +2744,25 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # transcribing a Swedish place name, Qwen2-Audio turned out not
         # to support Swedish at all, Qwen3-ASR-1.7B does and supports
         # native vocabulary biasing). known_places comes from two
-        # sources, config-file entries first: Christer hit the same
+        # sources, learned entries first: Christer hit the same
         # mis-transcription again ("Vår Nygård") even with history-
         # based biasing, because that alone only helps once a place has
-        # already been searched near successfully once - see
-        # known_places_from_config()'s own docstring for the bootstrap
-        # gap this closes. Config-file places are deliberately ordered
-        # first in the bias string (_build_context() just joins them
-        # in order) since they're Christer's own deliberately-curated
-        # "this one matters" list, not just incidental history.
-        configured_places = known_places_from_config(default_config_dir())
+        # already been searched near successfully once via a full,
+        # submitted bv-search job - see known_places_from_learned()'s
+        # own docstring for the bootstrap gap this closes (a --place
+        # lookup that resolves is remembered the moment it resolves,
+        # not only once a whole job with it has run and been recorded).
+        # Learned places are deliberately ordered first in the bias
+        # string (_build_context() just joins them in order) since
+        # they're real, Nominatim-confirmed place names, not just
+        # incidental form-field history.
+        learned_places = known_places_from_learned(default_config_dir())
         history_places = known_places_from_params(
             [numbered.entry.params for numbered in _recent_web_runs("bv-search")]
         )
         seen_places: set[str] = set()
         known_places: list[str] = []
-        for place in [*configured_places, *history_places]:
+        for place in [*learned_places, *history_places]:
             key = place.casefold()
             if key in seen_places:
                 continue

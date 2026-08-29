@@ -117,33 +117,25 @@ def known_places_from_params(
     return places
 
 
-def known_places_from_config(config_dir: Path) -> list[str]:
-    """Impure - reads `config_dir / "known_places.txt"` (one place name
-    per line, blank lines and #-prefixed comment lines ignored) if it
-    exists, otherwise returns an empty list.
+_LEARNED_PLACES_FILENAME = "known_places_learned.txt"
 
-    Christer, after known_places_from_params() alone still wasn't
-    enough: "actually i got vår nygård again, both 'Vårby gård' and
-    'Vårbygård' should work" - Qwen3-ASR mis-heard "Vårby gård" as the
-    entirely unrelated "Vår Nygård" again, despite the history-derived
-    bias context this module already builds. Root cause:
-    known_places_from_params() only ever contains place names from
-    *past successful bv-search runs he already recorded* - a
-    chicken-and-egg gap for exactly the case that matters most, a
-    place he hasn't successfully searched near yet (or hasn't submitted
-    the run with, since a job only reaches history once started - see
-    web/jobs.py's _record_job_history()). A place Christer knows he'll
-    want to search near regularly should bias the ASR from the very
-    first attempt, not only after it's already been transcribed
-    correctly once by luck.
 
-    This file is optional and manually maintained (no UI for it yet -
-    same "note: build a UI for this later" precedent as other
-    config-file features in this project) - a missing file is not an
-    error, just means no manually-configured bias on top of whatever
-    known_places_from_params() found."""
+def known_places_from_learned(config_dir: Path) -> list[str]:
+    """Impure - reads `config_dir / "known_places_learned.txt"` (one
+    place name per line) if it exists, otherwise returns an empty list.
 
-    path = config_dir / "known_places.txt"
+    This file is never hand-maintained - see remember_known_place()
+    below, which is the only thing that ever writes to it. First
+    attempt at this gap was a manually-maintained known_places.txt
+    that Christer would have had to create and keep up to date
+    himself; Christer's own reaction: "I dont like halfway fixes like
+    known_places, that needs to be updated for every single user" -
+    fair complaint, a bias list only as good as everyone's willingness
+    to hand-edit a text file doesn't scale past Christer's own machine,
+    let alone to other people running this project. This replaces that
+    file entirely with one the program keeps up to date on its own."""
+
+    path = config_dir / _LEARNED_PLACES_FILENAME
     if not path.exists():
         return []
 
@@ -154,6 +146,47 @@ def known_places_from_config(config_dir: Path) -> list[str]:
             continue
         places.append(line)
     return places
+
+
+def remember_known_place(place: str, config_dir: Path) -> None:
+    """Impure - appends `place` to `config_dir /
+    "known_places_learned.txt"` if it isn't already there
+    (case-insensitive dedup, same rule known_places_from_params() uses),
+    creating the file/directory on first use.
+
+    Called from cli/bv_search.py's _run() right after a --place lookup
+    actually resolves to real coordinates (web/jobs.py's
+    start_bv_search() runs through that exact same _run() function, so
+    this covers both the CLI and the web UI with one hook) - the moment
+    a place name is proven to be real and correctly spelled, by the one
+    source of truth that matters (Nominatim actually geocoded it), is
+    also the best moment to remember it for future ASR bias. No manual
+    file to create or maintain: the first time anyone using this
+    project successfully searches near "Vårby gård" - whether they
+    typed it, corrected a bad voice guess before hitting Start, or got
+    lucky on the first transcription - it's remembered automatically
+    from then on, same as known_places_from_params()'s existing
+    history-derived bias, just without waiting for a full job to be
+    submitted and recorded first.
+
+    Silently does nothing if `place` is blank/whitespace-only. Existing
+    entries are preserved verbatim (first-seen spelling wins) - not
+    rewriting the file on every call keeps this a plain append, and a
+    place already known well enough to resolve doesn't need its
+    spelling second-guessed."""
+
+    place = place.strip()
+    if not place:
+        return
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = config_dir / _LEARNED_PLACES_FILENAME
+    existing = known_places_from_learned(config_dir)
+    if place.casefold() in {p.casefold() for p in existing}:
+        return
+
+    with path.open("a", encoding="utf-8") as f:
+        f.write(place + "\n")
 
 
 def _build_context(known_places: Sequence[str]) -> str:

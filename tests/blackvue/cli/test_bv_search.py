@@ -347,8 +347,14 @@ def test_run_place_geocodes_then_searches(monkeypatch, tmp_path):
         geocoding_module, "load_or_forward_geocode", fake_load_or_forward_geocode
     )
 
+    # --config-dir pinned to tmp_path: _run() now also writes a
+    # learned-place entry there on a successful --place resolve (see
+    # cli/bv_search.py's remember_known_place() call) - without this,
+    # the test would write into the real default_config_dir() on
+    # whatever machine runs the suite.
     args = parse_args(
-        [str(tmp_path), "--place", "Stockholm", "--radius", "500"]
+        [str(tmp_path), "--place", "Stockholm", "--radius", "500",
+         "--config-dir", str(tmp_path)]
     )
     messages = []
     exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
@@ -358,6 +364,54 @@ def test_run_place_geocodes_then_searches(monkeypatch, tmp_path):
     assert calls[0][0] == "Stockholm"
     assert any("Stockholm" in m for m in messages)
     assert any("20260715_126000_N" in m for m in messages)
+
+
+def test_run_place_success_remembers_place_for_future_asr_bias(monkeypatch, tmp_path):
+    # cli/bv_search.py's _run() calls web/voice_asr.py's
+    # remember_known_place() the moment a --place lookup resolves -
+    # this replaced an earlier manually-maintained known_places.txt
+    # (see remember_known_place()'s own docstring for why, and
+    # Christer's real objection: "I dont like halfway fixes like
+    # known_places, that needs to be updated for every single user").
+    # Web and CLI both funnel through this same _run() (see
+    # web/jobs.py's start_bv_search()), so this one hook covers both.
+    from datetime import datetime
+    from blackvue.telemetry.gps_reader import GpsFix
+    from blackvue.export import geocoding as geocoding_module
+    from blackvue.export.geocoding import GeocodeResult
+    from blackvue.web.voice_asr import known_places_from_learned
+
+    recording = Recording(id=RecordingId("20260715_126500_N"))
+    gps_path = tmp_path / "20260715_126500_N.gps"
+    gps_path.write_text("irrelevant")
+    recording.assets[Asset.GPS] = AssetFile(asset=Asset.GPS, path=gps_path)
+
+    fix = GpsFix(
+        timestamp=datetime(2026, 7, 15, 12, 30, 0),
+        valid=True,
+        latitude=59.3293,
+        longitude=18.0686,
+        speed_kmh=10.0,
+        course=90.0,
+    )
+    fake_adapter = _FakeAdapter(_FakeArchive([recording]))
+    monkeypatch.setattr(fake_adapter, "read_gps", lambda path: (fix,))
+    monkeypatch.setattr(bv_search, "get_adapter", lambda adapter_id: fake_adapter)
+    monkeypatch.setattr(
+        geocoding_module,
+        "load_or_forward_geocode",
+        lambda name, cache_dir, **k: GeocodeResult(point=(59.3293, 18.0686)),
+    )
+
+    config_dir = tmp_path / "config"
+    args = parse_args(
+        [str(tmp_path), "--place", "Vårby gård", "--radius", "500",
+         "--config-dir", str(config_dir)]
+    )
+    exit_code = bv_search._run(args, say=lambda m: None, warn=lambda m: None)
+
+    assert exit_code == bv_search.EXIT_OK
+    assert known_places_from_learned(config_dir) == ["Vårby gård"]
 
 
 def test_run_place_with_road_geometry_matches_along_the_whole_road(
@@ -402,7 +456,8 @@ def test_run_place_with_road_geometry_matches_along_the_whole_road(
     )
 
     args = parse_args(
-        [str(tmp_path), "--place", "A Long Road", "--radius", "200"]
+        [str(tmp_path), "--place", "A Long Road", "--radius", "200",
+         "--config-dir", str(tmp_path)]
     )
     messages = []
     exit_code = bv_search._run(args, say=messages.append, warn=messages.append)
@@ -576,7 +631,10 @@ def test_run_place_resolution_prints_before_the_started_line(monkeypatch, tmp_pa
         lambda name, cache_dir, **k: GeocodeResult(point=(59.3293, 18.0686)),
     )
 
-    args = parse_args([str(tmp_path), "--place", "Stockholm", "--radius", "500"])
+    args = parse_args(
+        [str(tmp_path), "--place", "Stockholm", "--radius", "500",
+         "--config-dir", str(tmp_path)]
+    )
     messages = []
     bv_search._run(args, say=messages.append, warn=messages.append)
 

@@ -20034,3 +20034,80 @@ verified via `ast.parse()` only. Re-ran the full 30-test
 as expected - docstring-only). `jinja2.Environment.parse()` and a
 `node`-equivalent (`new Function()`) syntax check on
 `job_new_bv_search.html`'s extracted `<script>` block both pass.
+
+## Replace manually-maintained `known_places.txt` with a self-learning file (2026-08-29)
+
+Christer's reaction to the entry above's `known_places.txt` config-
+file fix, in full: "I dont like halfway fixes like known_places, that
+needs to be updated for every single user-" - a fair architectural
+complaint, not just a taste preference. That file only helped if
+Christer (or, on someone else's deployment, some other user) noticed
+the mis-transcription, knew this project's config directory existed,
+and manually typed the correctly-spelled place name into a text file
+with no UI for it. That doesn't scale past a single motivated user on
+a single machine, and it's the kind of thing that quietly bit-rots
+the moment nobody remembers to touch it.
+
+Also confirmed, from Christer's own follow-up ("The distance was
+correct but vår bygård is still wrong that why i guess no
+coordinates"), that the previous entry's other two fixes (word-number
+parsing, LLM-found-nothing precedence) both worked exactly as
+intended - the *only* remaining failure was the ASR bias gap the
+config file was meant to close.
+
+Replaced `known_places_from_config()` (`web/voice_asr.py`) with two
+new functions:
+
+- `known_places_from_learned(config_dir)` - reads
+  `config_dir / "known_places_learned.txt"`, same one-per-line format
+  as before, but this file is never meant to be hand-edited.
+- `remember_known_place(place, config_dir)` - appends `place` to that
+  file if it isn't already there (case-insensitive dedup, first-seen
+  spelling wins), creating the directory/file on first use. Blank
+  input is a silent no-op.
+
+The self-learning hook: `cli/bv_search.py`'s `_run()` now calls
+`remember_known_place(args.place, args.config_dir)` immediately after
+a `--place` lookup actually resolves to real coordinates (right after
+the existing `load_or_forward_geocode()` success check, before the
+"started"/timed section) - wrapped in `try/except OSError: pass` so a
+write failure can't fail the search itself. Because `web/jobs.py`'s
+`start_bv_search()` runs through this exact same `_run()` function
+(not a separate code path), this one hook covers both the CLI and the
+bv-web job trigger with no extra wiring. The result: the very first
+time *anyone* using this project successfully searches near "Vårby
+gård" - by typing it correctly, by correcting a bad voice guess in the
+Place field before hitting Start, or by getting lucky on the first
+transcription - it's remembered automatically from then on. No config
+file to create, no UI needed, no per-user/per-deployment maintenance
+burden. `web/app.py`'s `transcribe_voice_search()` route was updated
+to merge `known_places_from_learned()` (previously
+`known_places_from_config()`) with `known_places_from_params()`'s
+existing history-derived bias, same dedup-and-order logic as before.
+
+Docstrings in `voice_asr.py`, `app.py`, and `bv_search.py` were all
+updated to explain the replacement and quote Christer's objection
+directly, so a future reader understands *why* this design was
+chosen over the more obvious "just document known_places.txt better"
+fix.
+
+**Tests**: `test_voice_asr.py` renamed the 4 existing
+`known_places_from_config` tests to `known_places_from_learned` (same
+assertions, new filename) and added 6 new tests for
+`remember_known_place()` (missing-dir auto-create, append-ordering,
+case-insensitive dedup with first-seen-wins, blank-input no-op,
+whitespace-stripping) - all 24 tests in the file pass. `test_bv_search.py`
+gained a new `test_run_place_success_remembers_place_for_future_asr_bias`
+verifying the actual `_run()` wiring end-to-end (fake geocode success
+-> real `known_places_from_learned()` read confirms the entry landed).
+Three pre-existing `--place`-success tests in that file were updated
+to pass an explicit `--config-dir` pointing at `tmp_path` - without
+that, `_run()`'s new write would otherwise land in the real
+`default_config_dir()` on whatever machine runs the suite, since none
+of those tests previously had a reason to pin it (the old config_dir
+usage there was read-only camera-id resolution). Verified via the same
+manual `pytest`/`tomllib` stub harness this sandbox always needs (no
+real pytest, no stdlib `tomllib` on this box's Python 3.10) - all 4
+affected `test_bv_search.py` tests and all 24 `test_voice_asr.py`
+tests pass; `ast.parse()` clean on `app.py`, `voice_asr.py`, and
+`bv_search.py`.
