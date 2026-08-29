@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -324,6 +324,50 @@ def write_default_driver_profiles(path: Path) -> DriverProfiles:
         encoding="utf-8",
     )
     return profiles
+
+
+def save_driver_profiles(path: Path, profiles: DriverProfiles) -> None:
+    """Persist `profiles` back to `path` - the write half of
+    load_driver_profiles(), needed once /drivers grew an "Add a
+    driver" form (Christer: "How do i add a driver") rather than only
+    ever reading driver_profiles.json. Same plain
+    driver_profiles_to_dict() shape write_default_driver_profiles()
+    already writes, just callable with an already-in-memory
+    DriverProfiles instead of only the fixed seed data."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(driver_profiles_to_dict(profiles), indent=2, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def add_driver(profiles: DriverProfiles, display_name: str) -> DriverProfiles:
+    """Append a new, pattern-less DriverProfile to `profiles` and
+    return the updated instance - the pure half of the /drivers "Add a
+    driver" form. The new driver's opaque `label` is the next unused
+    "driverN" in sequence (never reusing a number even if an earlier
+    driver were ever removed, so old driver_knowledge.json overrides
+    referencing a stale label can't collide with a new one) - same
+    opaque-label convention every existing profile already follows
+    (see this module's own docstring). Route matching only ever
+    happens through `patterns`, so a driver added this way starts out
+    only usable via the place-rule/bulk-assign/per-trip paths on
+    /drivers, same as any driver whose patterns haven't been tuned
+    yet - patterns are deliberately left to hand-editing
+    driver_profiles.json, same as before this function existed."""
+
+    existing_numbers = []
+    for driver in profiles.drivers:
+        if driver.label.startswith("driver"):
+            suffix = driver.label[len("driver") :]
+            if suffix.isdigit():
+                existing_numbers.append(int(suffix))
+    next_number = max(existing_numbers, default=0) + 1
+    new_driver = DriverProfile(label=f"driver{next_number}", display_name=display_name)
+
+    return replace(profiles, drivers=(*profiles.drivers, new_driver))
 
 
 # --------------------------------------------------------------------

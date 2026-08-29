@@ -20666,3 +20666,34 @@ cases. `group_trips_by_place()` got 3 new tests in `test_place_
 knowledge.py` (groups by place, sorts most-recent-first, skips trips
 with no away_place_key) - all 25 place_knowledge tests pass under the
 usual harness.
+
+Next message in the same thread: "How do i add a driver." Until now
+there was no way - `driver_profiles.json` only ever had the two
+drivers `christers_driver_profiles()` seeds it with, and the only
+write path in `driver_detect.py` was `write_default_driver_profiles()`
+(fixed seed data, only fires when the file doesn't exist yet). Added
+`add_driver(profiles, display_name)` - a pure function that appends a
+new pattern-less `DriverProfile` with the next unused opaque `driverN`
+label (numbers are never reused, even across a gap, so a driver added
+after one was ever removed can't collide with a stale override still
+sitting in some old `driver_knowledge.json`) - and `save_driver_
+profiles(path, profiles)`, the write half `load_driver_profiles()` was
+missing (same `driver_profiles_to_dict()` + `json.dumps()` shape
+`write_default_driver_profiles()` already used). Wired into a new
+owner-only `POST /drivers/add-driver` route (one `display_name` field,
+`#add-driver` redirect-fragment) and a new "Drivers" section at the
+top of `/drivers` (above Common places) listing current drivers plus
+the add form. A driver added this way starts with no `patterns`, so
+it won't get picked up by the increment-1 named-pattern matcher until
+Christer hand-tunes `driver_profiles.json` for it - but it's
+immediately selectable everywhere else on the page (place rules,
+bulk-assign, per-trip override), since those only need the label/
+display_name pair to exist.
+
+Verified with 4 new tests in `test_driver_detect.py` (opaque-label
+sequencing, gap-skipping/never-reusing a number, starting fresh at
+driver1 on an empty profile set, and a real round-trip through `save_
+driver_profiles()`/`load_driver_profiles()` via a temp dir) - all 16
+driver_detect tests pass under the harness. `app.py`/`drivers.html`
+verified via `ast.parse()` and the same standalone Jinja2 render
+check, same as always.

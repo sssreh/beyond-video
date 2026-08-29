@@ -24,6 +24,21 @@ driver KB</a> first.</p>
 <p>{{ decided_count }}/{{ trip_count }} trip(s) resolved to a driver.</p>
 </div>
 
+<h3 id="add-driver">Drivers</h3>
+<div class="content-panel">
+<p class="hint">
+  {% for label, display_name in driver_choices %}
+  {{ display_name }}{% if not loop.last %}, {% endif %}
+  {% else %}
+  No drivers yet.
+  {% endfor %}
+</p>
+<form method="post" action="/drivers/add-driver">
+  <label>Name <input type="text" name="display_name" placeholder="e.g. Sofia" required></label>
+  <button type="submit">Add driver</button>
+</form>
+</div>
+
 <h3>Common places</h3>
 <div class="content-panel">
 {% if places %}

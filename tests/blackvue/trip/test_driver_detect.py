@@ -20,12 +20,14 @@ from blackvue.trip.driver_detect import (
     DriverProfiles,
     RoutePattern,
     TripFix,
+    add_driver,
     christers_driver_profiles,
     default_driver_profiles_path,
     driver_profiles_from_dict,
     driver_profiles_to_dict,
     load_driver_profiles,
     match_driver,
+    save_driver_profiles,
     write_default_driver_profiles,
 )
 
@@ -266,3 +268,57 @@ def test_load_driver_profiles_returns_none_when_missing():
     with tempfile.TemporaryDirectory() as tmp:
         path = default_driver_profiles_path(Path(tmp))
         assert load_driver_profiles(path) is None
+
+
+def test_add_driver_appends_next_opaque_label():
+    profiles = christers_driver_profiles()  # driver1 (Fru), driver2 (Christer)
+
+    updated = add_driver(profiles, "Sofia")
+
+    assert len(updated.drivers) == 3
+    new_driver = updated.drivers[-1]
+    assert new_driver.label == "driver3"
+    assert new_driver.display_name == "Sofia"
+    assert new_driver.patterns == ()
+    # Original untouched (pure function).
+    assert len(profiles.drivers) == 2
+
+
+def test_add_driver_skips_gaps_never_reuses_a_number():
+    two_drivers = DriverProfiles(
+        home_name="Home", home_query="Home", home_radius_meters=300.0,
+        drivers=(
+            DriverProfile(label="driver1", display_name="A"),
+            DriverProfile(label="driver5", display_name="B"),
+        ),
+    )
+
+    updated = add_driver(two_drivers, "C")
+
+    assert updated.drivers[-1].label == "driver6"
+
+
+def test_add_driver_on_empty_profiles_starts_at_driver1():
+    empty = DriverProfiles(
+        home_name="Home", home_query="Home", home_radius_meters=300.0, drivers=()
+    )
+
+    updated = add_driver(empty, "First")
+
+    assert updated.drivers[0].label == "driver1"
+
+
+def test_save_driver_profiles_round_trips():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = default_driver_profiles_path(Path(tmp))
+        profiles = christers_driver_profiles()
+        updated = add_driver(profiles, "Sofia")
+
+        save_driver_profiles(path, updated)
+
+        assert path.exists()
+        loaded = load_driver_profiles(path)
+        assert loaded is not None
+        assert len(loaded.drivers) == 3
+        assert loaded.drivers[-1].display_name == "Sofia"
+        assert loaded.drivers[-1].label == "driver3"

@@ -126,8 +126,10 @@ from ..stats_report import aggregate_recording_stats
 from ..stats_report import count_recordings_without_gps
 from ..stats_report import load_recording_stats
 from ..cli.bv_stats import _format_value as _format_stat_value
+from ..trip.driver_detect import add_driver
 from ..trip.driver_detect import default_driver_profiles_path
 from ..trip.driver_detect import load_driver_profiles
+from ..trip.driver_detect import save_driver_profiles
 from ..trip.place_knowledge import bulk_assign_undecided_trips
 from ..trip.place_knowledge import default_driver_knowledge_path
 from ..trip.place_knowledge import group_trips_by_place
@@ -996,6 +998,33 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         return RedirectResponse(
             url="/drivers#bulk-assign", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.post("/drivers/add-driver")
+    async def drivers_add_driver(
+        display_name: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Christer: "How do i add a driver" - until now driver_
+        # profiles.json only ever had two drivers (christers_driver_
+        # profiles()' seed data) and the only way to add a third was
+        # hand-editing that file. This is the minimal version: a name
+        # gets a fresh opaque "driverN" label and an empty patterns
+        # tuple (add_driver()'s own docstring explains why patterns
+        # stay hand-edit-only) - enough to immediately show up in
+        # every driver_choices <select> on this page (place rules,
+        # bulk-assign, per-trip override).
+        config_dir = default_config_dir()
+        profiles_path = default_driver_profiles_path(config_dir)
+        profiles = load_driver_profiles(profiles_path)
+
+        display_name = display_name.strip()
+        if profiles is not None and display_name:
+            updated = add_driver(profiles, display_name)
+            save_driver_profiles(profiles_path, updated)
+
+        return RedirectResponse(
+            url="/drivers#add-driver", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @app.get("/archive", response_class=HTMLResponse)
