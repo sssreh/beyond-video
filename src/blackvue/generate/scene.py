@@ -1266,6 +1266,51 @@ def unload_scene_model(model_name: str | None = None, *, force_cpu: bool | None 
         torch.cuda.empty_cache()
 
 
+def generate_text_only(
+    prompt: str,
+    *,
+    model: str = DEFAULT_MODEL,
+    force_cpu: bool = False,
+    quantize: str = "auto",
+    gpu_memory_fraction: float | None = None,
+    max_new_tokens: int = 512,
+) -> str:
+    """Run a plain text prompt (no image/video attached) through a
+    loaded vision-language scene model, returning its generated text.
+
+    Added for web/voice_llm.py's "reuse the already-loaded scene model
+    for text-only structured extraction" option - one of two runtime-
+    selectable model choices Christer asked for when scoping local-LLM
+    voice-search parsing, specifically to avoid standing up/loading a
+    second model on top of whatever bv-scribe/bv-generate/bv-export
+    --describe-scene already has resident. Not otherwise used by this
+    module's own image/video describe/OCR call sites - those all
+    attach real vision content, so they use their own dedicated
+    helpers (_run_single_image_prompt(), the video branch in
+    describe_scene(), etc) instead of this one.
+
+    Uses _get_scene_model()'s existing cache - a text-only call for the
+    same (model, force_cpu, quantize, gpu_memory_fraction) combination
+    already in use for scene description reuses the same loaded
+    weights rather than loading a second copy. Untested against a real
+    model from this sandbox - no GPU/transformers here."""
+
+    loaded = _get_scene_model(
+        model, force_cpu=force_cpu, quantize=quantize, gpu_memory_fraction=gpu_memory_fraction
+    )
+    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+    text = loaded.processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = loaded.processor(text=[text], padding=True, return_tensors="pt")
+    inputs = inputs.to(loaded.model.device)
+    generated_ids = loaded.model.generate(**inputs, max_new_tokens=max_new_tokens)
+    trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+    return loaded.processor.batch_decode(
+        trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )[0]
+
+
 def build_prompt(task: str) -> str:
     if task == "describe":
         return DESCRIBE_PROMPT

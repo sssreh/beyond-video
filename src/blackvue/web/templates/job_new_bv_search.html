@@ -84,6 +84,21 @@
       <button type="button" id="voice-search-btn" class="voice-btn" title="Record a spoken query, then edit the transcript before searching">Search by voice</button>
     </div>
     <p class="hint voice-status" id="voice-status" hidden></p>
+    <div class="field voice-llm-choice" id="voice-llm-choice" hidden>
+      <label class="field-label" for="voice-llm-model">
+        Also try local-LLM parsing
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Experimental: runs the spoken transcript through a local LLM in parallel with the built-in parser above, purely for comparison. Never auto-fills the form by itself - the built-in parser above always does that. Off by default.</span></span>
+      </label>
+      <select id="voice-llm-model" name="voice_llm_model">
+        <option value="none" selected>Off</option>
+        <option value="scene">Reuse scene-description model</option>
+        <option value="small">Small dedicated text model</option>
+      </select>
+    </div>
+    <div class="content-panel voice-llm-panel" id="voice-llm-panel" hidden>
+      <p class="hint" id="voice-llm-summary"></p>
+      <button type="button" id="voice-llm-apply-btn" class="voice-btn" hidden>Apply LLM values instead</button>
+    </div>
     <div class="field-row">
       <div class="field">
         <label class="field-label" for="asset">
@@ -175,6 +190,14 @@ with bv-config</a> first.</p>
   // voice_time.py's parse_spoken_timerange()) and this script routes
   // each into its own existing field - every field stays just as
   // editable as Text always was.
+  //
+  // Optionally (voice-llm-model select, off by default) the same
+  // transcript is also run through web/voice_llm.py's experimental
+  // local-LLM parser, in parallel with the above - Christer: "I would
+  // like to try it out in parallel to what we already have." That
+  // result is shown in its own comparison panel below the Text field
+  // with an explicit "Apply" button - it never auto-fills the form
+  // fields itself, only the regex-parser result above does that.
   var btn = document.getElementById('voice-search-btn');
   var textInput = document.getElementById('text');
   var placeInput = document.getElementById('place');
@@ -183,6 +206,11 @@ with bv-config</a> first.</p>
   var fromInput = document.getElementById('from_');
   var untilInput = document.getElementById('until');
   var status = document.getElementById('voice-status');
+  var llmChoice = document.getElementById('voice-llm-choice');
+  var llmModelSelect = document.getElementById('voice-llm-model');
+  var llmPanel = document.getElementById('voice-llm-panel');
+  var llmSummary = document.getElementById('voice-llm-summary');
+  var llmApplyBtn = document.getElementById('voice-llm-apply-btn');
   if (!btn || !textInput) return;
 
   function formatYmd(ymd) {
@@ -201,6 +229,10 @@ with bv-config</a> first.</p>
     btn.hidden = true;
     return;
   }
+
+  // Mic support confirmed - the voice button works, so the optional
+  // local-LLM comparison dropdown next to it is relevant too.
+  if (llmChoice) llmChoice.hidden = false;
 
   var mediaRecorder = null;
   var chunks = [];
@@ -255,9 +287,12 @@ with bv-config</a> first.</p>
     var extension = blob.type.indexOf('ogg') !== -1 ? '.ogg' : '.webm';
     var formData = new FormData();
     formData.append('audio', blob, 'voice-query' + extension);
+    formData.append('llm_model', llmModelSelect ? llmModelSelect.value : 'none');
 
     btn.disabled = true;
     setStatus('Transcribing...');
+    if (llmPanel) llmPanel.hidden = true;
+    if (llmApplyBtn) llmApplyBtn.hidden = true;
 
     fetch('/jobs/bv-search/transcribe', { method: 'POST', body: formData })
       .then(function (response) {
@@ -322,11 +357,70 @@ with bv-config</a> first.</p>
         } else {
           setStatus('Transcribed - edit the text above if needed, then click Start.');
         }
+
+        renderLlmComparison(data.llm);
       })
       .catch(function (err) {
         btn.disabled = false;
         setStatus('Transcription request failed: ' + err.message);
       });
+  }
+
+  function renderLlmComparison(llm) {
+    // Shows web/voice_llm.py's experimental parser result alongside the
+    // regex-parser result above, purely for comparison - never
+    // auto-filled. See this file's own top-of-script comment and
+    // voice_llm.py's module docstring for why this stays separate.
+    if (!llmPanel || !llmSummary || !llmApplyBtn) return;
+    if (!llm) {
+      llmPanel.hidden = true;
+      llmApplyBtn.hidden = true;
+      return;
+    }
+
+    llmPanel.hidden = false;
+
+    if (llm.error) {
+      llmSummary.textContent = 'Local-LLM parse failed: ' + llm.error;
+      llmApplyBtn.hidden = true;
+      return;
+    }
+
+    var parts = [];
+    if (llm.place) {
+      parts.push(
+        'Place "' + llm.place + '"' +
+        (llm.radius_meters ? ' within ' + Math.round(llm.radius_meters) + ' m' : '')
+      );
+    }
+    if (llm.timestamp) {
+      parts.push('Timestamp ' + formatYmd(llm.timestamp));
+    } else if (llm.from_ && llm.until) {
+      parts.push('From ' + formatYmd(llm.from_) + ' to ' + formatYmd(llm.until));
+    }
+    if (llm.text) {
+      parts.push('Text "' + llm.text + '"');
+    }
+
+    llmSummary.textContent = 'Local LLM (' + llm.model + ') interpreted this as: ' +
+      (parts.length ? parts.join(', ') : 'nothing usable.');
+    llmApplyBtn.hidden = false;
+
+    llmApplyBtn.onclick = function () {
+      textInput.value = llm.text || '';
+      if (placeInput) {
+        placeInput.value = llm.place || '';
+        var nearInput = document.getElementById('near');
+        if (llm.place && nearInput) nearInput.value = '';
+      }
+      if (radiusInput && llm.radius_meters) {
+        radiusInput.value = Math.round(llm.radius_meters);
+      }
+      if (timestampInput) timestampInput.value = llm.timestamp || '';
+      if (fromInput) fromInput.value = llm.from_ || '';
+      if (untilInput) untilInput.value = llm.until || '';
+      textInput.focus();
+    };
   }
 
   btn.addEventListener('click', function () {

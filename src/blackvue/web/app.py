@@ -93,6 +93,8 @@ from .trips import first_gpx_point
 from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
+from .voice_llm import VALID_MODEL_CHOICES as VOICE_LLM_MODEL_CHOICES
+from .voice_llm import extract_voice_query_llm
 from .voice_query import parse_spoken_query
 from .voice_time import parse_spoken_timerange
 from ..core.camera_config import CameraConfigCache
@@ -2613,6 +2615,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     @app.post("/jobs/bv-search/transcribe")
     async def transcribe_voice_search(
         audio: UploadFile = File(...),
+        llm_model: str = Form("none"),
         user: User = Depends(require_viewer_or_owner),
     ):
         """Quick, synchronous voice-to-text for the bv-search form's
@@ -2663,7 +2666,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         results that are otherwise correctly filtered by place/radius
         or date. Every field in the response is still just an
         editable suggestion - the frontend fills the form but never
-        auto-submits.
+        auto-submits. These regex-parser fields (text/place/
+        radius_meters/timestamp/from_/until at the top level of the
+        response) are still the *only* thing that auto-fills the
+        bv-search form - unchanged by the addition below.
+
+        `llm_model` ("none"/"scene"/"small", default "none") optionally
+        also runs the transcript through web/voice_llm.py's
+        experimental local-LLM structured-extraction parser, *in
+        parallel* with the regex parsers above - Christer's own
+        framing: "I would like to try it out in parallel to what we
+        already have." Its result is returned under a nested "llm" key
+        for the frontend to show alongside the regex result for
+        comparison; it never touches the top-level fields and never
+        auto-fills anything itself (see voice_llm.py's own module
+        docstring, design decision 2). Any failure loading or running
+        the model (missing extras, ImportError, a bad download, a
+        malformed/unparseable model response) is caught and reported
+        as `llm.error` rather than breaking the response - this is
+        explicitly an experimental comparison, so a failure here must
+        never take down the proven regex-based flow above it.
         """
 
         suffix = Path(audio.filename or "").suffix or ".webm"
@@ -2681,12 +2703,33 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             tmp_path.unlink(missing_ok=True)
 
         transcript = result.text.strip()
-        time_range = parse_spoken_timerange(transcript, datetime.now().date())
+        today = datetime.now().date()
+        time_range = parse_spoken_timerange(transcript, today)
         remainder = time_range.remainder if time_range.matched else transcript
         parsed = parse_spoken_query(remainder)
 
         matched_something = time_range.matched or parsed.place is not None
         final_text = "" if matched_something else parsed.text
+
+        llm_result = None
+        if transcript and llm_model in VOICE_LLM_MODEL_CHOICES:
+            try:
+                llm_parsed = extract_voice_query_llm(
+                    transcript, today, model_choice=llm_model
+                )
+            except (MediaToolError, ValueError) as exc:
+                llm_result = {"model": llm_model, "error": str(exc)}
+            else:
+                llm_result = {
+                    "model": llm_model,
+                    "error": None,
+                    "text": llm_parsed.text,
+                    "place": llm_parsed.place,
+                    "radius_meters": llm_parsed.radius_meters,
+                    "timestamp": llm_parsed.timestamp,
+                    "from_": llm_parsed.from_,
+                    "until": llm_parsed.until,
+                }
 
         return JSONResponse(
             {
@@ -2697,6 +2740,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "timestamp": time_range.timestamp,
                 "from_": time_range.from_,
                 "until": time_range.until,
+                "llm": llm_result,
             }
         )
 

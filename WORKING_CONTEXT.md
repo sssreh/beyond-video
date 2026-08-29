@@ -19485,3 +19485,111 @@ This whole change rests on Christer's own explicit choice to proceed
 without independently confirming BlackVue's own app labels - flagged
 here per that choice, in case a later side-by-side with the real
 BlackVue viewer app surfaces a mismatch.
+
+## Local-LLM structured extraction for voice search, run in parallel with the regex parsers (2026-08-29)
+
+Christer: "About Voice search: local-LLM structured extraction instead
+of the current parser. I would like to try it out in parallel to what
+we already have." - implements the idea already sketched in this file's
+own earlier "Note: local-LLM structured extraction for voice search
+(future improvement)" entry, with the two changes Christer's answers
+below made to that original sketch.
+
+Three design questions, asked directly and answered:
+
+1. **Model choice**: not a single fixed model - runtime-selectable
+   between reusing the already-loaded `generate/scene.py` Qwen3-VL-8B-
+   Instruct model in text-only mode ("scene"), or a separate small
+   dedicated text model, `Qwen/Qwen2.5-1.5B-Instruct` ("small"), loaded
+   via plain `transformers` `AutoModelForCausalLM`/`AutoTokenizer` -
+   "both, selectable at runtime". Reusing the scene model avoids the
+   VRAM-contention concern the original note flagged (Christer's dual-
+   RTX-3080-Ti box, 12GB/card); the dedicated small model avoids
+   evicting/reloading a ~16GB model for a few-token extraction query.
+   Christer separately mentioned having a laptop RTX 5090 available for
+   this work - ample VRAM either way, doesn't change the runtime-
+   selectable design.
+2. **UI surfacing**: "Run both, show both, auto-fill from regex
+   (Recommended)" - one recording button as before; transcribe once;
+   run both the existing regex parsers (`voice_query.py`/`voice_time.py`,
+   completely unchanged) and the new LLM parser; auto-fill the
+   bv-search form from the regex result only, exactly as before this
+   feature existed; show the LLM's own interpretation alongside in a
+   separate comparison panel, with an explicit "Apply LLM values
+   instead" button to manually take it if it did better.
+3. **Extraction scope**: "Match today's fields only (Recommended)" -
+   the LLM parser produces exactly the same field shape as the combined
+   regex parsers (text/place/radius_meters/timestamp/from_/until), not
+   additionally scene-keyword or asset-restriction extraction in this
+   first pass.
+
+**New module `web/voice_llm.py`** (task #1290). Pure, offline-testable
+functions - `_build_prompt(transcript, today)` (injects today's real
+date + weekday name so the model resolves "last week"/"yesterday"
+against a fact, not a guess, per the original note's own warning about
+date-arithmetic reliability), `_parse_llm_json_response()` (tolerant:
+strips a ```json code fence if present, then greedily grabs the first
+`{...}` span, so stray prose around the JSON from a less-compliant
+small model doesn't break parsing), `_validate_ymd()` (sanity-checks
+any date the model claims is YYYYMMDD against a real `datetime.strptime`
+parse - the "don't blindly trust model output" safeguard the original
+note called out explicitly, mirroring `voice_time.py`'s own
+`_safe_date()`), and `_build_parsed_result()` (JSON parsing + field
+validation + the same AND-conflict-avoidance rule `voice_query.py`
+documents: if place/date matched, force `text` back to `""` regardless
+of what the model itself put there, since a prompt instruction alone
+isn't trustworthy enough per this project's established "never trust
+model output blindly" stance - see `DISCLAIMER` in `generate/scene.py`).
+Two impure model-calling functions
+(`_generate_via_scene_model()`/`_generate_via_small_text_model()`) stay
+thin and separate from the pure logic, mirroring how `test_scene.py`
+already only tests scene.py's prompt/parsing logic, never the real
+model-loading path - this sandbox has no GPU/transformers/network, so
+none of the actual generation code has been run against a real model,
+only the pure functions (30 assert-based tests in the new
+`tests/blackvue/web/test_voice_llm.py`, all passing via a standalone
+harness).
+
+Added `generate/scene.py::generate_text_only()` - a small new public
+helper that runs a plain text prompt (no image/video attached) through
+`_get_scene_model()`'s existing cache, for the "scene" model choice
+above. Deliberately public (not calling `_get_scene_model()` directly
+from `voice_llm.py`) to match this codebase's existing convention of
+only importing public symbols across module boundaries (checked:
+`archive_browser.py`/`export/trip_export.py`/`generate/__init__.py` all
+already do this for other `scene.py` functions).
+
+**Wired into `web/app.py`'s `transcribe_voice_search()` route** (task
+#1291): added an `llm_model: str = Form("none")` field (values
+"none"/"scene"/"small"). The existing regex-parser response fields
+(`text`/`place`/`radius_meters`/`timestamp`/`from_`/`until` at the top
+level) are completely unchanged and remain the only thing that
+auto-fills the form. A new nested `"llm"` key carries the LLM's own
+result (`model`, `error`, plus the same six fields) when `llm_model !=
+"none"` - `None` when off. The whole LLM call is wrapped in
+`try/except (MediaToolError, ValueError)` so any failure (missing scene/
+torch extras, a bad model download, unparseable model output) degrades
+to `llm.error` rather than ever breaking the proven regex-based flow
+above it - this is explicitly an experimental comparison feature, never
+allowed to take down the thing it's being compared against.
+
+**Wired into `templates/job_new_bv_search.html`**: a "Also try
+local-LLM parsing" dropdown (Off/scene/small, default Off, only shown
+once mic support is confirmed) next to the voice button; a comparison
+panel below the Text field that shows the LLM's interpretation as plain
+text plus an "Apply LLM values instead" button that copies its
+place/radius/timestamp/from_/until/text into the real form fields on
+click - never automatically. Verified via `node --check` on the
+extracted `<script>` block and `jinja2.Environment.parse()` on the
+whole template (both clean); the FastAPI route itself could only be
+`ast.parse()`-checked here, same "no `fastapi` in this dev sandbox, CI
+has it" constraint `test_app_routes.py`'s own docstring already
+documents for this project - no `TestClient`-based route test was
+added for the same reason no prior route change in this sandbox has
+one.
+
+Not yet done, left for a future session if Christer wants to continue
+comparing: no test coverage for `_generate_via_scene_model()`/
+`_generate_via_small_text_model()` themselves (needs real hardware);
+the scene-keyword/asset-restriction extraction extension explicitly
+deferred by design decision 3 above.
