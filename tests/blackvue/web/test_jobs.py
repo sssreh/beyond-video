@@ -977,7 +977,7 @@ def _export_kwargs(**overrides):
         map_intro_seconds=None,
         render_gsensor=False,
         render_gsensor_graph=False,
-        gsensor_graph_x=False,
+        gsensor_graph_z=False,
         stitch=False,
         stitch_layout="auto",
         stitch_mirror_size=None,

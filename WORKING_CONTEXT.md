@@ -19385,3 +19385,103 @@ while leaving the run's exit code at `EXIT_OK`. Added the same
 scenarios as permanent regression tests in `tests/blackvue/test_snap.py`
 and `tests/blackvue/cli/test_bv_snap.py`. Also updated
 `docs/man/bv-snap.md` for the new flag.
+
+## Rename `gsensor_reader.py`'s raw X/Y/Z fields to BlackVue's own letter convention (2026-08-29)
+
+Christer: "please remap g-sensor axis to blackvue viewer" - the raw
+`.3gf` field names this codebase has used internally (`GSensorSample.x`/
+`.y`/`.z`) didn't line up with what BlackVue's own app apparently labels
+those same three physical readings. Asked which of two things he meant:
+confirm BlackVue's own on-screen labels first, or proceed on the
+corroborating clues already logged in this file even though the app's
+exact wording is still unconfirmed - he picked "proceed anyway." Asked a
+second question - rename the raw field *labels* only (a pure naming
+refactor, same bytes drive the same on-screen effect, just called by
+different letters) versus also changing the on-screen UI legend wording
+- he picked "rename raw field labels only," explicitly declining a UI
+wording change.
+
+The rotation applied everywhere raw X/Y/Z appears: old raw X (vertical,
+the axis gsensor_graph_render.py's `show_z`/`show_x` opt-in mechanism has
+hidden by default through two earlier rounds of letter churn - see that
+module's own docstring) becomes new **Z**; old raw Y (lateral,
+left/right) becomes new **X**; old raw Z (longitudinal, acc/brake)
+becomes new **Y**. This is BlackVue's own convention: X=lateral,
+Y=longitudinal, Z=vertical. Critically, this is a *letter* rename only -
+`gsensor_reader.py`'s on-disk `.3gf` record byte order never changes
+(`_RECORD_FORMAT = ">Ihhh"`: ms, vertical, lateral, longitudinal, same as
+always); only which `GSensorSample` field name (x/y/z) each position's
+value is assigned to changed. `read_gsensor()` now builds
+`GSensorSample(x=raw_lateral, y=raw_longitudinal, z=raw_vertical)`;
+`write_gsensor()` packs the inverse. No physical/semantic behavior
+changed anywhere - the same raw byte still drives the same on-screen
+effect (the dot gauge's lateral/longitudinal position, the graph's
+Left/right and Acc/brake traces, the vertical axis's default-hidden
+opt-in lane); only the letter naming that byte rotated.
+
+Every layer that referenced the old letters was updated to match:
+`gsensor_render.py` (dot gauge) and `gsensor_video.py` now read
+`sample.x`/`sample.y` as lateral/longitudinal (unchanged reading
+positions, just now under the new letter names) with `sample.z` unused;
+`gsensor_graph_render.py`'s `LEGEND_LABELS` became
+`(("X", "Left/right"), ("Y", "Acc/brake"), ("Z", "Up/down"))`, and its
+opt-in-hidden-by-default mechanism (renamed `show_x` -> `show_z`,
+`X_LANE_FRACTION` -> `Z_LANE_FRACTION`) now gates the vertical axis under
+its new Z letter, continuing the same physical axis it always hid;
+`gsensor_graph_video.py`'s `show_x` param -> `show_z`; `stitch.py`'s
+`--stitch-graph` panel forwarding (`graph_x` -> `graph_z`, `show_x` ->
+`show_z`); `trip_export.py`'s `gsensor_graph_x` -> `gsensor_graph_z`
+param at both the standalone `gsensor_graph.mp4` and `--stitch-graph`
+call sites; `bv_export.py`'s `--gsensor-graph-x` CLI flag ->
+`--gsensor-graph-z`; bv-web's `web/app.py`/`web/jobs.py`/
+`job_new_bv_export.html` form field and JobRunner kwarg
+(`gsensor_graph_x` -> `gsensor_graph_z`); `docs/man/bv-export.md`'s
+`--gsensor-video`/`--gsensor-graph-video`/`--gsensor-graph-z`/
+`--stitch-graph` rows. The GoPro GPMF adapter's own axis mapping (which
+feeds the same `GSensorSample` type through `telemetry_bridge.py`) was
+checked and confirmed to already assign into the new letter positions
+correctly, needing no further change.
+
+Every test file referencing the old letters was updated to match: raw
+`.3gf` byte-order fixtures in `test_gsensor_reader.py` (expected
+`x`/`y`/`z` values recomputed against the new lateral/longitudinal/
+vertical assignment, not just relabeled); `test_gsensor_render.py` and
+`test_gsensor_video.py`'s sample-builder helpers and their "ignores the
+raw X field" test (renamed to "raw Z field", filler moved from the `x`
+kwarg to `z`); `test_gsensor_graph_render.py` (the largest of the set -
+`LEGEND_LABELS` exact-tuple assertion, `Z_LANE_FRACTION` import, the
+default-scale/legend-swatch/legend-centering/hides-by-default/reclaims-
+the-axis/omits-the-divider/two-legend-rows/reserve-is-smaller/playhead-
+alignment tests all swapped from X-is-isolated to Z-is-isolated,
+including recomputing which two axes are "always shown" for tests that
+deliberately relied on that); `test_gsensor_graph_video.py`'s two
+`show_x`-forwarding tests -> `show_z`; `test_trip_export.py`'s
+`gsensor_graph_x`-default/-forwarded tests (both the standalone-video and
+`--stitch-graph` call sites) -> `gsensor_graph_z`; `test_bv_export.py`'s
+`--gsensor-graph-x` CLI-parsing and its real end-to-end
+"plots X" -> "plots Z" test (sample data swapped so the isolated axis,
+not X, carries the distinguishing large value); `test_jobs.py`'s
+default-kwargs assertion. `test_prebuffer.py`, `test_stitch.py`, and the
+GoPro adapter's own tests were checked and confirmed to need no changes
+- none of their assertions carry a BlackVue-semantic claim about which
+letter means what.
+
+Verified via `python3 -m py_compile` on all 21 touched source and test
+files, a standalone runtime harness (no pytest in this sandbox, per the
+constraint noted throughout this file) exercising every edited test
+function directly against real render output, and a final cross-module
+consistency check confirming the full chain end-to-end: a raw `.3gf`
+record with distinct vertical/lateral/longitudinal values round-trips
+through `read_gsensor()` into `x=lateral, y=longitudinal, z=vertical`;
+`gsensor_render.py`'s `baseline_for_samples()` ignores `z` and medians
+`x`/`y`; `gsensor_graph_render.py`'s `LEGEND_LABELS` and
+`Z_LANE_FRACTION` match the new convention. A final repo-wide grep for
+`gsensor_graph_x`/`--gsensor-graph-x`/`show_x`/`graph_x`/
+`X_LANE_FRACTION` across `src/`, `tests/`, and `docs/man/` turned up only
+one hit - `gsensor_graph_render.py`'s own module docstring recounting
+this exact renaming history, which is correct as written, not stale.
+
+This whole change rests on Christer's own explicit choice to proceed
+without independently confirming BlackVue's own app labels - flagged
+here per that choice, in case a later side-by-side with the real
+BlackVue viewer app surfaces a mismatch.

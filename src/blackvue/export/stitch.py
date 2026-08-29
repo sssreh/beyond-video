@@ -500,7 +500,7 @@ def stitch_cameras(
     graph_side: str | None = None,
     graph_size: float | None = None,
     graph_video_duration_seconds: float | None = None,
-    graph_x: bool = False,
+    graph_z: bool = False,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -823,18 +823,19 @@ def stitch_cameras(
     `gsensor_video` already follow. Only meaningful when both front and
     rear exist, same as `map_mode`.
 
-    `graph_x` (default False), forwarded straight to
+    `graph_z` (default False), forwarded straight to
     gsensor_graph_render.render_base_frame()/render_frame() (see
-    gsensor_graph_video.render_gsensor_graph_video()'s own `show_x`
-    parameter), controls whether the panel plots X at all - this used
-    to be `graph_z`/raw Z; see gsensor_graph_render.py's own module
-    docstring for why the opt-in axis is X now. Christer's own
-    reasoning for hiding one axis by default in the first place: "Z is
-    just not useful, unless you hit a giant pothole, but then the
+    gsensor_graph_video.render_gsensor_graph_video()'s own `show_z`
+    parameter), controls whether the panel plots Z at all - see
+    gsensor_graph_render.py's own module docstring for the full
+    letter-churn history of which letter has named this opt-in axis
+    (it's landed back on Z after a pure letter-rotation rename - see
+    gsensor_reader.py's own docstring). Christer's own reasoning for
+    hiding one axis by default in the first place: the vertical axis
+    "is just not useful, unless you hit a giant pothole, but then the
     video probably got that and the reaction of the driver" - the one
     situation where that axis genuinely matters is already captured by
-    the footage itself, so it's opt-in rather than on by default; that
-    reasoning fits X (Up/down) now, not Z (Acc/brake).
+    the footage itself, so it's opt-in rather than on by default.
 
     `subtitles_path`, if given, is an already-written trip.srt (see
     trip_export.py, which always writes one whenever the trip has any
@@ -883,7 +884,7 @@ def stitch_cameras(
             graph_samples=graph_samples, graph_side=graph_side,
             graph_size=graph_size,
             graph_video_duration_seconds=graph_video_duration_seconds,
-            graph_x=graph_x,
+            graph_z=graph_z,
             subtitles_path=subtitles_path,
             subtitles_background=subtitles_background,
             audio_path=audio_path,
@@ -1713,7 +1714,7 @@ def _render_graph_panel(
     height: int,
     orientation: str,
     duration_seconds: float | None = None,
-    show_x: bool = False,
+    show_z: bool = False,
 ) -> Path | None:
     """Render --stitch-graph's panel at exactly width x height, so
     combining it with the composite via a plain hstack/vstack doesn't
@@ -1729,16 +1730,16 @@ def _render_graph_panel(
     running left to right - see gsensor_graph_render.py's own module
     docstring for what each orientation looks like).
 
-    `show_x` (default False) is forwarded straight to
+    `show_z` (default False) is forwarded straight to
     render_gsensor_graph_video() - see stitch_cameras()'s own
-    docstring for `graph_x` and gsensor_graph_render.py's module
-    docstring for Christer's reasoning (X hidden by default, opt-in
+    docstring for `graph_z` and gsensor_graph_render.py's module
+    docstring for Christer's reasoning (Z hidden by default, opt-in
     for a specific look at a bump/vibration event).
 
     Always renders as a rolling GRAPH_PANEL_WINDOW_SECONDS (10-minute)
     window rather than one static whole-trip chart - see that
     constant's own comment and render_gsensor_graph_video()'s
-    `window_seconds` docstring. Unlike `show_x`, this isn't a
+    `window_seconds` docstring. Unlike `show_z`, this isn't a
     parameter here: it's this panel's own new default, not something
     stitch_cameras() callers opt into, and the standalone
     --gsensor-graph-video output (render_gsensor_graph_video() called
@@ -1757,7 +1758,7 @@ def _render_graph_panel(
     return render_gsensor_graph_video(
         samples, destination,
         orientation=orientation, width=width, height=height,
-        duration_seconds=duration_seconds, show_x=show_x,
+        duration_seconds=duration_seconds, show_z=show_z,
         window_seconds=GRAPH_PANEL_WINDOW_SECONDS,
     )
 
@@ -2114,7 +2115,7 @@ def _stack(
     graph_side: str | None = None,
     graph_size: float | None = None,
     graph_video_duration_seconds: float | None = None,
-    graph_x: bool = False,
+    graph_z: bool = False,
     subtitles_path: Path | None = None,
     subtitles_background: bool = True,
     audio_path: Path | None = None,
@@ -2965,7 +2966,7 @@ def _stack(
                     width=panel_size[0], height=panel_size[1],
                     orientation=graph_orientation,
                     duration_seconds=graph_video_duration_seconds,
-                    show_x=graph_x,
+                    show_z=graph_z,
                 )
             except MediaToolError as exc:
                 if warnings is not None:

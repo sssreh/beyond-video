@@ -523,14 +523,22 @@ def extract_gps_fixes(data: bytes) -> tuple[GpsFix, ...]:
 def extract_gsensor_samples(data: bytes) -> tuple[GSensorSample, ...]:
     """Extract every ACCL sample from a raw GPMF stream, oldest first.
 
-    ACCL rows are 3 raw (unscaled) int16 values (x, y, z) - deliberately
+    ACCL rows are 3 raw (unscaled) int16 values, unpacked straight into
+    GSensorSample's x/y/z fields in GPMF's own row order - deliberately
     NOT run through ACCL's own SCAL factor, matching this project's
     existing telemetry/gsensor_reader.py contract for BlackVue's own
     .3gf format: GSensorSample carries raw values because the physical
     unit isn't confirmed for either camera's raw axis data (see that
     module's own docstring), and everything downstream (movement.py's
     heuristics, the g-sensor overlay/graph renderers) already works
-    off relative variance, not a calibrated g-force threshold.
+    off relative variance, not a calibrated g-force threshold. Note
+    that this straight pass-through does NOT claim GPMF's own row
+    order lines up with the BlackVue-derived lateral/longitudinal/
+    vertical meaning gsensor_reader.py's x/y/z fields carry - nobody
+    has verified GoPro's ACCL axis order against a real recording the
+    way BlackVue's .3gf format was (see that module's docstring); this
+    was already the case before the letter-convention rename there and
+    is unchanged by it.
 
     Each row's `offset` (time since this recording's own start) comes
     from its STRM block's STMP field (GPMF's own microsecond-since-

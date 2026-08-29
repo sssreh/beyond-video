@@ -7,14 +7,28 @@ trailer - a file's size is always an exact multiple of 10. Each
 record is:
 
     4 bytes  big-endian unsigned int   milliseconds since recording start
-    2 bytes  big-endian signed short   X axis
-    2 bytes  big-endian signed short   Y axis
-    2 bytes  big-endian signed short   Z axis
+    2 bytes  big-endian signed short   vertical axis (up/down)
+    2 bytes  big-endian signed short   lateral axis (left/right)
+    2 bytes  big-endian signed short   longitudinal axis (accel/brake)
+
+GSensorSample below names these three values x/y/z, but *not* in the
+raw file's own byte order above - the field names instead follow
+BlackVue's own letter convention for the axes (X=lateral, Y=
+longitudinal, Z=vertical), per the corroborating-but-still-unconfirmed
+evidence logged in WORKING_CONTEXT.md (BlackVue's own app/viewer is
+believed to label the same three physical quantities with a letter
+rotated one step from this project's own raw byte order). This is a
+pure naming choice, not a behavioral one: read_gsensor()/write_gsensor()
+below always map the same raw byte position to the same physical
+quantity - only the label attached to it changed. This project's
+g-sensor axis-labeling has been reversed multiple times before (see
+WORKING_CONTEXT.md for the full history) - don't touch this mapping
+again without reading that history first.
 
 Verified against a real ~170 second file: the millisecond field
 counts up smoothly with ~100ms steps (a real 4-byte field - it keeps
 counting past the 65536 mark a 2-byte field would wrap at, with no
-reset). The physical unit of the X/Y/Z values isn't confirmed (could
+reset). The physical unit of the axis values isn't confirmed (could
 be milli-g, raw ADC counts, or something else) - in the one real
 sample available, a stationary/idling vehicle, they sit in a tight,
 stable band throughout. Because the unit is unconfirmed, don't build
@@ -42,12 +56,16 @@ _RECORD_SIZE = struct.calcsize(_RECORD_FORMAT)
 
 @dataclass(frozen=True)
 class GSensorSample:
-    """One g-sensor reading."""
+    """One g-sensor reading.
+
+    Field names follow BlackVue's own axis-letter convention, not the
+    raw .3gf file's own byte order - see this module's docstring.
+    """
 
     offset: timedelta
-    x: int
-    y: int
-    z: int
+    x: int  # lateral (left/right) - the raw file's 2nd axis value
+    y: int  # longitudinal (accel/brake) - the raw file's 3rd axis value
+    z: int  # vertical (up/down) - the raw file's 1st axis value
 
 
 def read_gsensor(path: Path) -> tuple[GSensorSample, ...]:
@@ -68,15 +86,15 @@ def read_gsensor(path: Path) -> tuple[GSensorSample, ...]:
     samples = []
 
     for offset in range(0, len(data), _RECORD_SIZE):
-        milliseconds, x, y, z = struct.unpack_from(
+        milliseconds, raw_vertical, raw_lateral, raw_longitudinal = struct.unpack_from(
             _RECORD_FORMAT, data, offset
         )
         samples.append(
             GSensorSample(
                 offset=timedelta(milliseconds=milliseconds),
-                x=x,
-                y=y,
-                z=z,
+                x=raw_lateral,
+                y=raw_longitudinal,
+                z=raw_vertical,
             )
         )
 
@@ -129,9 +147,9 @@ def write_gsensor(samples: tuple[GSensorSample, ...], path: Path) -> None:
         struct.pack(
             _RECORD_FORMAT,
             round(sample.offset.total_seconds() * 1000),
+            sample.z,
             sample.x,
             sample.y,
-            sample.z,
         )
         for sample in samples
     )

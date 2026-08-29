@@ -6,11 +6,14 @@ reading rather than raw (0, 0), with a short fading trail) on a flat
 chroma-key green background, then handing the frame sequence to
 ffmpeg. The gauge's horizontal axis is lateral (left/right) movement
 and its vertical axis is longitudinal (forward/back, i.e.
-acceleration/braking) movement - fed from the raw Y and raw Z fields
-respectively, per a second real test recording
-(`20260802_103545_M.3gf`) that reconfirmed this after an intervening
-override had it reading raw X/Y instead; see gsensor_render.py's
-module docstring for the full story. See gsensor_render.py for why
+acceleration/braking) movement - fed from the raw X and raw Y fields
+respectively (X=lateral, Y=longitudinal is this project's field-naming
+convention as of the letter-rotation rename described in
+gsensor_reader.py's own docstring), per a second real test recording
+(`20260802_103545_M.3gf`) that reconfirmed the underlying physical
+mapping after an intervening override had briefly gotten it backwards;
+see gsensor_render.py's module docstring for the full story. See
+gsensor_render.py for why
 the background is green rather than transparent - h264/mp4 has no
 alpha channel, so a chroma-key background is the way to make this
 compositable later (the future --stitch item), not a real transparent
@@ -240,8 +243,8 @@ def render_gsensor_video(
             elapsed = timedelta(seconds=elapsed_seconds)
 
             search_index = _advance_search_index(samples, elapsed, search_index)
-            _x, y, z = _interpolate_from_index(samples, elapsed, search_index)
-            position = (y - baseline_lateral, z - baseline_longitudinal)
+            x, y, _z = _interpolate_from_index(samples, elapsed, search_index)
+            position = (x - baseline_lateral, y - baseline_longitudinal)
 
             trail.append(position)
             if len(trail) > DEFAULT_TRAIL_LENGTH:

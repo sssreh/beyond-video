@@ -3256,16 +3256,15 @@ def test_export_trip_render_gsensor_is_silent_by_default(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_export_trip_gsensor_graph_x_defaults_to_false(tmp_path, monkeypatch):
+def test_export_trip_gsensor_graph_z_defaults_to_false(tmp_path, monkeypatch):
     # Christer: "Z is just not useful, unless you hit a giant pothole,
     # but then the video probably got that and the reaction of the
-    # driver" - originally about Z; the axis that actually fits that
-    # reasoning is X (Up/down) now, not Z (Acc/brake) - see
-    # gsensor_graph_render.py's own module docstring for the full
-    # story. Confirms export_trip()'s own default (gsensor_graph_x=
-    # False) actually reaches render_gsensor_graph_video(), not just
-    # that gsensor_graph_video.py's own default does the right thing
-    # in isolation.
+    # driver" - Z (Up/down) is the axis that reasoning describes, under
+    # the letters' BlackVue-convention rotation - see gsensor_reader.py's
+    # own module docstring for the full story. Confirms export_trip()'s
+    # own default (gsensor_graph_z=False) actually reaches
+    # render_gsensor_graph_video(), not just that gsensor_graph_video.py's
+    # own default does the right thing in isolation.
     captured = {}
     original = trip_export_module.render_gsensor_graph_video
 
@@ -3284,10 +3283,10 @@ def test_export_trip_gsensor_graph_x_defaults_to_false(tmp_path, monkeypatch):
 
     export_trip(trip, dest_dir, render_gsensor_graph=True)
 
-    assert captured["show_x"] is False
+    assert captured["show_z"] is False
 
 
-def test_export_trip_gsensor_graph_x_forwarded_when_true(tmp_path, monkeypatch):
+def test_export_trip_gsensor_graph_z_forwarded_when_true(tmp_path, monkeypatch):
     captured = {}
     original = trip_export_module.render_gsensor_graph_video
 
@@ -3304,9 +3303,9 @@ def test_export_trip_gsensor_graph_x_forwarded_when_true(tmp_path, monkeypatch):
     dest_dir = tmp_path / "export"
     trip = _trip_with_gsensor_samples(source_dir)
 
-    export_trip(trip, dest_dir, render_gsensor_graph=True, gsensor_graph_x=True)
+    export_trip(trip, dest_dir, render_gsensor_graph=True, gsensor_graph_z=True)
 
-    assert captured["show_x"] is True
+    assert captured["show_z"] is True
 
 
 def test_export_trip_render_gsensor_logs_elapsed_seconds_to_trip_log(tmp_path):
@@ -4747,10 +4746,10 @@ def _trip_with_front_rear_and_gsensor(source_dir):
     ))
 
 
-def test_export_trip_stitch_graph_x_defaults_to_false(tmp_path, monkeypatch):
-    # Same reasoning as test_export_trip_gsensor_graph_x_defaults_to_false
+def test_export_trip_stitch_graph_z_defaults_to_false(tmp_path, monkeypatch):
+    # Same reasoning as test_export_trip_gsensor_graph_z_defaults_to_false
     # above, but for the --stitch-graph panel path (stitch_cameras()'s
-    # own `graph_x` kwarg) rather than the standalone gsensor_graph.mp4
+    # own `graph_z` kwarg) rather than the standalone gsensor_graph.mp4
     # path - the two share one CLI switch (see bv_export.py), but are
     # two separate call sites inside export_trip() that both need to
     # forward it correctly.
@@ -4772,10 +4771,10 @@ def test_export_trip_stitch_graph_x_defaults_to_false(tmp_path, monkeypatch):
 
     export_trip(trip, dest_dir, stitch_layout="side_by_side", stitch_graph=True)
 
-    assert captured["graph_x"] is False
+    assert captured["graph_z"] is False
 
 
-def test_export_trip_stitch_graph_x_forwarded_when_true(tmp_path, monkeypatch):
+def test_export_trip_stitch_graph_z_forwarded_when_true(tmp_path, monkeypatch):
     source_dir = tmp_path / "archive"
     source_dir.mkdir()
     dest_dir = tmp_path / "export"
@@ -4794,10 +4793,10 @@ def test_export_trip_stitch_graph_x_forwarded_when_true(tmp_path, monkeypatch):
 
     export_trip(
         trip, dest_dir, stitch_layout="side_by_side", stitch_graph=True,
-        gsensor_graph_x=True,
+        gsensor_graph_z=True,
     )
 
-    assert captured["graph_x"] is True
+    assert captured["graph_z"] is True
 
 
 def _trip_with_front_rear_and_subtitles(source_dir):

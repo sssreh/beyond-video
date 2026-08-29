@@ -173,13 +173,13 @@ def test_render_gsensor_graph_video_forwards_orientation_and_size_to_the_render(
     assert (stream["width"], stream["height"]) == (220, 800)
 
 
-def test_render_gsensor_graph_video_defaults_to_hiding_x(tmp_path, monkeypatch):
+def test_render_gsensor_graph_video_defaults_to_hiding_z(tmp_path, monkeypatch):
     # Christer: "Z is just not useful, unless you hit a giant pothole,
     # but then the video probably got that and the reaction of the
-    # driver" - originally about Z; the axis that actually fits that
-    # reasoning is X (Up/down) now, not Z (Acc/brake) - see
-    # gsensor_graph_render.py's own module docstring for the full
-    # story. Confirms show_x's own default (False) actually reaches
+    # driver" - Z (Up/down) is now the axis that reasoning describes,
+    # under the letters' BlackVue-convention rotation (see
+    # gsensor_reader.py's own module docstring for the full story).
+    # Confirms show_z's own default (False) actually reaches
     # render_base_frame()/render_frame(), not just that
     # gsensor_graph_render.py's own default does the right thing in
     # isolation.
@@ -190,11 +190,11 @@ def test_render_gsensor_graph_video_defaults_to_hiding_x(tmp_path, monkeypatch):
     real_render_frame = module.render_frame
 
     def _capturing_render_base_frame(*args, **kwargs):
-        calls["base"].append(kwargs.get("show_x"))
+        calls["base"].append(kwargs.get("show_z"))
         return real_render_base_frame(*args, **kwargs)
 
     def _capturing_render_frame(*args, **kwargs):
-        calls["frame"].append(kwargs.get("show_x"))
+        calls["frame"].append(kwargs.get("show_z"))
         return real_render_frame(*args, **kwargs)
 
     monkeypatch.setattr(module, "render_base_frame", _capturing_render_base_frame)
@@ -207,7 +207,7 @@ def test_render_gsensor_graph_video_defaults_to_hiding_x(tmp_path, monkeypatch):
     assert calls["frame"] and all(value is False for value in calls["frame"])
 
 
-def test_render_gsensor_graph_video_forwards_show_x_true(tmp_path, monkeypatch):
+def test_render_gsensor_graph_video_forwards_show_z_true(tmp_path, monkeypatch):
     from blackvue.export import gsensor_graph_video as module
 
     calls = {"base": [], "frame": []}
@@ -215,11 +215,11 @@ def test_render_gsensor_graph_video_forwards_show_x_true(tmp_path, monkeypatch):
     real_render_frame = module.render_frame
 
     def _capturing_render_base_frame(*args, **kwargs):
-        calls["base"].append(kwargs.get("show_x"))
+        calls["base"].append(kwargs.get("show_z"))
         return real_render_base_frame(*args, **kwargs)
 
     def _capturing_render_frame(*args, **kwargs):
-        calls["frame"].append(kwargs.get("show_x"))
+        calls["frame"].append(kwargs.get("show_z"))
         return real_render_frame(*args, **kwargs)
 
     monkeypatch.setattr(module, "render_base_frame", _capturing_render_base_frame)
@@ -227,7 +227,7 @@ def test_render_gsensor_graph_video_forwards_show_x_true(tmp_path, monkeypatch):
 
     samples = (_sample(0, 0, 0), _sample(1000, 200, -100))
     render_gsensor_graph_video(
-        samples, tmp_path / "gsensor_graph.mp4", fps=2, show_x=True
+        samples, tmp_path / "gsensor_graph.mp4", fps=2, show_z=True
     )
 
     assert calls["base"] == [True]

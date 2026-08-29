@@ -46,24 +46,34 @@ needs to stay green for the dot-gauge's own real chroma-key use.
 
 Each axis's own trace is labeled by a small color-key legend (Christer:
 "nothing explaining the colors"), spelling out what each axis
-physically means - "Y — Left/right", "Z — Acc/brake", "X — Up/down".
+physically means - "X — Left/right", "Y — Acc/brake", "Z — Up/down".
 
 This wording tracks gsensor_render.py's own axis-mapping story (see
 that module's docstring for the full history): an initial test
-recording found raw Y tracking turning and raw Z tracking braking,
-with raw X showing no sustained response to either; Christer then
-overrode that to X/Y for a time; a second test recording
-(`20260802_103545_M.3gf`, two labeled events - heavy acceleration and
-a 540-degree roundabout turn) reconfirmed the original Y/Z finding, so
-the legend wording is back to matching it. See gsensor_reader.py's own
-module docstring for the standing caveat that the physical *unit* of
-these readings (milli-g, raw ADC counts, or something else) remains
-unconfirmed regardless of which axis is which.
+recording found what this project now calls raw X tracking turning
+and raw Y tracking braking, with raw Z showing no sustained response
+to either; Christer then overrode that mapping for a time; a second
+test recording (`20260802_103545_M.3gf`, two labeled events - heavy
+acceleration and a 540-degree roundabout turn) reconfirmed the
+original X/Y finding, so the legend wording matches it. The letters
+quoted above (and throughout the rest of this docstring) are this
+module's *current* field names - see gsensor_reader.py's own module
+docstring for the pure-naming rename that rotated them to follow
+BlackVue's own letter convention, applied after the test-recording
+findings above were first made (and originally worded in terms of the
+letter assignment current at the time). The physical axes and which
+one tracks which maneuver haven't changed; only the letters naming
+them have. See gsensor_reader.py's own module docstring for the
+standing caveat that the physical *unit* of these readings (milli-g,
+raw ADC counts, or something else) remains unconfirmed regardless of
+which axis is which.
 
-LEGEND_LABELS's own tuple *order* is Y/Z/X, not raw X/Y/Z - see that
-constant's own comment for why: the two always-shown axes need to come
-first so `[:2]` slicing still works, now that X (not Z) is the opt-in
-one (see the "hidden by default" paragraph below).
+LEGEND_LABELS's own tuple *order* is X/Y/Z - see that constant's own
+comment for why: the two always-shown axes need to come first so
+`[:2]` slicing still works, and Z is the opt-in one (see the "hidden
+by default" paragraph below) - this happens to also match plain
+alphabetical/raw order post-rename, but the ordering constraint itself
+is about the `[:2]` slice, not about matching raw order.
 
 The legend gets its own dedicated space rather than sitting on top of
 the traces: `_legend_reserve_px(orientation)` adds extra room to the
@@ -85,21 +95,25 @@ cluttered output", diagnosed as the three traces overlapping/blurring
 rather than tick-mark or general detail clutter). Lightened trace
 colors (see _lighten()) plus light smoothing (a short centered moving
 average, see _smoothed()) reduce that blur, but Christer's own
-follow-up call - after seeing X/Y/Z still crossing each other
-regardless - was to stop sharing one plot entirely for one axis
-specifically: "let the cluttered Z have its own line" (back when Z was
-that axis - see below for why it's X now). Y and Z share one lane
-(`main_lane`), but X now gets its own separate `x_lane` (see
-_split_lanes()), so its trace never crosses Y's or Z's. Christer picked
-a ~1/3 share of the panel for that isolated lane (one trace against the
-other two) over an equal 50/50 split. Both lanes originally plotted
-using the very same shared `scale` value (not an independent auto-scale
-for the isolated axis) so a given magnitude looked the same size in
-either lane - that's since been reversed (see
-axis_scales_for_samples()'s own docstring): each axis, X/Y/Z alike, now
-gets its own independent scale, maximized to that axis' own peak for
-the trip, so a small-range axis isn't squashed down just because
-another axis happens to swing wider. TRACE_LINE_WIDTH itself has gone
+follow-up call - after seeing the three traces still crossing each
+other regardless - was to stop sharing one plot entirely for one axis
+specifically: "let the cluttered [axis] have its own line" (worded, at
+the time, in terms of whichever letter that isolated axis was called
+under this project's letter convention *then* - see gsensor_reader.py's
+own docstring for the pure-naming rename since applied, and the
+"hidden by default" paragraph below for the full letter-churn history
+of this specific mechanism). X and Y share one lane (`main_lane`), but
+Z now gets its own separate `z_lane` (see _split_lanes()), so its
+trace never crosses X's or Y's. Christer picked a ~1/3 share of the
+panel for that isolated lane (one trace against the other two) over an
+equal 50/50 split. Both lanes originally plotted using the very same
+shared `scale` value (not an independent auto-scale for the isolated
+axis) so a given magnitude looked the same size in either lane - that's
+since been reversed (see axis_scales_for_samples()'s own docstring):
+each axis, X/Y/Z alike, now gets its own independent scale, maximized
+to that axis' own peak for the trip, so a small-range axis isn't
+squashed down just because another axis happens to swing wider.
+TRACE_LINE_WIDTH itself has gone
 back and forth several times (1px, 2px, 1px, 2px, 1px again) as the
 actual sources of clutter got fixed one at a time - the legend's former
 overlap with the traces (see _legend_reserve_px()) and the lane split
@@ -111,37 +125,42 @@ say 2 times") - a thin line reads as clean rather than sparse once it
 has twice the canvas to work with, instead of competing with a bolder
 line for the same cramped space.
 
-One axis is hidden entirely by default (`show_x=False` on
+One axis is hidden entirely by default (`show_z=False` on
 render_base_frame()/render_frame()) - a further step past giving it its
 own lane. Christer's own reasoning for hiding one axis by default in
-the first place: "Z is just not useful, unless you hit a giant pothole,
-but then the video probably got that and the reaction of the driver" -
-the one situation where that axis genuinely matters is already captured
-by the footage itself, so day to day it mostly just adds visual noise
-even in its own dedicated lane.
+the first place: the vertical (up/down) axis "is just not useful,
+unless you hit a giant pothole, but then the video probably got that
+and the reaction of the driver" - the one situation where that axis
+genuinely matters is already captured by the footage itself, so day to
+day it mostly just adds visual noise even in its own dedicated lane.
 
-This used to be `show_z`/raw Z specifically - it's `show_x`/raw X now.
-Once Y and Z's own meanings settled (Left/right and Acc/brake - see
-above), the axis genuinely fitting Christer's original "not useful
-day to day" reasoning turned out to be X (Up/down, still unconfirmed by
-any real test recording - see the module docstring's own axis-mapping
-paragraph), not Z (Acc/brake is exactly the kind of driving event this
-graph exists to show). The opt-in mechanism itself hadn't moved with
-that finding - it was still gating raw Z, meaning the graph showed
-Up/down unconditionally and hid Acc/brake unless asked for, backwards
-from "hide the one that isn't useful unless chosen" (Christer, once
-this was pointed out: "up and down is what we didnt want to see unless
-choosen"). Fixed by moving the opt-in gate from Z to X throughout this
-module (and its callers - gsensor_graph_video.py, stitch.py,
-trip_export.py, the `--gsensor-graph-x` CLI flag, the web form
-checkbox) rather than relabeling text again - the *axis* that's opt-in
-changed, not just what something is called.
+This opt-in mechanism's own name has followed the vertical axis's
+letter through two separate rounds of letter churn now, and landed
+back where it started. It was originally `show_z`/raw Z (an earlier
+letter convention had Z meaning vertical). Once a mid-project
+convention change made Left/right and Acc/brake the axes called Y and
+Z, the axis genuinely fitting Christer's original "not useful day to
+day" reasoning became the one called X under that convention (Up/down),
+not Z (Acc/brake is exactly the kind of driving event this graph
+exists to show) - the opt-in mechanism itself hadn't moved with that
+finding, so it was still gating the wrong letter, showing Up/down
+unconditionally and hiding Acc/brake unless asked for, backwards from
+"hide the one that isn't useful unless chosen" (Christer, once this was
+pointed out: "up and down is what we didnt want to see unless
+choosen"). That was fixed by moving the opt-in gate to `show_x`
+throughout this module and its callers. Since then, this project's
+raw-field letters were rotated again (see gsensor_reader.py's own
+module docstring) to follow BlackVue's own letter convention, under
+which the vertical/unused axis is once again called Z - so this
+mechanism is back to `show_z`, gating the same physical axis
+(vertical/up-down) it always has; only the letter naming that axis
+changed, twice, not which physical reading gets hidden.
 
-Pass `show_x=True` to opt back in for a specific look at a bump/
+Pass `show_z=True` to opt back in for a specific look at a bump/
 vibration event - the full lane-split layout above applies unchanged in
-that case. When X is hidden, Y/Z reclaim the entire value axis rather
-than leaving x_lane's own space empty (no X_LANE_FRACTION split, no
-lane divider, no X legend row) - the same plain single-lane layout this
+that case. When Z is hidden, X/Y reclaim the entire value axis rather
+than leaving z_lane's own space empty (no Z_LANE_FRACTION split, no
+lane divider, no Z legend row) - the same plain single-lane layout this
 chart used before the isolated axis ever got its own lane, per
 Christer's own explicit "reclaim the space" choice over leaving a blank
 lane.
@@ -181,7 +200,10 @@ def _lighten(color: tuple[int, int, int], amount: float) -> tuple[int, int, int]
 
 # Base identity colors before lightening - red picks up
 # gsensor_render.py's own dot/trail accent color for a little visual
-# continuity between the two g-sensor views; blue and amber are chosen
+# continuity between the two g-sensor views (fittingly, red/X is now
+# the lateral axis - one of the same two axes the dot-gauge itself
+# plots, since the letter rename below put X back on a shown-by-default
+# axis rather than the hidden vertical one); blue and amber are chosen
 # for contrast against both red and each other, and against the black
 # axis/tick text.
 _BASE_X_COLOR = (230, 57, 70)
@@ -252,21 +274,21 @@ TRACE_LINE_WIDTH = 1
 PLAYHEAD_LINE_WIDTH = 3
 TICK_FONT_SIZE = 14
 
-# X gets its own dedicated lane, separate from the shared Y/Z plot -
-# Christer's own request ("let the cluttered Z have its own line",
-# originally about Z - see the module docstring for why the isolated/
-# opt-in axis is X now instead), after X/Y/Z all sharing one plot kept
-# crossing each other regardless of line width or smoothing. X is one
-# trace against Y/Z's two, so it gets proportionally less of the
-# panel's own value axis (~1/3, the rest split none further - Y and Z
-# still share the remaining ~2/3 lane exactly as before). Both lanes
-# are plotted using the very same `scale` value (see
+# Z gets its own dedicated lane, separate from the shared X/Y plot -
+# Christer's own request ("let the cluttered [axis] have its own line",
+# see the module docstring for the full letter-churn history of which
+# letter has named this isolated/opt-in axis), after all three traces
+# sharing one plot kept crossing each other regardless of line width or
+# smoothing. Z is one trace against X/Y's two, so it gets proportionally
+# less of the panel's own value axis (~1/3, the rest split none further
+# - X and Y still share the remaining ~2/3 lane exactly as before).
+# Both lanes are plotted using the very same `scale` value (see
 # render_base_frame()) - Christer explicitly chose a shared scale over
 # an independent one for the isolated axis, so a given magnitude still
 # looks the same size in either lane; only the crossing between the
 # isolated axis and the other two is what's being removed, not
 # comparability.
-X_LANE_FRACTION = 1 / 3
+Z_LANE_FRACTION = 1 / 3
 # Small visual gap between the two lanes, plus a thin divider line
 # drawn in it - without some separation the two lanes would look like
 # one plot with a kink in it rather than two deliberately distinct
@@ -292,21 +314,23 @@ LEGEND_PADDING = 6
 # past the narrow vertical side-panel's own right edge (his explicit
 # call over abbreviating there - see the module docstring). This
 # X/Y/Z assignment matches what two separate real test recordings have
-# now shown (Y tracks turning, Z tracks acceleration/braking, X shows
+# now shown (X tracks turning, Y tracks acceleration/braking, Z shows
 # no sustained response to either) - see the module docstring above
-# for the full story, including the interim override this reverses.
+# for the full story, including the interim override this reverses and
+# the letter-rotation rename applied since (gsensor_reader.py's own
+# docstring).
 #
-# Tuple *order* is Y, Z, X - not raw X, Y, Z - and must stay fixed
-# regardless of wording changes: it's zipped with the (Y_COLOR,
-# Z_COLOR, X_COLOR) tuple by position in _draw_legend(), not matched
-# by the "axis" string, and _legend_rows() slices the first two
-# entries as "the always-shown pair". X needs to be last (the one
-# `[:2]` drops) because X is the opt-in axis now, not Z - see the
-# module docstring's "hidden by default" paragraph for why that moved.
+# Tuple *order* is X, Y, Z, and must stay fixed regardless of wording
+# changes: it's zipped with the (X_COLOR, Y_COLOR, Z_COLOR) tuple by
+# position in _draw_legend(), not matched by the "axis" string, and
+# _legend_rows() slices the first two entries as "the always-shown
+# pair". Z needs to be last (the one `[:2]` drops) because Z is the
+# opt-in axis - see the module docstring's "hidden by default"
+# paragraph for the full history of which letter that's been.
 LEGEND_LABELS = (
-    ("Y", "Left/right"),
-    ("Z", "Acc/brake"),
-    ("X", "Up/down"),
+    ("X", "Left/right"),
+    ("Y", "Acc/brake"),
+    ("Z", "Up/down"),
 )
 
 # The bundled copy is tried first (see assets/, and pyproject.toml's
@@ -568,52 +592,52 @@ def _split_lanes(value_start: float, value_end: float) -> tuple[
     tuple[float, float], tuple[float, float]
 ]:
     """Split the overall value axis [value_start, value_end] into
-    (main_lane, x_lane) sub-ranges, separated by LANE_GAP_PX - Y/Z
-    share `main_lane` (the larger of the two), X gets its own
-    `x_lane` (X_LANE_FRACTION of the space), so X's trace no longer
-    crosses Y/Z's (Christer: "let the cluttered Z have its own line" -
-    originally about Z; see the module docstring for why the isolated
-    axis is X now). This only decides which *pixels* each lane owns -
-    it has nothing to do with how values map to pixels within a lane,
-    which is each axis' own independent scale now (see
-    axis_scales_for_samples()): an earlier version of this docstring
-    noted that both lanes got passed the very same shared `scale`
-    value, so a given magnitude looked the same size in either lane -
-    that's no longer true since each axis was later given its own
-    independent scale (Christer: "could the x and y be optimized to
-    have the amplitude gained to the maximum of that trip", confirmed
-    to include the third axis too), so X/Y/Z can each use their own
-    lane's full height regardless of how the other axes happen to
-    scale."""
+    (main_lane, z_lane) sub-ranges, separated by LANE_GAP_PX - X/Y
+    share `main_lane` (the larger of the two), Z gets its own
+    `z_lane` (Z_LANE_FRACTION of the space), so Z's trace no longer
+    crosses X/Y's (Christer: "let the cluttered [axis] have its own
+    line"; see the module docstring for the full letter-churn history
+    of which letter has named this isolated axis). This only decides
+    which *pixels* each lane owns - it has nothing to do with how
+    values map to pixels within a lane, which is each axis' own
+    independent scale now (see axis_scales_for_samples()): an earlier
+    version of this docstring noted that both lanes got passed the
+    very same shared `scale` value, so a given magnitude looked the
+    same size in either lane - that's no longer true since each axis
+    was later given its own independent scale (Christer: "could the x
+    and y be optimized to have the amplitude gained to the maximum of
+    that trip", confirmed to include the third axis too), so X/Y/Z can
+    each use their own lane's full height regardless of how the other
+    axes happen to scale."""
 
     available = (value_end - value_start) - LANE_GAP_PX
-    x_span = available * X_LANE_FRACTION
-    main_span = available - x_span
+    z_span = available * Z_LANE_FRACTION
+    main_span = available - z_span
 
     main_start = value_start
     main_end = value_start + main_span
-    x_start = main_end + LANE_GAP_PX
-    x_end = value_end
+    z_start = main_end + LANE_GAP_PX
+    z_end = value_end
 
-    return (main_start, main_end), (x_start, x_end)
+    return (main_start, main_end), (z_start, z_end)
 
 
-def _legend_rows(show_x: bool) -> tuple[tuple[str, str], ...]:
+def _legend_rows(show_z: bool) -> tuple[tuple[str, str], ...]:
     """Return the legend rows to actually draw/measure - all three
-    (Y/Z/X) when `show_x` is True, just the first two (Y/Z) otherwise.
+    (X/Y/Z) when `show_z` is True, just the first two (X/Y) otherwise.
     Shared by _legend_text_width()/_legend_reserve_px()/_draw_legend()
     so all three always agree on exactly which rows exist - see
-    render_base_frame()'s own docstring for why X is opt-in at all."""
+    render_base_frame()'s own docstring for why Z is opt-in at all."""
 
-    return LEGEND_LABELS if show_x else LEGEND_LABELS[:2]
+    return LEGEND_LABELS if show_z else LEGEND_LABELS[:2]
 
 
 def _legend_text_width(
-    draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, show_x: bool = False
+    draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, show_z: bool = False
 ) -> float:
     """Return the widest of the legend's own rendered rows' text width
-    ("Y — Left/right", "Z — Acc/brake", and "X — Up/down" when
-    `show_x`) - shared by _legend_reserve_px() (how much space to set
+    ("X — Left/right", "Y — Acc/brake", and "Z — Up/down" when
+    `show_z`) - shared by _legend_reserve_px() (how much space to set
     aside) and _draw_legend() (where exactly to center the block within
     it), so the two can never disagree with each other about the same
     width.
@@ -621,11 +645,11 @@ def _legend_text_width(
 
     return max(
         draw.textbbox((0, 0), f"{axis} — {meaning}", font=font)[2]
-        for axis, meaning in _legend_rows(show_x)
+        for axis, meaning in _legend_rows(show_z)
     )
 
 
-def _legend_reserve_px(orientation: str, show_x: bool = False) -> float:
+def _legend_reserve_px(orientation: str, show_z: bool = False) -> float:
     """Return how much extra room, beyond DEFAULT_MARGIN_PX, the plot
     area should give up so the legend gets its own dedicated space
     instead of sitting on top of the traces (Christer: "legend should
@@ -634,20 +658,20 @@ def _legend_reserve_px(orientation: str, show_x: bool = False) -> float:
     wide enough for the widest legend row (swatch + gap + text, plus
     padding on both sides); vertical mode reserves a row tall enough
     for however many legend rows are actually drawn (plus padding top
-    and bottom) - two rows when `show_x` is False (see
+    and bottom) - two rows when `show_z` is False (see
     render_base_frame()'s own docstring), three when it's True. See
     _plot_area()'s own `legend_reserve` parameter for where this
     actually gets applied.
     """
 
-    row_count = len(_legend_rows(show_x))
+    row_count = len(_legend_rows(show_z))
 
     if orientation == "vertical":
         return row_count * LEGEND_ROW_HEIGHT + LEGEND_PADDING * 2
 
     font = _load_font(LEGEND_FONT_SIZE)
     measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    text_width = _legend_text_width(measuring_draw, font, show_x)
+    text_width = _legend_text_width(measuring_draw, font, show_z)
     return LEGEND_SWATCH_LENGTH + 4 + text_width + LEGEND_PADDING * 2
 
 
@@ -658,7 +682,7 @@ def _draw_legend(
     *,
     canvas_width: float | None = None,
     orientation: str = "horizontal",
-    show_x: bool = False,
+    show_z: bool = False,
 ) -> None:
     """Draw a small color-key, one row per axis actually plotted - the
     chart otherwise has no indication of which trace is which
@@ -668,7 +692,7 @@ def _draw_legend(
     so it never competes visually with whatever traces happen to pass
     through the same spot.
 
-    Only Y/Z rows are drawn when `show_x` is False (X's own trace isn't
+    Only X/Y rows are drawn when `show_z` is False (Z's own trace isn't
     plotted at all in that case - see render_base_frame()'s own
     docstring), so the legend never lists a color that isn't actually
     on the chart.
@@ -692,14 +716,14 @@ def _draw_legend(
     """
 
     font = _load_font(LEGEND_FONT_SIZE)
-    colors = (Y_COLOR, Z_COLOR, X_COLOR)
+    colors = (X_COLOR, Y_COLOR, Z_COLOR)
     rows = [
         (axis, meaning, color, f"{axis} — {meaning}")
-        for (axis, meaning), color in zip(_legend_rows(show_x), colors)
+        for (axis, meaning), color in zip(_legend_rows(show_z), colors)
     ]
 
     if orientation == "vertical" and canvas_width is not None:
-        block_width = LEGEND_SWATCH_LENGTH + 4 + _legend_text_width(draw, font, show_x)
+        block_width = LEGEND_SWATCH_LENGTH + 4 + _legend_text_width(draw, font, show_z)
         x = (canvas_width - block_width) / 2
     else:
         x = left + LEGEND_PADDING
@@ -729,32 +753,35 @@ def render_base_frame(
     margin: int = DEFAULT_MARGIN_PX,
     tick_label_reserve: int | None = None,
     orientation: str = "horizontal",
-    show_x: bool = False,
+    show_z: bool = False,
     window_start: float = 0.0,
     window_end: float | None = None,
 ) -> Image.Image:
     """Render the static, whole-trip part of the strip chart once: the
-    Y/Z traces (and X's own, when `show_x`) plotted across the full
+    X/Y traces (and Z's own, when `show_z`) plotted across the full
     length, a zero-line, and time-tick labels - everything that doesn't
     change frame to frame. render_frame() composites the moving
     playhead on top of a copy of this image per output frame, rather
     than this function being called again for every frame.
 
-    `show_x` (default False) controls whether X is plotted at all -
-    this used to be `show_z`/raw Z; see the module docstring's own
-    "hidden by default" paragraph for why the opt-in axis moved from Z
-    to X. Christer's own reasoning for hiding one axis by default in
-    the first place: "Z is just not useful, unless you hit a giant
-    pothole, but then the video probably got that and the reaction of
-    the driver" - the one situation where that axis genuinely matters
-    is already captured by the footage itself, so it mostly just adds
-    visual noise to the graph day to day; that reasoning fits X (Up/
-    down), not Z (Acc/brake), once the axes' own meanings settled.
-    When False, only Y and Z are drawn (sharing the *entire* value
-    axis - no X_LANE_FRACTION split, no lane divider, no X legend row -
+    `show_z` (default False) controls whether Z is plotted at all - see
+    the module docstring's own "hidden by default" paragraph for the
+    full history of which letter has named this opt-in axis (it's
+    followed the vertical/up-down axis through two rounds of letter
+    churn and landed back on Z). Christer's own reasoning for hiding
+    one axis by default in the first place: the vertical axis "is just
+    not useful, unless you hit a giant pothole, but then the video
+    probably got that and the reaction of the driver" - the one
+    situation where that axis genuinely matters is already captured by
+    the footage itself, so it mostly just adds visual noise to the
+    graph day to day; that reasoning fits Z (Up/down), not X or Y
+    (Left/right and Acc/brake are exactly the kind of driving events
+    this graph exists to show).
+    When False, only X and Y are drawn (sharing the *entire* value
+    axis - no Z_LANE_FRACTION split, no lane divider, no Z legend row -
     the same plain single-lane layout this chart used before the
     isolated axis ever got its own lane), and the legend only lists
-    Y/Z. When True, the full Y/Z-shared-lane-plus-X's-own-lane layout
+    X/Y. When True, the full X/Y-shared-lane-plus-Z's-own-lane layout
     from before applies unchanged (see _split_lanes()) - opt in when
     you actually want to dig into a specific bump/vibration event.
 
@@ -784,8 +811,8 @@ def render_base_frame(
 
     `scales` is (scale_x, scale_y, scale_z) - each axis' own
     independent value-axis scale (see axis_scales_for_samples()),
-    rather than one value shared by all three. Y and Z still share
-    `main_lane`'s pixel range (and X shares `x_lane`'s, when `show_x`),
+    rather than one value shared by all three. X and Y still share
+    `main_lane`'s pixel range (and Z shares `z_lane`'s, when `show_z`),
     but each axis' own trace within that shared range is normalized
     against its own scale, not the others' - so an axis with a small
     trip-wide range still uses its own lane's full height, rather than
@@ -819,7 +846,7 @@ def render_base_frame(
     image = Image.new("RGB", (width, height), BACKGROUND_COLOR)
     draw = ImageDraw.Draw(image)
 
-    legend_reserve = _legend_reserve_px(orientation, show_x)
+    legend_reserve = _legend_reserve_px(orientation, show_z)
     left, top, right, bottom = _plot_area(
         width, height, margin, tick_label_reserve, orientation,
         legend_reserve=legend_reserve,
@@ -832,19 +859,20 @@ def render_base_frame(
         time_start, time_end = left, right
         value_start, value_end = top, bottom
 
-    if show_x:
-        # Y/Z share main_lane, X gets its own x_lane - see
+    if show_z:
+        # X/Y share main_lane, Z gets its own z_lane - see
         # _split_lanes()'s own docstring for why (Christer: "let the
-        # cluttered Z have its own line" - originally about Z; see the
-        # module docstring for why the isolated axis is X now). Both
-        # are sub-ranges of the same overall value axis, separated by a
-        # small gap plus a light divider line.
-        main_lane, x_lane = _split_lanes(value_start, value_end)
+        # cluttered [axis] have its own line"; see the module
+        # docstring for the full letter-churn history of which letter
+        # has named this isolated axis). Both are sub-ranges of the
+        # same overall value axis, separated by a small gap plus a
+        # light divider line.
+        main_lane, z_lane = _split_lanes(value_start, value_end)
     else:
-        # No X at all - Y/Z get the entire value axis back, same as
-        # before the isolated axis ever got its own lane. x_lane is
+        # No Z at all - X/Y get the entire value axis back, same as
+        # before the isolated axis ever got its own lane. z_lane is
         # left unused below.
-        main_lane, x_lane = (value_start, value_end), None
+        main_lane, z_lane = (value_start, value_end), None
     main_start, main_end = main_lane
     scale_x, scale_y, scale_z = scales
 
@@ -859,18 +887,18 @@ def render_base_frame(
     else:
         draw.line((left, main_zero_pos, right, main_zero_pos), fill=AXIS_COLOR, width=1)
 
-    if show_x:
-        x_start, x_end = x_lane
-        x_zero_pos = _value_to_pos(0.0, scale_x, x_start, x_end)
-        divider_pos = (main_end + x_start) / 2
+    if show_z:
+        z_start, z_end = z_lane
+        z_zero_pos = _value_to_pos(0.0, scale_z, z_start, z_end)
+        divider_pos = (main_end + z_start) / 2
         if orientation == "vertical":
-            draw.line((x_zero_pos, top, x_zero_pos, bottom), fill=AXIS_COLOR, width=1)
+            draw.line((z_zero_pos, top, z_zero_pos, bottom), fill=AXIS_COLOR, width=1)
             draw.line(
                 (divider_pos, top, divider_pos, bottom),
                 fill=LANE_DIVIDER_COLOR, width=1,
             )
         else:
-            draw.line((left, x_zero_pos, right, x_zero_pos), fill=AXIS_COLOR, width=1)
+            draw.line((left, z_zero_pos, right, z_zero_pos), fill=AXIS_COLOR, width=1)
             draw.line(
                 (left, divider_pos, right, divider_pos),
                 fill=LANE_DIVIDER_COLOR, width=1,
@@ -893,15 +921,15 @@ def render_base_frame(
         # full height at their own peak, rather than one shared scale
         # letting a wider-swinging axis squash a narrower one down.
         axes = (
+            (X_COLOR, baseline_x, scale_x, [sample.x for sample in samples]),
             (Y_COLOR, baseline_y, scale_y, [sample.y for sample in samples]),
-            (Z_COLOR, baseline_z, scale_z, [sample.z for sample in samples]),
         )
-        if show_x:
+        if show_z:
             axes = axes + (
-                (X_COLOR, baseline_x, scale_x, [sample.x for sample in samples]),
+                (Z_COLOR, baseline_z, scale_z, [sample.z for sample in samples]),
             )
         for axis_index, (color, base, axis_scale, raw_values) in enumerate(axes):
-            lane_start, lane_end = x_lane if (show_x and axis_index == 2) else main_lane
+            lane_start, lane_end = z_lane if (show_z and axis_index == 2) else main_lane
             smoothed = _smoothed(raw_values)
             points = []
             for t, value in zip(times, smoothed):
@@ -911,7 +939,7 @@ def render_base_frame(
 
         _draw_legend(
             draw, margin, margin, canvas_width=width, orientation=orientation,
-            show_x=show_x,
+            show_z=show_z,
         )
 
     if window_span > 0:
@@ -952,13 +980,13 @@ def render_frame(
     margin: int = DEFAULT_MARGIN_PX,
     tick_label_reserve: int | None = None,
     orientation: str = "horizontal",
-    show_x: bool = False,
+    show_z: bool = False,
 ) -> Image.Image:
     """Return a copy of `base_image` (see render_base_frame()) with a
     playhead line composited at the position corresponding to
     `elapsed_seconds` out of `total_seconds` - a vertical line in
     horizontal mode, a horizontal line in vertical mode. `orientation`
-    and `show_x` must match whatever render_base_frame() was called
+    and `show_z` must match whatever render_base_frame() was called
     with for the same `base_image` - both affect how much room the
     legend reserves, which shifts the plot area's own bounds (see
     _plot_area()'s `legend_reserve`), and the playhead has to land on
@@ -973,7 +1001,7 @@ def render_frame(
         )
 
     width, height = base_image.size
-    legend_reserve = _legend_reserve_px(orientation, show_x)
+    legend_reserve = _legend_reserve_px(orientation, show_z)
     left, top, right, bottom = _plot_area(
         width, height, margin, tick_label_reserve, orientation,
         legend_reserve=legend_reserve,

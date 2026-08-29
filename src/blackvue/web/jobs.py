@@ -722,7 +722,7 @@ class JobRunner:
         map_intro_seconds: float | None,
         render_gsensor: bool,
         render_gsensor_graph: bool,
-        gsensor_graph_x: bool,
+        gsensor_graph_z: bool,
         stitch: bool,
         stitch_layout: str,
         stitch_mirror_size: float | None,
@@ -848,8 +848,8 @@ class JobRunner:
             argv.append("--gsensor-video")
         if render_gsensor_graph:
             argv.append("--gsensor-graph-video")
-        if gsensor_graph_x:
-            argv.append("--gsensor-graph-x")
+        if gsensor_graph_z:
+            argv.append("--gsensor-graph-z")
         if stitch:
             argv.append("--stitch")
         if stitch_layout:

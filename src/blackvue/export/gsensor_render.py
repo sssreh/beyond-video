@@ -13,30 +13,41 @@ answer.
 
 A recording with known, timestamped maneuvers (two right turns and a
 left U-turn, plus a braking event caught incidentally just before the
-U-turn) found raw Y tracking turning (sustained positive during both
-right turns, sustained negative during the U-turn) and raw Z tracking
-braking (a sustained dip right before the U-turn) - with raw X showing
-no sustained response to any of the three events. Told this directly -
-that treating X as lateral runs against that same recording - Christer
-chose to override it anyway ("Actually swap which raw channel means
-what"), swapping the module to plot raw X as lateral and raw Y as
-longitudinal/braking, with a note that a planned follow-up recording
-with hard acceleration, braking, and turns should settle the question
-either way once it landed.
+U-turn) found the physical axis this project now calls raw X tracking
+turning (sustained positive during both right turns, sustained
+negative during the U-turn) and the axis now called raw Y tracking
+braking (a sustained dip right before the U-turn) - with the axis now
+called raw Z showing no sustained response to any of the three
+events. Told this directly - that treating what-was-then-X as lateral
+ran against that same recording - Christer chose to override it
+anyway at the time ("Actually swap which raw channel means what"),
+swapping the module to plot the vertical axis as lateral and the
+lateral axis as longitudinal/braking, with a note that a planned
+follow-up recording with hard acceleration, braking, and turns should
+settle the question either way once it landed.
 
 That follow-up recording arrived (`20260802_103545_M.3gf`, two labeled
 real-world events: heavy acceleration at 16s, a 540-degree left turn
 in a roundabout at 127s) and reconfirmed the original finding, not the
-override: raw Z moved 26.6x its own baseline stdev during the
-acceleration event (X and Y far smaller), and raw Y moved 41.6x its
-own baseline stdev during the turn (X and Z far smaller). Raw X showed
-no sustained response to either event, on either recording. Christer
-accepted this result, so the module is back to plotting raw Y as
-lateral and raw Z as longitudinal/braking, with raw X unused (assumed
-vertical/mounting axis) - see WORKING_CONTEXT.md for the full numbers.
-See gsensor_reader.py's own module docstring for the standing caveat
-that the physical *unit* of these readings (milli-g, raw ADC counts,
-or something else) remains unconfirmed regardless of which axis is
+override: the axis now called raw Y moved 26.6x its own baseline
+stdev during the acceleration event (X and Z far smaller), and the
+axis now called raw X moved 41.6x its own baseline stdev during the
+turn (Y and Z far smaller). The axis now called raw Z showed no
+sustained response to either event, on either recording. Christer
+accepted this result, so the module plots raw X as lateral and raw Y
+as longitudinal/braking, with raw Z unused (assumed vertical/mounting
+axis) - see WORKING_CONTEXT.md for the full numbers.
+
+Note: the letters above (X/Y/Z) are this module's *current* field
+names, which follow BlackVue's own letter convention per
+gsensor_reader.py's own module docstring - a pure-naming rename
+applied after the acceleration/turn findings quoted above were
+originally recorded (and originally worded in terms of the *previous*
+letter assignment). The physical axes and which one tracks which
+maneuver haven't changed; only the letters naming them have. See
+gsensor_reader.py's own module docstring for the standing caveat that
+the physical *unit* of these readings (milli-g, raw ADC counts, or
+something else) remains unconfirmed regardless of which axis is
 which.
 
 The background is a flat chroma-key green rather than the cream tone
@@ -109,7 +120,7 @@ def _median(values: list[float]) -> float:
 def baseline_for_samples(samples) -> tuple[float, float]:
     """Return the (lateral, longitudinal) reading gsensor.mp4's gauge
     should treat as its center, for a set of g-sensor samples: the
-    trip's own median Y (lateral) and median Z (longitudinal) - see
+    trip's own median X (lateral) and median Y (longitudinal) - see
     this module's own docstring for the two real test recordings that
     settled this.
 
@@ -125,8 +136,8 @@ def baseline_for_samples(samples) -> tuple[float, float]:
         return 0.0, 0.0
 
     return (
+        _median([float(sample.x) for sample in samples]),
         _median([float(sample.y) for sample in samples]),
-        _median([float(sample.z) for sample in samples]),
     )
 
 
@@ -158,8 +169,8 @@ def scale_for_samples(
     for sample in samples:
         peak = max(
             peak,
-            abs(sample.y - baseline_lateral),
-            abs(sample.z - baseline_longitudinal),
+            abs(sample.x - baseline_lateral),
+            abs(sample.y - baseline_longitudinal),
         )
 
     return max(peak * padding, minimum)

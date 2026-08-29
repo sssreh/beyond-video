@@ -11,13 +11,13 @@ from blackvue.export.gsensor_video import render_gsensor_video
 from blackvue.telemetry.gsensor_reader import GSensorSample
 
 
-def _sample(offset_ms, lateral, longitudinal, x=900):
-    # render_gsensor_video() reads the raw Y field as lateral and the
-    # raw Z field as longitudinal - see gsensor_render.py's module
-    # docstring for the full axis-mapping story. Raw X isn't used, so
+def _sample(offset_ms, lateral, longitudinal, z=900):
+    # render_gsensor_video() reads the raw X field as lateral and the
+    # raw Y field as longitudinal - see gsensor_render.py's module
+    # docstring for the full axis-mapping story. Raw Z isn't used, so
     # it's an arbitrary filler value here.
     return GSensorSample(
-        offset=timedelta(milliseconds=offset_ms), x=x, y=lateral, z=longitudinal
+        offset=timedelta(milliseconds=offset_ms), x=lateral, y=longitudinal, z=z
     )
 
 
@@ -41,15 +41,15 @@ def test_interpolate_sample_returns_exact_sample_at_its_own_offset():
 
     x, y, z = interpolate_sample(samples, samples[0].offset)
 
-    assert (x, y, z) == (900.0, 10.0, 20.0)
+    assert (x, y, z) == (10.0, 20.0, 900.0)
 
 
 def test_interpolate_sample_interpolates_midpoint():
-    samples = (_sample(0, 0, 0, x=800), _sample(10000, 100, -200, x=1000))
+    samples = (_sample(0, 0, 0, z=800), _sample(10000, 100, -200, z=1000))
 
     x, y, z = interpolate_sample(samples, timedelta(seconds=5))
 
-    assert (x, y, z) == (900.0, 50.0, -100.0)
+    assert (x, y, z) == (50.0, -100.0, 900.0)
 
 
 def test_interpolate_sample_clamps_before_first_sample():
@@ -57,7 +57,7 @@ def test_interpolate_sample_clamps_before_first_sample():
 
     x, y, z = interpolate_sample(samples, timedelta(seconds=-5))
 
-    assert (x, y, z) == (900.0, 10.0, 20.0)
+    assert (x, y, z) == (10.0, 20.0, 900.0)
 
 
 def test_interpolate_sample_clamps_after_last_sample():
@@ -65,7 +65,7 @@ def test_interpolate_sample_clamps_after_last_sample():
 
     x, y, z = interpolate_sample(samples, timedelta(seconds=5))
 
-    assert (x, y, z) == (900.0, 30.0, 40.0)
+    assert (x, y, z) == (30.0, 40.0, 900.0)
 
 
 def test_advance_and_interpolate_from_index_matches_exact_offset():
@@ -74,16 +74,16 @@ def test_advance_and_interpolate_from_index_matches_exact_offset():
     index = _advance_search_index(samples, samples[0].offset, 0)
     x, y, z = _interpolate_from_index(samples, samples[0].offset, index)
 
-    assert (x, y, z) == (900.0, 10.0, 20.0)
+    assert (x, y, z) == (10.0, 20.0, 900.0)
 
 
 def test_advance_and_interpolate_from_index_matches_midpoint():
-    samples = (_sample(0, 0, 0, x=800), _sample(10000, 100, -200, x=1000))
+    samples = (_sample(0, 0, 0, z=800), _sample(10000, 100, -200, z=1000))
 
     index = _advance_search_index(samples, timedelta(seconds=5), 0)
     x, y, z = _interpolate_from_index(samples, timedelta(seconds=5), index)
 
-    assert (x, y, z) == (900.0, 50.0, -100.0)
+    assert (x, y, z) == (50.0, -100.0, 900.0)
 
 
 def test_advance_and_interpolate_from_index_clamps_before_first_sample():
@@ -92,7 +92,7 @@ def test_advance_and_interpolate_from_index_clamps_before_first_sample():
     index = _advance_search_index(samples, timedelta(seconds=-5), 0)
     x, y, z = _interpolate_from_index(samples, timedelta(seconds=-5), index)
 
-    assert (x, y, z) == (900.0, 10.0, 20.0)
+    assert (x, y, z) == (10.0, 20.0, 900.0)
 
 
 def test_advance_and_interpolate_from_index_clamps_after_last_sample():
@@ -101,7 +101,7 @@ def test_advance_and_interpolate_from_index_clamps_after_last_sample():
     index = _advance_search_index(samples, timedelta(seconds=5), 0)
     x, y, z = _interpolate_from_index(samples, timedelta(seconds=5), index)
 
-    assert (x, y, z) == (900.0, 30.0, 40.0)
+    assert (x, y, z) == (30.0, 40.0, 900.0)
 
 
 def test_advance_and_interpolate_from_index_matches_interpolate_sample_over_a_monotonic_sweep():
@@ -242,9 +242,9 @@ def test_render_gsensor_video_centers_positions_on_the_trips_median_reading(
 
     # A constant offset baked into every sample - a dashcam mounted at
     # an angle, say. render_gsensor_video() centers on the median of
-    # the raw Y (lateral) and Z (longitudinal) fields - see
+    # the raw X (lateral) and Y (longitudinal) fields - see
     # gsensor_render.py's module docstring for the full axis-mapping
-    # story. Raw X (the 4th positional arg here) is unused by the
+    # story. Raw Z (the 4th positional arg here) is unused by the
     # gauge, so it's an arbitrary filler value. Median lateral/
     # longitudinal across these three samples is (500, -300).
     samples = (

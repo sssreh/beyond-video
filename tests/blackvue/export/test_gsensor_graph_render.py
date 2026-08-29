@@ -25,7 +25,7 @@ from blackvue.export.gsensor_graph_render import TRACE_LINE_WIDTH
 from blackvue.export.gsensor_graph_render import X_COLOR
 from blackvue.export.gsensor_graph_render import Y_COLOR
 from blackvue.export.gsensor_graph_render import Z_COLOR
-from blackvue.export.gsensor_graph_render import X_LANE_FRACTION
+from blackvue.export.gsensor_graph_render import Z_LANE_FRACTION
 from blackvue.export.gsensor_graph_render import _format_tick
 from blackvue.export.gsensor_graph_render import _legend_reserve_px
 from blackvue.export.gsensor_graph_render import _load_font
@@ -68,7 +68,7 @@ def test_render_base_frame_windowed_places_samples_relative_to_the_window():
     # if the old (pre-windowing) total_seconds-fraction math were used
     # instead, a 20s window out of a 100s trip would only occupy the
     # left ~20% of the plot, well short of the pixel checked below.
-    # Y is one of the two axes shown by default (X is opt-in - see
+    # Y is one of the two axes shown by default (Z is opt-in - see
     # the module docstring), so its trace is what's checked here.
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
@@ -82,7 +82,7 @@ def test_render_base_frame_windowed_places_samples_relative_to_the_window():
 
     left, top, right, bottom = _plot_area(
         320, 180, DEFAULT_MARGIN_PX, 20, "horizontal",
-        legend_reserve=_legend_reserve_px("horizontal", show_x=False),
+        legend_reserve=_legend_reserve_px("horizontal", show_z=False),
     )
     y_y = round(_value_to_pos(-50, scale, top, bottom))
     near_right_edge_x = round(left + 0.9 * (right - left))
@@ -104,10 +104,10 @@ def test_render_base_frame_default_window_matches_explicit_full_span():
     total_seconds = 9.0
 
     default_image = render_base_frame(
-        samples, baseline, scales, total_seconds, width=400, height=200, show_x=True,
+        samples, baseline, scales, total_seconds, width=400, height=200, show_z=True,
     )
     explicit_image = render_base_frame(
-        samples, baseline, scales, total_seconds, width=400, height=200, show_x=True,
+        samples, baseline, scales, total_seconds, width=400, height=200, show_z=True,
         window_start=0.0, window_end=total_seconds,
     )
 
@@ -151,33 +151,33 @@ def test_render_base_frame_draws_each_axis_in_its_own_color():
     # the endpoint pixel at the strip's own left edge (elapsed=0) can
     # be computed directly via the same _time_to_pos/_value_to_pos
     # helpers the renderer itself uses, and should land exactly on
-    # that axis's own trace color. Y/Z share main_lane; X is plotted
-    # into its own separate x_lane (see _split_lanes()) - Christer's
-    # own request ("let the cluttered Z have its own line" -
-    # originally about Z; see the module docstring for why the
-    # isolated/opt-in axis is X now) - so its expected position is
-    # computed against x_lane, not the full plot area Y/Z still share.
-    # show_x=True since this test is specifically about X's own
-    # trace/lane - X is hidden by default (see
-    # test_render_base_frame_hides_x_by_default()).
+    # that axis's own trace color. X/Y share main_lane; Z is plotted
+    # into its own separate z_lane (see _split_lanes()) - Christer's
+    # own request ("let the cluttered [axis] have its own line" - see
+    # the module docstring for the full letter-churn history of which
+    # letter has named the isolated/opt-in axis) - so its expected
+    # position is computed against z_lane, not the full plot area X/Y
+    # still share. show_z=True since this test is specifically about
+    # Z's own trace/lane - Z is hidden by default (see
+    # test_render_base_frame_hides_z_by_default()).
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
     samples = (_sample(0, 50, -30, 10), _sample(1000, 50, -30, 10))
 
     image = render_base_frame(
-        samples, baseline, (scale, scale, scale), total_seconds, show_x=True
+        samples, baseline, (scale, scale, scale), total_seconds, show_z=True
     )
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
-        legend_reserve=_legend_reserve_px("horizontal", show_x=True),
+        legend_reserve=_legend_reserve_px("horizontal", show_z=True),
     )
     x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
 
-    (main_top, main_bottom), (x_top, x_bottom) = _split_lanes(top, bottom)
+    (main_top, main_bottom), (z_top, z_bottom) = _split_lanes(top, bottom)
+    x_y = round(_value_to_pos(50, scale, main_top, main_bottom))
     y_y = round(_value_to_pos(-30, scale, main_top, main_bottom))
-    z_y = round(_value_to_pos(10, scale, main_top, main_bottom))
-    x_y = round(_value_to_pos(50, scale, x_top, x_bottom))
+    z_y = round(_value_to_pos(10, scale, z_top, z_bottom))
 
     # _color_near_row rather than an exact getpixel() check - at 1px
     # TRACE_LINE_WIDTH (see module docstring), this near-horizontal
@@ -250,12 +250,12 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
     # Two samples produce one straight-line segment per axis - in
     # vertical mode, elapsed=0 should land at the plot area's own top
     # edge (time runs top to bottom - see the module docstring), not
-    # its left edge the way horizontal mode does. Y/Z share main_lane;
-    # X is plotted into its own x_lane (see _split_lanes()), so its
-    # expected position is computed against x_lane, not the full plot
-    # area Y/Z still share. show_x=True since this test is specifically
-    # about X's own trace/lane - X is hidden by default (see
-    # test_render_base_frame_hides_x_by_default()).
+    # its left edge the way horizontal mode does. X/Y share main_lane;
+    # Z is plotted into its own z_lane (see _split_lanes()), so its
+    # expected position is computed against z_lane, not the full plot
+    # area X/Y still share. show_z=True since this test is specifically
+    # about Z's own trace/lane - Z is hidden by default (see
+    # test_render_base_frame_hides_z_by_default()).
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
@@ -263,18 +263,18 @@ def test_render_base_frame_vertical_runs_time_top_to_bottom():
 
     image = render_base_frame(
         samples, baseline, (scale, scale, scale), total_seconds,
-        orientation="vertical", show_x=True,
+        orientation="vertical", show_z=True,
     )
     left, top, right, bottom = _plot_area(
         DEFAULT_VERTICAL_WIDTH, DEFAULT_VERTICAL_HEIGHT, 32, 44, "vertical",
-        legend_reserve=_legend_reserve_px("vertical", show_x=True),
+        legend_reserve=_legend_reserve_px("vertical", show_z=True),
     )
     y_pixel = round(_time_to_pos(0.0, total_seconds, top, bottom))
 
-    (main_left, main_right), (x_left, x_right) = _split_lanes(left, right)
+    (main_left, main_right), (z_left, z_right) = _split_lanes(left, right)
+    x_x = round(_value_to_pos(50, scale, main_left, main_right))
     y_x = round(_value_to_pos(-30, scale, main_left, main_right))
-    z_x = round(_value_to_pos(10, scale, main_left, main_right))
-    x_x = round(_value_to_pos(50, scale, x_left, x_right))
+    z_x = round(_value_to_pos(10, scale, z_left, z_right))
 
     assert _color_near(image, x_x, y_pixel, X_COLOR)
     assert _color_near(image, y_x, y_pixel, Y_COLOR)
@@ -342,38 +342,38 @@ def test_plot_area_vertical_legend_reserve_shifts_the_top_edge():
 
 
 def test_split_lanes_covers_the_full_original_range():
-    # main_lane's own start and x_lane's own end should be the exact
+    # main_lane's own start and z_lane's own end should be the exact
     # ends of the range that was split - no space at either extreme
     # goes unclaimed by either lane.
-    (main_start, main_end), (x_start, x_end) = _split_lanes(100.0, 400.0)
+    (main_start, main_end), (z_start, z_end) = _split_lanes(100.0, 400.0)
 
     assert main_start == 100.0
-    assert x_end == 400.0
+    assert z_end == 400.0
 
 
 def test_split_lanes_leaves_a_gap_between_the_two_lanes():
-    # Y/Z's main_lane and X's own x_lane shouldn't touch - a small gap
+    # X/Y's main_lane and Z's own z_lane shouldn't touch - a small gap
     # (plus a divider line drawn in it, see render_base_frame()) is
     # what visually separates them into two distinct regions rather
     # than one plot with a kink in it.
-    (main_start, main_end), (x_start, x_end) = _split_lanes(100.0, 400.0)
+    (main_start, main_end), (z_start, z_end) = _split_lanes(100.0, 400.0)
 
-    assert x_start - main_end == LANE_GAP_PX
+    assert z_start - main_end == LANE_GAP_PX
 
 
-def test_split_lanes_gives_x_the_smaller_share():
-    # X is one trace against Y/Z's two, so it gets proportionally less
+def test_split_lanes_gives_z_the_smaller_share():
+    # Z is one trace against X/Y's two, so it gets proportionally less
     # of the panel (Christer's own pick: ~1/3 for the isolated axis,
-    # over an equal 50/50 split - originally about Z, X is the
-    # isolated/opt-in axis now, see the module docstring) -
-    # X_LANE_FRACTION applies to the space actually available for the
+    # over an equal 50/50 split - see the module docstring for the
+    # full letter-churn history of which letter that's been) -
+    # Z_LANE_FRACTION applies to the space actually available for the
     # two lanes, i.e. after LANE_GAP_PX is set aside.
     value_start, value_end = 100.0, 400.0
-    (main_start, main_end), (x_start, x_end) = _split_lanes(value_start, value_end)
+    (main_start, main_end), (z_start, z_end) = _split_lanes(value_start, value_end)
 
     available = (value_end - value_start) - LANE_GAP_PX
-    expected_x_span = available * X_LANE_FRACTION
-    expected_main_span = available - expected_x_span
+    expected_z_span = available * Z_LANE_FRACTION
+    expected_main_span = available - expected_z_span
 
     # Computed through several chained float operations inside
     # _split_lanes() itself (subtraction, addition, subtraction again),
@@ -381,9 +381,9 @@ def test_split_lanes_gives_x_the_smaller_share():
     # computed expectation even though both are mathematically the
     # same value - a tiny tolerance avoids a false failure over that,
     # not a real one.
-    assert abs((x_end - x_start) - expected_x_span) < 1e-9
+    assert abs((z_end - z_start) - expected_z_span) < 1e-9
     assert abs((main_end - main_start) - expected_main_span) < 1e-9
-    assert (x_end - x_start) < (main_end - main_start)
+    assert (z_end - z_start) < (main_end - main_start)
 
 
 def test_render_base_frame_draws_a_divider_between_the_two_lanes():
@@ -391,17 +391,17 @@ def test_render_base_frame_draws_a_divider_between_the_two_lanes():
     # unit tests above) that the divider actually gets drawn where the
     # two lanes meet - the visual cue that they're deliberately two
     # separate regions, not a plot with a kink in it. Only drawn when
-    # show_x (no lane split at all otherwise - see
-    # test_render_base_frame_hides_x_by_default()).
+    # show_z (no lane split at all otherwise - see
+    # test_render_base_frame_hides_z_by_default()).
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, show_x=True)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, show_z=True)
 
     left, top, right, bottom = _plot_area(
         DEFAULT_WIDTH, DEFAULT_HEIGHT, 32, 20, "horizontal",
-        legend_reserve=_legend_reserve_px("horizontal", show_x=True),
+        legend_reserve=_legend_reserve_px("horizontal", show_z=True),
     )
-    (main_top, main_bottom), (x_top, x_bottom) = _split_lanes(top, bottom)
-    divider_y = round((main_bottom + x_top) / 2)
+    (main_top, main_bottom), (z_top, z_bottom) = _split_lanes(top, bottom)
+    divider_y = round((main_bottom + z_top) / 2)
 
     assert image.getpixel((round(left) + 5, divider_y)) == LANE_DIVIDER_COLOR
 
@@ -447,14 +447,14 @@ def test_render_base_frame_each_axis_uses_its_own_scale_not_a_shared_one():
     # gained to the maximum of that trip" - an axis with a small scale
     # relative to another axis' should still reach its own lane's full
     # height at its own peak, rather than being squashed down by the
-    # other axis' larger scale. Y and Z (the two axes shown by default -
-    # X is opt-in, see the module docstring) are given the exact same
-    # raw value (10) here but different scales (10 vs 100) - Y's value
+    # other axis' larger scale. X and Y (the two axes shown by default -
+    # Z is opt-in, see the module docstring) are given the exact same
+    # raw value (10) here but different scales (10 vs 100) - X's value
     # equals its own scale exactly, so it should land at the lane's
-    # own top edge (the full extent), while Z - same raw value, but
-    # ten times Y's own scale - lands much closer to the lane's center.
+    # own top edge (the full extent), while Y - same raw value, but
+    # ten times X's own scale - lands much closer to the lane's center.
     baseline = (0.0, 0.0, 0.0)
-    scales = (100.0, 10.0, 100.0)
+    scales = (10.0, 100.0, 100.0)
     total_seconds = 1.0
     samples = (_sample(0, 10, 10, 10), _sample(1000, 10, 10, 10))
 
@@ -465,15 +465,15 @@ def test_render_base_frame_each_axis_uses_its_own_scale_not_a_shared_one():
     )
     x_pixel = round(_time_to_pos(0.0, total_seconds, left, right))
 
-    y_edge_y = round(_value_to_pos(10, 10.0, top, bottom))
-    z_center_ish_y = round(_value_to_pos(10, 100.0, top, bottom))
+    x_edge_y = round(_value_to_pos(10, 10.0, top, bottom))
+    y_center_ish_y = round(_value_to_pos(10, 100.0, top, bottom))
 
-    assert _color_near_row(image, x_pixel, y_edge_y, Y_COLOR)
-    assert _color_near_row(image, x_pixel, z_center_ish_y, Z_COLOR)
-    # Concrete check that this isn't a coincidence: Y's own edge
-    # position is nowhere near Z's, confirming the two traces really
+    assert _color_near_row(image, x_pixel, x_edge_y, X_COLOR)
+    assert _color_near_row(image, x_pixel, y_center_ish_y, Y_COLOR)
+    # Concrete check that this isn't a coincidence: X's own edge
+    # position is nowhere near Y's, confirming the two traces really
     # did use different scales rather than the same one.
-    assert abs(y_edge_y - z_center_ish_y) > 50
+    assert abs(x_edge_y - y_center_ish_y) > 50
 
 
 def test_baseline_for_samples_is_the_median_of_each_axis():
@@ -525,15 +525,15 @@ def test_render_base_frame_draws_a_legend_swatch_for_each_axis_color():
     # used elsewhere in this file: default margin puts the plot area's
     # own top-left at (DEFAULT_MARGIN_PX, DEFAULT_MARGIN_PX), and the
     # legend itself starts LEGEND_PADDING further in, one
-    # LEGEND_ROW_HEIGHT-tall row per axis. show_x=True to check all
-    # three rows including X's own - X is hidden (and so is its legend
-    # row) by default, see test_render_base_frame_hides_x_by_default().
+    # LEGEND_ROW_HEIGHT-tall row per axis. show_z=True to check all
+    # three rows including Z's own - Z is hidden (and so is its legend
+    # row) by default, see test_render_base_frame_hides_z_by_default().
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
-    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, show_x=True)
+    image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0, show_z=True)
 
     left = top = DEFAULT_MARGIN_PX
     swatch_x = left + LEGEND_PADDING + 5
-    for row, expected_color in enumerate((Y_COLOR, Z_COLOR, X_COLOR)):
+    for row, expected_color in enumerate((X_COLOR, Y_COLOR, Z_COLOR)):
         row_mid = round(
             top + LEGEND_PADDING + row * LEGEND_ROW_HEIGHT + LEGEND_ROW_HEIGHT / 2
         )
@@ -569,10 +569,10 @@ def test_render_base_frame_vertical_centers_the_legend_block():
 
     font = _load_font(LEGEND_FONT_SIZE)
     measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    # render_base_frame() above is called without show_x, so only the
-    # Y/Z rows are actually drawn (see _legend_rows()) - measure
+    # render_base_frame() above is called without show_z, so only the
+    # X/Y rows are actually drawn (see _legend_rows()) - measure
     # against those two, not all three LEGEND_LABELS. The hidden label
-    # under the current wording is "X — Up/down" (X is now the opt-in
+    # under the current wording is "Z — Up/down" (Z is now the opt-in
     # axis - see the module docstring), but computing this dynamically
     # from whatever's actually drawn keeps the test correct regardless
     # of which label happens to be widest for any given wording.
@@ -586,7 +586,7 @@ def test_render_base_frame_vertical_centers_the_legend_block():
     top = DEFAULT_MARGIN_PX
     row_mid = round(top + LEGEND_PADDING + LEGEND_ROW_HEIGHT / 2)
 
-    assert image.getpixel((expected_x + 5, row_mid)) == Y_COLOR
+    assert image.getpixel((expected_x + 5, row_mid)) == X_COLOR
     # And it isn't just coincidentally sitting at the old left-anchored
     # position - centering should have actually moved it.
     old_left_anchored_x = DEFAULT_MARGIN_PX + 44 + LEGEND_PADDING
@@ -668,27 +668,27 @@ def test_legend_labels_spell_out_what_each_axis_physically_means():
     # Christer's own explicit wording, not just "X"/"Y"/"Z" - see
     # _draw_legend()/the module docstring for why this is kept
     # identical in both orientations even though it runs past the
-    # narrow vertical panel's own plot-area edge there. This X/Y/Z
-    # assignment (up-down/left-right/acc-brake) matches what two
-    # separate real test recordings have shown - Y tracking turning
-    # and Z tracking braking/acceleration, with X showing no sustained
-    # response to either. See gsensor_render.py's own module docstring
-    # for the full story, including the interim override this reverses.
-    # Tuple order is Y, Z, X (not raw X, Y, Z) - the two always-shown
-    # axes come first so _legend_rows()'s own `[:2]` slice still works,
-    # now that X (not Z) is the opt-in one - see the module docstring's
-    # "hidden by default" paragraph.
+    # narrow vertical panel's own plot-area edge there. The letters
+    # themselves follow BlackVue's own convention (X=lateral, Y=
+    # longitudinal, Z=vertical) - see gsensor_reader.py's own module
+    # docstring for the full letter-rotation story - while the physical
+    # meanings themselves (left/right, acc/brake, up/down) are unchanged
+    # from what two separate real test recordings have shown.
+    # Tuple order is X, Y, Z - the two always-shown axes come first so
+    # _legend_rows()'s own `[:2]` slice still works, now that Z is the
+    # opt-in one - see the module docstring's "hidden by default"
+    # paragraph.
     assert LEGEND_LABELS == (
-        ("Y", "Left/right"),
-        ("Z", "Acc/brake"),
-        ("X", "Up/down"),
+        ("X", "Left/right"),
+        ("Y", "Acc/brake"),
+        ("Z", "Up/down"),
     )
 
 
 def test_trace_line_width_is_1px():
     # Went 1px -> 2px -> 1px -> 2px -> 1px again. The back-and-forth
     # was really about the traces crossing each other (fixed by
-    # giving the isolated axis its own lane, see X_LANE_FRACTION) and
+    # giving the isolated axis its own lane, see Z_LANE_FRACTION) and
     # the legend overlapping the traces (fixed by _legend_reserve_px()),
     # not line width in isolation - once those two were fixed, and the
     # canvas doubled in size (see DEFAULT_WIDTH/DEFAULT_HEIGHT),
@@ -742,34 +742,32 @@ def test_bundled_font_renders_swedish_letters_with_nonzero_width(monkeypatch):
     assert (bottom - top) > 15
 
 
-def test_render_base_frame_hides_x_by_default():
-    # Christer, after seeing X get its own dedicated lane: "Z is just
-    # not useful, unless you hit a giant pothole, but then the video
-    # probably got that and the reaction of the driver" - originally
-    # about Z; once Y/Z's own meanings settled, the axis that actually
-    # fits that reasoning turned out to be X (Up/down), not Z (Acc/
-    # brake) - see the module docstring for the full story. So X is
-    # now hidden entirely unless explicitly asked for via show_x=True.
-    # This checks the *pixel-level* consequence: with two samples whose
-    # Y/Z are flat at the shared zero-line (so Y/Z's own zero-line
-    # trace pixels don't accidentally coincide with where X would be)
-    # but whose X value is large, no pixel in the image should be
-    # X_COLOR at all when show_x is left at its default.
-    samples = (_sample(0, 80, 0, 0), _sample(1000, 80, 0, 0))
+def test_render_base_frame_hides_z_by_default():
+    # Christer, after seeing the isolated axis get its own dedicated
+    # lane: "Z is just not useful, unless you hit a giant pothole, but
+    # then the video probably got that and the reaction of the driver"
+    # - now that the letters follow BlackVue's own convention (see
+    # gsensor_reader.py's module docstring), Z (Up/down) is exactly the
+    # axis that reasoning describes, and it's the one hidden entirely
+    # unless explicitly asked for via show_z=True. This checks the
+    # *pixel-level* consequence: with two samples whose X/Y are flat at
+    # the shared zero-line (so X/Y's own zero-line trace pixels don't
+    # accidentally coincide with where Z would be) but whose Z value is
+    # large, no pixel in the image should be Z_COLOR at all when show_z
+    # is left at its default.
+    samples = (_sample(0, 0, 0, 80), _sample(1000, 0, 0, 80))
     image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
-    assert X_COLOR not in set(image.getdata())
+    assert Z_COLOR not in set(image.getdata())
 
 
-def test_render_base_frame_y_z_reclaim_the_full_axis_when_x_is_hidden():
-    # Christer's own explicit pick ("X/Y reclaim the space" - originally
-    # about X/Y reclaiming Z's old lane; Y/Z are the always-shown pair
-    # now, reclaiming X's lane instead - see the module docstring) over
-    # leaving x_lane's own share of the panel empty when X is hidden -
+def test_render_base_frame_x_y_reclaim_the_full_axis_when_z_is_hidden():
+    # Christer's own explicit pick ("X/Y reclaim the space" over
+    # leaving z_lane's own share of the panel empty when Z is hidden) -
     # Y's trace should land at the position _value_to_pos() computes
     # against the *entire* plot area's own value axis, not against
-    # main_lane (_split_lanes()'s smaller ~2/3 share), confirming Y/Z
-    # aren't still confined to their old lane once X is gone.
+    # main_lane (_split_lanes()'s smaller ~2/3 share), confirming X/Y
+    # aren't still confined to their old lane once Z is gone.
     baseline = (0.0, 0.0, 0.0)
     scale = 100.0
     total_seconds = 1.0
@@ -788,10 +786,10 @@ def test_render_base_frame_y_z_reclaim_the_full_axis_when_x_is_hidden():
     assert image.getpixel((x_pixel, full_axis_y)) == Y_COLOR
 
 
-def test_render_base_frame_omits_the_divider_when_x_is_hidden():
+def test_render_base_frame_omits_the_divider_when_z_is_hidden():
     # No second lane, nothing to divide - only one zero-line should be
-    # drawn across the value axis when X is hidden, not the two (plus a
-    # LANE_DIVIDER_COLOR line between them) show_x=True draws (see
+    # drawn across the value axis when Z is hidden, not the two (plus a
+    # LANE_DIVIDER_COLOR line between them) show_z=True draws (see
     # test_render_base_frame_draws_a_divider_between_the_two_lanes).
     # Counts AXIS_COLOR rows in a single column rather than checking
     # "LANE_DIVIDER_COLOR absent anywhere in the image" - that plain
@@ -814,24 +812,22 @@ def test_render_base_frame_omits_the_divider_when_x_is_hidden():
     assert len(axis_color_rows) == 1
 
 
-def test_legend_has_two_rows_when_x_is_hidden():
-    # Only Y/Z's own rows - no "X — Up/down" row for a trace that
-    # isn't actually drawn (see _draw_legend()'s own docstring). (Y's
-    # own row reads "Left/right" under the current X/Y/Z assignment -
-    # see gsensor_render.py's module docstring for why.)
+def test_legend_has_two_rows_when_z_is_hidden():
+    # Only X/Y's own rows - no "Z — Up/down" row for a trace that
+    # isn't actually drawn (see _draw_legend()'s own docstring).
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     image = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 
     left = top = DEFAULT_MARGIN_PX
     swatch_x = left + LEGEND_PADDING + 5
 
-    for row, expected_color in enumerate((Y_COLOR, Z_COLOR)):
+    for row, expected_color in enumerate((X_COLOR, Y_COLOR)):
         row_mid = round(
             top + LEGEND_PADDING + row * LEGEND_ROW_HEIGHT + LEGEND_ROW_HEIGHT / 2
         )
         assert image.getpixel((swatch_x, row_mid)) == expected_color
 
-    # A third row, where X's would have gone, should just be background
+    # A third row, where Z's would have gone, should just be background
     # - nothing drawn there at all.
     third_row_mid = round(
         top + LEGEND_PADDING + 2 * LEGEND_ROW_HEIGHT + LEGEND_ROW_HEIGHT / 2
@@ -839,24 +835,24 @@ def test_legend_has_two_rows_when_x_is_hidden():
     assert image.getpixel((swatch_x, third_row_mid)) == BACKGROUND_COLOR
 
 
-def test_legend_reserve_is_smaller_when_x_is_hidden():
+def test_legend_reserve_is_smaller_when_z_is_hidden():
     # Two rows need less reserved space than three - checked in
     # vertical mode since that reserve is a simple fixed row count
     # (horizontal mode's reserve also depends on text width, which
     # doesn't change between 2 and 3 rows since Y's own row is already
     # the widest either way).
-    assert _legend_reserve_px("vertical", show_x=False) < _legend_reserve_px(
-        "vertical", show_x=True
+    assert _legend_reserve_px("vertical", show_z=False) < _legend_reserve_px(
+        "vertical", show_z=True
     )
 
 
-def test_render_frame_playhead_still_aligns_when_x_is_hidden():
+def test_render_frame_playhead_still_aligns_when_z_is_hidden():
     # render_frame() has to compute the exact same legend_reserve (and
     # therefore the exact same plot area) render_base_frame() used, or
     # the playhead drifts out of alignment with the base chart's own
     # traces - see render_frame()'s own docstring. Both default to
-    # show_x=False now, so this should just work without either side
-    # passing show_x explicitly.
+    # show_z=False now, so this should just work without either side
+    # passing show_z explicitly.
     samples = (_sample(0, 0, 0, 0), _sample(1000, 10, -10, 5))
     base = render_base_frame(samples, (0.0, 0.0, 0.0), (100.0, 100.0, 100.0), 1.0)
 

@@ -7,8 +7,11 @@ from blackvue.telemetry.gsensor_reader import trim_gsensor_head
 from blackvue.telemetry.gsensor_reader import write_gsensor
 
 
-def _record(ms: int, x: int, y: int, z: int) -> bytes:
-    return struct.pack(">Ihhh", ms, x, y, z)
+def _record(ms: int, vertical: int, lateral: int, longitudinal: int) -> bytes:
+    # On-disk byte order never changes across the letter-rotation
+    # history (see gsensor_reader.py's module docstring): vertical,
+    # then lateral, then longitudinal.
+    return struct.pack(">Ihhh", ms, vertical, lateral, longitudinal)
 
 
 def test_read_gsensor_parses_records_in_order(tmp_path):
@@ -21,10 +24,14 @@ def test_read_gsensor_parses_records_in_order(tmp_path):
 
     samples = read_gsensor(path)
 
+    # GSensorSample's x/y/z field names follow BlackVue's own
+    # convention (X=lateral, Y=longitudinal, Z=vertical), not the raw
+    # file's own byte order - so this is (x=lateral, y=longitudinal,
+    # z=vertical) from each record above.
     assert samples == (
-        _sample(0, 120, -10, 24),
-        _sample(100, 118, -12, 30),
-        _sample(200, 122, -10, 28),
+        _sample(0, -10, 24, 120),
+        _sample(100, -12, 30, 118),
+        _sample(200, -10, 28, 122),
     )
 
 
@@ -40,9 +47,12 @@ def test_read_gsensor_handles_negative_axis_values(tmp_path):
 
     samples = read_gsensor(path)
 
-    assert samples[0].x == -500
-    assert samples[0].y == -1000
-    assert samples[0].z == 32000
+    # _record's args are (vertical, lateral, longitudinal); GSensorSample's
+    # x/y/z are (lateral, longitudinal, vertical) - see the docstring
+    # note in test_read_gsensor_parses_records_in_order above.
+    assert samples[0].x == -1000
+    assert samples[0].y == 32000
+    assert samples[0].z == -500
 
 
 def test_read_gsensor_does_not_wrap_the_timestamp_at_16_bits(tmp_path):
