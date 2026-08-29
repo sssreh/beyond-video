@@ -20580,3 +20580,57 @@ harness workaround (still no pytest/fastapi available here, so `test_
 app_reuse.py`'s three new tests are verified by `ast.parse()` +
 manual review only, consistent with how that whole file has always had
 to be handled in this sandbox).
+
+Follow-up (same day): bulk-assign-by-date-range, and Google Maps links
+everywhere an address shows up. Christer: "I want to minimize add
+driver. How can i tell the system that only i was driving since wife
+was out of town for 4 days" - clicking through the Specific-trips table
+one row at a time doesn't scale for "this whole stretch of days was
+one driver." Added `bulk_assign_undecided_trips(trips, trip_overrides,
+*, from_date, until_date, driver_label)` to `place_knowledge.py` - a
+pure function (no I/O, matching the module's own convention) that
+returns a new `trip_overrides` dict with `driver_label` set for every
+trip whose `start_time.date()` falls in `[from_date, until_date]`
+inclusive AND whose current `source == "undecided"`. That scoping was
+Christer's own explicit choice via `AskUserQuestion` ("Only undecided
+trips" over "everything in range"): a trip already resolved by a
+common-place rule or the increment-1 pattern matcher reflects a more
+specific signal than "this date range was one driver," so it isn't
+silently overwritten just because its date happens to fall inside the
+window. Wired into a new owner-only `POST /drivers/bulk-assign` route
+in `app.py` (parses the two HTML `<input type="date">` values via
+`date.fromisoformat()`, falls through to a no-op redirect on a bad
+date instead of a 500) and a new "Assign a driver for a date range"
+section on `/drivers` (`id="bulk-assign"`, from/until date inputs plus
+the existing `driver_choices` `<select>`), placed right above the
+Specific-trips table it's a shortcut for. Same `#bulk-assign` redirect-
+fragment scroll-position trick as the other two POST routes.
+
+Second, smaller ask in the same message thread: Christer pasted a
+Common Place row ("Place near 59.298, 18.087 ... 4 0 0 Save") and asked
+"What am i saving?" - visit_count=4 but short_stay_count=long_stay_
+count=0 means none of those 4 visits' `dwell_minutes` resolved to a
+category (`stop_category` was `None` for all of them, e.g. because the
+matching return trip hasn't happened yet - see `dwell_at_destination()`
+in `place_knowledge.py`), so with no dropdown showing, that row's Save
+button only persists a label rename. He also asked for "start and stop
+addresses with a google maps link open a new tab or window and a link
+to the video if exists." Reworked every address display in `drivers.
+html` to wrap in `<a href="https://www.google.com/maps?q={lat},{lon}"
+target="_blank" rel="noopener">` (falls back to the raw "lat, lon"
+text when the reverse-geocode lookup came back empty) - this now
+covers both the Common Places table's single point-per-place and the
+Specific Trips table's Start/Stop columns. The video link (when a
+`camera_id` + recording id exist) is now a separate, second link under
+the address rather than replacing it, so both are always visible
+independently.
+
+Verified via the same Jinja2-render-with-fake-objects approach as the
+previous entry (asserts on the maps URL, `target="_blank"`, `rel=
+"noopener"`, the new `#bulk-assign` markers, and that a trip with no
+`camera_id` still renders cleanly with no dangling video link); `bulk_
+assign_undecided_trips()` got 3 new tests in `test_place_knowledge.py`
+(only-undecided-in-range, inclusive-endpoints, preserves-unrelated-
+overrides) - all 22 place_knowledge tests pass under the usual harness.
+`app.py`'s new route is untestable here (no fastapi), verified via
+`ast.parse()` + manual review only, same as always.

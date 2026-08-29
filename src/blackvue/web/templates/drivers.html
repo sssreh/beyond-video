@@ -44,10 +44,10 @@ driver KB</a> first.</p>
       <td>
         {% if place.key in undecided_place_keys %}<strong title="Common place with no driver rule set yet">&#9888;</strong>{% endif %}
         <input type="text" name="label" value="{{ place.label }}">
-        <div class="hint">{{ "%.4f"|format(place.point[0]) }}, {{ "%.4f"|format(place.point[1]) }}</div>
-        {% if place_addresses.get(place.key) %}
-        <div class="hint">{{ place_addresses.get(place.key) }}</div>
-        {% endif %}
+        {% set place_label = place_addresses.get(place.key) or ("%.4f"|format(place.point[0]) ~ ", " ~ "%.4f"|format(place.point[1])) %}
+        <div class="hint">
+          <a href="https://www.google.com/maps?q={{ place.point[0] }},{{ place.point[1] }}" target="_blank" rel="noopener">{{ place_label }}</a>
+        </div>
       </td>
       <td>{{ place.visit_count }}</td>
       <td>
@@ -85,6 +85,29 @@ driver KB</a> first.</p>
 {% else %}
 <p class="empty">No common places yet - no destination has been visited more than once.</p>
 {% endif %}
+</div>
+
+<h3 id="bulk-assign">Assign a driver for a date range</h3>
+<div class="command-help">
+  <p>For a stretch of days where you already know who was driving - e.g.
+  "only I was driving, my wife was out of town for 4 days" - set one
+  driver for every undecided trip in that range in a single save. Trips
+  already resolved by a common-place rule or an automatic pattern match
+  are left alone; only trips still shown as undecided below are
+  affected.</p>
+</div>
+<div class="content-panel">
+<form method="post" action="/drivers/bulk-assign">
+  <label>From <input type="date" name="from_date" required></label>
+  <label>Until <input type="date" name="until_date" required></label>
+  <select name="driver_label" required>
+    <option value="" disabled selected>&mdash; choose a driver &mdash;</option>
+    {% for label, display_name in driver_choices %}
+    <option value="{{ label }}">{{ display_name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Assign</button>
+</form>
 </div>
 
 <h3>Specific trips</h3>
@@ -132,21 +155,25 @@ driver KB</a> first.</p>
       </td>
       {% set addresses = trip_addresses.get(trip.trip_label, (none, none)) %}
       <td>
-        {% if trip.camera_id and trip.first_recording_id %}
-        <a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}">{{ addresses[0] or "First video" }}</a>
-        {% elif addresses[0] %}
-        {{ addresses[0] }}
+        {% if trip.start_point %}
+        {% set start_label = addresses[0] or ("%.4f"|format(trip.start_point[0]) ~ ", " ~ "%.4f"|format(trip.start_point[1])) %}
+        <a href="https://www.google.com/maps?q={{ trip.start_point[0] }},{{ trip.start_point[1] }}" target="_blank" rel="noopener">{{ start_label }}</a>
         {% else %}
         &mdash;
         {% endif %}
+        {% if trip.camera_id and trip.first_recording_id %}
+        <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}">Video</a></div>
+        {% endif %}
       </td>
       <td>
-        {% if trip.camera_id and trip.last_recording_id %}
-        <a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}">{{ addresses[1] or "Last video" }}</a>
-        {% elif addresses[1] %}
-        {{ addresses[1] }}
+        {% if trip.end_point %}
+        {% set stop_label = addresses[1] or ("%.4f"|format(trip.end_point[0]) ~ ", " ~ "%.4f"|format(trip.end_point[1])) %}
+        <a href="https://www.google.com/maps?q={{ trip.end_point[0] }},{{ trip.end_point[1] }}" target="_blank" rel="noopener">{{ stop_label }}</a>
         {% else %}
         &mdash;
+        {% endif %}
+        {% if trip.camera_id and trip.last_recording_id %}
+        <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}">Video</a></div>
         {% endif %}
       </td>
       <td>

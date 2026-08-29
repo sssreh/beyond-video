@@ -13,7 +13,7 @@ key.
 from __future__ import annotations
 
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from blackvue.trip.driver_detect import DriverProfile
@@ -25,6 +25,7 @@ from blackvue.trip.place_knowledge import TripKnowledge
 from blackvue.trip.place_knowledge import _resolve_trip_driver
 from blackvue.trip.place_knowledge import build_common_places
 from blackvue.trip.place_knowledge import build_knowledge_base
+from blackvue.trip.place_knowledge import bulk_assign_undecided_trips
 from blackvue.trip.place_knowledge import dwell_at_destination
 from blackvue.trip.place_knowledge import load_knowledge_base
 from blackvue.trip.place_knowledge import local_weekday_and_time
@@ -284,6 +285,67 @@ def test_undecided_trips_filters_by_source():
         **{**resolved.__dict__, "driver_label": "driver1", "source": "place-rule"}
     )
     assert undecided_trips([resolved, decided]) == [resolved]
+
+
+def _entry_on(day, *, trip_label="trip_x", source="undecided"):
+    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    start = datetime(2026, 8, day, 8, 0)
+    return entry.__class__(
+        **{
+            **entry.__dict__,
+            "trip_label": trip_label,
+            "start_time": start,
+            "end_time": start,
+            "source": source,
+        }
+    )
+
+
+def test_bulk_assign_undecided_trips_only_touches_undecided_in_range():
+    in_range_undecided = _entry_on(10, trip_label="trip_in_range")
+    in_range_decided = _entry_on(
+        11, trip_label="trip_already_resolved", source="place-rule"
+    )
+    out_of_range_undecided = _entry_on(20, trip_label="trip_out_of_range")
+
+    updated = bulk_assign_undecided_trips(
+        [in_range_undecided, in_range_decided, out_of_range_undecided],
+        {},
+        from_date=date(2026, 8, 9),
+        until_date=date(2026, 8, 12),
+        driver_label="christer",
+    )
+
+    assert updated == {"trip_in_range": "christer"}
+
+
+def test_bulk_assign_undecided_trips_is_inclusive_of_both_endpoints():
+    first_day = _entry_on(9, trip_label="trip_first_day")
+    last_day = _entry_on(12, trip_label="trip_last_day")
+
+    updated = bulk_assign_undecided_trips(
+        [first_day, last_day],
+        {},
+        from_date=date(2026, 8, 9),
+        until_date=date(2026, 8, 12),
+        driver_label="christer",
+    )
+
+    assert updated == {"trip_first_day": "christer", "trip_last_day": "christer"}
+
+
+def test_bulk_assign_undecided_trips_preserves_unrelated_existing_overrides():
+    in_range = _entry_on(10, trip_label="trip_in_range")
+
+    updated = bulk_assign_undecided_trips(
+        [in_range],
+        {"trip_elsewhere": "fru"},
+        from_date=date(2026, 8, 9),
+        until_date=date(2026, 8, 12),
+        driver_label="christer",
+    )
+
+    assert updated == {"trip_elsewhere": "fru", "trip_in_range": "christer"}
 
 
 def test_build_knowledge_base_end_to_end_with_real_trip_objects():

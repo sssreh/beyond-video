@@ -54,6 +54,7 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from datetime import date
 from datetime import datetime
 from pathlib import Path
 
@@ -551,6 +552,49 @@ def reresolve_trip_drivers(
         )
         for entry in reset
     ]
+
+
+def bulk_assign_undecided_trips(
+    trips: Sequence[TripKnowledge],
+    trip_overrides: dict[str, str],
+    *,
+    from_date: date,
+    until_date: date,
+    driver_label: str,
+) -> dict[str, str]:
+    """Return a new `trip_overrides` dict with `driver_label` set for
+    every currently-undecided trip (`source == "undecided"`) whose
+    `start_time` falls within `[from_date, until_date]` inclusive -
+    Christer's "I want to minimize add driver ... only I was driving
+    since wife was out of town for 4 days" ask: a way to clear a whole
+    stretch of Specific-trips rows in one submit instead of picking a
+    driver one row at a time.
+
+    Deliberately scoped to *undecided* trips only, not every trip in
+    the range: a trip already resolved via a place-rule or the
+    increment-1 pattern matcher reflects a more specific signal than
+    "this whole date range was one driver" (Christer chose this scope
+    explicitly over overriding everything in range, so a household's
+    own known routine - e.g. a place rule that's usually right - isn't
+    silently clobbered just because its date happens to fall inside a
+    bulk-assign window). Trips outside the range, and any existing
+    override on a trip whose source *isn't* "undecided" (an edge case
+    that shouldn't normally arise, since undecided is reset before
+    resolving - see reresolve_trip_drivers()), are left untouched.
+
+    Pure, like every other function in this module - no I/O, no read
+    of the real trip list beyond what's passed in - so the web route
+    calling this still owns loading/saving driver_knowledge.json
+    itself, same division of labor as drivers_update_place()/
+    drivers_update_trip()."""
+
+    updated = dict(trip_overrides)
+    for entry in trips:
+        if entry.source != "undecided":
+            continue
+        if from_date <= entry.start_time.date() <= until_date:
+            updated[entry.trip_label] = driver_label
+    return updated
 
 
 def undecided_places(

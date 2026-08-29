@@ -31,6 +31,7 @@ import re
 import tempfile
 import time
 from argparse import ArgumentTypeError
+from datetime import date
 from datetime import datetime
 from pathlib import Path
 
@@ -127,6 +128,7 @@ from ..stats_report import load_recording_stats
 from ..cli.bv_stats import _format_value as _format_stat_value
 from ..trip.driver_detect import default_driver_profiles_path
 from ..trip.driver_detect import load_driver_profiles
+from ..trip.place_knowledge import bulk_assign_undecided_trips
 from ..trip.place_knowledge import default_driver_knowledge_path
 from ..trip.place_knowledge import load_knowledge_base
 from ..trip.place_knowledge import reresolve_trip_drivers
@@ -913,6 +915,55 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # specific-trips row id instead.
         return RedirectResponse(
             url=f"/drivers#trip-{trip_label}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.post("/drivers/bulk-assign")
+    async def drivers_bulk_assign(
+        from_date: str = Form(...),
+        until_date: str = Form(...),
+        driver_label: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Christer: "I want to minimize add driver. How can i tell the
+        # system that only i was driving since wife was out of town for
+        # 4 days" - a bulk alternative to clicking through the Specific
+        # trips table one row at a time. Deliberately scoped to
+        # currently-undecided trips only (Christer's own choice via
+        # AskUserQuestion): a trip already resolved by a place rule or
+        # the increment-1 pattern matcher reflects a more specific
+        # signal than "this whole date range was one driver" and isn't
+        # touched just because its date falls inside the window. See
+        # bulk_assign_undecided_trips()'s docstring for the full
+        # reasoning.
+        config_dir = default_config_dir()
+        knowledge_path = default_driver_knowledge_path(config_dir)
+        knowledge = load_knowledge_base(knowledge_path)
+        profiles = load_driver_profiles(default_driver_profiles_path(config_dir))
+
+        driver_label = driver_label.strip()
+        if knowledge is not None and profiles is not None and driver_label:
+            trips, places, trip_overrides = knowledge
+            try:
+                from_d = date.fromisoformat(from_date)
+                until_d = date.fromisoformat(until_date)
+            except ValueError:
+                from_d = until_d = None
+            if from_d is not None and until_d is not None:
+                trip_overrides = bulk_assign_undecided_trips(
+                    trips, trip_overrides,
+                    from_date=from_d, until_date=until_d,
+                    driver_label=driver_label,
+                )
+                resolved = reresolve_trip_drivers(
+                    trips, places, profiles, trip_overrides
+                )
+                save_knowledge_base(
+                    knowledge_path, trips=resolved, places=places,
+                    trip_overrides=trip_overrides,
+                )
+
+        return RedirectResponse(
+            url="/drivers#bulk-assign", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @app.get("/archive", response_class=HTMLResponse)
