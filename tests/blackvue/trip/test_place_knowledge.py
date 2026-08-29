@@ -32,9 +32,13 @@ from blackvue.trip.place_knowledge import load_knowledge_base
 from blackvue.trip.place_knowledge import local_weekday_and_time
 from blackvue.trip.place_knowledge import place_key
 from blackvue.trip.place_knowledge import save_knowledge_base
+from blackvue.trip.place_knowledge import smoothness_raw_from_samples
+from blackvue.trip.place_knowledge import smoothness_score
 from blackvue.trip.place_knowledge import stop_category
+from blackvue.trip.place_knowledge import suggest_closest_decided_trip
 from blackvue.trip.place_knowledge import undecided_places
 from blackvue.trip.place_knowledge import undecided_trips
+from blackvue.trip.place_knowledge import _time_of_day_distance_minutes
 from blackvue.trip.trip import Trip
 
 HOME = (59.3050, 18.1010)
@@ -524,3 +528,116 @@ def test_rebuild_preserves_manual_place_rules_via_existing_places_arg():
     assert second_places[key].long_stay_driver == "driver1"
     assert second_resolved[0].driver_label == "driver1"
     assert second_resolved[0].source == "place-rule"
+
+
+class FakeGSensorSample:
+    def __init__(self, x: int, y: int, z: int) -> None:
+        self.x, self.y, self.z = x, y, z
+
+
+def test_smoothness_raw_from_samples_uses_lateral_and_accel_brake_only():
+    # x=3, y=4 -> magnitude 5 (3-4-5 triangle); z is deliberately huge
+    # (a road bump) and must not affect the result at all.
+    samples = [FakeGSensorSample(x=3, y=4, z=999), FakeGSensorSample(x=3, y=4, z=-999)]
+    assert smoothness_raw_from_samples(samples) == 5.0
+
+
+def test_smoothness_raw_from_samples_none_when_empty():
+    assert smoothness_raw_from_samples([]) is None
+
+
+def test_smoothness_score_spreads_evenly_across_a_population():
+    # Hand-verified 10-element population: min maps to bucket 0, max to
+    # bucket 9, spread roughly evenly in between.
+    population = [float(n) for n in range(1, 11)]
+    assert smoothness_score(1.0, population) == 0
+    assert smoothness_score(5.0, population) == 4
+    assert smoothness_score(10.0, population) == 9
+
+
+def test_smoothness_score_none_when_raw_or_population_missing():
+    assert smoothness_score(None, [1.0, 2.0, 3.0]) is None
+    assert smoothness_score(5.0, []) is None
+
+
+def test_time_of_day_distance_minutes_handles_midnight_wraparound():
+    assert _time_of_day_distance_minutes("08:00", "08:00") == 0
+    assert _time_of_day_distance_minutes("08:00", "08:30") == 30
+    assert _time_of_day_distance_minutes("23:50", "00:10") == 20
+
+
+def test_suggest_closest_decided_trip_prefers_same_place_over_same_weekday():
+    entry = _entry_at(PLACE_A, 10, trip_label="trip_undecided")  # a Monday
+    same_place_other_weekday = entry.__class__(
+        **{
+            **_entry_at(PLACE_A, 4, trip_label="trip_same_place").__dict__,
+            "weekday": "Tuesday",
+            "source": "place-rule",
+        }
+    )
+    same_weekday_other_place = entry.__class__(
+        **{
+            **_entry_at(PLACE_B, 3, trip_label="trip_same_weekday").__dict__,
+            "weekday": entry.weekday,
+            "source": "place-rule",
+        }
+    )
+
+    closest = suggest_closest_decided_trip(
+        entry, [same_place_other_weekday, same_weekday_other_place]
+    )
+
+    assert closest is not None
+    assert closest.trip_label == "trip_same_place"
+
+
+def test_suggest_closest_decided_trip_excludes_undecided_and_self():
+    entry = _entry_at(PLACE_A, 10, trip_label="trip_undecided")
+    still_undecided = _entry_at(PLACE_A, 4, trip_label="trip_still_undecided")
+
+    assert suggest_closest_decided_trip(entry, [entry, still_undecided]) is None
+
+
+def test_suggest_closest_decided_trip_returns_none_with_no_candidates():
+    entry = _entry_at(PLACE_A, 10, trip_label="trip_undecided")
+    assert suggest_closest_decided_trip(entry, []) is None
+
+
+def test_build_knowledge_base_threads_smoothness_values_by_index():
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+    trip_a = make_trip(t0)
+    t1 = t0 + timedelta(minutes=60)
+    trip_b = make_trip(t1)
+    outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
+    inbound_fix = make_fix(PLACE_A, HOME, t1, t1)
+
+    resolved, _ = build_knowledge_base(
+        [trip_a, trip_b], [outbound_fix, inbound_fix], profiles, {"home": HOME},
+        smoothness_values=[1.5, None],
+    )
+
+    assert resolved[0].smoothness_raw == 1.5
+    assert resolved[1].smoothness_raw is None
+
+
+def test_trip_knowledge_smoothness_raw_round_trips_through_save_load():
+    profiles = make_profiles()
+    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = entry.__class__(**{**entry.__dict__, "smoothness_raw": 2.75})
+    key = entry.away_place_key
+    place = CommonPlace(
+        key=key, point=PLACE_A, label="My place", visit_count=1,
+        short_stay_count=0, long_stay_count=1, long_stay_driver="driver1",
+    )
+    resolved = _resolve_trip_driver(entry, place, profiles, None)
+
+    tmp_path = Path(tempfile.mkdtemp()) / "driver_knowledge.json"
+    save_knowledge_base(
+        tmp_path, trips=[resolved], places={key: place}, trip_overrides={},
+    )
+
+    loaded = load_knowledge_base(tmp_path)
+    assert loaded is not None
+    loaded_trips, _, _ = loaded
+    assert loaded_trips[0].smoothness_raw == 2.75

@@ -136,6 +136,8 @@ from ..trip.place_knowledge import group_trips_by_place
 from ..trip.place_knowledge import load_knowledge_base
 from ..trip.place_knowledge import reresolve_trip_drivers
 from ..trip.place_knowledge import save_knowledge_base
+from ..trip.place_knowledge import smoothness_score
+from ..trip.place_knowledge import suggest_closest_decided_trip
 from ..trip.place_knowledge import undecided_places
 from ..trip.place_knowledge import undecided_trips
 from dataclasses import replace as _dc_replace
@@ -772,6 +774,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "place_trips": {},
                     "place_trip_addresses": {},
                     "driver_display_by_label": {},
+                    "smoothness_scores": {},
+                    "closest_matches": {},
                     "min_visits": min_visits,
                     "trip_count": 0,
                     "decided_count": 0,
@@ -846,6 +850,26 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             driver.label: driver.display_name for driver in profiles.drivers
         }
 
+        # Driving-smoothness score + "closest past match" suggestion -
+        # Christer's own follow-up ask ("anything else you can do to
+        # make it easier for me to decide driver"), both scoped to the
+        # Specific trips table only (undecided_trip_list), same scope
+        # trip_addresses above already uses. smoothness_population is
+        # every trip's own smoothness_raw (not just undecided ones) -
+        # an undecided trip's score is its percentile rank against the
+        # whole archive, not just other undecided trips.
+        smoothness_population = [
+            entry.smoothness_raw for entry in trips if entry.smoothness_raw is not None
+        ]
+        smoothness_scores = {
+            entry.trip_label: smoothness_score(entry.smoothness_raw, smoothness_population)
+            for entry in undecided_trip_list
+        }
+        closest_matches = {
+            entry.trip_label: suggest_closest_decided_trip(entry, trips)
+            for entry in undecided_trip_list
+        }
+
         return templates.TemplateResponse(
             request,
             "drivers.html",
@@ -861,6 +885,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "place_trips": place_trips,
                 "place_trip_addresses": place_trip_addresses,
                 "driver_display_by_label": driver_display_by_label,
+                "smoothness_scores": smoothness_scores,
+                "closest_matches": closest_matches,
                 "min_visits": min_visits,
                 "trip_count": len(trips),
                 "decided_count": sum(

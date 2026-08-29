@@ -50,6 +50,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 from collections.abc import Sequence
@@ -185,6 +186,107 @@ def stop_category(dwell_minutes: float | None) -> str | None:
     return "short" if dwell_minutes < STOP_THRESHOLD_MINUTES else "long"
 
 
+def smoothness_raw_from_samples(samples: Sequence) -> float | None:
+    """Mean lateral+accel/brake g-sensor magnitude across `samples` -
+    the raw per-trip value smoothness_score() later ranks against
+    every other trip's own value. Uses each GSensorSample's own
+    x (lateral) and y (accel/brake) fields only, excluding z
+    (vertical) - a bump in the road shows up on the vertical axis but
+    isn't a driving-style signal the way steering/braking are (see
+    telemetry/gsensor_reader.py's own field-convention docstring).
+
+    None if `samples` is empty - a trip with no g-sensor data at all
+    (missing .3gf, unsupported adapter) simply has no smoothness
+    score, same "unknown, not zero" contract dwell_at_destination()
+    and friends already use elsewhere in this module."""
+
+    if not samples:
+        return None
+    magnitudes = [math.sqrt(sample.x**2 + sample.y**2) for sample in samples]
+    return sum(magnitudes) / len(magnitudes)
+
+
+def smoothness_score(
+    raw: float | None, population: Sequence[float]
+) -> int | None:
+    """`raw`'s percentile rank within `population`, bucketed 0 (smooth)
+    to 9 (aggressive) - Christer's own follow-up ask ("anything else
+    you can do to make it easier for me to decide driver"), scoped to
+    a driving-smoothness score. Deliberately relative-to-your-own-trips
+    rather than a fixed g-force threshold, since the g-sensor's raw
+    physical unit is unconfirmed (see telemetry/gsensor_reader.py's own
+    docstring) - only ever meaningful compared to `population`, the set
+    of every other trip's own smoothness_raw.
+
+    None if `raw` itself is None (no g-sensor data for this trip) or
+    `population` is empty (nothing to rank against yet)."""
+
+    if raw is None or not population:
+        return None
+
+    values = sorted(population)
+    index = bisect.bisect_left(values, raw)
+    return min(9, int(index / len(values) * 10))
+
+
+def _time_of_day_distance_minutes(a: str, b: str) -> int:
+    """Circular distance in minutes between two "HH:MM" times of day -
+    e.g. 23:50 and 00:10 are 20 minutes apart, not 1420, since a trip
+    just before midnight and one just after are close in the way that
+    matters here (which of a household's regular routines this trip
+    looks like), not literal clock distance."""
+
+    a_hour, a_minute = (int(part) for part in a.split(":"))
+    b_hour, b_minute = (int(part) for part in b.split(":"))
+    a_total = a_hour * 60 + a_minute
+    b_total = b_hour * 60 + b_minute
+    diff = abs(a_total - b_total)
+    return min(diff, 1440 - diff)
+
+
+def suggest_closest_decided_trip(
+    entry: TripKnowledge, trips: Sequence[TripKnowledge]
+) -> TripKnowledge | None:
+    """The already-*decided* trip in `trips` that most resembles
+    `entry` - Christer's own follow-up ask ("anything else you can do
+    to make it easier for me to decide driver"), the "closest past
+    match" idea: when an undecided trip has no automatic candidate at
+    all, the nearest look-alike among trips Christer (or a rule)
+    already resolved is still a useful hint ("this looks like that
+    other Tuesday morning trip to the same place, which you assigned
+    to Christer").
+
+    Ranked by (same place, same weekday, closeness in time of day), in
+    that priority order - a decided trip to the *same place* always
+    outranks one merely on the same weekday, regardless of how close
+    the times of day are; among same-place candidates, one on the same
+    weekday outranks one that merely shares a similar time. Only
+    considers trips with a resolved driver (source != "undecided") and
+    excludes `entry` itself; returns None if there's no other decided
+    trip to compare against at all."""
+
+    candidates = [
+        other
+        for other in trips
+        if other.trip_label != entry.trip_label and other.source != "undecided"
+    ]
+    if not candidates:
+        return None
+
+    def score(other: TripKnowledge) -> tuple[bool, bool, int]:
+        same_place = (
+            entry.away_place_key is not None
+            and other.away_place_key == entry.away_place_key
+        )
+        same_weekday = other.weekday == entry.weekday
+        time_distance = _time_of_day_distance_minutes(
+            entry.start_time_of_day, other.start_time_of_day
+        )
+        return (same_place, same_weekday, -time_distance)
+
+    return max(candidates, key=score)
+
+
 def place_key(point: tuple[float, float]) -> str:
     """Deterministic grid-cell id for a destination point - see this
     module's own docstring (point 2) for why identity is a plain
@@ -292,6 +394,16 @@ class TripKnowledge:
     first_recording_id: str | None = None
     last_recording_id: str | None = None
     camera_id: str | None = None
+    # Mean lateral+accel/brake g-sensor magnitude pooled across every
+    # recording in this trip (see bv_drivers.py's own computation) -
+    # unitless raw scale (the g-sensor's own physical unit is
+    # unconfirmed, see telemetry/gsensor_reader.py's docstring), only
+    # ever compared to *other trips'* own smoothness_raw via
+    # smoothness_score() below, never against a fixed threshold. None
+    # if this trip has no g-sensor data at all (missing asset,
+    # unsupported adapter, or a pre-existing driver_knowledge.json
+    # written before this field existed).
+    smoothness_raw: float | None = None
 
 
 @dataclass(frozen=True)
@@ -324,6 +436,7 @@ def _raw_trip_knowledge(
     known_points: dict[str, tuple[float, float]],
     *,
     camera_id: str | None = None,
+    smoothness_values: Sequence[float | None] | None = None,
 ) -> list[TripKnowledge]:
     home = known_points.get("home")
     home_radius = profiles.home_radius_meters
@@ -331,6 +444,9 @@ def _raw_trip_knowledge(
     entries: list[TripKnowledge] = []
     for index, trip in enumerate(trips):
         trip_fix = fixes[index]
+        smoothness_raw = (
+            smoothness_values[index] if smoothness_values is not None else None
+        )
         prev_fix = fixes[index - 1] if index > 0 else None
         next_fix = fixes[index + 1] if index + 1 < len(fixes) else None
 
@@ -365,6 +481,7 @@ def _raw_trip_knowledge(
                 first_recording_id=trip.first_recording.id.value,
                 last_recording_id=trip.last_recording.id.value,
                 camera_id=camera_id,
+                smoothness_raw=smoothness_raw,
             )
         )
 
@@ -483,6 +600,7 @@ def build_knowledge_base(
     existing_places: dict[str, CommonPlace] | None = None,
     trip_overrides: dict[str, str] | None = None,
     camera_id: str | None = None,
+    smoothness_values: Sequence[float | None] | None = None,
 ) -> tuple[list[TripKnowledge], dict[str, CommonPlace]]:
     """The whole pure pipeline: raw per-trip fields -> common places
     (carrying forward `existing_places`' own labels/rules) -> each
@@ -496,7 +614,10 @@ def build_knowledge_base(
     last recording straight to /archive/{camera_id}/{recording_id}."""
 
     trip_overrides = trip_overrides or {}
-    raw = _raw_trip_knowledge(trips, fixes, profiles, known_points, camera_id=camera_id)
+    raw = _raw_trip_knowledge(
+        trips, fixes, profiles, known_points,
+        camera_id=camera_id, smoothness_values=smoothness_values,
+    )
     places = build_common_places(raw, existing=existing_places)
     resolved = [
         _resolve_trip_driver(
@@ -736,6 +857,7 @@ def _trip_to_dict(entry: TripKnowledge) -> dict:
         "first_recording_id": entry.first_recording_id,
         "last_recording_id": entry.last_recording_id,
         "camera_id": entry.camera_id,
+        "smoothness_raw": entry.smoothness_raw,
     }
 
 
@@ -774,6 +896,7 @@ def _trip_from_dict(data: dict) -> TripKnowledge:
         first_recording_id=data.get("first_recording_id"),
         last_recording_id=data.get("last_recording_id"),
         camera_id=data.get("camera_id"),
+        smoothness_raw=data.get("smoothness_raw"),
     )
 
 

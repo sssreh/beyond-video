@@ -212,7 +212,11 @@ driver KB</a> first.</p>
 <div class="command-help">
   <p>Trips with no resolved driver at all - a one-off destination, or a
   common place above you haven't filled in yet. Assign a driver to just
-  this trip, or leave it undecided.</p>
+  this trip, or leave it undecided. Smoothness (0=smoothest, 9=most
+  aggressive) ranks this trip's g-sensor readings against every other
+  trip's own - a relative scale, not a fixed threshold - and "most
+  similar decided trip" points at the closest-matching trip you've
+  already assigned, as a hint toward who was probably driving.</p>
 </div>
 <div class="content-panel">
 {% if undecided_trip_list %}
@@ -224,6 +228,7 @@ driver KB</a> first.</p>
       <th>Time</th>
       <th>Stay</th>
       <th>Candidates</th>
+      <th>Smoothness</th>
       <th>Start</th>
       <th>Stop</th>
       <th>Driver</th>
@@ -247,6 +252,22 @@ driver KB</a> first.</p>
         {% for candidate in trip.candidates %}
         {{ candidate.display_name }} ({{ "%.0f"|format(candidate.confidence * 100) }}%){% if not loop.last %}, {% endif %}
         {% endfor %}
+        {% else %}
+        &mdash;
+        {% endif %}
+        {% set closest = closest_matches.get(trip.trip_label) %}
+        {% if closest %}
+        <div class="hint">
+          Most similar decided trip: {{ closest.weekday }} {{ closest.start_time_of_day }}
+          {% if closest.away_place_key == trip.away_place_key %}(same place){% endif %}
+          -&gt; {{ driver_display_by_label.get(closest.driver_label, closest.driver_label) }}
+        </div>
+        {% endif %}
+      </td>
+      <td>
+        {% set score = smoothness_scores.get(trip.trip_label) %}
+        {% if score is not none %}
+        {{ score }}/9
         {% else %}
         &mdash;
         {% endif %}

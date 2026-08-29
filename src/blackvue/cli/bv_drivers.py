@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..adapters.registry import get_adapter
+from ..adapters.telemetry_bridge import read_recording_gsensor
 from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
@@ -46,8 +47,10 @@ from ..trip.place_knowledge import default_driver_knowledge_path
 from ..trip.place_knowledge import build_knowledge_base
 from ..trip.place_knowledge import load_knowledge_base
 from ..trip.place_knowledge import save_knowledge_base
+from ..trip.place_knowledge import smoothness_raw_from_samples
 from ..trip.place_knowledge import undecided_places
 from ..trip.place_knowledge import undecided_trips
+from ..trip.trip import Trip
 from ..trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from ..trip.trip_builder import DEFAULT_MAX_GAP
 from ..trip.trip_builder import TripBuilder
@@ -177,6 +180,27 @@ def _default_warn(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _resolve_trip_smoothness(adapter, trips: list[Trip]) -> list[float | None]:
+    """smoothness_raw_from_samples() for each trip, index-aligned with
+    `trips` - Christer's own follow-up ask ("anything else you can do
+    to make it easier for me to decide driver"), the driving-smoothness
+    idea. Pools every recording belonging to a trip (Trip.recordings)
+    into one g-sensor sample set via read_recording_gsensor(), same
+    "whole trip, not just one recording" pooling resolve_trip_fix()
+    itself already does for GPS. A trip with no g-sensor data at all
+    (missing .3gf, an adapter that doesn't support gsensor) simply
+    gets None here - see smoothness_raw_from_samples()'s own
+    docstring for why that's "unknown", not zero."""
+
+    values: list[float | None] = []
+    for trip in trips:
+        samples = []
+        for recording in trip.recordings:
+            samples.extend(read_recording_gsensor(adapter, recording))
+        values.append(smoothness_raw_from_samples(samples))
+    return values
+
+
 def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     """Run bv-drivers for already-parsed arguments. `say`/`warn` are
     injectable (default: real stdout/stderr) - same pattern as every
@@ -262,6 +286,15 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
                 f"in {time.monotonic() - fixes_start:.2f}s"
             )
 
+        smoothness_start = time.monotonic()
+        smoothness_values = _resolve_trip_smoothness(adapter, trips)
+        if args.debug:
+            say(
+                f"bv-drivers: debug: resolved smoothness for "
+                f"{len(smoothness_values)} trip(s) in "
+                f"{time.monotonic() - smoothness_start:.2f}s"
+            )
+
         knowledge_path = default_driver_knowledge_path(args.config_dir)
         existing = load_knowledge_base(knowledge_path)
         existing_places = existing[1] if existing is not None else None
@@ -272,7 +305,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         resolved, places = build_knowledge_base(
             trips, fixes, profiles, known_points,
             existing_places=existing_places, trip_overrides=trip_overrides,
-            camera_id=camera_id,
+            camera_id=camera_id, smoothness_values=smoothness_values,
         )
         if args.debug:
             say(

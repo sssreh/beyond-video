@@ -281,6 +281,53 @@ def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):
     assert place_after.long_stay_driver == "christer"
 
 
+class _FakeGSensorSample:
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+
+
+def test_run_wires_smoothness_raw_into_knowledge_base(tmp_path, monkeypatch):
+    # Christer's own follow-up ask ("anything else you can do to make
+    # it easier for me to decide driver") - the driving-smoothness
+    # idea. bv_drivers._run() pools every recording in a trip's own
+    # g-sensor samples via read_recording_gsensor() and stamps the
+    # mean lateral+accel/brake magnitude onto each TripKnowledge.
+    trip1 = _make_trip("20260702_080000")
+    trip2 = _make_trip("20260702_180000")
+    fix1 = TripFix(
+        start=HOME, end=WORK,
+        start_time=trip1.start_timestamp, end_time=trip1.end_timestamp,
+    )
+    fix2 = TripFix(
+        start=WORK, end=HOME,
+        start_time=trip2.start_timestamp, end_time=trip2.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[trip1, trip2], fixes=[fix1, fix2])
+
+    # trip1's recordings each report one sample (x=3, y=4 -> magnitude
+    # 5); trip2's recordings report none at all (empty tuple, same as
+    # a real trip with no g-sensor data).
+    def fake_read_recording_gsensor(adapter, recording):
+        if recording in trip1.recordings:
+            return (_FakeGSensorSample(x=3, y=4, z=0),)
+        return ()
+
+    monkeypatch.setattr(
+        bv_drivers, "read_recording_gsensor", fake_read_recording_gsensor
+    )
+
+    config_dir = tmp_path / "config"
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    knowledge_path = config_dir / "driver_knowledge.json"
+    trips, _, _ = load_knowledge_base(knowledge_path)
+    by_label = {t.trip_label: t for t in trips}
+    assert by_label[trip1.label].smoothness_raw == 5.0
+    assert by_label[trip2.label].smoothness_raw is None
+
+
 def test_run_debug_prints_phase_timings(tmp_path, monkeypatch):
     _install_fakes(monkeypatch, trips=[], fixes=[])
 

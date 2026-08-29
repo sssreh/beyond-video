@@ -20697,3 +20697,90 @@ driver_profiles()`/`load_driver_profiles()` via a temp dir) - all 16
 driver_detect tests pass under the harness. `app.py`/`drivers.html`
 verified via `ast.parse()` and the same standalone Jinja2 render
 check, same as always.
+
+Same thread, mid-turn message: "How do i add a driver. I would also
+like to split a drivers trip into 2, in case i drive 1 one way and my
+wife drive back." The add-a-driver half is covered above. For the
+split ask, asked two `AskUserQuestion` clarifiers rather than guessing
+- Christer's answers ("It depends, but probably a long pause" for the
+split scenario, "No exact point - just tag both drivers (Recommended)"
+for precision) resolved it without writing any new code: `TripBuilder`
+already splits on a real pause at the destination into two separate
+`Trip`/`TripKnowledge` rows (outbound + return), each independently
+assignable a driver via the existing per-trip override - the common
+case Christer described. Explained this and offered to build the
+"tag both drivers, no exact split point" version only if he hits a
+genuine no-pause/continuous-drive case; left unimplemented since he
+hasn't.
+
+**Third feature in the same thread: "Anything else you can do to make
+it easier for me to decide driver."** Proposed 3 ideas via
+`AskUserQuestion`; Christer picked two - a driving-smoothness score
+and a "closest past match" suggestion (declined the third, an interior-
+camera snapshot).
+
+Driving-smoothness score: added `TripKnowledge.smoothness_raw: float |
+None` (persisted in `driver_knowledge.json`, defaults `None` so an
+older file still loads) and threaded a new optional `smoothness_values`
+param (index-aligned with `trips`/`fixes`) through `_raw_trip_
+knowledge()`/`build_knowledge_base()` in `place_knowledge.py`. The raw
+value itself comes from a new pure function, `smoothness_raw_from_
+samples(samples)` - mean `sqrt(x**2 + y**2)` magnitude over a trip's
+pooled g-sensor samples, using only `GSensorSample.x` (lateral) and
+`.y` (accel/brake), deliberately excluding `.z` (vertical - a road
+bump, not a driving-style signal; confirmed the field convention is
+unchanged from the earlier X/Y/Z rename work by re-reading gsensor_
+reader.py's own docstring before writing this). `None` if a trip has
+no g-sensor data at all - same "unknown, not zero" contract the rest
+of the module already uses. `bv_drivers.py` gained `_resolve_trip_
+smoothness(adapter, trips)`, which pools every recording in a trip via
+`adapters.telemetry_bridge.read_recording_gsensor()` (same "whole
+trip, not one recording" pattern `resolve_trip_fix()` already uses for
+GPS) and calls `smoothness_raw_from_samples()` per trip; wired into
+`_run()` right after the existing fixes-resolution loop, with its own
+`--debug` timing line, and passed into `build_knowledge_base(...,
+smoothness_values=...)`.
+
+Never compared against a fixed g-force threshold - the g-sensor's
+physical unit is still unconfirmed (per that module's own docstring) -
+only ever ranked against every *other* trip's own raw value, via a new
+pure `smoothness_score(raw, population)`: `bisect.bisect_left()`-based
+percentile rank, bucketed `min(9, int(index / len(values) * 10))` -
+hand-verified against a synthetic 10-element population before writing
+any code (min maps to 0, max to 9, roughly even spread between).
+`drivers_page()` in `app.py` computes `smoothness_population` from
+every trip's non-`None` `smoothness_raw` (not just undecided ones - an
+undecided trip's score is its rank against the whole archive) and a
+per-undecided-trip `smoothness_scores` dict; `drivers.html`'s Specific
+trips table gets a new "Smoothness" column (`N/9`, or `—`).
+
+Closest past match: `suggest_closest_decided_trip(entry, trips)` in
+`place_knowledge.py` - finds the already-decided trip (`source !=
+"undecided"`) that most resembles an undecided one, scored by the
+tuple `(same away place, same weekday, -time_distance)` so a same-
+place match always outranks a same-weekday-only one, which in turn
+outranks a mere closest-time-of-day match. `_time_of_day_distance_
+minutes()` is circular (23:50 and 00:10 are 20 minutes apart, not
+1420). `drivers_page()` computes a per-undecided-trip `closest_matches`
+dict; `drivers.html` appends a hint line to the existing Candidates
+cell ("Most similar decided trip: {weekday} {time} (same place) -&gt;
+{driver}") - the preview shown to and implicitly approved by Christer
+during the `AskUserQuestion` scoping.
+
+Verified: 10 new tests in `test_place_knowledge.py` (`smoothness_raw_
+from_samples()` uses lateral+accel/brake only and ignores z, empty ->
+None; `smoothness_score()`'s even-spread bucketing and both None
+cases; `_time_of_day_distance_minutes()`'s midnight wraparound;
+`suggest_closest_decided_trip()`'s place-over-weekday priority,
+excludes-undecided-and-self, and no-candidates cases; `build_
+knowledge_base()` threading `smoothness_values` by index; a full
+save/load round-trip preserving `smoothness_raw`) - all 35 place_
+knowledge tests pass. 1 new test in `test_bv_drivers.py` (`_run()`
+wires a fake `read_recording_gsensor()` through to real `smoothness_
+raw` values in the saved knowledge base, including the no-data ->
+`None` case) - all 11 bv_drivers tests pass. `app.py`/`bv_drivers.py`/
+`place_knowledge.py` verified via `ast.parse()`; `drivers.html` verified
+via the standalone Jinja2 render harness (extended with `away_place_
+key`/`smoothness_raw` fields on the fake `Trip` fixture and `smoothness_
+scores`/`closest_matches` context, asserting on the new column, the
+`N/9` score, the closest-match hint text, and the same-place tag).
