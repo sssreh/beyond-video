@@ -45,10 +45,28 @@ transcribe_voice_query() actually load and run a real model and are
 untested in this sandbox (no GPU/qwen_asr/network here), matching
 generate/test_scene.py's own established precedent of never exercising
 the real model-loading path in CI.
+
+Real-hardware follow-up: Christer's first live run hit "Qwen3-ASR
+transcription failed: Error opening '...tmpXXXX.webm': Format not
+recognised." Whisper (faster-whisper) decodes whatever container ffmpeg
+understands internally, so handing it the browser's raw
+MediaRecorder .webm blob (see job_new_bv_search.html's "Search by
+voice" JS) always just worked. Qwen3-ASR's own transcribe() apparently
+loads audio via a libsndfile-backed reader (soundfile/librosa), which
+has no WebM/Opus container support at all - that assumption
+(untestable in this no-qwen_asr sandbox, so never caught before real
+hardware surfaced it) was wrong. Fixed by explicitly transcoding to WAV
+via ffmpeg first (_convert_to_wav(), mirrors generate/media.py's own
+extract_audio() ffmpeg-subprocess pattern) - WAV/PCM is unambiguously
+readable by any audio loader, unlike relying on Qwen3-ASR to guess a
+container format the way Whisper's own ffmpeg-based decoder does.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -185,6 +203,58 @@ def unload_asr_model() -> None:
         torch.cuda.empty_cache()
 
 
+def _convert_to_wav(source: Path) -> Path:
+    """Impure - transcodes `source` (any container ffmpeg can read -
+    the browser's MediaRecorder output is .webm/Opus) to a 16kHz mono
+    PCM WAV file in a fresh temp path, via ffmpeg. See this module's
+    own docstring for why this exists: Qwen3-ASR's transcribe() can't
+    read .webm directly the way Whisper always could, confirmed by a
+    real "Format not recognised" failure on Christer's hardware. 16kHz
+    mono is the standard ASR input rate (also what faster-whisper
+    itself resamples everything to internally) - downsampling here
+    rather than trusting Qwen3-ASR's own loader to do it avoids
+    depending on that loader supporting anything but the plainest
+    possible WAV.
+
+    Raises MediaToolError on any ffmpeg failure, exactly like
+    generate/media.py's own extract_audio(). Caller owns cleanup of
+    the returned temp file (mirrors how web/app.py's
+    transcribe_voice_search() route already owns cleanup of its own
+    upload temp file)."""
+
+    fd, wav_path_str = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    wav_path = Path(wav_path_str)
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v", "error",
+                "-y",
+                "-i", str(source),
+                "-vn",
+                "-ac", "1",
+                "-ar", "16000",
+                "-acodec", "pcm_s16le",
+                str(wav_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        wav_path.unlink(missing_ok=True)
+        raise MediaToolError("ffmpeg not found on PATH") from exc
+    except subprocess.CalledProcessError as exc:
+        wav_path.unlink(missing_ok=True)
+        raise MediaToolError(
+            f"ffmpeg failed converting {source.name} to WAV: {exc.stderr.strip()}"
+        ) from exc
+
+    return wav_path
+
+
 def transcribe_voice_query(
     source: Path,
     *,
@@ -200,6 +270,13 @@ def transcribe_voice_query(
     it exactly the way it already caught Whisper's own MediaToolError,
     no behavior change there.
 
+    `source` is transcoded to WAV first (_convert_to_wav()) - see this
+    module's own docstring for the real "Format not recognised" failure
+    that made this necessary; Qwen3-ASR's own audio loader can't read
+    the browser's raw .webm the way Whisper's ffmpeg-based decoder
+    always could. The temp WAV is always cleaned up here, regardless of
+    whether transcription succeeds.
+
     Reuses generate/speech.py's own Transcript dataclass rather than
     defining a near-duplicate here - Transcript is a generic
     (text, language, segments) shape, not Whisper-specific.
@@ -211,12 +288,16 @@ def transcribe_voice_query(
     loaded = _get_asr_model(model_name, force_cpu=force_cpu)
     context = _build_context(known_places or ())
 
+    wav_path = _convert_to_wav(source)
     try:
-        results = loaded.model.transcribe(
-            audio=str(source), context=context, language=None
-        )
-    except Exception as exc:
-        raise MediaToolError(f"Qwen3-ASR transcription failed: {exc}") from exc
+        try:
+            results = loaded.model.transcribe(
+                audio=str(wav_path), context=context, language=None
+            )
+        except Exception as exc:
+            raise MediaToolError(f"Qwen3-ASR transcription failed: {exc}") from exc
+    finally:
+        wav_path.unlink(missing_ok=True)
 
     if not results:
         raise MediaToolError("Qwen3-ASR returned no transcription result")

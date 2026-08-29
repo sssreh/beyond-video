@@ -19811,3 +19811,40 @@ tests still pass unchanged. Verified via `ast.parse()` on `app.py` and
 `node --check` on the extracted `<script>` block (all clean) - no
 `TestClient`-based route test, same "no `fastapi` in this dev sandbox"
 constraint as every other route change in this file.
+
+## Fix Qwen3-ASR webm decode failure (2026-08-29)
+
+Christer's first live run of the Qwen3-ASR voice-search swap (previous
+entry above) hit a real error on his hardware: `Qwen3-ASR transcription
+failed: Error opening 'C:\Users\christer\...\tmpa2q5fhxa.webm': Format
+not recognised.` faster-whisper (the previous backend for this route)
+decodes whatever container ffmpeg understands internally, so handing it
+the browser's raw `MediaRecorder` `.webm`/Opus blob always just worked
+without anyone noticing that dependency. Qwen3-ASR's own
+`Qwen3ASRModel.transcribe()` apparently loads audio via a different,
+more limited reader with no WebM/Opus container support at all - an
+assumption this dev sandbox could never test (no GPU/`qwen_asr`/network
+here), so it went uncaught until real hardware surfaced it.
+
+Fixed in `web/voice_asr.py` by adding `_convert_to_wav()`, an
+ffmpeg-subprocess helper that transcodes the source file to 16kHz mono
+PCM WAV before handing it to `transcribe()` - mirrors
+`generate/media.py`'s own `extract_audio()` ffmpeg-subprocess pattern
+(`-v error`, `capture_output=True, text=True, check=True`,
+`FileNotFoundError`/`CalledProcessError` -> `MediaToolError`, partial-
+output cleanup on failure). `transcribe_voice_query()` now calls
+`_convert_to_wav(source)` first and transcribes the resulting WAV path
+instead of the original `.webm`, cleaning up the temp WAV in a `finally`
+block regardless of transcription outcome. The original `.webm` upload
+is untouched - still owned and cleaned up by `web/app.py`'s
+`transcribe_voice_search()` route exactly as before.
+
+**Verified for real, not just statically**: unlike the rest of this
+module (blocked by no `qwen_asr`/GPU in this sandbox), `ffmpeg` itself
+*is* available here, so `_convert_to_wav()` got a genuine smoke test -
+generated a real synthetic `.webm` (`ffmpeg -f lavfi -i sine=... -c:a
+libopus`), ran it through `_convert_to_wav()`, and confirmed a valid
+non-empty WAV came out the other side. Also ran `ast.parse()` on the
+whole file and the full 15-test `test_voice_asr.py` suite (all pass,
+unchanged - none of them exercise `_convert_to_wav()` directly since
+they predate it, but nothing it touches broke).
