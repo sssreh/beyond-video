@@ -263,6 +263,54 @@ def _geojson_to_lines(
     return ()
 
 
+# Common Swedish place-name suffix morphemes that sometimes get
+# transcribed/typed run together with the word before them - e.g.
+# Christer's own real report: "Vårbygård" (concatenated) vs. "Vårby
+# gård" (the real, two-word name). Nominatim's own search index is
+# picky about this for Swedish compounds in a way it usually isn't for
+# e.g. English place names - "both 'Vårby gård' and 'Vårbygård' should
+# work" regardless of which spelling voice/text input happens to
+# produce. Not exhaustive; extend as new real gaps show up, same
+# "handle the shape actually hit, don't try to anticipate everything"
+# approach web/voice_query.py's own _PATTERNS list already takes.
+_SWEDISH_COMPOUND_SUFFIXES = (
+    "gård", "väg", "gatan", "gata", "torg", "holm", "berg", "dal",
+    "näs", "sund", "kyrka", "backen",
+)
+
+
+def _spacing_variants(name: str) -> list[str]:
+    """Pure - alternate spellings of `name` worth also trying against
+    Nominatim if the literal query comes back with no match.
+
+    Always yields `name` itself first - forward_geocode() stops at the
+    first variant that gets a real result, so the literal query the
+    caller actually asked for is tried before any guessed alternative.
+
+    If `name` has no space in it, tries inserting one before any
+    _SWEDISH_COMPOUND_SUFFIXES morpheme it happens to end with (so
+    "Vårbygård" also tries "Vårby gård"). If `name` already has a
+    space, also tries the fully concatenated form (so "Vårby gård"
+    also tries "Vårbygård") - some OSM entries are tagged without the
+    space even when the "official" written form has one."""
+
+    variants = [name]
+
+    if " " in name:
+        concatenated = name.replace(" ", "")
+        if concatenated not in variants:
+            variants.append(concatenated)
+    else:
+        lowered = name.lower()
+        for suffix in _SWEDISH_COMPOUND_SUFFIXES:
+            if lowered.endswith(suffix) and len(name) > len(suffix):
+                spaced = name[: -len(suffix)] + " " + name[-len(suffix):]
+                if spaced not in variants:
+                    variants.append(spaced)
+
+    return variants
+
+
 def forward_geocode(
     name: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
 ) -> GeocodeResult | None:
@@ -275,12 +323,35 @@ def forward_geocode(
     (see GeocodeResult's own docstring for why that matters) as well
     as the plain point every match already has.
 
-    Returns None if Nominatim has no match for this query (a genuine,
-    cacheable "no result"). Raises MediaToolError if the request
-    itself fails (network error, malformed response), same convention
-    as reverse_geocode(). Only the single best-ranked match is used -
-    bv-search wants one search target, not a disambiguation list.
+    Tries `_spacing_variants(name)` in order and returns the first
+    genuine match - see that function's own docstring for why (real
+    report: both "Vårby gård" and "Vårbygård" should geocode
+    successfully, not just whichever spelling happens to match
+    Nominatim's index exactly). Returns None only if every variant
+    comes back with no match - a genuine, cacheable "no result".
+    Raises MediaToolError immediately if a request itself fails
+    (network error, malformed response), same convention as
+    reverse_geocode() - no point trying further spelling variants
+    against an unreachable service. Only the single best-ranked match
+    per variant is used - bv-search wants one search target, not a
+    disambiguation list.
     """
+
+    for variant in _spacing_variants(name):
+        result = _forward_geocode_query(variant, timeout=timeout)
+        if result is not None:
+            return result
+    return None
+
+
+def _forward_geocode_query(
+    name: str, *, timeout: float
+) -> GeocodeResult | None:
+    """Impure - a single Nominatim forward-geocode HTTP request for the
+    literal `name` given, no spelling-variant retry (that's
+    forward_geocode()'s job, above - split out so it can try more than
+    one spelling without duplicating the actual HTTP-request/response-
+    parsing logic)."""
 
     _throttle()
 

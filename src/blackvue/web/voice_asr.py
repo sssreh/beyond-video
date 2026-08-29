@@ -117,6 +117,45 @@ def known_places_from_params(
     return places
 
 
+def known_places_from_config(config_dir: Path) -> list[str]:
+    """Impure - reads `config_dir / "known_places.txt"` (one place name
+    per line, blank lines and #-prefixed comment lines ignored) if it
+    exists, otherwise returns an empty list.
+
+    Christer, after known_places_from_params() alone still wasn't
+    enough: "actually i got vår nygård again, both 'Vårby gård' and
+    'Vårbygård' should work" - Qwen3-ASR mis-heard "Vårby gård" as the
+    entirely unrelated "Vår Nygård" again, despite the history-derived
+    bias context this module already builds. Root cause:
+    known_places_from_params() only ever contains place names from
+    *past successful bv-search runs he already recorded* - a
+    chicken-and-egg gap for exactly the case that matters most, a
+    place he hasn't successfully searched near yet (or hasn't submitted
+    the run with, since a job only reaches history once started - see
+    web/jobs.py's _record_job_history()). A place Christer knows he'll
+    want to search near regularly should bias the ASR from the very
+    first attempt, not only after it's already been transcribed
+    correctly once by luck.
+
+    This file is optional and manually maintained (no UI for it yet -
+    same "note: build a UI for this later" precedent as other
+    config-file features in this project) - a missing file is not an
+    error, just means no manually-configured bias on top of whatever
+    known_places_from_params() found."""
+
+    path = config_dir / "known_places.txt"
+    if not path.exists():
+        return []
+
+    places: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        places.append(line)
+    return places
+
+
 def _build_context(known_places: Sequence[str]) -> str:
     """Pure - builds the `context` bias string Qwen3ASRModel.transcribe()
     accepts, in the same "May say: ..." phrasing the upstream project's

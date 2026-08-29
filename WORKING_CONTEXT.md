@@ -19881,3 +19881,85 @@ Verified via `jinja2.Environment.parse()` on both templates and `node
 --check`-equivalent (`new Function()`) on the extracted `<script>`
 block - both clean. No visual/screenshot verification possible in this
 sandbox (no browser); Christer should confirm on his own hardware.
+
+## "Vårby gård" mis-transcribed again + geocoding spelling gap (2026-08-29)
+
+Christer, after the webm/status fixes above: "not filling in
+coordinates for våbygård" then, more precisely: "actually i got vår
+nygård again, both 'Vårby gård' and 'Vårbygård' should work" -
+Qwen3-ASR mis-heard "Vårby gård" as the entirely unrelated "Vår
+Nygård" again, despite the known_places bias mechanism built in an
+earlier session. Two separate real gaps, both fixed:
+
+**Bootstrap gap in the ASR bias (`web/voice_asr.py`,
+`web/app.py`)**: `known_places_from_params()` only ever contains place
+names pulled from *past bv-search runs that already got far enough to
+be recorded in history* (`web/jobs.py`'s `_record_job_history()` fires
+on every finished job, success or failure, but only once a run has
+actually been submitted) - a chicken-and-egg gap for exactly the case
+that matters most, a place Christer hasn't successfully searched near
+yet. Added `known_places_from_config(config_dir)`: reads an optional,
+manually-maintained `known_places.txt` (one place per line, `#`
+comments and blank lines skipped) from `default_config_dir()` - no UI
+yet, same "note: build this later" precedent as other config-file
+features in this project. `transcribe_voice_search()`'s route now
+merges config-file places (first, since they're Christer's own
+deliberately-curated "this one matters" list) with the existing
+history-derived places, case-insensitively deduped, before building
+the bias `context` string. Christer needs to actually create
+`known_places.txt` with "Vårby gård" in it on his real deployment for
+this to help - nothing in this sandbox can create that file for him.
+
+**Spelling-variant gap in forward geocoding (`export/geocoding.py`)**:
+Christer's explicit spec - "both 'Vårby gård' and 'Vårbygård' should
+work" - regardless of which spelling a transcript/typed query happens
+to produce. Nominatim's own free-text search index is picky about
+Swedish compound place names being run together vs. spaced out in a
+way it usually isn't for other place-name shapes. Added
+`_spacing_variants(name)` (pure): if `name` has no space, tries
+inserting one before any of a short list of common Swedish place-name
+suffix morphemes it ends with (`_SWEDISH_COMPOUND_SUFFIXES` - gård,
+väg, gatan, gata, torg, holm, berg, dal, näs, sund, kyrka, backen; not
+exhaustive, same "extend as new real gaps show up" approach
+`voice_query.py`'s own `_PATTERNS` list already takes); if `name`
+already has a space, also tries the fully concatenated form. Split
+`forward_geocode()`'s single HTTP-request/response logic out into
+`_forward_geocode_query()` so `forward_geocode()` itself just loops
+`_spacing_variants(name)` and returns the first genuine match - the
+literal query is always tried first, so the common case (no variant
+needed) costs nothing extra. A network/parse failure still propagates
+immediately without trying further variants (no point retrying
+spellings against an unreachable service); only a genuine "no match"
+triggers the next variant.
+
+**Known limitation, not fixed here**: some common single-word Swedish
+place names (e.g. "Stockholm", which ends in "holm") also happen to
+end in one of `_SWEDISH_COMPOUND_SUFFIXES`, so `_spacing_variants()`
+generates a harmless-but-unnecessary "Stock holm" variant for them.
+Harmless in practice - `forward_geocode()` tries the literal name
+first and it always matches immediately, so the bogus variant is never
+actually queried - but worth knowing about if this list grows.
+
+**Tests**: 4 new tests in `test_voice_asr.py` for
+`known_places_from_config()` (missing file, one-per-line, blank/#
+skipping, whitespace stripping - uses real tmp_path I/O, unlike the
+rest of that file's plain-assert pure-function tests). 9 new tests in
+`test_geocoding.py` for `_spacing_variants()` (suffix insertion,
+concatenation, no-match passthrough, degenerate all-suffix input) and
+`forward_geocode()`'s variant retry (falls back correctly, doesn't
+over-query when the literal already matches, returns None when no
+variant matches - via a new `_fake_urlopen_by_query()` helper keyed on
+the request's actual `q=` value, since the existing stateless
+`_fake_urlopen()` can't express "this spelling matches, that one
+doesn't"). Two pre-existing tests needed updating for the new,
+correct behavior: `test_load_or_forward_geocode_caches_genuine_no_result`
+now expects 2 captured requests instead of 1 (the query has a space,
+so the concatenated-variant retry genuinely fires once, before the
+cache kicks in for the second call) - not a regression, the extra
+request is the whole point of the fix. Verified via a standalone
+harness (`ast.parse()` + a hand-rolled `pytest`/`tomllib` stub, this
+sandbox's usual no-pytest/no-tomllib-on-3.10 workaround) - all 19
+`test_voice_asr.py` and all 22 `test_geocoding.py` tests pass. No
+network access to the real Nominatim API from this sandbox to verify
+the geocoding assumption directly - Christer should confirm both
+"Vårby gård" and "Vårbygård" resolve correctly on his own machine.
