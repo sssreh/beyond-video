@@ -20175,3 +20175,39 @@ expectations. Template verified via a real Jinja2 render
 (`place-preview`/`geocode-preview` markers present in output) and the
 new inline JS verified with `node --check`. `ast.parse()` clean on
 `app.py`.
+
+## Note: LLM-understood complex/OR searches in bv-search (future improvement)
+
+Christer asked about "or" options in bv-search - e.g. searching for
+multiple alternative text terms, or matching if text OR place/GPS
+matches rather than requiring both. Current state: `cli/bv_search.py`'s
+`_run()` ANDs every given criterion (Text, Near/Place+Radius, time
+range all must match if given - see the loop in `_run()` around
+`search_text()`/`search_near()`). Plain-text OR *within* the Text
+field is already possible today via the existing `regex` option
+(`search.py`'s `search_text()` compiles the pattern with `re.compile()`
+when `--regex`/the "Treat text as a regular expression" checkbox is
+set) - e.g. `roundabout|bridge` - but there's no OR *between*
+different criteria (text vs. place vs. time), and no way to OR
+multiple places in one run.
+
+Christer's own framing: "I can live with it as is for now, but in the
+future i would like the llm, to understand complex searches" - i.e.
+not interested in a special "OR mode" checkbox/UI right now, but
+wants a natural-language path where a query like "find clips near
+Slussen or with 'roundabout' in the description" gets parsed into the
+right combination of criteria automatically. This lines up with
+`web/voice_llm.py`'s existing extraction step (already the primary
+parser for voice search - see the "Make voice_llm.py the primary
+voice-search parser" entry above) as the natural place to extend:
+today it only extracts a single flat
+text/place/radius_meters/timestamp/from_/until result; genuinely
+understanding "or" would mean extending that into a small structured
+query (e.g. a list of alternative clauses, each with its own
+text/place/radius) and extending `search.py`'s matching loop to
+evaluate OR-of-AND-groups instead of a single flat AND. Also relevant
+if picked up: whether this becomes voice-only (matching the existing
+LLM-primary voice search) or also reachable by typing a query directly
+into the web form.
+
+**Not implemented** - noted here for when Christer wants to build it.
