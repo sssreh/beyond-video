@@ -27,6 +27,7 @@ from blackvue.trip.place_knowledge import build_common_places
 from blackvue.trip.place_knowledge import build_knowledge_base
 from blackvue.trip.place_knowledge import bulk_assign_undecided_trips
 from blackvue.trip.place_knowledge import dwell_at_destination
+from blackvue.trip.place_knowledge import group_trips_by_place
 from blackvue.trip.place_knowledge import load_knowledge_base
 from blackvue.trip.place_knowledge import local_weekday_and_time
 from blackvue.trip.place_knowledge import place_key
@@ -38,6 +39,7 @@ from blackvue.trip.trip import Trip
 
 HOME = (59.3050, 18.1010)
 PLACE_A = (59.3600, 18.0000)
+PLACE_B = (59.4200, 17.9200)
 
 
 class FakeRecordingId:
@@ -346,6 +348,61 @@ def test_bulk_assign_undecided_trips_preserves_unrelated_existing_overrides():
     )
 
     assert updated == {"trip_elsewhere": "fru", "trip_in_range": "christer"}
+
+
+def _entry_at(place_point, day, *, trip_label, source="undecided"):
+    """Same shape as _entry_on() above but lets the caller pick which
+    place the trip resolves to - needed for group_trips_by_place()'s
+    own tests, which (unlike the bulk-assign tests) care about more
+    than one distinct place."""
+
+    entry = _knowledge_entry(place_point, "long", 40.0)
+    start = datetime(2026, 8, day, 8, 0)
+    return entry.__class__(
+        **{
+            **entry.__dict__,
+            "trip_label": trip_label,
+            "start_time": start,
+            "end_time": start,
+            "source": source,
+        }
+    )
+
+
+def test_group_trips_by_place_groups_by_away_place_key():
+    trip_a1 = _entry_at(PLACE_A, 5, trip_label="trip_a1")
+    trip_a2 = _entry_at(PLACE_A, 10, trip_label="trip_a2")
+    trip_b1 = _entry_at(PLACE_B, 7, trip_label="trip_b1")
+
+    grouped = group_trips_by_place([trip_a1, trip_a2, trip_b1])
+
+    assert set(grouped.keys()) == {place_key(PLACE_A), place_key(PLACE_B)}
+    assert {e.trip_label for e in grouped[place_key(PLACE_A)]} == {"trip_a1", "trip_a2"}
+    assert [e.trip_label for e in grouped[place_key(PLACE_B)]] == ["trip_b1"]
+
+
+def test_group_trips_by_place_sorts_most_recent_first():
+    earliest = _entry_at(PLACE_A, 1, trip_label="trip_earliest")
+    latest = _entry_at(PLACE_A, 20, trip_label="trip_latest")
+    middle = _entry_at(PLACE_A, 10, trip_label="trip_middle")
+
+    grouped = group_trips_by_place([earliest, latest, middle])
+
+    assert [e.trip_label for e in grouped[place_key(PLACE_A)]] == [
+        "trip_latest",
+        "trip_middle",
+        "trip_earliest",
+    ]
+
+
+def test_group_trips_by_place_skips_trips_with_no_away_place_key():
+    entry = _entry_at(PLACE_A, 5, trip_label="trip_a")
+    no_away = entry.__class__(**{**entry.__dict__, "away_place_key": None})
+
+    grouped = group_trips_by_place([entry, no_away])
+
+    assert sum(len(v) for v in grouped.values()) == 1
+    assert grouped[place_key(PLACE_A)][0].trip_label == "trip_a"
 
 
 def test_build_knowledge_base_end_to_end_with_real_trip_objects():

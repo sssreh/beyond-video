@@ -79,6 +79,89 @@ driver KB</a> first.</p>
       <td><button type="submit">Save</button></td>
       </form>
     </tr>
+    <tr class="place-trips-row">
+      <td colspan="5">
+        {% set trips_here = place_trips.get(place.key, []) %}
+        <details>
+          <summary>{{ trips_here|length }} trip(s) - show</summary>
+          {% if trips_here %}
+          <table>
+            <thead>
+              <tr>
+                <th>Trip</th>
+                <th>Weekday</th>
+                <th>Time</th>
+                <th>Stay</th>
+                <th>Candidates</th>
+                <th>Start</th>
+                <th>Stop</th>
+                <th>Driver</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for trip in trips_here %}
+              <tr id="place-trip-{{ trip.trip_label }}">
+                <td>{{ trip.start_time.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td>{{ trip.weekday }}</td>
+                <td>{{ trip.start_time_of_day }}</td>
+                <td>
+                  {% if trip.stop_category %}
+                  {{ trip.stop_category }}{% if trip.dwell_minutes is not none %} ({{ "%.0f"|format(trip.dwell_minutes) }} min){% endif %}
+                  {% else %}
+                  &mdash;
+                  {% endif %}
+                </td>
+                <td>
+                  {% if trip.candidates %}
+                  {% for candidate in trip.candidates %}
+                  {{ candidate.display_name }} ({{ "%.0f"|format(candidate.confidence * 100) }}%){% if not loop.last %}, {% endif %}
+                  {% endfor %}
+                  {% else %}
+                  &mdash;
+                  {% endif %}
+                </td>
+                {% set p_addresses = place_trip_addresses.get(trip.trip_label, (none, none)) %}
+                <td>
+                  {% if trip.start_point %}
+                  {% set p_start_label = p_addresses[0] or ("%.4f"|format(trip.start_point[0]) ~ ", " ~ "%.4f"|format(trip.start_point[1])) %}
+                  <a href="https://www.google.com/maps?q={{ trip.start_point[0] }},{{ trip.start_point[1] }}" target="_blank" rel="noopener">{{ p_start_label }}</a>
+                  {% else %}
+                  &mdash;
+                  {% endif %}
+                  {% if trip.camera_id and trip.first_recording_id %}
+                  <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}">Video</a></div>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if trip.end_point %}
+                  {% set p_stop_label = p_addresses[1] or ("%.4f"|format(trip.end_point[0]) ~ ", " ~ "%.4f"|format(trip.end_point[1])) %}
+                  <a href="https://www.google.com/maps?q={{ trip.end_point[0] }},{{ trip.end_point[1] }}" target="_blank" rel="noopener">{{ p_stop_label }}</a>
+                  {% else %}
+                  &mdash;
+                  {% endif %}
+                  {% if trip.camera_id and trip.last_recording_id %}
+                  <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}">Video</a></div>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if trip.driver_label %}
+                  {{ driver_display_by_label.get(trip.driver_label, trip.driver_label) }}
+                  <div class="hint">{{ trip.source }}</div>
+                  {% else %}
+                  &mdash; undecided &mdash;
+                  <div class="hint"><a href="#trip-{{ trip.trip_label }}">assign below</a></div>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <p class="empty">No trips recorded for this place yet.</p>
+          {% endif %}
+        </details>
+      </td>
+    </tr>
     {% endfor %}
   </tbody>
 </table>

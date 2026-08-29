@@ -20634,3 +20634,35 @@ assign_undecided_trips()` got 3 new tests in `test_place_knowledge.py`
 overrides) - all 22 place_knowledge tests pass under the usual harness.
 `app.py`'s new route is untestable here (no fastapi), verified via
 `ast.parse()` + manual review only, same as always.
+
+Third ask in the same thread: "common places should show each trip
+with all what that means." A Common Place row's visit/short/long
+counts only ever said how many trips went there, never which ones.
+Added `group_trips_by_place(trips)` to `place_knowledge.py` - a single
+pass that buckets the same `TripKnowledge` entries `build_common_
+places()` already counts by `away_place_key`, sorted most-recent-first
+within each place. `drivers_page()` in `app.py` calls it once
+(`place_trips`), reverse-geocodes every one of those trips' start/stop
+points the same way the Specific trips table's `trip_addresses` does
+(`place_trip_addresses`), and builds a `driver_display_by_label`
+lookup so a resolved trip's driver shows as a name instead of the raw
+`driverN` label. `drivers.html` renders a collapsed `<details>` row
+under each place ("N trip(s) - show") containing a full per-trip table
+- same columns as Specific trips (date, weekday, time, stay, dwell,
+candidates, start/stop with Maps links + a separate Video link,
+driver) - but covering every trip at that place regardless of whether
+it's already resolved, not just undecided ones. An undecided trip
+found here links down to its own editable row in Specific trips
+(`#trip-{trip_label}`) rather than duplicating a driver `<select>` a
+second time in two places.
+
+Verified via the same standalone Jinja2 render harness, extended with
+fake `Place`/`Trip` fixtures deliberately using a trip count that
+differs from `place.visit_count` (to prove the `<details>` summary
+reads off the real per-trip list, not the aggregate counter) - asserts
+on the trip count text, an empty-place message, the nested Maps links,
+and both the resolved-driver-with-source and undecided-with-jump-link
+cases. `group_trips_by_place()` got 3 new tests in `test_place_
+knowledge.py` (groups by place, sorts most-recent-first, skips trips
+with no away_place_key) - all 25 place_knowledge tests pass under the
+usual harness.

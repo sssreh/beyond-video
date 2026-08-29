@@ -130,6 +130,7 @@ from ..trip.driver_detect import default_driver_profiles_path
 from ..trip.driver_detect import load_driver_profiles
 from ..trip.place_knowledge import bulk_assign_undecided_trips
 from ..trip.place_knowledge import default_driver_knowledge_path
+from ..trip.place_knowledge import group_trips_by_place
 from ..trip.place_knowledge import load_knowledge_base
 from ..trip.place_knowledge import reresolve_trip_drivers
 from ..trip.place_knowledge import save_knowledge_base
@@ -766,6 +767,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "places": [],
                     "undecided_place_keys": set(),
                     "undecided_trip_list": [],
+                    "place_trips": {},
+                    "place_trip_addresses": {},
+                    "driver_display_by_label": {},
                     "min_visits": min_visits,
                     "trip_count": 0,
                     "decided_count": 0,
@@ -815,6 +819,31 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             for entry in undecided_trip_list
         }
 
+        # Every trip belonging to each Common Place, most-recent-first -
+        # Christer's own follow-up ask ("common places should show each
+        # trip with all what that means"): the place row's aggregate
+        # visit/short/long counts don't say *which* trips they are, so
+        # this expands each place into its own per-trip list (same
+        # per-trip fields the Specific trips table shows - date,
+        # weekday, time, stay length, driver/candidates, start/stop
+        # addresses with Maps links, video links) rendered as a
+        # collapsed <details> under that place's row. Unlike the
+        # Specific trips table (undecided only), this covers every
+        # trip at the place regardless of whether it's already been
+        # resolved to a driver - that's the whole point of "each trip".
+        place_trips = group_trips_by_place(trips)
+        place_trip_addresses = {
+            entry.trip_label: (
+                _reverse_geocode_or_none(entry.start_point, geocode_cache_dir),
+                _reverse_geocode_or_none(entry.end_point, geocode_cache_dir),
+            )
+            for entries in place_trips.values()
+            for entry in entries
+        }
+        driver_display_by_label = {
+            driver.label: driver.display_name for driver in profiles.drivers
+        }
+
         return templates.TemplateResponse(
             request,
             "drivers.html",
@@ -827,6 +856,9 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "undecided_place_keys": undecided_place_keys,
                 "undecided_trip_list": undecided_trip_list,
                 "trip_addresses": trip_addresses,
+                "place_trips": place_trips,
+                "place_trip_addresses": place_trip_addresses,
+                "driver_display_by_label": driver_display_by_label,
                 "min_visits": min_visits,
                 "trip_count": len(trips),
                 "decided_count": sum(

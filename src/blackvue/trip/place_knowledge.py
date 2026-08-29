@@ -624,6 +624,28 @@ def undecided_trips(trips: Sequence[TripKnowledge]) -> list[TripKnowledge]:
     return [entry for entry in trips if entry.source == "undecided"]
 
 
+def group_trips_by_place(
+    trips: Sequence[TripKnowledge],
+) -> dict[str, list[TripKnowledge]]:
+    """Every trip that resolved to a given away-place, keyed by
+    CommonPlace.key and sorted most-recent-first - Christer's own
+    follow-up ask ("common places should show each trip with all what
+    that means"): a CommonPlace row's visit_count/short_stay_count/
+    long_stay_count only say *how many* trips went there, not *which*
+    ones, so the web form groups the same TripKnowledge entries
+    build_common_places() already counts back out into actual per-trip
+    lists to show under each place."""
+
+    grouped: dict[str, list[TripKnowledge]] = {}
+    for entry in trips:
+        if entry.away_place_key is None:
+            continue
+        grouped.setdefault(entry.away_place_key, []).append(entry)
+    for entries in grouped.values():
+        entries.sort(key=lambda entry: entry.start_time, reverse=True)
+    return grouped
+
+
 # --------------------------------------------------------------------
 # I/O wrappers
 # --------------------------------------------------------------------
