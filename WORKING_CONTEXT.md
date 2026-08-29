@@ -19593,3 +19593,43 @@ comparing: no test coverage for `_generate_via_scene_model()`/
 `_generate_via_small_text_model()` themselves (needs real hardware);
 the scene-keyword/asset-restriction extraction extension explicitly
 deferred by design decision 3 above.
+
+## Back-link on job report pages (2026-08-29)
+
+Christer: "i would like to have a return link after a search report" -
+after viewing a job's output page (e.g. a bv-search "search report"),
+there was no way back to the form that started it except the browser's
+Back button or the top nav.
+
+`job_detail.html` (`web/templates/job_detail.html`) is the one shared
+template for every job type's output page - bv-config, bv-gps,
+bv-download, bv-ls, bv-generate, bv-lock, bv-scribe, bv-export, and
+bv-search all render through it - so rather than a bv-search-only
+special case, the fix is generic and benefits every job type. It rests
+on an already-true fact confirmed by grepping `jobs.py`: every
+`start_bv_*()` method sets `command=f"bv-... {...}"` (e.g.
+`start_bv_search()` at jobs.py:1309 sets `command=f"bv-search
+{camera_id}"`), and every one of those same command names has a
+matching `@app.get("/jobs/bv-...")` "start a new job" route registered
+in `app.py` (e.g. `/jobs/bv-search`). So `job.command`'s first word
+always names a real "go back and start another one of these" URL.
+
+`job_detail()` (app.py) now computes `command_name =
+job.command.split(maxsplit=1)[0]` and passes `back_link_url =
+f"/jobs/{command_name}"` plus `back_link_label` (a friendlier label
+than the bare command name, via a new `JOB_NEW_LABELS` dict mirroring
+the wording already used for each command's tab in `base.html`'s
+`<nav class="tabs">`, e.g. "bv-search" -> "Search") into the template
+context. `job_detail.html` renders `<p class="back-link"><a
+href="{{ back_link_url }}">&larr; {{ back_link_label }}</a></p>`
+immediately after `{% block content %}`, matching the exact
+`.back-link` markup/position/CSS-class convention every other
+detail page in this app already uses (`trip_detail.html`,
+`archive_recording_detail.html`, `history_detail.html`, etc.) - no new
+CSS needed, `base.html`'s existing `.back-link` styling applies as-is.
+
+Verified via `ast.parse()` on `app.py` and
+`jinja2.Environment.parse()` on `job_detail.html` (both clean); no
+`TestClient`-based route test added, same "no `fastapi` in this dev
+sandbox" constraint documented throughout this file and in
+`test_app_routes.py`'s own docstring.

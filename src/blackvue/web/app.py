@@ -187,6 +187,29 @@ TAIL_LINE_COUNT = 30
 # voice list before re-fetching - see that route's own docstring.
 TTS_VOICE_CACHE_SECONDS = 300
 
+# job_detail.html's own back-link (Christer: "i would like to have a
+# return link after a search report"): every job type's Job.command
+# starts with the exact same command name its "start a new job" route
+# is registered under (see each start_bv_*() call's own
+# `command=f"bv-... {...}"` in jobs.py, and the matching
+# `@app.get("/jobs/bv-...")` routes below) - so job_detail() can build
+# one generic "back to the form that started this" link for every job
+# type, not just bv-search, just by taking the first word of
+# job.command. This dict only supplies a friendlier label than the
+# bare command name; it mirrors the wording already used for each
+# command's tab in base.html's <nav class="tabs">.
+JOB_NEW_LABELS = {
+    "bv-config": "Set up camera",
+    "bv-gps": "GPS Current loc",
+    "bv-download": "Download recordings",
+    "bv-ls": "List recordings",
+    "bv-generate": "Generate assets",
+    "bv-lock": "Lock ranges",
+    "bv-scribe": "Describe scenes",
+    "bv-export": "Export trips",
+    "bv-search": "Search",
+}
+
 
 def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     """Build the bv-web FastAPI app.
@@ -2784,12 +2807,18 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             job_status, output, tail_requested
         )
         camera_id = _job_camera_id(job)
+        # See JOB_NEW_LABELS' own comment: job.command always starts
+        # with the same command name its "new job" form is registered
+        # under, e.g. "bv-search cam1" -> "/jobs/bv-search".
+        command_name = job.command.split(maxsplit=1)[0]
         response = templates.TemplateResponse(
             request,
             "job_detail.html",
             {
                 "user": user,
                 "job": job,
+                "back_link_url": f"/jobs/{command_name}",
+                "back_link_label": JOB_NEW_LABELS.get(command_name, command_name),
                 # .value, not the raw JobStatus - a `str, Enum` member's
                 # own __str__ renders as "JobStatus.RUNNING", not the
                 # plain "running" the template's CSS classes and

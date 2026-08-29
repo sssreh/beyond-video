@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ job.command }} - Beyond Video{% endblock %}
 {% block content %}
+<p class="back-link"><a href="{{ back_link_url }}">&larr; {{ back_link_label }}</a></p>
 {% if status == "running" and not paused %}
 {# Was a plain <meta http-equiv="refresh" content="2"> full-page
    reload - see the JS poll loop further down for why that got
