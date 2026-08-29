@@ -274,6 +274,23 @@ class TripKnowledge:
     display_name: str | None = None
     confidence: float = 0.0
     source: str = "undecided"
+    # The trip's own start/end GPS points (as opposed to away_point,
+    # which is whichever single end is away from home) plus the
+    # camera id and first/last recording id needed to link straight to
+    # a trip's first and last video - Christer's own follow-up ask
+    # ("a link to first and last video with the adress of start and
+    # stop"). All five default to None so a pre-existing
+    # driver_knowledge.json (written before this field set existed)
+    # still loads - see _trip_from_dict()'s own .get() calls below.
+    # bv-web's /drivers page reverse-geocodes start_point/end_point
+    # live (same load_or_reverse_geocode() the archive browser's own
+    # /location route already uses) rather than this module doing that
+    # I/O itself - see this module's docstring for why it stays pure.
+    start_point: tuple[float, float] | None = None
+    end_point: tuple[float, float] | None = None
+    first_recording_id: str | None = None
+    last_recording_id: str | None = None
+    camera_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -304,6 +321,8 @@ def _raw_trip_knowledge(
     fixes: Sequence[TripFix],
     profiles: DriverProfiles,
     known_points: dict[str, tuple[float, float]],
+    *,
+    camera_id: str | None = None,
 ) -> list[TripKnowledge]:
     home = known_points.get("home")
     home_radius = profiles.home_radius_meters
@@ -340,6 +359,11 @@ def _raw_trip_knowledge(
                 dwell_minutes=dwell,
                 stop_category=category,
                 candidates=candidates,
+                start_point=trip_fix.start,
+                end_point=trip_fix.end,
+                first_recording_id=trip.first_recording.id.value,
+                last_recording_id=trip.last_recording.id.value,
+                camera_id=camera_id,
             )
         )
 
@@ -457,15 +481,21 @@ def build_knowledge_base(
     *,
     existing_places: dict[str, CommonPlace] | None = None,
     trip_overrides: dict[str, str] | None = None,
+    camera_id: str | None = None,
 ) -> tuple[list[TripKnowledge], dict[str, CommonPlace]]:
     """The whole pure pipeline: raw per-trip fields -> common places
     (carrying forward `existing_places`' own labels/rules) -> each
     trip resolved to a driver via the order _resolve_trip_driver()
     documents. `fixes` must be the same length as `trips`, in the same
-    chronological order (index-aligned - see resolve_all_trip_fixes())."""
+    chronological order (index-aligned - see resolve_all_trip_fixes()).
+    `camera_id` (the resolved CameraConfig.id bv_drivers.py's own
+    resolve_archive_path() call already produces, or None for a
+    literal/unconfigured archive path) is stamped onto every resulting
+    TripKnowledge so bv-web's /drivers page can link a trip's first/
+    last recording straight to /archive/{camera_id}/{recording_id}."""
 
     trip_overrides = trip_overrides or {}
-    raw = _raw_trip_knowledge(trips, fixes, profiles, known_points)
+    raw = _raw_trip_knowledge(trips, fixes, profiles, known_points, camera_id=camera_id)
     places = build_common_places(raw, existing=existing_places)
     resolved = [
         _resolve_trip_driver(
@@ -635,6 +665,11 @@ def _trip_to_dict(entry: TripKnowledge) -> dict:
         "display_name": entry.display_name,
         "confidence": entry.confidence,
         "source": entry.source,
+        "start_point": list(entry.start_point) if entry.start_point is not None else None,
+        "end_point": list(entry.end_point) if entry.end_point is not None else None,
+        "first_recording_id": entry.first_recording_id,
+        "last_recording_id": entry.last_recording_id,
+        "camera_id": entry.camera_id,
     }
 
 
@@ -660,6 +695,19 @@ def _trip_from_dict(data: dict) -> TripKnowledge:
         display_name=data.get("display_name"),
         confidence=float(data.get("confidence", 0.0)),
         source=data.get("source", "undecided"),
+        start_point=(
+            (float(data["start_point"][0]), float(data["start_point"][1]))
+            if data.get("start_point") is not None
+            else None
+        ),
+        end_point=(
+            (float(data["end_point"][0]), float(data["end_point"][1]))
+            if data.get("end_point") is not None
+            else None
+        ),
+        first_recording_id=data.get("first_recording_id"),
+        last_recording_id=data.get("last_recording_id"),
+        camera_id=data.get("camera_id"),
     )
 
 

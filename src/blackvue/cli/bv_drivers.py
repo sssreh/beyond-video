@@ -268,9 +268,11 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         trip_overrides = existing[2] if existing is not None else {}
 
         resolve_start = time.monotonic()
+        camera_id = camera_config.id if camera_config is not None else None
         resolved, places = build_knowledge_base(
             trips, fixes, profiles, known_points,
             existing_places=existing_places, trip_overrides=trip_overrides,
+            camera_id=camera_id,
         )
         if args.debug:
             say(

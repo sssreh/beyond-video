@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timezone
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -36,6 +37,7 @@ from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _job_snapshot_path
 from blackvue.web.app import _recent_web_runs
 from blackvue.web.app import _reuse_defaults
+from blackvue.web.app import _reverse_geocode_or_none
 from blackvue.web.app import _selected_graph_fields
 from blackvue.web.app import _selected_stat_fields
 from blackvue.web.app import _slugify
@@ -780,3 +782,48 @@ def test_slugify_accepts_non_string_bucket_keys():
     # from Jinja where a stray int/None wouldn't be shocking - make
     # sure it degrades gracefully rather than raising.
     assert _slugify(2026) == "2026"
+
+
+# --------------------------------------------------------------------
+# _reverse_geocode_or_none() - drivers_page()'s own address helper
+# (Christer: "i also need an address for Place near 59.298, 18.087" /
+# "not for that specific address all of them in the list") - same
+# load_or_reverse_geocode()-with-cache call _describe_gps_fix() already
+# makes for the archive browser's /location route, just for a plain
+# (lat, lon) point rather than a GpsFix, and degrading to None instead
+# of a separate address_error string (drivers.html just omits the
+# address line rather than rendering per-row error text).
+# --------------------------------------------------------------------
+
+
+def test_reverse_geocode_or_none_returns_none_for_missing_point():
+    assert _reverse_geocode_or_none(None, Path("/unused")) is None
+
+
+def test_reverse_geocode_or_none_returns_the_geocoded_address(monkeypatch):
+    import blackvue.web.app as app_module
+
+    captured = {}
+
+    def fake_geocode(lat, lon, cache_dir):
+        captured["args"] = (lat, lon, cache_dir)
+        return "Some Street 1, Stockholm"
+
+    monkeypatch.setattr(app_module, "load_or_reverse_geocode", fake_geocode)
+
+    result = _reverse_geocode_or_none((59.298, 18.087), Path("/cache"))
+
+    assert result == "Some Street 1, Stockholm"
+    assert captured["args"] == (59.298, 18.087, Path("/cache"))
+
+
+def test_reverse_geocode_or_none_degrades_to_none_on_media_tool_error(monkeypatch):
+    import blackvue.web.app as app_module
+    from blackvue.generate.media import MediaToolError
+
+    def fake_geocode(lat, lon, cache_dir):
+        raise MediaToolError("Nominatim unreachable")
+
+    monkeypatch.setattr(app_module, "load_or_reverse_geocode", fake_geocode)
+
+    assert _reverse_geocode_or_none((59.298, 18.087), Path("/cache")) is None

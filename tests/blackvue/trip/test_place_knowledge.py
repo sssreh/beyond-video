@@ -42,6 +42,13 @@ PLACE_A = (59.3600, 18.0000)
 class FakeRecordingId:
     def __init__(self, timestamp: datetime) -> None:
         self.timestamp = timestamp
+        # _raw_trip_knowledge() reads first_recording.id.value/
+        # last_recording.id.value (for the video-link fields added
+        # alongside start_point/end_point) the same way the real
+        # RecordingId.value is read elsewhere - a plain deterministic
+        # stand-in is enough for these tests, it never has to parse
+        # back into a real RecordingId.
+        self.value = f"{timestamp:%Y%m%d_%H%M%S}"
 
 
 class FakeRecording:
@@ -291,6 +298,7 @@ def test_build_knowledge_base_end_to_end_with_real_trip_objects():
 
     resolved, places = build_knowledge_base(
         [trip_a, trip_b], [outbound_fix, inbound_fix], profiles, {"home": HOME},
+        camera_id="kirby",
     )
 
     assert len(resolved) == 2
@@ -302,6 +310,33 @@ def test_build_knowledge_base_end_to_end_with_real_trip_objects():
     assert resolved[0].stop_category == "long"
     assert len(places) == 1
     assert next(iter(places.values())).visit_count == 2
+
+    # start_point/end_point/first_recording_id/last_recording_id/
+    # camera_id (task: link to first/last video + address of start
+    # and stop) - trip_a is single-recording (make_trip() builds a
+    # one-recording Trip), so its own start/end fix and first/last
+    # recording id are the same outbound_fix/single recording.
+    assert resolved[0].start_point == HOME
+    assert resolved[0].end_point == PLACE_A
+    assert resolved[0].first_recording_id == f"{t0:%Y%m%d_%H%M%S}"
+    assert resolved[0].last_recording_id == f"{t0:%Y%m%d_%H%M%S}"
+    assert resolved[0].camera_id == "kirby"
+    assert resolved[1].start_point == PLACE_A
+    assert resolved[1].end_point == HOME
+    assert resolved[1].camera_id == "kirby"
+
+
+def test_build_knowledge_base_defaults_camera_id_to_none():
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+    trip_a = make_trip(t0)
+    outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
+
+    resolved, _ = build_knowledge_base(
+        [trip_a], [outbound_fix], profiles, {"home": HOME},
+    )
+
+    assert resolved[0].camera_id is None
 
 
 def test_save_and_load_knowledge_base_round_trip_preserves_overrides():

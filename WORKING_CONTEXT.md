@@ -20499,3 +20499,84 @@ selection-options list, `docs/WEB_ARCHITECTURE.md` gained a new
 bv_lock.py` added to the job-runner's own `_run()`-dispatch module
 list and the owner-gated job-routes list (both had silently drifted
 out of date for `bv-lock` too, noticed while making this edit).
+
+**Follow-up (same day): addresses, video links, and the scroll-jump
+fix.** Three more asks from Christer, all on `/drivers`: "i also need
+an address for Place near 59.298, 18.087" -> "not for that specific
+address all of them in the list" (every common place, not one), "i
+dont want to scroll down every time i save a driver [for either
+table]", and "a link to first and last video with the adress of start
+and stop" for each Specific-trips row.
+
+Addresses: rather than persisting geocoded strings into `driver_
+knowledge.json` (which would make `place_knowledge.py` do network I/O,
+breaking its "pure computation module" contract), `drivers_page()`
+reverse-geocodes live at render time - a new `_reverse_geocode_or_none()`
+helper in `app.py` wraps `export/geocoding.py`'s existing `load_or_
+reverse_geocode()` (same on-disk-cached call `_describe_gps_fix()`
+already makes for the archive browser's `/location` route), degrading
+to `None` on a missing point or `MediaToolError` instead of raising.
+Called once per `CommonPlace.point` (all of them, not just the one
+Christer originally asked about) and once each for every undecided
+trip's start/stop point - only undecided trips, since those are the
+only rows the Specific-trips table renders; a trip with a resolved
+driver is never geocoded at all. The Nominatim response cache (keyed
+by lat/lon, already shared with every other reverse-geocode call in
+this project) means only the first page load after a rebuild pays the
+real network cost - every reload after that is instant.
+
+Video links + start/stop addresses required extending `TripKnowledge`
+itself: it previously stored only `away_point` (whichever single end
+of a trip is away from home, for place-clustering), not both raw
+endpoints or which recording they came from. Added five new fields,
+all defaulting to `None` so old `driver_knowledge.json` files without
+them still load: `start_point`/`end_point` (the trip's own `TripFix.
+start`/`.end`, independent of which end is "away"), `first_recording_
+id`/`last_recording_id` (`trip.first_recording.id.value`/`.last_
+recording.id.value`), and `camera_id` (threaded in from `bv_drivers.
+py`'s already-resolved `camera_config.id`, `None` when `bv-drivers`
+was pointed at a literal path with no matching camera config).
+`build_knowledge_base()`/`_raw_trip_knowledge()` both gained an
+optional `camera_id` kwarg to stamp onto every trip; `_trip_to_dict()`/
+`_trip_from_dict()` serialize/deserialize all five. `drivers.html`
+links each undecided trip's first/last video straight to `/archive/
+{camera_id}/{recording_id}` (the existing archive-browser detail page)
+with the reverse-geocoded address as the link text, falling back to
+plain "First video"/"Last video" text when geocoding comes back empty,
+and to a bare em-dash when `camera_id` is `None` (no video to link to,
+but the address - if any - is still shown as plain text).
+
+Scroll-jump fix: both `drivers_update_place()` and `drivers_update_
+trip()` used to `RedirectResponse(url="/drivers", ...)` unconditionally
+after a save, landing back at the page top regardless of where in a
+long table Christer was working. Each table row in `drivers.html` now
+carries a stable `id` (`place-{key}` / `trip-{trip_label}` - `trip_
+label` is already a safe `trip_<start>_<end>` string, no encoding
+needed), and both redirects now target `/drivers#place-{key}` /
+`/drivers#trip-{trip_label}` instead of a bare `/drivers` - a URL
+fragment is never sent to the server (so the 303 redirect itself is
+unaffected) but the browser still scrolls to that anchor once the
+redirected page loads, the same trick used all over the web for
+"stay where you were" after a form POST.
+
+Tests: `tests/blackvue/trip/test_place_knowledge.py` gained two new
+cases on the existing end-to-end `build_knowledge_base()` test (asserts
+`start_point`/`end_point`/`first_recording_id`/`last_recording_id`/
+`camera_id` all come through correctly for both legs of a round trip)
+plus a `camera_id` defaults-to-`None` test; `FakeRecordingId` gained a
+`.value` field (a plain `f"{timestamp:%Y%m%d_%H%M%S}"` stand-in) since
+`_raw_trip_knowledge()` now reads `first_recording.id.value`. `tests/
+blackvue/web/test_app_reuse.py` gained three tests for `_reverse_
+geocode_or_none()` (missing point -> `None`, successful geocode ->
+returned as-is with the right args forwarded, `MediaToolError` ->
+`None`), monkeypatching `blackvue.web.app.load_or_reverse_geocode`
+directly. `drivers.html`'s new markup (row `id`s, address display,
+video links, the new Start/Stop columns) was verified via a real
+Jinja2 render with fake place/trip objects (including a `camera_id=
+None` trip, to exercise the em-dash fallback) - all 19 place_knowledge
+tests, all 10 bv_drivers CLI tests, and the template render pass under
+this sandbox's usual `/tmp/stublibs/tomllib` + hand-rolled fixture-
+harness workaround (still no pytest/fastapi available here, so `test_
+app_reuse.py`'s three new tests are verified by `ast.parse()` +
+manual review only, consistent with how that whole file has always had
+to be handled in this sandbox).

@@ -785,6 +785,34 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             undecided_trips(trips), key=lambda entry: entry.start_time, reverse=True
         )
 
+        # Reverse-geocoded address per place (keyed by CommonPlace.key)
+        # and per undecided trip's start/stop point (keyed by
+        # trip_label) - Christer's own follow-up asks ("i also need an
+        # address for Place ... not for that specific address all of
+        # them in the list" and "a link to first and last video with
+        # the adress of start and stop"). Computed live here, the same
+        # load_or_reverse_geocode()-with-on-disk-cache call the
+        # archive browser's own /location route already makes (see
+        # _describe_gps_fix()) rather than persisted into
+        # driver_knowledge.json - place_knowledge.py stays a pure,
+        # network-free module (see its own docstring) and the cache
+        # itself already makes every address after the first page load
+        # free. Only undecided trips are geocoded (not every trip in
+        # the archive) - the only ones this page's Specific trips table
+        # actually shows.
+        geocode_cache_dir = default_config_dir() / ".osm_cache"
+        place_addresses = {
+            place.key: _reverse_geocode_or_none(place.point, geocode_cache_dir)
+            for place in places_sorted
+        }
+        trip_addresses = {
+            entry.trip_label: (
+                _reverse_geocode_or_none(entry.start_point, geocode_cache_dir),
+                _reverse_geocode_or_none(entry.end_point, geocode_cache_dir),
+            )
+            for entry in undecided_trip_list
+        }
+
         return templates.TemplateResponse(
             request,
             "drivers.html",
@@ -793,8 +821,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "built": True,
                 "driver_choices": driver_choices,
                 "places": places_sorted,
+                "place_addresses": place_addresses,
                 "undecided_place_keys": undecided_place_keys,
                 "undecided_trip_list": undecided_trip_list,
+                "trip_addresses": trip_addresses,
                 "min_visits": min_visits,
                 "trip_count": len(trips),
                 "decided_count": sum(
@@ -837,7 +867,16 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 trip_overrides=trip_overrides,
             )
 
-        return RedirectResponse(url="/drivers", status_code=status.HTTP_303_SEE_OTHER)
+        # #place-{key} fragment (matching drivers.html's own row id) so
+        # the browser lands back on the row Christer just edited
+        # instead of scrolling to the top of a possibly long page -
+        # Christer: "i dont want to scroll down every time i save a
+        # driver. And that also goes for common places." A fragment is
+        # never sent to the server, but browsers still apply it
+        # client-side after following a redirect.
+        return RedirectResponse(
+            url=f"/drivers#place-{key}", status_code=status.HTTP_303_SEE_OTHER
+        )
 
     @app.post("/drivers/trips/{trip_label}")
     async def drivers_update_trip(
@@ -869,7 +908,12 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 trip_overrides=trip_overrides,
             )
 
-        return RedirectResponse(url="/drivers", status_code=status.HTTP_303_SEE_OTHER)
+        # Same #trip-{label} scroll-position fix as
+        # drivers_update_place() above, keyed to drivers.html's
+        # specific-trips row id instead.
+        return RedirectResponse(
+            url=f"/drivers#trip-{trip_label}", status_code=status.HTTP_303_SEE_OTHER
+        )
 
     @app.get("/archive", response_class=HTMLResponse)
     async def archive_camera_list(
@@ -3819,6 +3863,24 @@ def _find_camera_adapter_id(cache: CameraConfigCache, camera_id: str) -> str:
         )
 
     return config.adapter
+
+
+def _reverse_geocode_or_none(
+    point: tuple[float, float] | None, geocode_cache_dir: Path
+) -> str | None:
+    """load_or_reverse_geocode() for a plain (lat, lon) point (as
+    opposed to _describe_gps_fix()'s GpsFix), degrading to None on a
+    missing point or a MediaToolError (Nominatim unreachable, etc.) -
+    used by drivers_page() to address every common place and undecided
+    trip start/stop point without a failed lookup 500ing the whole
+    /drivers page."""
+
+    if point is None:
+        return None
+    try:
+        return load_or_reverse_geocode(point[0], point[1], geocode_cache_dir)
+    except MediaToolError:
+        return None
 
 
 def _describe_gps_fix(

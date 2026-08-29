@@ -39,12 +39,15 @@ driver KB</a> first.</p>
   </thead>
   <tbody>
     {% for place in places %}
-    <tr>
+    <tr id="place-{{ place.key }}">
       <form method="post" action="/drivers/places/{{ place.key }}">
       <td>
         {% if place.key in undecided_place_keys %}<strong title="Common place with no driver rule set yet">&#9888;</strong>{% endif %}
         <input type="text" name="label" value="{{ place.label }}">
         <div class="hint">{{ "%.4f"|format(place.point[0]) }}, {{ "%.4f"|format(place.point[1]) }}</div>
+        {% if place_addresses.get(place.key) %}
+        <div class="hint">{{ place_addresses.get(place.key) }}</div>
+        {% endif %}
       </td>
       <td>{{ place.visit_count }}</td>
       <td>
@@ -100,12 +103,14 @@ driver KB</a> first.</p>
       <th>Time</th>
       <th>Stay</th>
       <th>Candidates</th>
+      <th>Start</th>
+      <th>Stop</th>
       <th>Driver</th>
     </tr>
   </thead>
   <tbody>
     {% for trip in undecided_trip_list %}
-    <tr>
+    <tr id="trip-{{ trip.trip_label }}">
       <td>{{ trip.start_time.strftime("%Y-%m-%d %H:%M") }}</td>
       <td>{{ trip.weekday }}</td>
       <td>{{ trip.start_time_of_day }}</td>
@@ -121,6 +126,25 @@ driver KB</a> first.</p>
         {% for candidate in trip.candidates %}
         {{ candidate.display_name }} ({{ "%.0f"|format(candidate.confidence * 100) }}%){% if not loop.last %}, {% endif %}
         {% endfor %}
+        {% else %}
+        &mdash;
+        {% endif %}
+      </td>
+      {% set addresses = trip_addresses.get(trip.trip_label, (none, none)) %}
+      <td>
+        {% if trip.camera_id and trip.first_recording_id %}
+        <a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}">{{ addresses[0] or "First video" }}</a>
+        {% elif addresses[0] %}
+        {{ addresses[0] }}
+        {% else %}
+        &mdash;
+        {% endif %}
+      </td>
+      <td>
+        {% if trip.camera_id and trip.last_recording_id %}
+        <a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}">{{ addresses[1] or "Last video" }}</a>
+        {% elif addresses[1] %}
+        {{ addresses[1] }}
         {% else %}
         &mdash;
         {% endif %}
