@@ -86,18 +86,18 @@
     <p class="hint voice-status" id="voice-status" hidden></p>
     <div class="field voice-llm-choice" id="voice-llm-choice" hidden>
       <label class="field-label" for="voice-llm-model">
-        Also try local-LLM parsing
-        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Experimental: runs the spoken transcript through a local LLM in parallel with the built-in parser above, purely for comparison. Never auto-fills the form by itself - the built-in parser above always does that. Off by default.</span></span>
+        Voice search understanding
+        <span class="help-tip" tabindex="0">?<span class="tooltip-text">Speech-to-text alone doesn't understand what you mean - it just hears words. A local LLM reads the transcript and works out place/radius/dates regardless of phrasing or word order (e.g. "Vårbygård in range of 400 m" as well as "within 400 m of Vårbygård"). Off falls back to a faster but more rigid fixed-pattern parser.</span></span>
       </label>
       <select id="voice-llm-model" name="voice_llm_model">
-        <option value="none" selected>Off</option>
+        <option value="small" selected>Small dedicated text model (default)</option>
         <option value="scene">Reuse scene-description model</option>
-        <option value="small">Small dedicated text model</option>
+        <option value="none">Off (fixed-pattern parser only)</option>
       </select>
     </div>
     <div class="content-panel voice-llm-panel" id="voice-llm-panel" hidden>
       <p class="hint" id="voice-llm-summary"></p>
-      <button type="button" id="voice-llm-apply-btn" class="voice-btn" hidden>Apply LLM values instead</button>
+      <button type="button" id="voice-llm-apply-btn" class="voice-btn" hidden>Use quick pattern-match parse instead</button>
     </div>
     <div class="field-row">
       <div class="field">
@@ -173,31 +173,30 @@ with bv-config</a> first.</p>
 (function () {
   // "Search by voice" - records a short clip via the browser's
   // MediaRecorder API, sends it to POST /jobs/bv-search/transcribe
-  // (a quick synchronous Whisper transcription route, not a
-  // JobRunner background Job - see that route's docstring in
-  // web/app.py), and fills the result into the form as *editable*
-  // fields rather than auto-submitting. Christer's explicit ask: "i
-  // would like to be able to edit the transcript before search".
+  // (a quick synchronous transcription route, not a JobRunner
+  // background Job - see that route's docstring in web/app.py), and
+  // fills the result into the form as *editable* fields rather than
+  // auto-submitting. Christer's explicit ask: "i would like to be able
+  // to edit the transcript before search".
   //
-  // The route does more than raw transcription: a sentence like
-  // "less than 1000 meters from Vårby gård" means a Place+Radius
-  // search, not a literal Text search (Christer's own follow-up
-  // report: dictating exactly that "doesnt understand do do a radius
-  // search" when it just landed in Text), and "videos from last week"
-  // means a Timestamp/From+Until search, not literal text either. So
-  // the response carries text/place/radius_meters/timestamp/from_/
-  // until separately (see voice_query.py's parse_spoken_query() and
-  // voice_time.py's parse_spoken_timerange()) and this script routes
-  // each into its own existing field - every field stays just as
-  // editable as Text always was.
-  //
-  // Optionally (voice-llm-model select, off by default) the same
-  // transcript is also run through web/voice_llm.py's experimental
-  // local-LLM parser, in parallel with the above - Christer: "I would
-  // like to try it out in parallel to what we already have." That
-  // result is shown in its own comparison panel below the Text field
-  // with an explicit "Apply" button - it never auto-fills the form
-  // fields itself, only the regex-parser result above does that.
+  // Speech-to-text alone (Qwen3-ASR-1.7B, see voice_asr.py) only turns
+  // sound into words - it has no idea "less than 1000 meters from
+  // Vårby gård" means a Place+Radius search rather than a literal Text
+  // search. Christer's own framing after finding this out the hard
+  // way: "i thought audio llm would understand that, its a thinker not
+  // sound to text only" - so understanding the transcript is a
+  // separate, second step, and *that* step (web/voice_llm.py's local
+  // LLM) is now what fills the form by default, since it actually
+  // reasons about the sentence rather than matching a fixed set of
+  // word orders. The response's top-level text/place/radius_meters/
+  // timestamp/from_/until fields are whichever parser is authoritative
+  // for this response (`data.parser`, "llm" or "regex") - see the
+  // route's own docstring for the fallback rules (LLM off, or LLM
+  // failed to load/run). The older fixed-pattern parser
+  // (voice_query.py/voice_time.py) always still runs too and is always
+  // included under `data.regex`, both as the automatic fallback and so
+  // its (faster, free, no-model-load) interpretation stays visible and
+  // one click away via the button below.
   var btn = document.getElementById('voice-search-btn');
   var textInput = document.getElementById('text');
   var placeInput = document.getElementById('place');
@@ -313,52 +312,21 @@ with bv-config</a> first.</p>
           return;
         }
 
-        textInput.value = data.text || '';
-        var interpreted = [];
-
-        if (data.place && placeInput) {
-          placeInput.value = data.place;
-          // Place and Near are mutually exclusive in bv-search - clear
-          // Near so the parsed place actually takes effect if it was
-          // previously filled in.
-          var nearInput = document.getElementById('near');
-          if (nearInput) nearInput.value = '';
-          if (data.radius_meters && radiusInput) {
-            radiusInput.value = Math.round(data.radius_meters);
-          }
-          interpreted.push(
-            'Place "' + data.place + '" within ' + Math.round(data.radius_meters) + ' m'
-          );
-        }
-
-        if (data.timestamp && timestampInput) {
-          // Timestamp and From/Until are mutually exclusive in
-          // bv-search - clear From/Until so the single-day match
-          // actually takes effect.
-          timestampInput.value = data.timestamp;
-          if (fromInput) fromInput.value = '';
-          if (untilInput) untilInput.value = '';
-          interpreted.push('Timestamp ' + formatYmd(data.timestamp));
-        } else if (data.from_ && data.until && fromInput && untilInput) {
-          fromInput.value = data.from_;
-          untilInput.value = data.until;
-          if (timestampInput) timestampInput.value = '';
-          interpreted.push(
-            'From ' + formatYmd(data.from_) + ' to ' + formatYmd(data.until)
-          );
-        }
-
+        applyParsed(data);
         textInput.focus();
+
+        var interpreted = summarizeParsed(data);
+        var parserLabel = data.parser === 'llm' ? 'local LLM' : 'quick pattern match';
         if (interpreted.length) {
           setStatus(
-            'Heard: "' + transcript + '" - filled in as ' + interpreted.join(', ') +
-            '. Check the fields below, then click Start.'
+            'Heard: "' + transcript + '" - filled in via ' + parserLabel + ' as ' +
+            interpreted.join(', ') + '. Check the fields below, then click Start.'
           );
         } else {
           setStatus('Transcribed - edit the text above if needed, then click Start.');
         }
 
-        renderLlmComparison(data.llm);
+        renderFallbackPanel(data);
       })
       .catch(function (err) {
         btn.disabled = false;
@@ -366,61 +334,96 @@ with bv-config</a> first.</p>
       });
   }
 
-  function renderLlmComparison(llm) {
-    // Shows web/voice_llm.py's experimental parser result alongside the
-    // regex-parser result above, purely for comparison - never
-    // auto-filled. See this file's own top-of-script comment and
-    // voice_llm.py's module docstring for why this stays separate.
-    if (!llmPanel || !llmSummary || !llmApplyBtn) return;
-    if (!llm) {
-      llmPanel.hidden = true;
-      llmApplyBtn.hidden = true;
-      return;
-    }
-
-    llmPanel.hidden = false;
-
-    if (llm.error) {
-      llmSummary.textContent = 'Local-LLM parse failed: ' + llm.error;
-      llmApplyBtn.hidden = true;
-      return;
-    }
-
+  // Shared between the primary (LLM-or-regex) result and the "use the
+  // fixed-pattern parse instead" fallback button - both are the same
+  // {text, place, radius_meters, timestamp, from_, until} shape.
+  function summarizeParsed(parsed) {
     var parts = [];
-    if (llm.place) {
+    if (parsed.place) {
       parts.push(
-        'Place "' + llm.place + '"' +
-        (llm.radius_meters ? ' within ' + Math.round(llm.radius_meters) + ' m' : '')
+        'Place "' + parsed.place + '"' +
+        (parsed.radius_meters ? ' within ' + Math.round(parsed.radius_meters) + ' m' : '')
       );
     }
-    if (llm.timestamp) {
-      parts.push('Timestamp ' + formatYmd(llm.timestamp));
-    } else if (llm.from_ && llm.until) {
-      parts.push('From ' + formatYmd(llm.from_) + ' to ' + formatYmd(llm.until));
+    if (parsed.timestamp) {
+      parts.push('Timestamp ' + formatYmd(parsed.timestamp));
+    } else if (parsed.from_ && parsed.until) {
+      parts.push('From ' + formatYmd(parsed.from_) + ' to ' + formatYmd(parsed.until));
     }
-    if (llm.text) {
-      parts.push('Text "' + llm.text + '"');
+    if (parsed.text) {
+      parts.push('Text "' + parsed.text + '"');
+    }
+    return parts;
+  }
+
+  function applyParsed(parsed) {
+    textInput.value = parsed.text || '';
+
+    if (placeInput) {
+      placeInput.value = parsed.place || '';
+      // Place and Near are mutually exclusive in bv-search - clear
+      // Near so a parsed place actually takes effect if it was
+      // previously filled in.
+      var nearInput = document.getElementById('near');
+      if (parsed.place && nearInput) nearInput.value = '';
+    }
+    if (radiusInput && parsed.radius_meters) {
+      radiusInput.value = Math.round(parsed.radius_meters);
     }
 
-    llmSummary.textContent = 'Local LLM (' + llm.model + ') interpreted this as: ' +
-      (parts.length ? parts.join(', ') : 'nothing usable.');
-    llmApplyBtn.hidden = false;
+    if (parsed.timestamp && timestampInput) {
+      // Timestamp and From/Until are mutually exclusive in bv-search -
+      // clear From/Until so the single-day match actually takes effect.
+      timestampInput.value = parsed.timestamp;
+      if (fromInput) fromInput.value = '';
+      if (untilInput) untilInput.value = '';
+    } else if (parsed.from_ && parsed.until && fromInput && untilInput) {
+      fromInput.value = parsed.from_;
+      untilInput.value = parsed.until;
+      if (timestampInput) timestampInput.value = '';
+    } else {
+      if (timestampInput) timestampInput.value = '';
+      if (fromInput) fromInput.value = '';
+      if (untilInput) untilInput.value = '';
+    }
+  }
 
-    llmApplyBtn.onclick = function () {
-      textInput.value = llm.text || '';
-      if (placeInput) {
-        placeInput.value = llm.place || '';
-        var nearInput = document.getElementById('near');
-        if (llm.place && nearInput) nearInput.value = '';
-      }
-      if (radiusInput && llm.radius_meters) {
-        radiusInput.value = Math.round(llm.radius_meters);
-      }
-      if (timestampInput) timestampInput.value = llm.timestamp || '';
-      if (fromInput) fromInput.value = llm.from_ || '';
-      if (untilInput) untilInput.value = llm.until || '';
-      textInput.focus();
-    };
+  function renderFallbackPanel(data) {
+    // See this file's own top-of-script comment: data.text/place/... is
+    // already filled in from whichever parser was authoritative
+    // (data.parser). This panel is about the *other* one - showing
+    // Christer what the fixed-pattern parser (data.regex) would have
+    // produced, with a one-click way to use it instead if the LLM
+    // missed something, or explaining why the regex result was used
+    // (LLM off, or LLM failed).
+    if (!llmPanel || !llmSummary || !llmApplyBtn) return;
+
+    if (data.parser === 'llm') {
+      llmPanel.hidden = false;
+      llmApplyBtn.hidden = false;
+      var regexParts = summarizeParsed(data.regex);
+      llmSummary.textContent = 'Understood via local LLM. The quick pattern-match ' +
+        'parser would have used: ' +
+        (regexParts.length ? regexParts.join(', ') : 'nothing usable (literal text only)') + '.';
+      llmApplyBtn.onclick = function () {
+        applyParsed(data.regex);
+        textInput.focus();
+      };
+      return;
+    }
+
+    if (data.llm_error) {
+      llmPanel.hidden = false;
+      llmApplyBtn.hidden = true;
+      llmSummary.textContent = 'Local-LLM parsing failed (' + data.llm_error +
+        ') - used the quick pattern-match parser instead.';
+      return;
+    }
+
+    // llm_model was "none" - only the pattern-match parser ran, so
+    // there's nothing to compare against.
+    llmPanel.hidden = true;
+    llmApplyBtn.hidden = true;
   }
 
   btn.addEventListener('click', function () {

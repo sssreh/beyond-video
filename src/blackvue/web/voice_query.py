@@ -10,14 +10,26 @@ language understanding at all (real report from Christer: dictating
 exactly that kind of sentence transcribed correctly but "doesnt
 understand do do a radius search" when dumped straight into Text).
 
-This module recognizes one common, high-value shape - "within/less
-than <distance> <unit> of/from <place>", in English and Swedish - and
-extracts it into bv-search's *existing* Place/Radius fields, which
-already do exactly this kind of proximity search
-(blackvue.search.search_near() via forward-geocoding, see
+This module recognizes distance+place phrasing in either word order -
+"within/less than <distance> <unit> of/from <place>" (distance first)
+and "<place> in range of/within <distance> <unit>" (place first), in
+English and Swedish - and extracts it into bv-search's *existing*
+Place/Radius fields, which already do exactly this kind of proximity
+search (blackvue.search.search_near() via forward-geocoding, see
 cli/bv_search.py). Anything not recognized is left in Text verbatim.
 Every field stays editable in the form either way - this is a
 best-effort suggestion, never authoritative.
+
+The place-first patterns exist because Christer said it out loud
+naturally as "VårbyGård in range of 400 m" - place before distance -
+and the original distance-first-only patterns didn't match that at
+all, silently falling through to a literal Text search of the whole
+sentence. Speech-to-text alone can't fix this (it doesn't understand
+word order any more than these regexes originally did) - see
+web/voice_llm.py, which is now this project's primary voice-search
+parser precisely because it reasons about phrasing instead of matching
+fixed patterns; this module's patterns remain the fast, free fallback
+for when the LLM path is off or unavailable.
 
 Deliberately NOT a general natural-language-understanding layer: no
 LLM call, no new dependency, just a handful of regexes for the one
@@ -51,25 +63,47 @@ class ParsedVoiceQuery:
     radius_meters: float | None
 
 
-# Each pattern must capture, in order: (distance, unit, place-clause).
-# Tried in order, case-insensitively; the first match wins.
+# Every pattern uses the same three named groups (number/unit/place)
+# regardless of which order they appear in the sentence - distance-
+# first patterns write the place group last in the pattern text,
+# place-first patterns write it first. Tried in order, case-
+# insensitively; the first match wins. Distance-first patterns are
+# tried before place-first ones since they're the original, more
+# specific/less prone-to-overcapture shape (place-first has to grab an
+# unbounded run of leading words as the place candidate - see
+# _LEADING_FILLER below).
+_UNIT = r"(?P<unit>kilometers?|kilometres?|km|meters?|metres?|m)"
+_UNIT_SV = r"(?P<unit>kilometer|km|meter|m)"
+_NUM = r"(?P<number>[\d.,]+)"
+
 _PATTERNS = [
-    # English: "within/less than/under/closer than 1000 meters of/from X"
+    # English, distance-first: "within/less than/under/closer than
+    # 1000 meters of/from X"
     re.compile(
-        r"\b(?:within|less than|under|closer than)\s+"
-        r"([\d.,]+)\s*"
-        r"(kilometers?|kilometres?|km|meters?|metres?|m)\b"
-        r"\s*(?:of|from|to)\s+"
-        r"(.+)",
+        rf"\b(?:within|less than|under|closer than)\s+{_NUM}\s*{_UNIT}\b"
+        rf"\s*(?:of|from|to)\s+(?P<place>.+)",
         re.IGNORECASE,
     ),
-    # Swedish: "mindre än/inom/närmare än 1000 meter från/ifrån X"
+    # Swedish, distance-first: "mindre än/inom/närmare än 1000 meter
+    # från/ifrån X"
     re.compile(
-        r"\b(?:mindre än|inom|närmare än)\s+"
-        r"([\d.,]+)\s*"
-        r"(kilometer|km|meter|m)\b"
-        r"\s*(?:ifrån|från)\s+"
-        r"(.+)",
+        rf"\b(?:mindre än|inom|närmare än)\s+{_NUM}\s*{_UNIT_SV}\b"
+        rf"\s*(?:ifrån|från)\s+(?P<place>.+)",
+        re.IGNORECASE,
+    ),
+    # English, place-first: "X in range of/within/less than/under/
+    # closer than 1000 meters" - Christer's own real phrasing
+    # ("VårbyGård in range of 400 m") that started this: speech-to-
+    # text alone doesn't understand word order, so both orders need
+    # their own pattern rather than hoping one regex covers both.
+    re.compile(
+        r"(?P<place>.+?)\s+(?:is\s+)?"
+        rf"(?:in range of|within|less than|under|closer than)\s+{_NUM}\s*{_UNIT}\b",
+        re.IGNORECASE,
+    ),
+    # Swedish, place-first: "X inom 1000 meter"
+    re.compile(
+        rf"(?P<place>.+?)\s+inom\s+{_NUM}\s*{_UNIT_SV}\b",
         re.IGNORECASE,
     ),
 ]
@@ -82,6 +116,22 @@ _PATTERNS = [
 _TRAILING_FILLER = [
     "någon gång", "ibland", "en gång till", "en gång",
     "at some point", "at any time", "sometime", "ever",
+]
+
+# Trimmed off the *start* of a place-first match's captured place -
+# only relevant there, since distance-first patterns anchor their
+# place group right after "of/from" and never pick up a command
+# prefix. A place-first pattern's place group is "everything before
+# the distance phrase", so a full sentence like "show me videos near
+# Vårbygård in range of 400 m" would otherwise capture "show me videos
+# near Vårbygård" as the place. Deliberately short/conservative - an
+# unrecognized prefix is safer left in (a slightly-wrong place name
+# that still resolves is a minor annoyance; every field stays
+# editable) than aggressively stripped and accidentally eating part of
+# a real place name.
+_LEADING_FILLER = [
+    "show me", "show all videos", "show videos", "find", "search for",
+    "look for", "videos of", "videos near", "recordings near",
 ]
 
 _SENTENCE_END = re.compile(r"[.!?]+\s*$")
@@ -99,6 +149,11 @@ def _clean_place(raw: str) -> str:
             if trimmed != place:
                 place = trimmed
                 changed = True
+    for filler in _LEADING_FILLER:
+        pattern = re.compile(r"^\s*" + re.escape(filler) + r"\s+", re.IGNORECASE)
+        trimmed = pattern.sub("", place).strip()
+        if trimmed != place:
+            place = trimmed
     return place.strip(" ,.")
 
 
@@ -132,12 +187,11 @@ def parse_spoken_query(transcript: str) -> ParsedVoiceQuery:
         match = pattern.search(transcript)
         if not match:
             continue
-        raw_number, raw_unit, raw_place = match.groups()
         try:
-            radius_meters = _parse_distance(raw_number, raw_unit)
+            radius_meters = _parse_distance(match.group("number"), match.group("unit"))
         except ValueError:
             continue
-        place = _clean_place(raw_place)
+        place = _clean_place(match.group("place"))
         if not place:
             continue
         # See module docstring: text is cleared, not set to the

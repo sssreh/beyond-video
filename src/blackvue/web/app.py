@@ -2639,7 +2639,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     @app.post("/jobs/bv-search/transcribe")
     async def transcribe_voice_search(
         audio: UploadFile = File(...),
-        llm_model: str = Form("none"),
+        llm_model: str = Form("small"),
         user: User = Depends(require_viewer_or_owner),
     ):
         """Quick, synchronous voice-to-text for the bv-search form's
@@ -2666,16 +2666,37 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         Christer's own explicit scope decision when asked: "Replace
         Whisper for voice search only."
 
-        Transcription is accurate, but the raw transcript is not itself
-        a bv-search query - a sentence like "less than 1000 meters from
-        Vårby gård" typed verbatim into the Text field just searches
-        for that literal sentence and (correctly) finds nothing (real
-        report from Christer: exactly this happened). Two heuristic
-        parsers turn recognized phrases into bv-search's own structured
-        fields instead of leaving everything as literal Text:
+        IMPORTANT distinction Christer flagged after that swap landed:
+        "i thought audio llm would understand that, its a thinker not
+        sound to text only" - Qwen3-ASR-1.7B is speech-to-text ONLY, it
+        has no more understanding of what the words mean than Whisper
+        did. The part that actually reasons about the transcript is
+        web/voice_llm.py, a separate LLM call. Concretely this mattered
+        for a real phrasing gap: "VårbyGård in range of 400 m" (place
+        BEFORE distance) isn't recognized by voice_query.py's regexes
+        at all (they only match distance-before-place: "within 400m of
+        X"), so it used to silently fall through to a literal Text
+        search - clearly not what was meant.
+
+        So as of this change, **the LLM parser (voice_llm.py) is the
+        primary parser** - its result is what auto-fills the form by
+        default (`llm_model` now defaults to "small", not "none"). The
+        original regex parsers below still run unconditionally and are
+        used in two ways: as the actual result whenever `llm_model` is
+        "none" (an explicit opt-out - no model load at all, useful if
+        Christer wants a fast/free/offline-capable path), and as the
+        automatic fallback if the LLM call itself fails (missing torch/
+        qwen extras, a broken model download, unparseable model output)
+        - matching this project's "never let an experimental/model-
+        backed path take down a working one" stance. Both results are
+        always in the response (`regex` key always present; the
+        top-level text/place/radius_meters/timestamp/from_/until fields
+        are whichever one is authoritative - see `parser` for which).
 
         - parse_spoken_query() (web/voice_query.py): "within/less
-          than <distance> <unit> of/from <place>" -> Place/Radius.
+          than <distance> <unit> of/from <place>" -> Place/Radius (now
+          also the reverse order, "<place> in range of/within
+          <distance> <unit>" - see that module's own docstring).
         - parse_spoken_timerange() (web/voice_time.py): relative or
           explicit dates/date-ranges ("yesterday", "last week", "from
           July 15th to July 20th", ...) -> Timestamp or From/Until.
@@ -2690,26 +2711,15 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         results that are otherwise correctly filtered by place/radius
         or date. Every field in the response is still just an
         editable suggestion - the frontend fills the form but never
-        auto-submits. These regex-parser fields (text/place/
-        radius_meters/timestamp/from_/until at the top level of the
-        response) are still the *only* thing that auto-fills the
-        bv-search form - unchanged by the addition below.
+        auto-submits.
 
-        `llm_model` ("none"/"scene"/"small", default "none") optionally
-        also runs the transcript through web/voice_llm.py's
-        experimental local-LLM structured-extraction parser, *in
-        parallel* with the regex parsers above - Christer's own
-        framing: "I would like to try it out in parallel to what we
-        already have." Its result is returned under a nested "llm" key
-        for the frontend to show alongside the regex result for
-        comparison; it never touches the top-level fields and never
-        auto-fills anything itself (see voice_llm.py's own module
-        docstring, design decision 2). Any failure loading or running
-        the model (missing extras, ImportError, a bad download, a
-        malformed/unparseable model response) is caught and reported
-        as `llm.error` rather than breaking the response - this is
-        explicitly an experimental comparison, so a failure here must
-        never take down the proven regex-based flow above it.
+        `llm_model` ("none"/"scene"/"small", default "small") selects
+        which local-LLM extraction runs (web/voice_llm.py) - "none"
+        skips it entirely and uses the regex result directly. Any
+        failure loading or running the model (missing extras,
+        ImportError, a bad download, a malformed/unparseable model
+        response) is caught, reported via `llm_error`, and the response
+        degrades to the regex result rather than erroring out.
         """
 
         suffix = Path(audio.filename or "").suffix or ".webm"
@@ -2746,20 +2756,31 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         parsed = parse_spoken_query(remainder)
 
         matched_something = time_range.matched or parsed.place is not None
-        final_text = "" if matched_something else parsed.text
+        regex_result = {
+            "text": "" if matched_something else parsed.text,
+            "place": parsed.place,
+            "radius_meters": parsed.radius_meters,
+            "timestamp": time_range.timestamp,
+            "from_": time_range.from_,
+            "until": time_range.until,
+        }
 
-        llm_result = None
+        # Primary result: the LLM's understanding of the transcript
+        # (see docstring above for why this - not the regex parser -
+        # is now the default), falling back to the regex result if the
+        # LLM is switched off or fails.
+        primary = regex_result
+        parser_used = "regex"
+        llm_error = None
         if transcript and llm_model in VOICE_LLM_MODEL_CHOICES:
             try:
                 llm_parsed = extract_voice_query_llm(
                     transcript, today, model_choice=llm_model
                 )
             except (MediaToolError, ValueError) as exc:
-                llm_result = {"model": llm_model, "error": str(exc)}
+                llm_error = str(exc)
             else:
-                llm_result = {
-                    "model": llm_model,
-                    "error": None,
+                primary = {
                     "text": llm_parsed.text,
                     "place": llm_parsed.place,
                     "radius_meters": llm_parsed.radius_meters,
@@ -2767,17 +2788,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "from_": llm_parsed.from_,
                     "until": llm_parsed.until,
                 }
+                parser_used = "llm"
 
         return JSONResponse(
             {
                 "transcript": transcript,
-                "text": final_text,
-                "place": parsed.place,
-                "radius_meters": parsed.radius_meters,
-                "timestamp": time_range.timestamp,
-                "from_": time_range.from_,
-                "until": time_range.until,
-                "llm": llm_result,
+                "text": primary["text"],
+                "place": primary["place"],
+                "radius_meters": primary["radius_meters"],
+                "timestamp": primary["timestamp"],
+                "from_": primary["from_"],
+                "until": primary["until"],
+                "parser": parser_used,
+                "llm_model": llm_model,
+                "llm_error": llm_error,
+                "regex": regex_result,
             }
         )
 

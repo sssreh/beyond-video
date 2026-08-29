@@ -77,3 +77,52 @@ def test_empty_transcript_returns_empty_text_and_no_place():
     assert result.text == ""
     assert result.place is None
     assert result.radius_meters is None
+
+
+# ---------------------------------------------------------------------------
+# Place-first word order ("<place> in range of/within <distance> <unit>") -
+# Christer's own real phrasing that the original distance-first-only
+# patterns didn't recognize at all: "VårbyGård in range of 400 m" used to
+# fall straight through to a literal Text search of the whole sentence.
+# ---------------------------------------------------------------------------
+
+
+def test_place_first_in_range_of_matches_christers_exact_phrasing():
+    result = parse_spoken_query("VårbyGård in range of 400 m")
+    assert result.place == "VårbyGård"
+    assert result.radius_meters == 400.0
+    assert result.text == ""
+
+
+def test_place_first_within_word_order():
+    result = parse_spoken_query("Slussen within 500 meters")
+    assert result.place == "Slussen"
+    assert result.radius_meters == 500.0
+
+
+def test_place_first_kilometers_converted():
+    result = parse_spoken_query("Nacka in range of 2 km")
+    assert result.place == "Nacka"
+    assert result.radius_meters == 2000.0
+
+
+def test_place_first_strips_leading_command_filler():
+    result = parse_spoken_query("show me videos near Vårbygård in range of 400 m")
+    assert result.place == "Vårbygård"
+    assert result.radius_meters == 400.0
+
+
+def test_place_first_swedish_inom_word_order():
+    result = parse_spoken_query("Vårbygård inom 400 meter")
+    assert result.place == "Vårbygård"
+    assert result.radius_meters == 400.0
+
+
+def test_distance_first_still_takes_priority_over_place_first():
+    # Both pattern shapes could technically match pieces of the same
+    # sentence - distance-first patterns are tried first (see
+    # _PATTERNS's own ordering comment) and should win when a sentence
+    # is unambiguously distance-first.
+    result = parse_spoken_query("within 500 meters of Slussen")
+    assert result.place == "Slussen"
+    assert result.radius_meters == 500.0

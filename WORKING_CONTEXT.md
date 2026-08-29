@@ -19731,3 +19731,83 @@ Verified via `ast.parse()` on `voice_asr.py` and the modified `app.py`
 (both clean). Built but not verified against a real Qwen3-ASR model or
 real audio in this sandbox - same caveat every prior model-integration
 entry in this file already carries.
+
+## Make voice_llm.py the primary voice-search parser (2026-08-29)
+
+Immediately after the Qwen3-ASR swap above, Christer asked: "When i say
+VårbyGård in range of 400 m, do you think i want to search for the word
+VårbyGård in scene or the coordinates of VårbyGård and why are they
+mutually exclusive?" - a real gap: `voice_query.py`'s regexes only
+matched distance-before-place word order ("within 400m of X"), so his
+own natural phrasing (place-before-distance) fell straight through to a
+literal Text search of the whole sentence, silently wrong. Christer's
+follow-up made the deeper issue explicit: "i thought audio llm would
+understand that, its a thinker not sound to text only" - Qwen3-ASR-1.7B
+is speech-to-text only, no more capable of understanding word order than
+Whisper was. The part that actually reasons about the transcript is
+`web/voice_llm.py`, built in an earlier session but wired in as an
+opt-in side-by-side comparison only (off by default, never auto-filled
+the form).
+
+Asked Christer how to fix this (three options: patch the regex gap only,
+make the LLM parser primary, or both). Christer chose **"Make the LLM
+parser primary"** - both changes were made:
+
+**`web/app.py`'s `transcribe_voice_search()` route restructured**: the
+regex parsers (`voice_query.py`/`voice_time.py`) still always run first
+and produce a `regex_result` dict, exactly as before. If `llm_model` is
+set (now defaults to `"small"`, not `"none"`), `extract_voice_query_llm()`
+runs too; its result becomes `primary` (what fills the top-level
+`text`/`place`/`radius_meters`/`timestamp`/`from_`/`until` response
+fields) on success, with `regex_result` as the automatic fallback on any
+`MediaToolError`/`ValueError` (missing extras, broken model, unparseable
+output) or when `llm_model == "none"`. New response fields: `parser`
+("llm"/"regex" - which one is authoritative this time), `llm_model`
+(what was requested), `llm_error` (set only on failure), `regex` (always
+present - the regex parser's own result, for transparency and as a
+one-click fallback in the UI). Route docstring rewritten to explain the
+ASR-vs-understanding distinction and the new fallback chain.
+
+**`templates/job_new_bv_search.html`**: the "Also try local-LLM parsing"
+dropdown (default Off) is now "Voice search understanding" (default
+"Small dedicated text model", with "Off (fixed-pattern parser only)" as
+an explicit opt-out) - mic support still gates whether it's shown at
+all. JS reworked: `applyParsed()`/`summarizeParsed()` are now shared
+helpers (previously duplicated between the main fill logic and the old
+LLM-comparison-only path) that fill the form from whichever
+`{text, place, radius_meters, timestamp, from_, until}` shape is handed
+to them. `renderFallbackPanel()` (renamed from `renderLlmComparison()`)
+now shows the *regex* interpretation as the "other" option with a "Use
+quick pattern-match parse instead" button when the LLM produced the
+primary result, or explains why the regex result was used (LLM off, or
+`llm_error`) when it wasn't.
+
+**`web/voice_query.py`**: added place-first patterns as a fallback-layer
+fix, independent of the LLM-primary change - the LLM path handles this
+correctly by reasoning about the sentence, but the regex fallback (used
+whenever the LLM is off or fails) needs to handle it too, or the "no
+GPU/model available" case regresses back to the exact original bug.
+Switched all four patterns (2 original distance-first + 2 new
+place-first, English and Swedish each) to named regex groups
+(`number`/`unit`/`place`) instead of positional `match.groups()`
+unpacking, since place-first patterns necessarily capture the groups in
+a different textual order than distance-first ones. Added
+`_LEADING_FILLER` (mirroring the existing `_TRAILING_FILLER` list) to
+strip common command prefixes ("show me", "videos near", ...) that a
+place-first pattern's non-anchored place-capture would otherwise pull
+in - e.g. "show me videos near Vårbygård in range of 400 m" now cleans
+down to place="Vårbygård", not "show me videos near Vårbygård".
+Verified directly against Christer's own phrasing plus 6 other
+combinations (`python3 -c` sandbox script, all correct) before writing
+the 6 new pytest-style tests.
+
+**Tests**: 6 new tests in `tests/blackvue/web/test_voice_query.py`
+covering both place-first patterns (English "in range of"/"within",
+Swedish "inom", km conversion, leading-filler stripping, and
+distance-first-still-wins-when-unambiguous) - all 13 tests in that file
+pass, plus the existing 30 `test_voice_llm.py` and 15 `test_voice_asr.py`
+tests still pass unchanged. Verified via `ast.parse()` on `app.py` and
+`voice_query.py`, `jinja2.Environment.parse()` on the template, and
+`node --check` on the extracted `<script>` block (all clean) - no
+`TestClient`-based route test, same "no `fastapi` in this dev sandbox"
+constraint as every other route change in this file.
