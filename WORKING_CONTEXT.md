@@ -20329,3 +20329,173 @@ here) reproducing each test function's body directly: all 12 plus all
 Docs: `docs/man/bv-ls.md` gained `--drivers` in SYNOPSIS/OPTIONS and a
 new OUTPUT paragraph explaining the Driver column format and pointing
 at `driver_profiles.json`'s hand-editable nature.
+
+## Driver detection increment 2: driver-knowledge base, `bv-drivers`, and `/drivers` (2026-08-29)
+
+Christer's follow-up ask, verbatim: "We need to know duration on
+travelled site, excluding hammarby sjöstad around heliosgatan, where
+we live and have base parking underground. We might also decide if
+its a short stop(less than 15 minutes) and longer stops(above 15
+minutes). Sorry we also need to know weekday and time(no dst) for
+some trips. Please use the current archive Kirby(2026) to build the
+knowledge base. We will need a form of drivers with all this info and
+also a list of undecided common trips, to fill in driver manually.
+Also for specific trips. And a % estimate off driver probability."
+Increment 1 (above) surfaces candidate matches passively on `bv-ls
+--drivers`; this increment turns that into an actual editable
+knowledge base Christer fills in by hand via bv-web.
+
+**`trip/place_knowledge.py`** (new module, pure computation - no I/O
+beyond the JSON load/save at its edges) is the core design. Two ideas
+drive it, both spelled out in the module's own docstring: (1) "common
+places" are the primary editable unit, not individual trips - a
+destination visited more than once becomes one `CommonPlace` with at
+most two rules, "short stays here are driver X" and "long stays here
+are driver Y," and every trip to that place (past or future) inherits
+whichever rule matches its own `stop_category`; a one-off destination
+falls through to increment 1's `match_driver()` candidates, and
+failing that, sits undecided for a manual per-trip override. (2)
+places are identified by a deterministic grid cell (`place_key()`,
+`_GRID_DECIMALS = 3`, ~111m x ~57m cells at Stockholm's latitude), not
+a stateful clustering algorithm - so a place's hand-edited label/
+driver rules survive a rebuild without needing to persist/match
+previous cluster centroids at all; `build_common_places(existing=...)`
+just carries the prior `CommonPlace`'s fields forward under the same
+key. `STOP_THRESHOLD_MINUTES = 15.0` is Christer's own threshold,
+verbatim. `local_weekday_and_time()` reads weekday/time straight off
+the recording id's own embedded local timestamp - deliberately no DST
+adjustment, since the camera's clock is whatever the camera's own RTC
+says, and re-deriving "real" local time from UTC would need a DST
+database this project has no other use for and Christer never asked
+for. `_resolve_trip_driver()` is the resolution order: (1) a manual
+per-trip override (confidence 1.0, `source="manual-trip"`) beats (2)
+a matching place short/long-stay rule (confidence 0.95, `source=
+"place-rule"`) beats (3) the best increment-1 `match_driver()`
+candidate (`source="pattern-match"`) beats (4) `"undecided"`.
+`undecided_places()`/`undecided_trips()` are the two "still needs
+attention" lists Christer asked for. Everything persists to one JSON
+file, `driver_knowledge.json` (`default_driver_knowledge_path()`,
+alongside `driver_profiles.json` in the same config dir) via `save_
+knowledge_base()`/`load_knowledge_base()`.
+
+Scoped to the live Kirby (2026) archive only, per Christer's own
+framing: "i dont [think] we will check up on trips for previous years
+before 2026, the addresses will probably change over time" - so
+there's no cross-year aggregation anywhere in this module, and a
+place's label is treated as plain hand-edited text, not something
+meant to stay accurate forever.
+
+**`reresolve_trip_drivers()`** - added specifically for the `/drivers`
+web page's edit-and-save workflow (see below): re-applies `_resolve_
+trip_driver()`'s resolution order to already-computed `TripKnowledge`
+entries *without* re-scanning the archive or re-resolving any GPS fix
+- every raw field (weekday, dwell, candidates, `away_place_key`, ...)
+is unchanged, only which driver (if any) each trip resolves to might
+be. Each entry is explicitly reset to `"undecided"` first (`dataclasses.
+replace()`) before resolving again, because `_resolve_trip_driver()`'s
+own fall-through case ("else stays undecided, entry's own defaults,
+unchanged") assumes it's handed a still-undecided entry - without the
+reset, removing a place's driver rule or clearing a trip's manual
+override would leave the old resolution stuck instead of correctly
+reverting to undecided. Verified with a dedicated test: resolve a trip
+via a place rule, remove the place's rule, re-resolve, confirm the
+trip correctly reverts to `undecided`/`driver_label=None` rather than
+keeping its stale resolution.
+
+**`cli/bv_drivers.py`** (`bv-drivers`) is the build/refresh command:
+scans an archive's trips (same `TripBuilder` logic `bv-ls --trips`/
+`bv-export` use), resolves each one's `TripFix` (increment 1's
+per-recording GPS probe), and calls `place_knowledge.build_knowledge_
+base()` to produce the trip list + common-places registry, then saves
+it. Re-running is meant to be routine - every place's label/short_
+stay_driver/long_stay_driver and every per-trip manual override
+survive a rebuild untouched (loads the existing `driver_knowledge.json`
+first and passes its places/overrides through as `existing_places`/
+`trip_overrides`); only visit counts, weekday/time, and the trip list
+itself are refreshed from the archive's current state. `--min-visits`
+(default 2) is purely a reporting threshold for the "N common places
+still need a rule" summary line and the `/drivers` warning marker -
+every place with 2+ visits is still built/saved regardless of this
+flag. `--trace`/`--debug` mirror `bv-stats`'/`bv-search`'s own
+precedent (dot-per-trip progress, phase-timing lines). Run against the
+real Kirby (2026) archive per Christer's own scoping instruction.
+
+**Web wiring**: `JobRunner.start_bv_drivers()` follows the exact `bv-
+ls`/`bv-stats` precedent - no `--config-dir`/`--trace`/`--debug`
+exposed, `config_dir` always `default_config_dir()`. `GET`/`POST
+/jobs/bv-drivers` (owner-only, same as every other job trigger) is
+modeled directly on the `/jobs/bv-ls` route pair. `job_new_bv_drivers.
+html` is a plain camera-id + time-range + `--max-gap`/`--gap-
+tolerance`/`--min-visits` form, same shape as `bv-ls`'s own.
+
+**`/drivers`** (`require_login` - any logged-in user can see the
+registry, same as trip/archive browsing and the Stats dashboard) is
+the actual editing surface: two tables, "Common places" (sorted by
+visit count; each row is its own `<form>` with an editable label
+input, short-stay/long-stay driver `<select>`s, and a warning glyph
+next to any place with no rule set yet - `POST /drivers/places/
+{key}`, owner-only) and "Specific trips" (every trip `undecided_trips()`
+flags, each with weekday/time/stay-category/candidate-list columns and
+a per-trip driver `<select>` - `POST /drivers/trips/{trip_label}`,
+owner-only). Both POST routes: load the knowledge base fresh, apply
+the one edit (a place's rule fields, or one trip's entry in `trip_
+overrides`), call `reresolve_trip_drivers()` to re-apply every trip's
+resolution against the updated data *without* re-scanning the archive
+(the whole reason that function exists as its own thing - a full `bv-
+drivers build` rescans and re-resolves every trip's GPS fix, which per
+that command's own docstring can be slow, unnecessary just to react to
+an edit that only touches already-loaded `places`/`trip_overrides`),
+save, redirect back to `/drivers` (303). No knowledge base built yet
+shows an empty state pointing at `/jobs/bv-drivers` rather than a 500.
+
+**Tests**: `tests/blackvue/trip/test_place_knowledge.py` (written the
+prior session, covers `place_key()`/grid-cell identity, `local_
+weekday_and_time()`'s no-DST behavior, stop-category thresholding,
+`build_common_places(existing=...)` carry-forward, `_resolve_trip_
+driver()`'s full resolution order, `undecided_places()`/`undecided_
+trips()`, and JSON round-trip). `tests/blackvue/cli/test_bv_drivers.py`
+(this session, 10 tests): 6 cover `parse_args()` (path default,
+min-visits default/override, time-range flags, max-gap/gap-tolerance,
+trace/debug flags); 4 cover `_run()` with `TripBuilder`/`resolve_trip_
+fix`/`resolve_known_points`/`write_default_driver_profiles` all faked
+(`_FakeTripBuilder` ignores its `recordings` argument entirely and
+always returns a pre-set trip list - the point of these tests is bv_
+drivers.py's own plumbing/reporting/file-I/O/existing-knowledge-merge,
+not re-testing `TripBuilder`'s own grouping or `place_knowledge`'s own
+pure resolution logic, both already covered elsewhere): empty-archive
+"no trips found" with no file written, a real build-and-save round
+trip via `load_knowledge_base()`, a rebuild-preserves-existing-place-
+label integration test (runs `_run()` twice with fresh `Trip`
+instances the second time, confirming the CLI's own load-existing/
+save-merged path - not just `build_common_places(existing=...)` in
+isolation - carries a hand-edited label/driver forward), and `--debug`
+phase-timing output. `tests/blackvue/web/test_jobs.py` gained 5 more:
+`start_bv_drivers()`'s parsed-args reach (path/min-visits/from/until/
+timestamp), a `--min-visits` override, a time-range test, max-gap/
+gap-tolerance, and a job-fails-on-nonzero-exit test - same `_drivers_
+kwargs(**overrides)`/fake-`_run`/`_wait_until` pattern every other
+`start_bv_*()` test group in that file already uses. All 10 + 5 tests
+verified via this sandbox's standard standalone-harness workaround (no
+pytest/fastapi/network here; a `/tmp/stublibs/tomllib` stub plus a
+hand-rolled `pytest`-approx/`raises` stub for `test_jobs.py`'s own
+unrelated `pytest.approx()`/`pytest.raises()` usage elsewhere in that
+file) - all pass. `drivers.html` was verified via a real Jinja2 render
+(both the empty/`built=False` state and a populated state with one
+undecided place) rather than a pytest file, since it's a template, not
+test code; `app.py`'s new routes were verified via `ast.parse()` plus
+that same template render, consistent with this project's established
+practice of not writing `TestClient`-based route tests anywhere in
+this codebase (confirmed by grep - `test_app_reuse.py`/`test_archive_
+browser.py` both test extracted pure helper functions directly, never
+a running app) - the new `/drivers`/`/jobs/bv-drivers` routes are thin
+wrappers around already-unit-tested `place_knowledge.py`/`bv_drivers.py`
+functions, so this is consistent with how every other job-trigger
+route in this project has been "tested."
+
+Docs: `docs/man/bv-drivers.md` (new), `docs/CLI.md` gained `bv-drivers`
+in both the camera-id-as-path-argument list and the timestamp-
+selection-options list, `docs/WEB_ARCHITECTURE.md` gained a new
+"Driver-knowledge base (`/drivers`)" section plus `bv-drivers`/`cli/
+bv_lock.py` added to the job-runner's own `_run()`-dispatch module
+list and the owner-gated job-routes list (both had silently drifted
+out of date for `bv-lock` too, noticed while making this edit).

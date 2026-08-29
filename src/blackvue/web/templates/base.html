@@ -960,12 +960,14 @@
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-lock' else '' }}" href="/jobs/bv-lock">Lock ranges</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-scribe' else '' }}" href="/jobs/bv-scribe">Describe scenes</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-export' else '' }}" href="/jobs/bv-export">Export trips</a>
+    <a class="tab{{ ' active' if request.url.path == '/jobs/bv-drivers' else '' }}" href="/jobs/bv-drivers">Build driver KB</a>
     <a class="tab{{ ' active' if request.url.path.startswith('/history') else '' }}" href="/history">History</a>
     {% endif %}
     <a class="tab{{ ' active' if request.url.path == '/trips' or request.url.path.startswith('/trips/') else '' }}" href="/trips">Trips</a>
     <a class="tab{{ ' active' if request.url.path.startswith('/archive') else '' }}" href="/archive">Browse archive</a>
     <a class="tab{{ ' active' if request.url.path == '/jobs/bv-search' else '' }}" href="/jobs/bv-search">Search</a>
     <a class="tab{{ ' active' if request.url.path == '/stats' else '' }}" href="/stats">Stats</a>
+    <a class="tab{{ ' active' if request.url.path == '/drivers' else '' }}" href="/drivers">Drivers</a>
   </nav>
   {% endif %}
   {% block content %}{% endblock %}

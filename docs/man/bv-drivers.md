@@ -1,0 +1,62 @@
+# bv-drivers(1)
+
+## NAME
+
+`bv-drivers` - build or refresh the driver-knowledge base (who was driving on each trip)
+
+## SYNOPSIS
+
+```
+bv-drivers [PATH] [--config-dir DIR] [--from TIMESTAMP | --until TIMESTAMP | --timestamp TIMESTAMP]
+           [--max-gap MINUTES] [--gap-tolerance SECONDS] [--min-visits N] [--trace] [--debug]
+```
+
+## DESCRIPTION
+
+Scans an archive's detected trips (the same `TripBuilder` logic `bv-ls --trips`/`bv-export` use), and for each one works out how long the vehicle was away from home, whether that counts as a short stop (under 15 minutes) or a long stop (15 minutes or more), and the trip's weekday/time in the camera's own raw clock (no DST correction - see `trip/place_knowledge.py`'s `local_weekday_and_time()` docstring for why). Home itself - Hammarby Sjöstad/Heliosgatan, where the vehicle has underground parking - is never counted as a "stop."
+
+Every destination visited more than once is clustered into a **common place**: one entry with at most two rules, "short stays here are driver X" and "long stays here are driver Y." Once Christer fills those in via bv-web's `/drivers` page, every trip to that place - past or future - inherits the matching rule automatically. A destination that only shows up once falls through to `driver_detect.py`'s increment-1 named-pattern matching, and failing that, sits in `/drivers`' specific-trips list for a one-off manual override.
+
+The result is written to `driver_knowledge.json` under `--config-dir`, which `/drivers` reads and edits. Re-running this command is meant to be routine - every place's label and short/long-stay driver, and every per-trip manual override, survive a rebuild untouched; only visit counts, weekday/time, and the trip list itself are refreshed from the archive's current state.
+
+This command is scoped to the live archive it's pointed at - there's no cross-year aggregation, and no attempt to reconcile place labels across separate archives. Christer's own framing: addresses and routines will drift over time, so this is a hand-reviewed, continuously-refreshed registry, not something meant to stay accurate forever without revisiting.
+
+## OPTIONS
+
+| Option | Description |
+|---|---|
+| `PATH` | Archive directory, or a configured camera system id (see `bv-config`) - resolved to that camera's archive target. Defaults to `.`. |
+| `--config-dir DIR` | Directory camera configs, `driver_profiles.json`, and `driver_knowledge.json` live in (default: the usual `default_config_dir()`). |
+| `--from TIMESTAMP` | Only consider recordings from this timestamp onward. |
+| `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
+| `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. Can't be combined with `--from`/`--until`. |
+| `--max-gap MINUTES` | Largest gap between two recordings that still counts as the same trip (same meaning as `bv-export`'s own flag). |
+| `--gap-tolerance SECONDS` | Small fixed margin added on top of `--max-gap`. |
+| `--min-visits N` | How many visits make a place "common" enough to flag as still needing a driver rule (default: 2) - purely a reporting threshold for the summary counts and `/drivers`' warning marker; every place with 2+ visits is still built and saved regardless. |
+| `--trace` | Print a `.` every 10 trips resolved, so a long run over a large archive shows it's still active. |
+| `--debug` | Print elapsed time for each phase (archive scan, trip detection, known-place geocoding, per-trip GPS fix resolution, driver/place resolution). |
+
+## EXAMPLES
+
+Build (or refresh) the knowledge base for the whole Kirby archive:
+
+```
+bv-drivers Kirby
+bv-drivers: 214 trip(s), 18 place(s)
+bv-drivers: 176/214 trip(s) resolved to a driver
+bv-drivers: 6 common place(s) (>= 2 visits) still need a short/long-stay driver rule
+bv-drivers: 38 trip(s) still undecided
+bv-drivers: wrote /home/christer/beyond-video-data/.config/driver_knowledge.json
+```
+
+Then open bv-web's `/drivers` page to fill in each place's short-stay/long-stay driver and any one-off trip overrides.
+
+Refresh just this year so far, watching progress on a slow archive:
+
+```
+bv-drivers Kirby --timestamp 2026 --trace --debug
+```
+
+## SEE ALSO
+
+`bv-web`'s `/drivers` page, where the common-places registry and specific-trip overrides this command builds are actually edited. `trip/driver_detect.py` for the increment-1 named-pattern matcher this builds on. `bv-config(1)` for setting up a camera system id.

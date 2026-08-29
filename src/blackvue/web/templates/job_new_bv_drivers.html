@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Build driver knowledge base (bv-drivers) - Beyond Video{% endblock %}
+{% block content %}
+<h2 class="page-heading">Build driver knowledge base (bv-drivers)</h2>
+<div class="command-help">
+  <p>Detects trips in an already-configured camera's archive and computes,
+  per trip, weekday/time, how long the vehicle stayed away from home, and a
+  short/long stay flag - then clusters recurring destinations into a common-
+  places registry you fill in on the <a href="/drivers">Drivers</a> page.
+  Safe to re-run: any place labels/driver rules and per-trip overrides you've
+  already set survive a rebuild untouched.</p>
+</div>
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+{% if cameras %}
+<div class="content-panel">
+<form method="post" action="/jobs/bv-drivers">
+  <div class="option-group">
+    <h3>Required</h3>
+    <label class="field-label" for="id">
+      Camera
+      <span class="help-tip" tabindex="0">?<span class="tooltip-text">Which already-configured camera's archive to scan. Set up a new one via bv-config first if it's not listed.</span></span>
+    </label>
+    <select id="id" name="id" autofocus required>
+      {% for camera in cameras %}
+      <option value="{{ camera.id }}">{{ camera.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="option-group">
+    <h3>Time range</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="timestamp">
+          Timestamp
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings matching this exact timestamp or prefix.</span></span>
+        </label>
+        <input type="text" id="timestamp" name="timestamp" placeholder="e.g. 20260715 or 2026">
+      </div>
+      <div class="field">
+        <label class="field-label" for="from_">
+          From
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings from this timestamp onward. Leave blank for the whole archive.</span></span>
+        </label>
+        <input type="text" id="from_" name="from_" placeholder="whole archive if blank">
+      </div>
+      <div class="field">
+        <label class="field-label" for="until">
+          Until
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">Only consider recordings up to this timestamp.</span></span>
+        </label>
+        <input type="text" id="until" name="until" placeholder="whole archive if blank">
+      </div>
+    </div>
+  </div>
+
+  <div class="option-group">
+    <h3>Optional</h3>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label" for="max_gap_minutes">
+          Max gap (minutes)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">The largest gap between two recordings that still counts as the same trip. Leave blank for the default (5 minutes) - same trip-detection rule bv-ls --trips uses.</span></span>
+        </label>
+        <input type="number" id="max_gap_minutes" name="max_gap_minutes" min="0" step="1" placeholder="default: 5">
+      </div>
+      <div class="field">
+        <label class="field-label" for="gap_tolerance_seconds">
+          Gap tolerance (seconds)
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">A small fixed margin added on top of Max gap. Leave blank for the default (10 seconds).</span></span>
+        </label>
+        <input type="number" id="gap_tolerance_seconds" name="gap_tolerance_seconds" min="0" step="1" placeholder="default: 10">
+      </div>
+      <div class="field">
+        <label class="field-label" for="min_visits">
+          Min visits for a "common" place
+          <span class="help-tip" tabindex="0">?<span class="tooltip-text">How many visits make a destination worth listing as an undecided common place on the Drivers page. Leave blank for the default (2).</span></span>
+        </label>
+        <input type="number" id="min_visits" name="min_visits" min="1" step="1" placeholder="default: 2">
+      </div>
+    </div>
+  </div>
+
+  <button type="submit">Start</button>
+</form>
+</div>
+{% else %}
+<p class="empty">No cameras set up yet - <a href="/jobs/bv-config">set one up
+with bv-config</a> first.</p>
+{% endif %}
+{% endblock %}

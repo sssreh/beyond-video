@@ -125,6 +125,15 @@ from ..stats_report import aggregate_recording_stats
 from ..stats_report import count_recordings_without_gps
 from ..stats_report import load_recording_stats
 from ..cli.bv_stats import _format_value as _format_stat_value
+from ..trip.driver_detect import default_driver_profiles_path
+from ..trip.driver_detect import load_driver_profiles
+from ..trip.place_knowledge import default_driver_knowledge_path
+from ..trip.place_knowledge import load_knowledge_base
+from ..trip.place_knowledge import reresolve_trip_drivers
+from ..trip.place_knowledge import save_knowledge_base
+from ..trip.place_knowledge import undecided_places
+from ..trip.place_knowledge import undecided_trips
+from dataclasses import replace as _dc_replace
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -725,6 +734,142 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "error": error,
             },
         )
+
+    @app.get("/drivers", response_class=HTMLResponse)
+    async def drivers_page(
+        request: Request,
+        user: User = Depends(require_login),
+        min_visits: int = Query(default=2),
+    ):
+        # Christer's common-places/undecided-trips driver-assignment
+        # form (see trip/place_knowledge.py's own module docstring) - a
+        # read over driver_knowledge.json, built/refreshed by the
+        # "Build driver KB" job (bv-drivers, /jobs/bv-drivers). Global,
+        # not per-camera, unlike /archive and /stats above:
+        # driver_knowledge.json lives under the shared
+        # default_config_dir(), not any one camera's own archive - a
+        # single household vehicle, one knowledge base.
+        config_dir = default_config_dir()
+        profiles = load_driver_profiles(default_driver_profiles_path(config_dir))
+        knowledge = load_knowledge_base(default_driver_knowledge_path(config_dir))
+
+        if knowledge is None or profiles is None:
+            return templates.TemplateResponse(
+                request,
+                "drivers.html",
+                {
+                    "user": user,
+                    "built": False,
+                    "driver_choices": [],
+                    "places": [],
+                    "undecided_place_keys": set(),
+                    "undecided_trip_list": [],
+                    "min_visits": min_visits,
+                    "trip_count": 0,
+                    "decided_count": 0,
+                },
+            )
+
+        trips, places, trip_overrides = knowledge
+        driver_choices = [
+            (driver.label, driver.display_name) for driver in profiles.drivers
+        ]
+
+        places_sorted = sorted(
+            places.values(), key=lambda place: place.visit_count, reverse=True
+        )
+        undecided_place_keys = {
+            place.key for place in undecided_places(places, min_visits=min_visits)
+        }
+        undecided_trip_list = sorted(
+            undecided_trips(trips), key=lambda entry: entry.start_time, reverse=True
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "drivers.html",
+            {
+                "user": user,
+                "built": True,
+                "driver_choices": driver_choices,
+                "places": places_sorted,
+                "undecided_place_keys": undecided_place_keys,
+                "undecided_trip_list": undecided_trip_list,
+                "min_visits": min_visits,
+                "trip_count": len(trips),
+                "decided_count": sum(
+                    1 for entry in trips if entry.source != "undecided"
+                ),
+            },
+        )
+
+    @app.post("/drivers/places/{key}")
+    async def drivers_update_place(
+        key: str,
+        label: str = Form(""),
+        short_stay_driver: str = Form(""),
+        long_stay_driver: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Updates one CommonPlace's label/short_stay_driver/
+        # long_stay_driver, then re-resolves every trip's driver via
+        # reresolve_trip_drivers() (no archive re-scan needed - see
+        # that function's own docstring) and saves the whole knowledge
+        # base back out. A blank driver field clears that rule
+        # (reverts matching trips to pattern-match/undecided).
+        config_dir = default_config_dir()
+        knowledge_path = default_driver_knowledge_path(config_dir)
+        knowledge = load_knowledge_base(knowledge_path)
+        profiles = load_driver_profiles(default_driver_profiles_path(config_dir))
+
+        if knowledge is not None and profiles is not None and key in knowledge[1]:
+            trips, places, trip_overrides = knowledge
+            places = dict(places)
+            places[key] = _dc_replace(
+                places[key],
+                label=label.strip() or places[key].label,
+                short_stay_driver=short_stay_driver.strip() or None,
+                long_stay_driver=long_stay_driver.strip() or None,
+            )
+            resolved = reresolve_trip_drivers(trips, places, profiles, trip_overrides)
+            save_knowledge_base(
+                knowledge_path, trips=resolved, places=places,
+                trip_overrides=trip_overrides,
+            )
+
+        return RedirectResponse(url="/drivers", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.post("/drivers/trips/{trip_label}")
+    async def drivers_update_trip(
+        trip_label: str,
+        driver_label: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Sets (or, if blank, clears) one specific trip's manual
+        # override - Christer's own "also for specific trips" ask,
+        # for a one-off destination that never clustered into a
+        # CommonPlace worth a rule. Same re-resolve-and-save path as
+        # drivers_update_place() above.
+        config_dir = default_config_dir()
+        knowledge_path = default_driver_knowledge_path(config_dir)
+        knowledge = load_knowledge_base(knowledge_path)
+        profiles = load_driver_profiles(default_driver_profiles_path(config_dir))
+
+        if knowledge is not None and profiles is not None:
+            trips, places, trip_overrides = knowledge
+            trip_overrides = dict(trip_overrides)
+            driver_label = driver_label.strip()
+            if driver_label:
+                trip_overrides[trip_label] = driver_label
+            else:
+                trip_overrides.pop(trip_label, None)
+            resolved = reresolve_trip_drivers(trips, places, profiles, trip_overrides)
+            save_knowledge_base(
+                knowledge_path, trips=resolved, places=places,
+                trip_overrides=trip_overrides,
+            )
+
+        return RedirectResponse(url="/drivers", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/archive", response_class=HTMLResponse)
     async def archive_camera_list(
@@ -2245,6 +2390,78 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             gps_split=gps_split,
             duration=not no_duration,
             gap_tolerance_seconds=gap_tolerance_seconds_value,
+            username=user.username,
+        )
+        return RedirectResponse(
+            url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-drivers", response_class=HTMLResponse)
+    async def new_bv_drivers_form(
+        request: Request, user: User = Depends(require_owner)
+    ):
+        return templates.TemplateResponse(
+            request,
+            "job_new_bv_drivers.html",
+            {"user": user, "cameras": _camera_options(), "error": None},
+        )
+
+    @app.post("/jobs/bv-drivers")
+    async def new_bv_drivers_submit(
+        request: Request,
+        id: str = Form(...),
+        from_: str = Form(""),
+        until: str = Form(""),
+        timestamp: str = Form(""),
+        max_gap_minutes: str = Form(""),
+        gap_tolerance_seconds: str = Form(""),
+        min_visits: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Same "blank means bv-drivers' own default, not zero" numeric
+        # handling as bv-ls's own job-trigger route above.
+        error = None
+        max_gap_minutes_value: int | None = None
+        gap_tolerance_seconds_value: int | None = None
+        min_visits_value = 2
+
+        if max_gap_minutes.strip():
+            try:
+                max_gap_minutes_value = int(max_gap_minutes.strip())
+            except ValueError:
+                error = "Max gap must be a whole number of minutes."
+
+        if error is None and gap_tolerance_seconds.strip():
+            try:
+                gap_tolerance_seconds_value = int(gap_tolerance_seconds.strip())
+            except ValueError:
+                error = "Gap tolerance must be a whole number of seconds."
+
+        if error is None and min_visits.strip():
+            try:
+                min_visits_value = int(min_visits.strip())
+            except ValueError:
+                error = "Min visits must be a whole number."
+
+        if error is not None:
+            return templates.TemplateResponse(
+                request,
+                "job_new_bv_drivers.html",
+                {"user": user, "cameras": _camera_options(), "error": error},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        archive_path = _find_camera_archive(app.state.camera_config_cache, id)
+
+        job = app.state.job_runner.start_bv_drivers(
+            camera_id=id,
+            archive_path=archive_path,
+            from_=from_.strip() or None,
+            until=until.strip() or None,
+            timestamp=timestamp.strip() or None,
+            max_gap_minutes=max_gap_minutes_value,
+            gap_tolerance_seconds=gap_tolerance_seconds_value,
+            min_visits=min_visits_value,
             username=user.username,
         )
         return RedirectResponse(

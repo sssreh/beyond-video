@@ -519,6 +519,66 @@ class JobRunner:
         self._spawn(job, run)
         return job
 
+    def start_bv_drivers(
+        self,
+        *,
+        camera_id: str,
+        archive_path: Path,
+        from_: str | None,
+        until: str | None,
+        timestamp: str | None,
+        max_gap_minutes: int | None,
+        gap_tolerance_seconds: int | None,
+        min_visits: int,
+        username: str,
+    ) -> Job:
+        """Start bv-drivers as a job against one already-configured
+        camera's archive - builds/refreshes driver_knowledge.json (see
+        trip/place_knowledge.py), which /drivers then reads. Same full-
+        parity, nothing-curated-away treatment as start_bv_ls() above -
+        bv-drivers has no destructive or interactive behavior either.
+
+        `--config-dir` and `--trace`/`--debug` aren't exposed here:
+        config_dir is always default_config_dir() for a web-triggered
+        job (the same directory every other job-runner method already
+        assumes - see start_bv_ls()'s own driver_profiles.json/
+        .osm_cache usage), and --trace's dot-per-trip progress has
+        nothing useful to show once it's just Job.output lines rather
+        than a real terminal; --debug's phase timings are still
+        reachable from a real terminal run if Christer wants them."""
+
+        from ..cli import bv_drivers as bv_drivers_cli
+
+        argv: list[str] = [str(archive_path)]
+        if from_:
+            argv += ["--from", from_]
+        if until:
+            argv += ["--until", until]
+        if timestamp:
+            argv += ["--timestamp", timestamp]
+        if max_gap_minutes is not None:
+            argv += ["--max-gap", str(max_gap_minutes)]
+        if gap_tolerance_seconds is not None:
+            argv += ["--gap-tolerance", str(gap_tolerance_seconds)]
+        if min_visits != 2:
+            argv += ["--min-visits", str(min_visits)]
+
+        args = bv_drivers_cli.parse_args(argv)
+        job = self._new_job(
+            command=f"bv-drivers {camera_id}",
+            replicate_command=_replicate_command_line(
+                "bv-drivers", [camera_id, *argv[1:]]
+            ),
+            username=username,
+        )
+
+        def run() -> int:
+            say = job.append_output
+            return bv_drivers_cli._run(args, say=say, warn=say)
+
+        self._spawn(job, run)
+        return job
+
     def start_bv_lock(
         self,
         *,

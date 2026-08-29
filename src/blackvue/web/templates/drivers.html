@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Drivers - Beyond Video{% endblock %}
+{% block content %}
+<h2 class="page-heading">Drivers</h2>
+<div class="command-help">
+  <p>Every place the vehicle has been to more than once, away from home
+  (Hammarby Sjostad/Heliosgatan is never counted as a "stop"), with a
+  short-stay (under 15 minutes) and a long-stay (15 minutes or more)
+  driver rule you can set once per place - every trip to that place,
+  past or future, inherits whichever rule matches its own stay length.
+  A one-off destination that never repeats falls through to the
+  specific-trip list below instead. Run <a href="/jobs/bv-drivers">Build
+  driver KB</a> first, and again any time you want this page to pick up
+  new trips - place labels and rules you've already set survive a
+  rebuild untouched.</p>
+</div>
+
+{% if not built %}
+<p class="empty">No driver knowledge base yet - run <a href="/jobs/bv-drivers">Build
+driver KB</a> first.</p>
+{% else %}
+
+<div class="content-panel">
+<p>{{ decided_count }}/{{ trip_count }} trip(s) resolved to a driver.</p>
+</div>
+
+<h3>Common places</h3>
+<div class="content-panel">
+{% if places %}
+<table>
+  <thead>
+    <tr>
+      <th>Place</th>
+      <th>Visits</th>
+      <th>Short stays (&lt;15 min)</th>
+      <th>Long stays (&ge;15 min)</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for place in places %}
+    <tr>
+      <form method="post" action="/drivers/places/{{ place.key }}">
+      <td>
+        {% if place.key in undecided_place_keys %}<strong title="Common place with no driver rule set yet">&#9888;</strong>{% endif %}
+        <input type="text" name="label" value="{{ place.label }}">
+        <div class="hint">{{ "%.4f"|format(place.point[0]) }}, {{ "%.4f"|format(place.point[1]) }}</div>
+      </td>
+      <td>{{ place.visit_count }}</td>
+      <td>
+        {{ place.short_stay_count }}
+        {% if place.short_stay_count > 0 %}
+        <select name="short_stay_driver">
+          <option value=""{% if not place.short_stay_driver %} selected{% endif %}>&mdash; none &mdash;</option>
+          {% for label, display_name in driver_choices %}
+          <option value="{{ label }}"{% if place.short_stay_driver == label %} selected{% endif %}>{{ display_name }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input type="hidden" name="short_stay_driver" value="{{ place.short_stay_driver or '' }}">
+        {% endif %}
+      </td>
+      <td>
+        {{ place.long_stay_count }}
+        {% if place.long_stay_count > 0 %}
+        <select name="long_stay_driver">
+          <option value=""{% if not place.long_stay_driver %} selected{% endif %}>&mdash; none &mdash;</option>
+          {% for label, display_name in driver_choices %}
+          <option value="{{ label }}"{% if place.long_stay_driver == label %} selected{% endif %}>{{ display_name }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input type="hidden" name="long_stay_driver" value="{{ place.long_stay_driver or '' }}">
+        {% endif %}
+      </td>
+      <td><button type="submit">Save</button></td>
+      </form>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No common places yet - no destination has been visited more than once.</p>
+{% endif %}
+</div>
+
+<h3>Specific trips</h3>
+<div class="command-help">
+  <p>Trips with no resolved driver at all - a one-off destination, or a
+  common place above you haven't filled in yet. Assign a driver to just
+  this trip, or leave it undecided.</p>
+</div>
+<div class="content-panel">
+{% if undecided_trip_list %}
+<table>
+  <thead>
+    <tr>
+      <th>Trip</th>
+      <th>Weekday</th>
+      <th>Time</th>
+      <th>Stay</th>
+      <th>Candidates</th>
+      <th>Driver</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for trip in undecided_trip_list %}
+    <tr>
+      <td>{{ trip.start_time.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ trip.weekday }}</td>
+      <td>{{ trip.start_time_of_day }}</td>
+      <td>
+        {% if trip.stop_category %}
+        {{ trip.stop_category }}{% if trip.dwell_minutes is not none %} ({{ "%.0f"|format(trip.dwell_minutes) }} min){% endif %}
+        {% else %}
+        &mdash;
+        {% endif %}
+      </td>
+      <td>
+        {% if trip.candidates %}
+        {% for candidate in trip.candidates %}
+        {{ candidate.display_name }} ({{ "%.0f"|format(candidate.confidence * 100) }}%){% if not loop.last %}, {% endif %}
+        {% endfor %}
+        {% else %}
+        &mdash;
+        {% endif %}
+      </td>
+      <td>
+        <form method="post" action="/drivers/trips/{{ trip.trip_label }}">
+          <select name="driver_label">
+            <option value="">&mdash; undecided &mdash;</option>
+            {% for label, display_name in driver_choices %}
+            <option value="{{ label }}">{{ display_name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Save</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No undecided trips.</p>
+{% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

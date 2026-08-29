@@ -26,6 +26,7 @@ import pytest
 
 from blackvue.cli import bv_config as bv_config_module
 from blackvue.cli import bv_download as bv_download_module
+from blackvue.cli import bv_drivers as bv_drivers_module
 from blackvue.cli import bv_export as bv_export_module
 from blackvue.cli import bv_generate as bv_generate_module
 from blackvue.cli import bv_gps as bv_gps_module
@@ -2326,3 +2327,123 @@ def test_start_bv_search_defaults_params_to_empty_dict_when_not_given(monkeypatc
     job = runner.start_bv_search(**_search_kwargs(text="roundabout"))
 
     assert job.params == {}
+
+
+# ---------------------------------------------------------------------------
+# JobRunner.start_bv_drivers - real wiring, fake _run
+# ---------------------------------------------------------------------------
+
+
+def _drivers_kwargs(**overrides):
+    """Every start_bv_drivers() keyword, defaulted to a plain build over
+    the whole archive with the CLI's own default min_visits=2 - same
+    per-test-override shape as _lock_kwargs()/_ls_kwargs() above."""
+
+    kwargs = dict(
+        camera_id="kirby",
+        archive_path=Path("/archive/kirby"),
+        from_=None,
+        until=None,
+        timestamp=None,
+        max_gap_minutes=None,
+        gap_tolerance_seconds=None,
+        min_visits=2,
+        username="christer",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_start_bv_drivers_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.path == "/archive/kirby"
+        assert args.min_visits == 2
+        assert args.from_ is None
+        assert args.until is None
+        assert args.timestamp is None
+        say("bv-drivers: /archive/kirby - 2 trip(s), 1 place(s)")
+        return 0
+
+    monkeypatch.setattr(bv_drivers_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_drivers(**_drivers_kwargs())
+
+    assert job.command == "bv-drivers kirby"
+    assert job.replicate_command == "bv-drivers kirby"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, output, _ = job.snapshot()
+    assert status == JobStatus.SUCCEEDED
+    assert any("1 place(s)" in line for line in output)
+
+
+def test_start_bv_drivers_min_visits_override_reaches_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.min_visits == 3
+        return 0
+
+    monkeypatch.setattr(bv_drivers_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_drivers(**_drivers_kwargs(min_visits=3))
+
+    assert job.replicate_command == "bv-drivers kirby --min-visits 3"
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_drivers_time_range_reaches_parsed_args(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *, say, warn):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(bv_drivers_module, "_run", fake_run)
+
+    runner = JobRunner()
+    runner.start_bv_drivers(
+        **_drivers_kwargs(
+            from_="20260101_000000",
+            until="20260201_000000",
+            timestamp="2026",
+        )
+    )
+
+    _wait_until(lambda: "args" in captured)
+    assert captured["args"].from_ == "20260101_000000"
+    assert captured["args"].until == "20260201_000000"
+    assert captured["args"].timestamp == "2026"
+
+
+def test_start_bv_drivers_max_gap_and_gap_tolerance_reach_parsed_args(monkeypatch):
+    def fake_run(args, *, say, warn):
+        assert args.max_gap_minutes == 10
+        assert args.gap_tolerance_seconds == 30
+        return 0
+
+    monkeypatch.setattr(bv_drivers_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_drivers(
+        **_drivers_kwargs(max_gap_minutes=10, gap_tolerance_seconds=30)
+    )
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    assert job.snapshot()[0] == JobStatus.SUCCEEDED
+
+
+def test_start_bv_drivers_job_fails_when_run_returns_nonzero(monkeypatch):
+    def fake_run(args, *, say, warn):
+        return 1
+
+    monkeypatch.setattr(bv_drivers_module, "_run", fake_run)
+
+    runner = JobRunner()
+    job = runner.start_bv_drivers(**_drivers_kwargs())
+
+    _wait_until(lambda: job.snapshot()[0].is_finished)
+    status, _, _ = job.snapshot()
+    assert status == JobStatus.FAILED
