@@ -82,6 +82,29 @@ web = [
     "python-multipart>=0.0.9",
     "Jinja2>=3.0",
 ]
+# bv-web's bv-search "Search by voice" route only (web/voice_asr.py) -
+# Qwen3-ASR-1.7B, which replaced faster-whisper for this one route
+# after Christer traced a real failed search back to Whisper mis-
+# transcribing a Swedish place name ("Vårby gård" heard as "vår
+# bygård" - see voice_asr.py's own module docstring). Every other
+# transcription path in this project (bv-generate --transcribe/
+# --translate, subtitle generation, bv-scribe) keeps using the
+# `speech` group's faster-whisper unchanged - Christer's own explicit
+# scope decision: "Replace Whisper for voice search only". Its own
+# group rather than folded into `speech` or `scene`: nobody without
+# bv-web's voice-search button has any reason to install it, and it
+# needs transformers/torch the same way `scene` does but is otherwise
+# unrelated. Install torch separately first per its own instructions
+# (CUDA build selection - see docs/man/bv-scribe.md), same reasoning
+# as `scene` above - a plain `pip install .[voice-asr]` pulls in
+# whatever torch is already on the machine (or CPU-only torch as a
+# transitive dependency if none is), not necessarily the right CUDA
+# build for the GPU present. Built but not verified against a real
+# model in this sandbox (no GPU/qwen_asr/network here) - see
+# WORKING_CONTEXT.md.
+voice-asr = [
+    "qwen-asr",
+]
 # bv-generate --describe-scene, bv-scribe. Its own group, not folded
 # into anything above - a vision-language model is a large, separate
 # dependency chain (torch + torchvision + transformers +

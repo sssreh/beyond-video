@@ -93,6 +93,8 @@ from .trips import first_gpx_point
 from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
+from .voice_asr import known_places_from_params
+from .voice_asr import transcribe_voice_query
 from .voice_llm import VALID_MODEL_CHOICES as VOICE_LLM_MODEL_CHOICES
 from .voice_llm import extract_voice_query_llm
 from .voice_query import parse_spoken_query
@@ -113,7 +115,6 @@ from ..generate.media import MediaToolError
 from ..generate.media import extract_video_thumbnail
 from ..generate.media import load_or_compute_duration
 from ..generate.mp4_repair import load_or_repair_parking_video
-from ..generate.speech import transcribe
 from ..lexicaltimeparser import LexicalTimeParser
 from ..stats_report import DEFAULT_FIELDS
 from ..stats_report import GPS_DEPENDENT_FIELDS
@@ -2647,31 +2648,31 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         action, not a multi-minute run" precedent
         archive_recording_thumbnail()/archive_recording_file()'s HEVC-
         preview branch already set: a few-second spoken query
-        transcribes in a few seconds on model_size="small", nowhere
-        near needing the Job/polling/history machinery built for
-        bv-generate/bv-export's multi-minute runs.
+        transcribes in a few seconds, nowhere near needing the
+        Job/polling/history machinery built for bv-generate/bv-export's
+        multi-minute runs.
 
-        Was model_size="base" (Whisper's smallest/fastest tier)
-        originally, for the quickest possible turnaround on this
-        synchronous request. Bumped to "small": this transcript feeds
-        parse_spoken_query()/parse_spoken_timerange() below, which
-        pattern-match on exact words, so a misheard word here doesn't
-        just look wrong - it can silently break the place/date parse.
-        "base" mangled the kind of proper noun this route sees a lot
-        of (Swedish place names) more than the modest extra latency
-        of "small" is worth avoiding. If turnaround becomes
-        noticeable, try GPU acceleration (already automatic - see
-        generate/speech.py's gpu_available()) before dropping back
-        down a model size.
+        Transcription was faster-whisper (generate/speech.py's
+        transcribe(), model_size="small") until Christer traced a real
+        failed search back to it mis-transcribing a Swedish place name
+        ("Vårby gård"/"Vårbygård" heard as the unrelated two words "vår
+        bygård") - see voice_asr.py's own module docstring for the full
+        investigation. Now uses web/voice_asr.py's Qwen3-ASR-1.7B
+        integration instead, biased toward place names Christer has
+        searched near before (known_places_from_params() below, built
+        from his own bv-search history). Whisper stays completely
+        unchanged everywhere else in this project (bv-generate
+        --transcribe/--translate, subtitle generation, bv-scribe) -
+        Christer's own explicit scope decision when asked: "Replace
+        Whisper for voice search only."
 
-        Whisper transcribes the audio accurately, but the raw
-        transcript is not itself a bv-search query - a sentence like
-        "less than 1000 meters from Vårby gård" typed verbatim into
-        the Text field just searches for that literal sentence and
-        (correctly) finds nothing (real report from Christer: exactly
-        this happened). Two heuristic parsers turn recognized phrases
-        into bv-search's own structured fields instead of leaving
-        everything as literal Text:
+        Transcription is accurate, but the raw transcript is not itself
+        a bv-search query - a sentence like "less than 1000 meters from
+        Vårby gård" typed verbatim into the Text field just searches
+        for that literal sentence and (correctly) finds nothing (real
+        report from Christer: exactly this happened). Two heuristic
+        parsers turn recognized phrases into bv-search's own structured
+        fields instead of leaving everything as literal Text:
 
         - parse_spoken_query() (web/voice_query.py): "within/less
           than <distance> <unit> of/from <place>" -> Place/Radius.
@@ -2716,8 +2717,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             tmp_path = Path(tmp.name)
             tmp.write(await audio.read())
 
+        # Christer: "i thought the llm would do the transcribe" - it
+        # now does. Qwen3-ASR-1.7B replaces Whisper for this route
+        # only (see voice_asr.py's own module docstring for the full
+        # story: a real failed search traced back to Whisper mis-
+        # transcribing a Swedish place name, Qwen2-Audio turned out not
+        # to support Swedish at all, Qwen3-ASR-1.7B does and supports
+        # native vocabulary biasing). known_places comes from
+        # Christer's own past bv-search runs, newest-first, so a place
+        # he's searched near before is more likely to transcribe
+        # correctly next time.
+        known_places = known_places_from_params(
+            [numbered.entry.params for numbered in _recent_web_runs("bv-search")]
+        )
         try:
-            result = transcribe(tmp_path, model_size="small")
+            result = transcribe_voice_query(tmp_path, known_places=known_places)
         except MediaToolError as exc:
             return JSONResponse(
                 {"error": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY

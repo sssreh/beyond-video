@@ -19633,3 +19633,101 @@ Verified via `ast.parse()` on `app.py` and
 `TestClient`-based route test added, same "no `fastapi` in this dev
 sandbox" constraint documented throughout this file and in
 `test_app_routes.py`'s own docstring.
+
+## Replace Whisper with Qwen3-ASR-1.7B for bv-search voice search only (2026-08-29)
+
+Christer reported a real failed search: `bv-search: no place found
+matching 'vår bygård'`. The underlying spoken place name is one
+recognizable Swedish place - accounts differ on the exact spelling
+(`"Vårby gård"` vs `"Vårbygård"`), but faster-whisper (the transcription
+backend `transcribe_voice_search()` used) had mis-heard it as two
+unrelated common Swedish words, "vår bygård", which then correctly
+found no match. `generate/speech.py`'s `transcribe()` has no vocabulary/
+initial-prompt biasing parameter at all, ruling out a quick "just hint
+Whisper" fix.
+
+Researched two Alibaba audio models as replacements. Qwen2-Audio
+(~8.2B params) was ruled out immediately - it supports only 8 languages
+(Chinese, English, Cantonese, French, Italian, Spanish, German,
+Japanese), no Swedish. **Qwen3-ASR-1.7B** (`Qwen/Qwen3-ASR-1.7B`) is
+suitable: one of 30 supported languages is Swedish, needs only 2-7GB
+VRAM (trivial on Christer's RTX 5090), Apache-2.0 licensed, and beats
+Whisper-large-v3 on most published WER benchmarks. Critically, its
+official `qwen_asr.Qwen3ASRModel.transcribe()` API has a native
+`context` parameter for vocabulary/proper-noun biasing - confirmed
+directly against the upstream `QwenLM/Qwen3-ASR` GitHub example script,
+not a homegrown workaround.
+
+Asked Christer how to wire this in (replace Whisper everywhere / add as
+a selectable option alongside Whisper / replace for voice search only).
+Christer's explicit answer: **"Replace Whisper for voice search only"**.
+Every other transcription path in this project - bv-generate
+`--transcribe`/`--translate`, subtitle generation, bv-scribe's own audio
+handling - keeps using `generate/speech.py`'s Whisper-based
+`transcribe()` completely unchanged.
+
+**New module `web/voice_asr.py`** (tasks #1296-1297). Two pure,
+offline-testable functions plus a model-loading/transcription pair,
+mirroring `voice_llm.py`'s established pure/impure split:
+
+- `known_places_from_params(params_list, *, limit=20)` - pulls distinct,
+  non-empty `"place"` values out of past bv-search web-form param
+  snapshots (`web/app.py`'s existing `_recent_web_runs("bv-search")`,
+  already newest-first - reused rather than duplicating history-reading
+  logic), case-insensitively deduplicated, capped at `limit`. These are
+  Christer's own real place names from real prior searches - exactly the
+  kind of proper noun a general-purpose ASR model tends to mangle
+  without a hint.
+- `_build_context(known_places)` - builds the `context` bias string
+  Qwen3-ASR's `transcribe()` accepts (`"May mention these place names:
+  ..."`), empty string when there's nothing to bias toward yet (a fresh
+  install with no bv-search history).
+- `_get_asr_model()`/`unload_asr_model()` - cache-by-`(model, device)`-key
+  model loading, mirroring `generate/scene.py`'s `_get_scene_model()`
+  and `voice_llm.py`'s `_get_small_text_model()` precedent exactly, with
+  a paired unload function for symmetry (not yet wired into any cleanup
+  hook, same reasoning `voice_llm.py`'s own `unload_text_model()` gives).
+- `transcribe_voice_query(source, *, known_places=None, ...)` - the
+  impure entry point; raises `MediaToolError` on any failure, exactly
+  the same exception type Whisper's own `transcribe()` raised, so
+  `transcribe_voice_search()`'s existing error handling needed no
+  change. Reuses `generate/speech.py`'s own `Transcript` dataclass
+  rather than defining a near-duplicate - it's a generic
+  `(text, language, segments)` shape, not Whisper-specific.
+  `segments` is always left as an empty tuple: forced-aligner timestamps
+  are never requested here, since bv-search's voice UI only ever needs
+  the plain transcript text.
+
+**Wired into `web/app.py`'s `transcribe_voice_search()` route**: removed
+the `generate.speech.transcribe` import, replaced the Whisper call with
+`known_places_from_params([...])` + `transcribe_voice_query(tmp_path,
+known_places=known_places)`. Everything downstream (the
+`parse_spoken_query()`/`parse_spoken_timerange()` calls, the
+`voice_llm.py` comparison-panel wiring from the previous entry) is
+unchanged, since `transcribe_voice_query()` returns the same
+`Transcript`-shaped object (`.text`, `.language`) Whisper's `transcribe()`
+did. Updated the route's docstring, which previously described a now-
+stale `model_size="base"->"small"` decision history, to instead describe
+the Qwen3-ASR swap and the `known_places` biasing mechanism.
+
+**`pyproject.toml`**: added a new `voice-asr` extra (`"qwen-asr"`),
+following the existing extras' convention of a named group with an
+explanatory comment and no explicit `torch` line (installed separately
+per the user's own CUDA needs, same as the `scene` extra).
+
+**Tests**: 15 new assert-based tests in
+`tests/blackvue/web/test_voice_asr.py` for `known_places_from_params()`
+(empty input, place-field-only extraction, non-string/blank-place
+skipping, whitespace stripping, case-insensitive dedup, newest-first
+order preservation, `limit` enforcement including the default of 20) and
+`_build_context()` (empty -> `""`, single place, multiple
+comma-joined places) - all passing via a standalone harness (no
+`pytest` CLI in this sandbox). `_get_asr_model()`/
+`transcribe_voice_query()` are untested here - no GPU/`qwen_asr`/network
+in this sandbox, matching `generate/test_scene.py`'s own established
+precedent of never exercising a real model-loading path in CI.
+
+Verified via `ast.parse()` on `voice_asr.py` and the modified `app.py`
+(both clean). Built but not verified against a real Qwen3-ASR model or
+real audio in this sandbox - same caveat every prior model-integration
+entry in this file already carries.
