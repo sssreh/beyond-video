@@ -35,13 +35,20 @@ Three design decisions, all Christer's own answers when asked:
    regardless of which machine actually runs it.)
 
 2. UI surfacing (see web/app.py's transcribe_voice_search route and
-   templates/job_new_bv_search.html's JS): this module's result is
-   *never* what auto-fills the bv-search form - the existing regex
-   parsers (voice_query.py/voice_time.py) keep doing that completely
-   unchanged, exactly as before this module existed. This module's
-   output is surfaced alongside as a second, comparable interpretation
-   for Christer to eyeball against the regex result, with its own
-   "apply these values instead" control on the frontend.
+   templates/job_new_bv_search.html's JS): ORIGINALLY this module's
+   result was never what auto-filled the bv-search form - the regex
+   parsers (voice_query.py/voice_time.py) did that unchanged, with this
+   module's output surfaced alongside as a second, comparable
+   interpretation. That changed in a later session (Christer: "i
+   thought audio llm would understand that, its a thinker not sound to
+   text only") - this module is now the *primary* parser by default,
+   with the regex parsers as the fallback (LLM off, LLM errors, or -
+   added still later, see the route's own comment - the LLM ran fine
+   but found no place/date at all while the regex parser did). Either
+   way, both results are always computed and both are always shown -
+   whichever one is authoritative fills the form, the other is offered
+   as a one-click "use this instead" alternative. The field shape
+   below (design decision 3) is unchanged by any of this.
 
 3. Extraction scope matches the *combined* regex parsers' own field
    shape exactly - text/place/radius_meters/timestamp/from_/until -

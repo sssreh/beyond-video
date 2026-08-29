@@ -126,3 +126,55 @@ def test_distance_first_still_takes_priority_over_place_first():
     result = parse_spoken_query("within 500 meters of Slussen")
     assert result.place == "Slussen"
     assert result.radius_meters == 500.0
+
+
+# ---------------------------------------------------------------------------
+# Written-out round numbers ("tusen"/"hundra", "thousand"/"hundred") -
+# Christer's real report: "...bilen som är närmare än tusen meter
+# ifrån vår bygård" ("...closer than a thousand meters from...") went
+# unrecognized because [\d.,]+ alone never matches a spelled-out
+# number, even though the rest of the sentence was transcribed fine.
+# ---------------------------------------------------------------------------
+
+
+def test_swedish_word_number_tusen_meter():
+    result = parse_spoken_query(
+        "bilen som är närmare än tusen meter ifrån vårby gård"
+    )
+    assert result.place == "vårby gård"
+    assert result.radius_meters == 1000.0
+
+
+def test_swedish_word_number_hundra_meter():
+    result = parse_spoken_query("inom hundra meter från Slussen")
+    assert result.place == "Slussen"
+    assert result.radius_meters == 100.0
+
+
+def test_english_word_number_thousand_meters():
+    result = parse_spoken_query("within thousand meters of Slussen")
+    assert result.place == "Slussen"
+    assert result.radius_meters == 1000.0
+
+
+def test_english_word_number_hundred_meters():
+    result = parse_spoken_query("within hundred meters of Slussen")
+    assert result.place == "Slussen"
+    assert result.radius_meters == 100.0
+
+
+def test_word_number_km_unit_still_converts_to_meters():
+    result = parse_spoken_query("within thousand km of Slussen")
+    assert result.radius_meters == 1000000.0
+
+
+def test_word_number_is_case_insensitive():
+    result = parse_spoken_query("within Thousand meters of Slussen")
+    assert result.radius_meters == 1000.0
+
+
+def test_digit_numbers_still_work_alongside_word_numbers():
+    # Regression guard: adding word-number support to _NUM must not
+    # break the original digit-based matching.
+    result = parse_spoken_query("within 750 meters of Slussen")
+    assert result.radius_meters == 750.0

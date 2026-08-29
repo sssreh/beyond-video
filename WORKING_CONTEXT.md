@@ -19963,3 +19963,74 @@ sandbox's usual no-pytest/no-tomllib-on-3.10 workaround) - all 19
 network access to the real Nominatim API from this sandbox to verify
 the geocoding assumption directly - Christer should confirm both
 "Vårby gård" and "Vårbygård" resolve correctly on his own machine.
+
+## Written-out numbers + LLM-found-nothing fallback (2026-08-29)
+
+Christer tried voice search again after the two fixes above and
+reported: 'Heard: "Hitta en resa med bilen som är närmare än tusen
+meter ifrån vår bygård." - filled in via local LLM as Text "bilen som
+är närmare än tusen meter ifrån vår bygård". Did not fill in
+coordinates.' Two independent gaps, both real:
+
+**Written-out numbers weren't recognized at all
+(`web/voice_query.py`)**: "tusen meter" is Swedish for "a thousand
+meters" - spelled out, not digits - and `_NUM`'s regex was
+`[\d.,]+`, so it never matched. This isn't an ASR mis-hearing this
+time (the transcript is accurate) - it's a parser gap. Added
+`_WORD_NUMBERS` (`hundra`/`tusen`/`hundred`/`thousand` -> 100/1000)
+and widened `_NUM` to `[\d.,]+|hundra|tusen|hundred|thousand`;
+`_parse_distance()` checks the word map first, falls through to the
+existing digit-parsing otherwise. Deliberately narrow (two round
+numbers per language, not a number-word grammar) - same "handle the
+shape actually hit" approach this module's own `_PATTERNS` list
+already takes.
+
+**A worse LLM result silently beat a better regex one
+(`web/app.py`)**: even setting the number-word gap aside, the route's
+existing precedence was "the LLM is primary whenever it doesn't raise
+an exception" - so a *successful-but-useless* LLM call (understood the
+whole sentence as free text, missed both the place and the radius)
+still won over the regex parser, even in cases where the regex parser
+would have found something. Restructured the precedence: after a
+successful LLM call, if its own result found no place/timestamp/date-
+range at all *and* the regex parser did find one, the regex result
+becomes primary instead. New response fields: `llm` (the LLM's own
+result, always included alongside `regex` when the LLM ran
+successfully - previously only surfaced when it was primary) and
+`llm_note` (explains *why* regex won despite the LLM not erroring -
+distinct from `llm_error`, which is for the LLM call actually
+breaking). `templates/job_new_bv_search.html`'s `renderFallbackPanel()`
+gained a third branch (parser is regex, no error, but `llm_note` is
+set) offering the LLM's own reading as a one-click alternative, mirror-
+image of the existing "parser is llm, offer regex instead" branch.
+
+Also fixed a stale docstring while touching this precedence logic:
+`web/voice_llm.py`'s own "design decision 2" section still said "this
+module's result is never what auto-fills the form" - true when
+originally written, false since the earlier "make LLM primary" session
+change, now corrected to describe the current (and this session's
+further-refined) precedence.
+
+**Still not fully fixed, and Christer should know why**: the
+transcript in this exact report still read "vår bygård", not "Vårby
+gård" - a *third* distinct mis-hearing (wrong split point entirely,
+not the "Vårbygård" concatenation the geocoding spacing-variant fix
+above handles). Even with both fixes in this entry, the Place field
+here would likely have come out as "vår bygård" via the now-working
+regex fallback - which won't geocode correctly either. The real fix
+for *that* specific problem is still the `known_places.txt` config
+file from the entry above - there's no evidence in this report that
+Christer has created it yet on his real deployment, and nothing in
+this sandbox can create it for him.
+
+**Tests**: 7 new tests in `test_voice_query.py` for word-number
+parsing (Swedish, English, km-unit conversion, case-insensitivity, a
+digit-number regression guard) - all 20 tests in that file pass. The
+`web/app.py` route change (`llm_found_nothing` precedence) has no
+dedicated test - same "no `fastapi`/`TestClient` in this dev sandbox"
+constraint noted throughout this file for every other route change;
+verified via `ast.parse()` only. Re-ran the full 30-test
+`test_voice_llm.py` suite after the docstring edit there (unchanged,
+as expected - docstring-only). `jinja2.Environment.parse()` and a
+`node`-equivalent (`new Function()`) syntax check on
+`job_new_bv_search.html`'s extracted `<script>` block both pass.

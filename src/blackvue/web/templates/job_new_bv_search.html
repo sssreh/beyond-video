@@ -419,6 +419,26 @@ with bv-config</a> first.</p>
       return;
     }
 
+    if (data.llm_note && data.llm) {
+      // The LLM ran fine but came up with nothing more specific than
+      // free text, so the pattern-match parser's result was used
+      // instead (see web/app.py's transcribe_voice_search() route) -
+      // distinct from data.llm_error below, where the LLM call itself
+      // broke. Offer the LLM's own (plain-text) reading as the "other"
+      // option here, same one-click-swap shape as the data.parser ===
+      // 'llm' branch above, just reversed.
+      llmPanel.hidden = false;
+      llmApplyBtn.hidden = false;
+      llmSummary.textContent = 'Used the quick pattern-match parser - ' + data.llm_note +
+        '. The local LLM read it as: ' +
+        (data.llm.text ? 'Text "' + data.llm.text + '"' : 'nothing usable') + '.';
+      llmApplyBtn.onclick = function () {
+        applyParsed(data.llm);
+        textInput.focus();
+      };
+      return;
+    }
+
     if (data.llm_error) {
       llmPanel.hidden = false;
       llmApplyBtn.hidden = true;

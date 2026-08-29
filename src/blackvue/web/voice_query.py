@@ -37,6 +37,13 @@ pattern that prompted this. Extend _PATTERNS with more phrasings as
 real gaps show up, rather than trying to anticipate every possible
 sentence up front.
 
+_NUM also recognizes a small set of written-out round numbers
+("tusen"/"hundra", "thousand"/"hundred") alongside digits - another
+real Christer report: "...närmare än tusen meter ifrån..." ("...closer
+than a thousand meters from...") wasn't just an ASR mis-hearing this
+time, the *transcript itself* was correct, but [\d.,]+ alone never
+matches a spelled-out number. See _WORD_NUMBERS below.
+
 Important design choice: when a distance+place pattern matches, the
 returned ``text`` is always "" (not "whatever was left over before the
 match"). bv-search ANDs Text and Place/Radius together (see
@@ -74,7 +81,22 @@ class ParsedVoiceQuery:
 # _LEADING_FILLER below).
 _UNIT = r"(?P<unit>kilometers?|kilometres?|km|meters?|metres?|m)"
 _UNIT_SV = r"(?P<unit>kilometer|km|meter|m)"
-_NUM = r"(?P<number>[\d.,]+)"
+
+# Real gap: Christer's own report, "Hitta en resa med bilen som är
+# närmare än tusen meter ifrån vår bygård" - "tusen meter" is spoken
+# Swedish for "a thousand meters", not digits, so [\d.,]+ alone never
+# matched it and the whole distance+place pattern silently failed to
+# recognize the sentence at all. Deliberately narrow (just the two
+# most common round-number words in each language, not a full
+# number-word grammar) - same "handle the shape actually hit" approach
+# this module's own docstring already describes for _PATTERNS.
+_WORD_NUMBERS = {
+    "hundra": 100.0,
+    "tusen": 1000.0,
+    "hundred": 100.0,
+    "thousand": 1000.0,
+}
+_NUM = r"(?P<number>[\d.,]+|hundra|tusen|hundred|thousand)"
 
 _PATTERNS = [
     # English, distance-first: "within/less than/under/closer than
@@ -158,16 +180,21 @@ def _clean_place(raw: str) -> str:
 
 
 def _parse_distance(raw_number: str, raw_unit: str) -> float:
-    # Spoken/dictated numbers sometimes carry a comma as the decimal
-    # separator (Swedish convention) rather than a thousands
-    # separator - if there's a comma and no dot, treat it as decimal;
-    # otherwise drop commas as thousands separators.
-    cleaned = raw_number.replace(" ", "").replace("\xa0", "")
-    if "," in cleaned and "." not in cleaned:
-        cleaned = cleaned.replace(",", ".")
+    word_value = _WORD_NUMBERS.get(raw_number.strip().lower())
+    if word_value is not None:
+        value = word_value
     else:
-        cleaned = cleaned.replace(",", "")
-    value = float(cleaned)
+        # Spoken/dictated numbers sometimes carry a comma as the
+        # decimal separator (Swedish convention) rather than a
+        # thousands separator - if there's a comma and no dot, treat
+        # it as decimal; otherwise drop commas as thousands
+        # separators.
+        cleaned = raw_number.replace(" ", "").replace("\xa0", "")
+        if "," in cleaned and "." not in cleaned:
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+        value = float(cleaned)
     if raw_unit.lower() in _KM_UNITS:
         value *= 1000
     return value

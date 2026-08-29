@@ -2790,9 +2790,28 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # (see docstring above for why this - not the regex parser -
         # is now the default), falling back to the regex result if the
         # LLM is switched off or fails.
+        #
+        # Real gap Christer hit: "Hitta en resa med bilen som är
+        # närmare än tusen meter ifrån vår bygård." - the LLM ran
+        # successfully (no exception) but understood the whole thing
+        # as free text, missing both the place and the "tusen meter"
+        # (written-out "a thousand meters", not digits) radius
+        # entirely - a small-model comprehension miss, not a code
+        # error. Blindly trusting "the LLM didn't raise" as "the LLM's
+        # answer is right" meant a *worse* result (place/radius blank,
+        # full sentence dumped into Text) won out over what the regex
+        # parser could have found. So: if the LLM's own result found no
+        # place/date at all, but the regex parser did, the regex result
+        # becomes primary instead - see llm_found_nothing below. This
+        # doesn't second-guess the LLM when it DID find something
+        # (still primary in that case), only when it found nothing
+        # structured, which is the case a plain pattern-match parser
+        # can plausibly out-perform a small model on.
         primary = regex_result
         parser_used = "regex"
         llm_error = None
+        llm_note = None
+        llm_result = None
         if transcript and llm_model in VOICE_LLM_MODEL_CHOICES:
             try:
                 llm_parsed = extract_voice_query_llm(
@@ -2801,7 +2820,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             except (MediaToolError, ValueError) as exc:
                 llm_error = str(exc)
             else:
-                primary = {
+                llm_result = {
                     "text": llm_parsed.text,
                     "place": llm_parsed.place,
                     "radius_meters": llm_parsed.radius_meters,
@@ -2809,7 +2828,22 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "from_": llm_parsed.from_,
                     "until": llm_parsed.until,
                 }
-                parser_used = "llm"
+                llm_found_nothing = (
+                    llm_result["place"] is None
+                    and llm_result["timestamp"] is None
+                    and not (llm_result["from_"] and llm_result["until"])
+                )
+                if llm_found_nothing and matched_something:
+                    primary = regex_result
+                    parser_used = "regex"
+                    llm_note = (
+                        "the local LLM understood this as free text only - the "
+                        "quick pattern-match parser found a more specific "
+                        "place/date match instead"
+                    )
+                else:
+                    primary = llm_result
+                    parser_used = "llm"
 
         return JSONResponse(
             {
@@ -2823,6 +2857,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "parser": parser_used,
                 "llm_model": llm_model,
                 "llm_error": llm_error,
+                "llm_note": llm_note,
+                "llm": llm_result,
                 "regex": regex_result,
             }
         )
