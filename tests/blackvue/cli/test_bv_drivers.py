@@ -290,9 +290,11 @@ def test_run_drops_parking_trip_whose_only_asset_is_generated(tmp_path, monkeypa
     # of a real stop - it's evidence some generation step ran, which
     # could happen even if the source it was derived from has since
     # been pruned. Only a *downloaded* asset (FRONT/REAR/INTERIOR
-    # video, GPS, GSENSOR, or a *_THUMBNAIL) should count.
-    kept = _make_trip("20260701_080000", kind="P")
-
+    # video, GPS, GSENSOR, or a *_THUMBNAIL) should count. `dropped` is
+    # deliberately not the last trip in the list - the chronologically
+    # last trip is exempt from this whole check (see the dedicated
+    # last-trip-exemption test below), so testing the generated-vs-
+    # downloaded distinction needs a non-last trip.
     dropped_end = Recording(id=RecordingId("20260701_181000_P"))
     dropped_end.assets[Asset.RECORDING_STATS] = AssetFile(
         asset=Asset.RECORDING_STATS,
@@ -304,8 +306,9 @@ def test_run_drops_parking_trip_whose_only_asset_is_generated(tmp_path, monkeypa
             dropped_end,
         ),
     )
+    kept = _make_trip("20260709_080000", kind="P")
 
-    trips = [kept, dropped]
+    trips = [dropped, kept]
     fixes = [
         TripFix(
             start=HOME, end=WORK,
@@ -325,6 +328,40 @@ def test_run_drops_parking_trip_whose_only_asset_is_generated(tmp_path, monkeypa
     saved_trips, _, _ = loaded
     saved_labels = {entry.trip_label for entry in saved_trips}
     assert saved_labels == {kept.label}
+
+
+def test_run_keeps_last_trip_even_if_not_ending_in_parking(tmp_path, monkeypatch):
+    # Christer: "All trips end with a P except for the last one, it
+    # might get it the next download." The car may simply still be
+    # parked with its Parking-mode sidecars not downloaded yet - that's
+    # not the same as an unverified trip, so the chronologically last
+    # trip is exempt from the P-ending/downloaded-asset check
+    # regardless of what it ends in. A *middle* trip not ending in P is
+    # still dropped normally - only the very last one gets the pass.
+    earliest = _make_trip("20260701_080000", kind="P")
+    middle_dropped = _make_trip("20260705_080000", kind="N")
+    last_kept = _make_trip("20260709_080000", kind="N")
+
+    trips = [earliest, middle_dropped, last_kept]
+    fixes = [
+        TripFix(
+            start=HOME, end=WORK,
+            start_time=trip.start_timestamp, end_time=trip.end_timestamp,
+        )
+        for trip in trips
+    ]
+    _install_fakes(monkeypatch, trips=trips, fixes=fixes)
+
+    config_dir = tmp_path / "config"
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(config_dir / "driver_knowledge.json")
+    assert loaded is not None
+    saved_trips, _, _ = loaded
+    saved_labels = {entry.trip_label for entry in saved_trips}
+    assert saved_labels == {earliest.label, last_kept.label}
 
 
 def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):

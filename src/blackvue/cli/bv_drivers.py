@@ -322,13 +322,32 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         # downloaded even though its video normally isn't (bv-
         # download's own policy: only E/M-kind video + the one right
         # before each).
+        #
+        # The chronologically *last* trip is exempt from this check.
+        # Christer: "All trips end with a P except for the last one, it
+        # might get it the next download" - the car may simply still be
+        # parked with its Parking-mode sidecars not pulled down yet, not
+        # because the trip is unverified. `trips` comes out of
+        # TripBuilder in chronological order (it groups an already-
+        # sorted `recordings` list, see build()'s own precondition), so
+        # `trips[-1]` is always the most recent one. Dropping it
+        # unconditionally would also silently break dwell_at_
+        # destination()'s adjacent-trip short/long-stay categorization
+        # for the *second*-to-last trip: an outbound (home -> away) leg
+        # computes its own dwell from the *next* trip's start time (see
+        # that function's docstring), so losing the last trip loses the
+        # only evidence of how long the most recent stay actually was,
+        # not just the last trip's own data.
         before_parking_filter = len(trips)
         trips = [
             trip
             for trip in trips
-            if trip.last_recording.id.is_parking
-            and any(
-                asset.is_downloaded for asset in trip.last_recording.assets
+            if trip is trips[-1]
+            or (
+                trip.last_recording.id.is_parking
+                and any(
+                    asset.is_downloaded for asset in trip.last_recording.assets
+                )
             )
         ]
         if args.debug and len(trips) != before_parking_filter:

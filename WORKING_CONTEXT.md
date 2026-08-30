@@ -21120,5 +21120,44 @@ drops_parking_trip_whose_only_asset_is_generated covering the
 downloaded-vs-generated distinction specifically. All 13 bv_drivers
 tests, plus the untouched driver_detect/place_knowledge/archive_reader
 suites, pass. No personal date or config value remains anywhere in
-code or (once rebased) git history bound for GitHub - the rule is now
-fully generic.
+code going to GitHub - the rule itself is fully generic. (Follow-up:
+the commit that introduced the original JULY_6_CUTOVER constant had
+already been pushed before this fix landed, so the personal date does
+still exist in one old commit's history on GitHub - Christer decided,
+after checking, to leave that alone rather than force-push a rewrite;
+it's just a date, not sensitive data, and the live code and design are
+clean going forward.)
+
+Follow-up: Christer caught a real gap in the P-ending rule right after
+the above landed: "All trips end with a P except for the last one, it
+might get it the next download. I think that also throws out long and
+short trip pause." Two things in one - the chronologically most recent
+trip in any archive will very often *not* yet end in a downloaded P
+recording, not because it's unverified, but simply because the car may
+still be parked with those Parking-mode sidecars not pulled down yet
+(they show up whenever bv-download next runs). Unconditionally
+dropping that trip was also silently breaking dwell_at_destination()'s
+short/long-stay categorization (place_knowledge.py) for the *second*-
+to-last trip: an outbound (home -> away) leg computes its own dwell
+duration from the *next* trip's start time (see that function's own
+docstring - "missing adjacent trip" is one of its documented None
+cases), so losing the last trip lost the only evidence of how long the
+most recent stay actually was, not just the last trip's own data.
+
+Fix: `trips[-1]` (TripBuilder.build() returns trips in chronological
+order - it groups an already-sorted `recordings` list, see build()'s
+own precondition, so the last list entry is always the most recent
+trip) is now exempt from the whole P-ending/downloaded-asset check,
+unconditionally - `trip is trips[-1] or (<the real check>)` in the
+filter comprehension. Every other trip, including the second-to-last
+one, is still filtered normally. Note this makes the *original*
+generated-vs-downloaded test (test_run_drops_parking_trip_whose_only_
+asset_is_generated) need reordering, since its "dropped" trip used to
+sit last in the list and would now pass purely by position - it's now
+first, with a real `kind="P"` trip appended after it. Added a
+dedicated test, test_run_keeps_last_trip_even_if_not_ending_in_
+parking, with three trips (earliest kept via the real check, a middle
+trip dropped normally, and a last trip kept regardless despite ending
+in N) to cover the exemption specifically without relying on
+coincidental list order elsewhere. All 14 bv_drivers tests, plus
+place_knowledge (35) and driver_detect (18), pass.
