@@ -970,11 +970,21 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 trip_overrides=trip_overrides,
             )
 
-        # Same #trip-{label} scroll-position fix as
-        # drivers_update_place() above, keyed to drivers.html's
-        # specific-trips row id instead.
+        # NOT the same #trip-{label} pattern drivers_update_place() uses
+        # above - unlike a CommonPlace row (which always stays in the
+        # places table regardless of whether its driver rules are set),
+        # resolving a trip's override removes it from undecided_trips()
+        # entirely, so its own #trip-{label} row is gone from the very
+        # next render. Anchoring to that now-vanished id left the
+        # browser unable to find any matching element and silently
+        # falling back to the top of the page - Christer: "varje gang
+        # jag fyllt i en forare pa en specifik resa och trycker pa
+        # save, sa hamnar jag hogst upp pa sidan, valdigt irriterande."
+        # Anchor to the (always-present) "Specific trips" heading
+        # instead - not the exact row, but at least the right section,
+        # rather than a dangling fragment that scrolls nowhere.
         return RedirectResponse(
-            url=f"/drivers#trip-{trip_label}", status_code=status.HTTP_303_SEE_OTHER
+            url="/drivers#specific-trips", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @app.post("/drivers/bulk-assign")

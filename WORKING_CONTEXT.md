@@ -20927,3 +20927,22 @@ with the very next/previous trip's own endpoint. Root cause of it
 being empty for nearly every row was the same trip-fragmentation bug
 above; expected to self-correct on the next `bv-drivers build` after
 this fix.
+
+Fixed: saving a Specific-trips driver override on /drivers always
+scrolled back to the top of the page. The #trip-{label} redirect
+fragment (added in task #1339, working fine for CommonPlace saves)
+doesn't work here for a structural reason, not a typo: a CommonPlace
+row stays in the places table regardless of whether its driver rules
+are set, so #place-{key} always resolves - but resolving a specific
+trip's override removes that trip from undecided_trips() entirely (its
+source is no longer "undecided"), so the very next render of /drivers
+no longer has a #trip-{label} element at all. The browser can't find a
+dangling fragment target and silently falls back to the top of the
+page - happens on literally every save, matching Christer's report
+("Varje gang jag fyllt i en forare pa en specifik resa och trycker pa
+save, sa hamnar jag hogst upp pa sidan, valdigt irriterande"). Fix:
+`drivers_update_trip()` now redirects to `/drivers#specific-trips`
+(the section heading, given `id="specific-trips"`) instead of the
+now-vanished row id - not as precise as landing on the exact row, but
+always resolves, unlike the dangling fragment it replaces. No existing
+test covered this redirect target, so nothing to update.
