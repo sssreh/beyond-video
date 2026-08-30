@@ -21045,3 +21045,80 @@ resolved to X" vs. "No undecided trips"). No web-level tests exist for
 /drivers routes (established precedent - none did before this task
 either), so verified via py_compile on app.py and a standalone Jinja2
 parse of drivers.html.
+
+Corrected: the entry above described bv-drivers dropping pre-
+JULY_6_CUTOVER (2026-07-06) trips not ending in Parking mode, with the
+cutover date hardcoded as a module constant. Christer flagged this
+immediately: "Notera att allt som rör 6 juli, bara gäller mig,
+ingenting som skall in i github" - his own personal camera-setup
+history (when his sidecar downloads happened to become complete) has
+no business being hardcoded into code that ships to the public repo.
+First instinct was to move the date into driver_profiles.json (a
+personal, non-repo config file - the same place christers_driver_
+profiles() already keeps his home address and driver names). Before
+implementing that, though, Christer reconsidered the rule itself:
+"När jag tänker efter så bör ju alla trips avslutas med en P
+arkering" - "en trip börjar och slutar ju i hammarby sjöstad även om
+hon jobbar på norra stationsgatan" (a trip starts and ends at home
+even if it's someone else's workplace in between), i.e. every real
+trip eventually comes back to a real stop, so the Parking-mode-ending
+requirement should just apply to *all* trips, unconditionally - no
+cutover date, no personal config value, needed at all.
+
+That was verified against the real Kirby archive before committing to
+it, and the first verification pass was itself wrong: a Python
+reproduction script scanned only `*.mp4` files to build the recording
+list fed into TripBuilder, which excluded every Parking-mode
+recording whose video was never downloaded (bv-download's own policy:
+only Event/Manual video + the one right before each ever gets
+downloaded, Parking video never does) - producing a badly misleading
+28%/26% end-in-P rate that looked like reasonable grounds for
+caution. Christer didn't accept that at face value: "Give me an
+example from after 6 july, that dont have a P sidecar" - hunting for
+one turned up that ArchiveReader.read() actually registers a
+RecordingId from *any* recognized asset file (thumbnails, .gps,
+.stats.json, ...), not just video (see ArchiveReader.ASSETS), so a
+video-only scan was undercounting real P recordings substantially.
+Rewriting the verification script to replicate ArchiveReader's real
+registration logic (skipping only the slow per-file stat() call,
+which isn't needed for this analysis) gave a very different, accurate
+picture: 326/331 (98.5%) of trips since sidecar downloads became
+complete already end in Parking mode - not a narrow edge case, but
+the normal shape of a trip once download coverage is good. Before
+that era, only 142/498 (28%) do, exactly the incomplete-sidecar-
+coverage period task #1355 already identified. With that confirmed,
+Christer signed off: "Ja, byt till enkelt P-krav på alla trips
+(rekommenderas)."
+
+bv_drivers.py's filter is now `trip.last_recording.id.is_parking` with
+no date or config check anywhere - the JULY_6_CUTOVER constant, its
+date import, and the sidecar_complete_since config field/serialization
+that had briefly been added to DriverProfiles for the config-based
+design were all removed again. One more correction landed in the same
+pass: Christer noted "bara nedladdade P assets räknas, inte
+genererade" (only downloaded P assets count, not generated ones) - a
+RecordingId registered solely from a bv-generate/bv-scribe-derived
+asset (.stats.json, a transcript, ...) isn't camera evidence of a real
+stop on its own, just evidence some generation step ran, which could
+happen even if the downloaded source it was derived from has since
+been pruned. Asset gained a new `is_downloaded` property (archive/
+asset.py) mirroring the enum's own existing "Downloaded from the
+camera" / "Generated assets" comment grouping (FRONT, REAR, INTERIOR,
+GPS, GSENSOR, and the three *_THUMBNAIL kinds are downloaded;
+everything else - AUDIO, DURATION, THUMBNAIL, RECORDING_STATS,
+TRANSCRIPT*, TRANSLATION*, SUBTITLES, SCENE_DESCRIPTION* - is
+generated). bv_drivers.py's filter now also requires `any(asset.
+is_downloaded for asset in trip.last_recording.assets)`, so a P-kind
+ending recording whose only surviving file is something generated
+after the fact no longer counts. test_bv_drivers.py's _make_trip()
+default `kind` flipped from "N" to "P" (every generic test now
+survives the real filter by default) and its end recording gets a
+downloaded GPS asset attached by default; the old JULY_6_CUTOVER-
+specific test was replaced with test_run_drops_trips_not_ending_in_
+parking_mode (simple, dateless P-vs-N check) plus a new test_run_
+drops_parking_trip_whose_only_asset_is_generated covering the
+downloaded-vs-generated distinction specifically. All 13 bv_drivers
+tests, plus the untouched driver_detect/place_knowledge/archive_reader
+suites, pass. No personal date or config value remains anywhere in
+code or (once rebased) git history bound for GitHub - the rule is now
+fully generic.

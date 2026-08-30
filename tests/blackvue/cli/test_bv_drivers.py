@@ -8,14 +8,15 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from blackvue.adapters.blackvue.adapter import BlackVueAdapter
+from blackvue.archive.asset import Asset
+from blackvue.archive.asset_file import AssetFile
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.cli import bv_drivers
-from blackvue.cli.bv_drivers import JULY_6_CUTOVER
 from blackvue.cli.bv_drivers import parse_args
 from blackvue.trip.driver_detect import DriverMatch
 from blackvue.trip.driver_detect import DriverProfile
@@ -123,21 +124,35 @@ class _FakeTripBuilder:
         return _FakeTripBuilder.trips_to_return
 
 
-def _make_trip(label_timestamp: str, minutes_span: int = 10, *, kind: str = "N") -> Trip:
-    """`kind` (default "N", Normal) is stamped onto both the start and
+def _make_trip(label_timestamp: str, minutes_span: int = 10, *, kind: str = "P") -> Trip:
+    """`kind` (default "P", Parking) is stamped onto both the start and
     end RecordingId - only the end recording's own kind actually
-    matters (see the JULY_6_CUTOVER filter test below, which needs a
+    matters (see the Parking-mode filter test below, which needs a
     trip whose *last* recording is Parking-mode specifically), but a
     bare RecordingId needs a real kind letter regardless (a 15-char
     "YYYYMMDD_HHMMSS" string with no trailing "_K" isn't a valid
     RecordingId - .kind indexes position 16, which doesn't exist
-    without one)."""
+    without one). Defaulting to "P" (rather than the old "N") means
+    every test that doesn't care about the Parking-filter survives it
+    by default, since bv_drivers.py's real filter now requires it.
+
+    The end recording also gets a downloaded GPS asset attached - the
+    filter requires not just `.id.is_parking` but also at least one
+    *downloaded* asset (Christer: "bara nedladdade P assets raknas,
+    inte genererade" - only downloaded P assets count, not generated
+    ones), so a bare id-only Recording with no assets at all would be
+    wrongly dropped by every test that doesn't care about that
+    distinction either."""
 
     start = RecordingId(f"{label_timestamp}_{kind}")
     end_dt = start.timestamp + timedelta(minutes=minutes_span)
     end = RecordingId(f"{end_dt:%Y%m%d_%H%M%S}_{kind}")
+    end_recording = Recording(id=end)
+    end_recording.assets[Asset.GPS] = AssetFile(
+        asset=Asset.GPS, path=Path(f"/archive/{end}.gps"),
+    )
     return Trip(
-        recordings=(Recording(id=start), Recording(id=end)),
+        recordings=(Recording(id=start), end_recording),
     )
 
 
@@ -234,22 +249,18 @@ def test_run_builds_and_saves_knowledge_base(tmp_path, monkeypatch):
     assert trip_overrides == {}
 
 
-def test_run_drops_pre_cutover_trips_not_ending_in_parking(tmp_path, monkeypatch):
-    # Christer: "Resor fore 6 juli bor inte finnas med om dom inte
-    # avslutas med en P handelse." Three trips: one before
-    # JULY_6_CUTOVER ending in a normal (N) recording - dropped; one
-    # before the cutover ending in a Parking (P) recording - a
-    # verified real stop, kept; one on/after the cutover ending in a
-    # normal recording - kept regardless, since the sidecar-
-    # completeness guarantee (task #1355) already makes its own ending
-    # trustworthy.
-    assert JULY_6_CUTOVER == date(2026, 7, 6)
-
+def test_run_drops_trips_not_ending_in_parking_mode(tmp_path, monkeypatch):
+    # Christer, having reasoned it through himself: "En trip borjar och
+    # slutar ju i hammarby sjostad aven om hon jobbar pa norra
+    # stationsgatan" - every real trip eventually comes back to a real
+    # stop, so a trip is only trusted if it ends with a Parking-mode
+    # (P) recording. No date involved at all - this is a simple,
+    # dateless, universal rule (see bv_drivers.py's own comment for
+    # the real-archive verification numbers behind it).
     dropped = _make_trip("20260701_080000", kind="N")
-    kept_parking_ending = _make_trip("20260701_180000", kind="P")
-    kept_post_cutover = _make_trip("20260709_080000", kind="N")
+    kept = _make_trip("20260701_180000", kind="P")
 
-    trips = [dropped, kept_parking_ending, kept_post_cutover]
+    trips = [dropped, kept]
     fixes = [
         TripFix(
             start=HOME, end=WORK,
@@ -268,7 +279,52 @@ def test_run_drops_pre_cutover_trips_not_ending_in_parking(tmp_path, monkeypatch
     assert loaded is not None
     saved_trips, _, _ = loaded
     saved_labels = {entry.trip_label for entry in saved_trips}
-    assert saved_labels == {kept_parking_ending.label, kept_post_cutover.label}
+    assert saved_labels == {kept.label}
+
+
+def test_run_drops_parking_trip_whose_only_asset_is_generated(tmp_path, monkeypatch):
+    # Christer: "Notera att bara nedladdade P assets raknas, inte
+    # genererade." A P-kind ending recording whose only asset is
+    # something bv-generate/bv-scribe derived after the fact (here,
+    # RECORDING_STATS from bv-generate --stats) isn't camera evidence
+    # of a real stop - it's evidence some generation step ran, which
+    # could happen even if the source it was derived from has since
+    # been pruned. Only a *downloaded* asset (FRONT/REAR/INTERIOR
+    # video, GPS, GSENSOR, or a *_THUMBNAIL) should count.
+    kept = _make_trip("20260701_080000", kind="P")
+
+    dropped_end = Recording(id=RecordingId("20260701_181000_P"))
+    dropped_end.assets[Asset.RECORDING_STATS] = AssetFile(
+        asset=Asset.RECORDING_STATS,
+        path=Path("/archive/20260701_181000_P.stats.json"),
+    )
+    dropped = Trip(
+        recordings=(
+            Recording(id=RecordingId("20260701_180000_P")),
+            dropped_end,
+        ),
+    )
+
+    trips = [kept, dropped]
+    fixes = [
+        TripFix(
+            start=HOME, end=WORK,
+            start_time=trip.start_timestamp, end_time=trip.end_timestamp,
+        )
+        for trip in trips
+    ]
+    _install_fakes(monkeypatch, trips=trips, fixes=fixes)
+
+    config_dir = tmp_path / "config"
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(config_dir / "driver_knowledge.json")
+    assert loaded is not None
+    saved_trips, _, _ = loaded
+    saved_labels = {entry.trip_label for entry in saved_trips}
+    assert saved_labels == {kept.label}
 
 
 def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):

@@ -84,4 +84,38 @@ class Asset(Enum):
     def display_order(cls) -> tuple["Asset", ...]:
         """Return assets in display order."""
         return tuple(cls)
-    
+
+    @property
+    def is_downloaded(self) -> bool:
+        """True if this asset comes straight off the camera (or a
+        recursive-scan adapter's own source folder), False if it's
+        something bv-generate/bv-scribe/bv-export derived from that
+        source data afterwards.
+
+        Mirrors the "Downloaded from the camera" / "Generated assets"
+        comment split above this enum's members - kept as an explicit
+        property rather than callers re-deriving the same list, since
+        getting this wrong has a real consequence: a caller that wants
+        to know whether a recording was actually captured (not just
+        that *some* file happens to exist for its id) needs to ignore
+        generated assets, which can (and for Parking-mode recordings,
+        normally do) exist without their source video ever having been
+        downloaded at all - see bv_drivers.py's Parking-ending trip
+        filter (Christer: "bara nedladdade P assets raknas, inte
+        genererade" - only downloaded P assets count, not generated
+        ones)."""
+        return self in _DOWNLOADED_ASSETS
+
+
+_DOWNLOADED_ASSETS = frozenset(
+    {
+        Asset.FRONT,
+        Asset.REAR,
+        Asset.INTERIOR,
+        Asset.GPS,
+        Asset.GSENSOR,
+        Asset.FRONT_THUMBNAIL,
+        Asset.REAR_THUMBNAIL,
+        Asset.INTERIOR_THUMBNAIL,
+    }
+)

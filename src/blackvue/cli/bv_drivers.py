@@ -31,11 +31,12 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..adapters.registry import get_adapter
 from ..adapters.telemetry_bridge import read_recording_gsensor
+from ..archive.asset import Asset
 from ..core.camera_config import DEFAULT_ADAPTER_ID
 from ..core.camera_config import default_config_dir
 from ..core.camera_config import resolve_archive_path
@@ -63,14 +64,6 @@ EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
 
 TRACE_INTERVAL_TRIPS = 10
-
-# The sidecar-completeness cutover date (see the recordings_with_
-# front_video() removal comment below) - before this date, a trip's
-# own ending isn't a reliably real stop the way it is afterward, so a
-# pre-cutover trip is only trusted if it ends with a verified real
-# stop: a Parking-mode (P) recording. Christer: "Resor fore 6 juli bor
-# inte finnas med om dom inte avslutas med en P handelse."
-JULY_6_CUTOVER = date(2026, 7, 6)
 
 
 class DotProgress:
@@ -283,35 +276,65 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         trips = TripBuilder(
             max_gap=max_gap, gap_tolerance=gap_tolerance,
         ).build(recordings)
-
-        # Christer, on top of the sidecar-vs-video fix above: trips
-        # before JULY_6_CUTOVER shouldn't be trusted just because
-        # TripBuilder's gap logic happened to end them there - without
-        # every sidecar guaranteed downloaded yet (see the comment
-        # above), a "trip end" before that date can just as easily be
-        # a data gap as a real stop. A trip that ends with a Parking-
-        # mode (P) recording is a verified real stop (the camera
-        # itself switched into parking mode), so those are kept
-        # regardless of date; any other pre-cutover trip ending is
-        # dropped as unverifiable. Trips starting on/after the cutover
-        # are never filtered here - the sidecar-completeness guarantee
-        # already makes their own endings trustworthy.
-        before_date_filter = len(trips)
-        trips = [
-            trip for trip in trips
-            if trip.start_timestamp.date() >= JULY_6_CUTOVER
-            or trip.last_recording.id.is_parking
-        ]
-        if args.debug and len(trips) != before_date_filter:
-            say(
-                f"bv-drivers: debug: dropped {before_date_filter - len(trips)} "
-                f"pre-{JULY_6_CUTOVER} trip(s) not ending in Parking mode"
-            )
-
         if args.debug:
             say(
                 f"bv-drivers: debug: detected {len(trips)} trip(s) in "
                 f"{time.monotonic() - build_start:.2f}s"
+            )
+
+        if not trips:
+            say(f"bv-drivers: {archive_path} - no trips found in range.")
+            return EXIT_OK
+
+        # Christer, on top of the sidecar-vs-video fix above: a trip's
+        # own end (wherever TripBuilder's gap logic happened to split
+        # it) is only trusted as a real stop if it ends with a
+        # Parking-mode (P) recording - "en trip borjar och slutar ju i
+        # hammarby sjostad aven om hon jobbar pa norra stationsgatan",
+        # i.e. every real trip eventually comes back to a real stop,
+        # and the camera switching into Parking mode is a direct
+        # signal that happened, unlike a gap in the recording alone
+        # (which can just as easily be a data/download gap as a real
+        # stop). Verified against the real Kirby archive (2384
+        # recordings): 326/331 (98.5%) of trips since sidecar downloads
+        # became complete already end in P: this isn't a narrow edge
+        # case, it's how trips normally look once download coverage is
+        # good. Before that, only 142/498 (28%) do - exactly the
+        # incomplete-sidecar-coverage era task #1355 already identified
+        # - so this single, dateless rule does the same job an earlier
+        # date-cutoff design needed a personal config value for,
+        # without needing one.
+        #
+        # Requiring `.id.is_parking` alone isn't enough: a RecordingId
+        # gets registered from *any* recognized asset file (see
+        # ArchiveReader.ASSETS), including ones bv-generate/bv-scribe
+        # derive well after the fact (.stats.json, .thumb.jpg,
+        # transcripts, ...) - "bara nedladdade P assets raknas, inte
+        # genererade" (only downloaded P assets count, not generated
+        # ones). A generated-only P id isn't camera evidence of a real
+        # stop by itself; it's evidence bv-generate ran, which could in
+        # principle happen even after the source it was derived from
+        # has since been pruned. Requiring at least one asset with
+        # Asset.is_downloaded True (thumbnail, .gps, .3gf, or video
+        # itself) keeps the check anchored to what the camera actually
+        # captured - still covers the vast majority of real stops,
+        # since a P recording's thumbnail/.gps/.3gf sidecars are
+        # downloaded even though its video normally isn't (bv-
+        # download's own policy: only E/M-kind video + the one right
+        # before each).
+        before_parking_filter = len(trips)
+        trips = [
+            trip
+            for trip in trips
+            if trip.last_recording.id.is_parking
+            and any(
+                asset.is_downloaded for asset in trip.last_recording.assets
+            )
+        ]
+        if args.debug and len(trips) != before_parking_filter:
+            say(
+                f"bv-drivers: debug: dropped {before_parking_filter - len(trips)} "
+                "trip(s) not ending in a downloaded Parking-mode recording"
             )
 
         if not trips:
