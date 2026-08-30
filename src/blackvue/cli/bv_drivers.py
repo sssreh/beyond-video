@@ -2,8 +2,11 @@
 bv-drivers.
 
 Build (or refresh) the driver-knowledge base: scans an archive's
-detected trips (same TripBuilder logic bv-ls --trips/bv-export use),
-computes each trip's weekday/time, away-from-home stop duration and
+detected trips (same TripBuilder gap logic bv-ls --trips/bv-export
+use, but - unlike those two - fed every recording in range, not just
+ones with front video; see this file's own trip-building comment
+below for why), computes each trip's weekday/time, away-from-home stop
+duration and
 short/long category, and its trip/driver_detect.py candidate driver
 matches, clusters recurring destinations into trip/place_knowledge.py's
 CommonPlace registry, and writes the result to driver_knowledge.json
@@ -54,7 +57,6 @@ from ..trip.trip import Trip
 from ..trip.trip_builder import DEFAULT_GAP_TOLERANCE
 from ..trip.trip_builder import DEFAULT_MAX_GAP
 from ..trip.trip_builder import TripBuilder
-from ..trip.trip_builder import recordings_with_front_video
 from .errors import run_cli
 
 EXIT_OK = 0
@@ -246,10 +248,33 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
             else DEFAULT_GAP_TOLERANCE
         )
 
+        # Unlike bv-export/bv-ls --trips, deliberately NOT filtered
+        # through recordings_with_front_video() - that filter exists
+        # for video concatenation/map-sync reasons (see its own
+        # docstring in trip_builder.py) that don't apply here.
+        # Christer: "Det ar inte videos som bygger en trip ... Det ar
+        # sidecars som bygger en trip och efter 6 juli sa skall alla
+        # sidecars laddas ner, medans for video ar det E och M som
+        # laddas ner inklusive videon precis innan." Front video is
+        # downloaded selectively (only Event/Manual recordings, plus
+        # the one right before each) and was never meant to gate trip
+        # continuity here - every recording in `interval` represents
+        # real recorded time whether or not its video was ever pulled
+        # down, so all of them participate in gap-based trip splitting.
+        # Filtering to front-video-only recordings (the bug this
+        # comment replaces) fragmented a single real drive into many
+        # spurious "trips" at every video-download gap, which (a)
+        # created bogus CommonPlaces at wherever video coverage
+        # happened to end/resume - not real stops at all - and (b)
+        # broke dwell_at_destination()'s adjacent-trip matching often
+        # enough that the /drivers "Stay" column came back empty for
+        # most specific trips, since the true home-adjacent trip was
+        # buried among spurious fragments instead of sitting right
+        # next to it in the trips list.
         build_start = time.monotonic()
         trips = TripBuilder(
             max_gap=max_gap, gap_tolerance=gap_tolerance,
-        ).build(recordings_with_front_video(recordings))
+        ).build(recordings)
         if args.debug:
             say(
                 f"bv-drivers: debug: detected {len(trips)} trip(s) in "

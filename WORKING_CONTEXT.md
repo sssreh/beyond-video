@@ -20860,3 +20860,70 @@ relates, if at all): "Every side car should have been downloaded after
 july 6 2026" - worth checking whether missing GPS sidecars *before* that
 date could produce spurious stationary-looking gaps that get misread as a
 stop, when investigating.
+
+Fixed: bv-drivers filtering trip-building to front-video recordings
+only, which caused both halves of the same bug report ("common place
+needs to show video if exist, now the top contender shows a stop
+where yo cant stop" - the "stop where you can't stop" half - and
+"Stay" coming back empty for virtually every row in the /drivers
+Specific trips table). Root cause: `_run()` called
+`TripBuilder(...).build(recordings_with_front_video(recordings))`,
+copied from bv-export/bv-ls --trips's own trip-building call without
+reconsidering whether it fits bv-drivers's very different use case.
+`recordings_with_front_video()`'s own docstring explains it exists for
+video concatenation/map-sync reasons (a video-less recording bridging
+what should be one continuous drive can chain a much longer real gap
+into looking like no gap at all, and even where splitting is correct,
+its GPS fixes still get merged into a rendered map that has no
+representation of the missing time) - neither reason applies to
+bv-drivers, which never concatenates or renders video, only clusters
+GPS stop locations and computes dwell times.
+
+Christer, correcting my first (wrong) diagnosis of this same report:
+"Det ar inte videos som bygger en trip, dom ar bara bra att ha. Det ar
+sidecars som bygger en trip och efter 6 juli sa skall alla sidecars
+laddas ner, medans for video ar det E och M som laddas ner inklusive
+videon precis innan." Front video is downloaded selectively (only
+Event/Manual recordings, plus the one immediately before each) and was
+never meant to gate trip continuity - every recording in range
+represents real recorded time whether or not its video was ever pulled
+down. Filtering to front-video-only recordings fragmented a single
+real drive into many spurious "trips" at every video-download gap:
+(a) each fragment boundary became a candidate away_point for
+build_common_places(), so wherever video coverage happened to end/
+resume - a roundabout, a stretch of highway, anywhere - could rack up
+visit_count and surface as a bogus "Common Place" if it recurred
+(explains "a stop where you can't stop"); (b) it broke
+dwell_at_destination()'s adjacent-trip matching often enough that the
+true home-adjacent trip ended up buried among spurious video-gap
+fragments instead of sitting right next to the trip it should pair
+with, so stop_category (and therefore /drivers's "Stay" column) came
+back None for most rows.
+
+Verified against the real Kirby archive (2384 recordings, mounted
+read-only from this session): recordings without front video jump from
+0% before 2026-07-06 to 76% after it, confirming this bug's real-world
+impact is concentrated in exactly the recent data the report was about
+- before that date front-video coverage was already ~complete, so
+`recordings_with_front_video()` was a near no-op there (499 vs. 498
+splits with/without the filter); after it, dropping the filter changes
+splitting substantially (185 -> 330 splits in that range) and the new
+splits are dominated by genuine Parking-mode (P-kind) recording gaps -
+real parked/stationary periods sidecars alone already prove happened,
+not video-download artifacts. Fix: `bv_drivers.py`'s `_run()` now
+calls `TripBuilder(...).build(recordings)` directly (no front-video
+filter), with `recordings_with_front_video` import removed and a
+comment at the call site explaining why, referencing Christer's own
+sidecars-vs-video framing. `test_bv_drivers.py`'s 11 tests are
+unaffected (its `_FakeTripBuilder.build()` ignores whatever recordings
+it's handed) - all still pass.
+
+Also answered a second, smaller question from the same exchange: the
+/drivers "Stay" column (both Common Places and Specific trips tables)
+renders `trip.stop_category` ("short"/"long") plus `dwell_minutes` in
+parentheses, or an em dash when `stop_category` is None - i.e. when
+dwell_at_destination() couldn't verify this trip's away-end lines up
+with the very next/previous trip's own endpoint. Root cause of it
+being empty for nearly every row was the same trip-fragmentation bug
+above; expected to self-correct on the next `bv-drivers build` after
+this fix.
