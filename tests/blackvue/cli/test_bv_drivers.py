@@ -392,7 +392,7 @@ def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):
     place_key = next(iter(places))
     from dataclasses import replace
     places[place_key] = replace(
-        places[place_key], label="Work", long_stay_driver="christer",
+        places[place_key], label="Work", parked_driver="christer",
     )
     from blackvue.trip.place_knowledge import save_knowledge_base
     save_knowledge_base(
@@ -418,7 +418,7 @@ def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):
     _, places_after, _ = load_knowledge_base(knowledge_path)
     place_after = places_after[place_key]
     assert place_after.label == "Work"
-    assert place_after.long_stay_driver == "christer"
+    assert place_after.parked_driver == "christer"
 
 
 class _FakeGSensorSample:

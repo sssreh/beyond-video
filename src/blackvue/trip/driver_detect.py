@@ -19,12 +19,24 @@ resolves reliably.
 
 Christer described each driver's habits as a set of home<->place
 commute pairs, two of which are only distinguishable from each other by
-how long the car stayed at the far end (his wife's Norra Stationsgatan
-drop-off waits >10 minutes; Christer's own Norra Stationsgatan run is a
-quick turnaround - same destination, opposite stay-duration signal).
-That shape - "same place, disambiguated only by dwell time" - is why
-this module treats stay duration as a first-class, optional condition
-on a route pattern rather than bolting it on separately.
+whether the car was left parked at the far end (his wife's Norra
+Stationsgatan drop-off leaves the car parked there; Christer's own
+Norra Stationsgatan run is a quick turnaround, no parking - same
+destination, opposite parking signal). That shape - "same place,
+disambiguated only by whether it was parked" - is why this module
+treats parking status as a first-class, optional condition on a route
+pattern rather than bolting it on separately.
+
+(Originally this was a wall-clock stay-duration threshold - min/max
+minutes parked at the far end, inferred from the gap between adjacent
+trips' GPS fixes. Christer: "Long and short are not in the game
+anymore, more like if you get a P file after its long" - a downloaded
+Parking-mode (P) recording at the far end is direct camera evidence
+the car was actually left there, unlike a wall-clock gap between two
+trips, which conflates a real stay with an ordinary download/data gap.
+See place_knowledge.py's own equivalent redesign of
+stop_category()/CommonPlace for the same change on that module's
+side.)
 
 Design choices carried over from the driver-detection notes this
 increment finally implements:
@@ -112,19 +124,19 @@ class RoutePattern:
       "short_local" - both ends of the trip are near home itself, no
           `place` needed ("Any short trip in Hammarby Sjöstad").
           Requires max_duration_minutes.
-      Both shapes accept an optional min_stay_minutes/max_stay_minutes
-      dwell-time condition on the *other* leg of the same round trip
-      (see match_driver()'s docstring for how that's computed) -
-      Christer's wife's Norra Stationsgatan/Kråkbärsgränd patterns use
-      min_stay_minutes; Christer's own Norra Stationsgatan pattern uses
-      max_stay_minutes to disambiguate against the exact same place.
+      Both shapes accept an optional requires_parking condition on the
+      *other* leg of the same round trip (see match_driver()'s
+      docstring for how that's checked) - Christer's wife's Norra
+      Stationsgatan/Kråkbärsgränd patterns use requires_parking=True
+      (car left parked there); Christer's own Norra Stationsgatan
+      pattern uses requires_parking=False (quick turnaround, no
+      parking) to disambiguate against the exact same place.
     """
 
     place: str | None = None
     kind: str = "commute"
     radius_meters: float = DEFAULT_RADIUS_METERS
-    min_stay_minutes: float | None = None
-    max_stay_minutes: float | None = None
+    requires_parking: bool | None = None
     max_duration_minutes: float | None = None
     note: str = ""
 
@@ -181,13 +193,13 @@ def christers_driver_profiles() -> DriverProfiles:
             RoutePattern(place="Orminge"),
             RoutePattern(
                 place="Norra Stationsgatan",
-                min_stay_minutes=10,
-                note="drop-off, stay longer than 10 minutes",
+                requires_parking=True,
+                note="drop-off, car left parked (has a P recording)",
             ),
             RoutePattern(
                 place="Kråkbärsgränd, Hässelby Villastad",
-                min_stay_minutes=30,
-                note="stay longer than 30 minutes",
+                requires_parking=True,
+                note="car left parked (has a P recording)",
             ),
         ),
     )
@@ -208,8 +220,8 @@ def christers_driver_profiles() -> DriverProfiles:
             ),
             RoutePattern(
                 place="Norra Stationsgatan",
-                max_stay_minutes=10,
-                note="quick turnaround, driving wife to work",
+                requires_parking=False,
+                note="quick turnaround, driving wife to work, no P recording",
             ),
         ),
     )
@@ -226,10 +238,8 @@ def _pattern_to_dict(pattern: RoutePattern) -> dict:
     data = {"kind": pattern.kind, "radius_meters": pattern.radius_meters}
     if pattern.place is not None:
         data["place"] = pattern.place
-    if pattern.min_stay_minutes is not None:
-        data["min_stay_minutes"] = pattern.min_stay_minutes
-    if pattern.max_stay_minutes is not None:
-        data["max_stay_minutes"] = pattern.max_stay_minutes
+    if pattern.requires_parking is not None:
+        data["requires_parking"] = pattern.requires_parking
     if pattern.max_duration_minutes is not None:
         data["max_duration_minutes"] = pattern.max_duration_minutes
     if pattern.note:
@@ -238,12 +248,27 @@ def _pattern_to_dict(pattern: RoutePattern) -> dict:
 
 
 def _pattern_from_dict(data: dict) -> RoutePattern:
+    requires_parking = data.get("requires_parking")
+    if requires_parking is None:
+        # Backward-compat migration: a driver_profiles.json written
+        # before Christer's "long and short doesn't exist any more"
+        # redesign may still have the old min_stay_minutes/
+        # max_stay_minutes fields - a min_stay condition meant "stayed
+        # a while" (now: was parked, requires_parking=True), a
+        # max_stay condition meant "quick turnaround" (now: no
+        # parking, requires_parking=False). Both keys are ignored (not
+        # written back) the next time this profile is saved - see
+        # _pattern_to_dict() above, which only ever emits
+        # requires_parking.
+        if data.get("min_stay_minutes") is not None:
+            requires_parking = True
+        elif data.get("max_stay_minutes") is not None:
+            requires_parking = False
     return RoutePattern(
         place=data.get("place"),
         kind=data.get("kind", "commute"),
         radius_meters=float(data.get("radius_meters", DEFAULT_RADIUS_METERS)),
-        min_stay_minutes=data.get("min_stay_minutes"),
-        max_stay_minutes=data.get("max_stay_minutes"),
+        requires_parking=requires_parking,
         max_duration_minutes=data.get("max_duration_minutes"),
         note=data.get("note", ""),
     )
@@ -410,12 +435,22 @@ class TripFix:
     match_driver() needs, and deliberately nothing more (no
     Recording/adapter reference), so it can be built by hand in tests
     without a real archive. `start`/`end` are (lat, lon) or None if
-    resolve_recording_gps_span() came up empty for that recording."""
+    resolve_recording_gps_span() came up empty for that recording.
+
+    `has_parking_footage` is whether this trip's own tail (its last
+    recording) is a downloaded Parking-mode (P) recording - the one
+    piece of non-GPS trip data match_driver() now needs, since a
+    RoutePattern's requires_parking condition (see that dataclass's
+    own docstring) reads it off `trip_fix`/`prev_fix` rather than a
+    wall-clock dwell computation. Resolved once per trip here, same
+    reason start/end/start_time/end_time are, so match_driver() itself
+    still needs no Recording/adapter reference of its own."""
 
     start: tuple[float, float] | None
     end: tuple[float, float] | None
     start_time: datetime
     end_time: datetime
+    has_parking_footage: bool = False
 
 
 def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
@@ -424,7 +459,15 @@ def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
     approach cli/bv_ls.py's GPS column and the /location route already
     use via resolve_recording_gps_span() - see that function's own
     docstring for the real-telemetry-then-EXIF/container-tag fallback
-    order and cost caveat)."""
+    order and cost caveat).
+
+    `has_parking_footage` mirrors bv_drivers.py's own P-ending trip
+    filter check (`trip.last_recording.id.is_parking and any(asset.
+    is_downloaded ...)`), not `Trip.has_parking_footage` (which checks
+    every recording in the trip, not specifically the last, and
+    doesn't require a downloaded asset) - see that filter's own
+    docstring for why a generated-only P id doesn't count as camera
+    evidence of a real stop."""
 
     start_fix, _ = resolve_recording_gps_span(adapter, trip.first_recording)
     _, end_fix = resolve_recording_gps_span(adapter, trip.last_recording)
@@ -444,11 +487,17 @@ def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
         else None
     )
 
+    last_recording = trip.last_recording
+    has_parking_footage = last_recording.id.is_parking and any(
+        asset.is_downloaded for asset in last_recording.assets
+    )
+
     return TripFix(
         start=start,
         end=end,
         start_time=trip.start_timestamp,
         end_time=trip.end_timestamp,
+        has_parking_footage=has_parking_footage,
     )
 
 
@@ -521,12 +570,6 @@ def _near(
     return _haversine_distance_meters(*point, *target) <= radius_meters
 
 
-def _dwell_minutes(a: datetime | None, b: datetime | None) -> float | None:
-    if a is None or b is None:
-        return None
-    return abs((b - a).total_seconds()) / 60.0
-
-
 def match_driver(
     trip_fix: TripFix,
     prev_fix: TripFix | None,
@@ -536,25 +579,25 @@ def match_driver(
 ) -> tuple[DriverMatch, ...]:
     """Return every driver/pattern this trip plausibly matches.
 
-    Stay-duration conditions (min_stay_minutes/max_stay_minutes) are
-    about the *other* leg of the same round trip - the gap the car
-    spent parked at the far end. Concretely: if this trip runs
-    home->place, the relevant dwell is the gap between this trip's own
-    end and `next_fix`'s start (the return leg, place->home); if this
-    trip runs place->home, it's the gap between `prev_fix`'s end and
-    this trip's own start (the outbound leg, home->place). That's why
-    match_driver() takes the chronologically adjacent trips' fixes as
-    well as this one's - Trip itself has no "next scheduled leg"
-    concept (see trip/trip.py), so the caller (iterating trips in
-    order, as bv-ls --trips already does) is what supplies them.
+    A requires_parking condition is about the *other* leg of the same
+    round trip - whether the car was left parked at the far end.
+    Concretely: if this trip runs home->place, the relevant parking
+    signal is this trip's *own* has_parking_footage (its own tail is
+    the stop at `place`); if this trip runs place->home, it's
+    `prev_fix`'s has_parking_footage (the outbound leg, home->place,
+    is what stopped at `place` - the arrival leg's own tail is the
+    evidence, not this return leg's). That's why match_driver() takes
+    the chronologically adjacent trips' fixes as well as this one's -
+    Trip itself has no "next scheduled leg" concept (see trip/trip.py),
+    so the caller (iterating trips in order, as bv-ls --trips already
+    does) is what supplies them.
 
-    When a stay-duration condition can't be checked at all (missing
-    adjacent trip, or the adjacent trip's own endpoint isn't near the
-    same place - e.g. the vehicle went somewhere else in between),
-    the pattern still matches but at reduced confidence with a reason
-    noting the dwell time is unverified, rather than being silently
-    dropped - a false "no match" is worse here than a lower-confidence
-    "maybe" the caller can still surface.
+    When a requires_parking condition can't be checked at all (a
+    place->home leg with no `prev_fix`), the pattern still matches but
+    at reduced confidence with a reason noting parking status is
+    unverified, rather than being silently dropped - a false "no
+    match" is worse here than a lower-confidence "maybe" the caller
+    can still surface.
     """
 
     home = known_points.get("home")
@@ -606,43 +649,32 @@ def match_driver(
             if not home_to_place and not place_to_home:
                 continue
 
-            dwell_minutes: float | None = None
-            dwell_verified = False
-            if pattern.min_stay_minutes is not None or pattern.max_stay_minutes is not None:
-                if home_to_place and next_fix is not None:
-                    if _near(next_fix.start, place_point, pattern.radius_meters):
-                        dwell_minutes = _dwell_minutes(
-                            trip_fix.end_time, next_fix.start_time
-                        )
-                        dwell_verified = dwell_minutes is not None
+            parking_signal: bool | None = None
+            parking_verified = False
+            if pattern.requires_parking is not None:
+                if home_to_place:
+                    # This trip's own tail is the stop at `place`.
+                    parking_signal = trip_fix.has_parking_footage
+                    parking_verified = True
                 elif place_to_home and prev_fix is not None:
-                    if _near(prev_fix.end, place_point, pattern.radius_meters):
-                        dwell_minutes = _dwell_minutes(
-                            prev_fix.end_time, trip_fix.start_time
-                        )
-                        dwell_verified = dwell_minutes is not None
+                    # The outbound leg (home->place) is what stopped at
+                    # `place` - its own tail is the evidence, not this
+                    # return leg's.
+                    parking_signal = prev_fix.has_parking_footage
+                    parking_verified = True
 
-                if dwell_verified:
-                    if (
-                        pattern.min_stay_minutes is not None
-                        and dwell_minutes < pattern.min_stay_minutes
-                    ):
-                        continue
-                    if (
-                        pattern.max_stay_minutes is not None
-                        and dwell_minutes > pattern.max_stay_minutes
-                    ):
-                        continue
+                if parking_verified and parking_signal != pattern.requires_parking:
+                    continue
 
             confidence = 0.6
             reason = f"{'home -> ' + pattern.place if home_to_place else pattern.place + ' -> home'}"
-            if pattern.min_stay_minutes is not None or pattern.max_stay_minutes is not None:
-                if dwell_verified:
+            if pattern.requires_parking is not None:
+                if parking_verified:
                     confidence = 0.9
-                    reason += f", stayed ~{dwell_minutes:.0f} min"
+                    reason += ", parked" if parking_signal else ", no parking file"
                 else:
                     confidence = 0.4
-                    reason += " (stay duration unverified)"
+                    reason += " (parking status unverified)"
             if pattern.note:
                 reason += f" - {pattern.note}"
 

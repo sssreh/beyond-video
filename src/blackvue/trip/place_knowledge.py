@@ -6,37 +6,55 @@ driver_detect.py's opaque driver1/driver2 route-pattern matcher
 Christer's follow-up ask, verbatim: duration spent at the travelled-to
 site (excluding Hammarby Sjöstad/Heliosgatan, home base with
 underground parking - a stay *at home* isn't a "stop" to report at
-all), a short(<15min)/long(>=15min) stay flag, weekday and time (no
-DST math - see local_weekday_and_time()'s own docstring for why), a
-"form of common places" with a short-stay/long-stay driver each
-Christer can fill in by hand, a list of undecided common trips, and a
-per-trip override for one-off/specific trips. Scoped to the live
-Kirby (2026) archive only - Christer: "i dont [think] we will check up
-on trips for previous years before 2026, the addresses will probably
-change over time" - so this module (and driver_knowledge.json) never
-looks at older per-year archives, and a place's label/short_stay_driver/
-long_stay_driver are plain hand-edited text/labels, not something
-meant to stay accurate forever.
+all), a stay-category flag, weekday and time (no DST math - see
+local_weekday_and_time()'s own docstring for why), a "form of common
+places" with a driver each Christer can fill in by hand per category, a
+list of undecided common trips, and a per-trip override for
+one-off/specific trips. Scoped to the live Kirby (2026) archive only -
+Christer: "i dont [think] we will check up on trips for previous years
+before 2026, the addresses will probably change over time" - so this
+module (and driver_knowledge.json) never looks at older per-year
+archives, and a place's label/parked_driver/no_parking_driver are plain
+hand-edited text/labels, not something meant to stay accurate forever.
+
+The stay-category flag was originally a wall-clock 15-minute dwell
+threshold ("short"/"long", inferred from the gap between adjacent
+trips' GPS fixes). Christer later replaced that outright: "Long and
+short are not in the game anymore, more like if you get a P file after
+its long" - followed by an explicit correction when a follow-up
+question tried to re-litigate it: "I have already told you to long and
+short doesnt exists any more." The category is now whether the stop
+ended in a downloaded Parking-mode (P) recording - direct camera
+evidence the car was actually left there, unlike a wall-clock gap
+between two trips, which conflates a real stay with an ordinary
+download/data gap (the same signal bv_drivers.py's own P-ending trip
+filter already relies on - see that module's docstring). See
+stop_category()/_trip_has_downloaded_parking_footage() below.
+dwell_minutes/dwell_at_destination() are kept as informational display
+data only (the "Stay: ~N min" a trip shows) - they no longer drive the
+category.
 
 Two ideas drive the design:
 
 1. "Common places" as the primary editable unit, not individual trips.
    Christer: "a form of common places, with a flag for short stay and
-   long stay coupled to a specific driver" - so rather than a giant
-   per-trip table to click through, a destination the vehicle visits
-   more than once becomes one CommonPlace with (at most) two rules -
-   "short stays here are always driver X", "long stays here are
-   always driver Y" - and every trip to that place, past or future,
-   inherits whichever rule matches its own stop_category. A trip whose
-   destination never repeats (or whose place hasn't been assigned yet)
-   falls through to driver_detect.match_driver()'s named-pattern
-   candidates, and failing that, stays "undecided" for Christer to
-   assign a one-off manual override on the trip itself (see
-   TripKnowledge.source and `trip_overrides` throughout this module).
+   long stay coupled to a specific driver" (see above for how "short/
+   long" itself was later redefined) - so rather than a giant per-trip
+   table to click through, a destination the vehicle visits more than
+   once becomes one CommonPlace with (at most) two rules - "stops here
+   with no parking file are always driver X", "stops here that end in
+   a parking file are always driver Y" - and every trip to that place,
+   past or future, inherits whichever rule matches its own
+   stop_category. A trip whose destination never repeats (or whose
+   place hasn't been assigned yet) falls through to
+   driver_detect.match_driver()'s named-pattern candidates, and
+   failing that, stays "undecided" for Christer to assign a one-off
+   manual override on the trip itself (see TripKnowledge.source and
+   `trip_overrides` throughout this module).
 
 2. Places are identified by a deterministic grid cell, not clustered
    by a stateful algorithm. See place_key()'s own docstring - this is
-   what lets a manual short_stay_driver/long_stay_driver assignment
+   what lets a manual parked_driver/no_parking_driver assignment
    survive a rebuild (a fresh `bv-drivers build` run) without needing
    to persist/match previous cluster centroids at all: the same
    destination always hashes to the same key, so
@@ -66,11 +84,6 @@ from .driver_detect import TripFix
 from .driver_detect import match_driver
 from .driver_detect import resolve_trip_fix
 from .trip import Trip
-
-# A stay shorter than this is "short", at/above it is "long" -
-# Christer's own threshold ("we might also decide if its a short
-# stop(less than 15 minutes) and longer stops(above 15 minutes)").
-STOP_THRESHOLD_MINUTES = 15.0
 
 # Same order of magnitude as driver_detect.DEFAULT_RADIUS_METERS
 # (300m) - used here for the "did the adjacent trip start/end at the
@@ -176,14 +189,47 @@ def local_weekday_and_time(timestamp: datetime) -> tuple[str, str]:
     )
 
 
-def stop_category(dwell_minutes: float | None) -> str | None:
-    """"short" (< STOP_THRESHOLD_MINUTES), "long" (>=), or None if
-    `dwell_minutes` itself is None (unknown - see
-    dwell_at_destination())."""
+# Backward-compat migration for _trip_from_dict() - see its own call
+# site below.
+_STOP_CATEGORY_MIGRATION = {"short": "no-parking", "long": "parked"}
 
-    if dwell_minutes is None:
+
+def _trip_has_downloaded_parking_footage(trip: Trip) -> bool:
+    """True if `trip` ends in a Parking-mode (P) recording backed by
+    at least one downloaded asset - the same "real camera evidence of
+    a stop" check bv_drivers.py's own P-ending trip filter already
+    uses (see that module's docstring for the .id.is_parking-alone-
+    isn't-enough reasoning: a RecordingId can get registered from a
+    bv-generate/bv-scribe-derived asset alone, which is evidence a
+    tool ran, not evidence the camera actually captured a stop there).
+
+    This, not a wall-clock dwell-minutes threshold, is the "was this a
+    long stay?" signal Christer asked for: "if you get a P file after
+    its long" - see stop_category()."""
+
+    last = trip.last_recording
+    return last.id.is_parking and any(
+        asset.is_downloaded for asset in last.assets
+    )
+
+
+def stop_category(has_parking_footage: bool | None) -> str | None:
+    """"parked" if the stop ended in a downloaded Parking-mode (P)
+    recording, "no-parking" if it didn't, or None if it's not known at
+    all (see _raw_trip_knowledge()'s own None case - a trip with no
+    away leg at all, or whose adjacent trip isn't available to check).
+
+    Replaces the original 15-minute wall-clock-gap threshold this used
+    to gate on (dwell_at_destination()'s own dwell_minutes) - Christer:
+    "Long and short are not in the game anymore, more like if you get
+    a P file after its long." A downloaded Parking-mode recording is
+    direct camera evidence the car was actually left there; a wall-
+    clock gap between two trips' GPS fixes can't tell a real stay
+    apart from an ordinary download/data gap."""
+
+    if has_parking_footage is None:
         return None
-    return "short" if dwell_minutes < STOP_THRESHOLD_MINUTES else "long"
+    return "parked" if has_parking_footage else "no-parking"
 
 
 def smoothness_raw_from_samples(samples: Sequence) -> float | None:
@@ -313,6 +359,11 @@ def dwell_at_destination(
     trip that starts and ends near home has no "away" leg to measure
     at all, so this returns None for it rather than a bogus 0).
 
+    Informational only - TripKnowledge.dwell_minutes (the "Stay: ~N
+    min" a trip displays) still comes from this function, but
+    stop_category() no longer gates on it; see that function's own
+    docstring for why (_trip_has_downloaded_parking_footage() instead).
+
     Returns None whenever it can't be computed: both ends near home,
     neither end near home (an inter-place leg, not modeled here),
     missing adjacent trip, or the adjacent trip's own endpoint isn't
@@ -409,19 +460,25 @@ class TripKnowledge:
 @dataclass(frozen=True)
 class CommonPlace:
     """One destination grid cell (see place_key()) Christer's vehicle
-    has visited away from home, with his own short_stay_driver/
-    long_stay_driver rules once he's set them - both start as None
+    has visited away from home, with his own parked_driver/
+    no_parking_driver rules once he's set them - both start as None
     ("undecided"), the exact state undecided_places() below surfaces
-    for the web form."""
+    for the web form.
+
+    Named parked/no_parking (not short/long - see this module's
+    docstring for why) after stop_category()'s own two category
+    values: parked_count/parked_driver cover stops that ended in a
+    downloaded Parking-mode recording, no_parking_count/
+    no_parking_driver cover ones that didn't."""
 
     key: str
     point: tuple[float, float]
     label: str
     visit_count: int
-    short_stay_count: int
-    long_stay_count: int
-    short_stay_driver: str | None = None
-    long_stay_driver: str | None = None
+    parked_count: int
+    no_parking_count: int
+    parked_driver: str | None = None
+    no_parking_driver: str | None = None
 
 
 # --------------------------------------------------------------------
@@ -461,7 +518,31 @@ def _raw_trip_knowledge(
             away_point = trip_fix.start
 
         dwell = dwell_at_destination(trip_fix, prev_fix, next_fix, home, home_radius)
-        category = stop_category(dwell)
+
+        # "Was this stop parked?" - checked on whichever trip's own
+        # tail actually sat at the away place, same direction logic
+        # dwell_at_destination() uses just above (see that function's
+        # own docstring): a home->away trip's stop is its *own* tail;
+        # an away->home trip's stop was the *previous* trip's tail, and
+        # only counts if that previous trip actually ended at the same
+        # place this one now returns from (the _near() check mirrors
+        # dwell_at_destination()'s own same-place guard, so a vehicle
+        # that went somewhere else in between doesn't borrow the wrong
+        # trip's P status).
+        has_parking_footage: bool | None = None
+        if start_near_home and not end_near_home:
+            has_parking_footage = _trip_has_downloaded_parking_footage(trip)
+        elif end_near_home and not start_near_home:
+            if index > 0 and _near(
+                prev_fix.end if prev_fix is not None else None,
+                trip_fix.start,
+                _SAME_PLACE_RADIUS_METERS,
+            ):
+                has_parking_footage = _trip_has_downloaded_parking_footage(
+                    trips[index - 1]
+                )
+
+        category = stop_category(has_parking_footage)
         candidates = match_driver(trip_fix, prev_fix, next_fix, profiles, known_points)
 
         entries.append(
@@ -496,16 +577,16 @@ def build_common_places(
     """Aggregate `knowledge` into one CommonPlace per distinct away
     destination grid cell. `existing` (a previously-saved registry -
     see load_knowledge_base()) supplies each place's own label and any
-    manual short_stay_driver/long_stay_driver Christer already set;
-    those survive a rebuild untouched - only visit_count/
-    short_stay_count/long_stay_count (and, for a place `existing` has
-    never seen, point/label) are recomputed from `knowledge`."""
+    manual parked_driver/no_parking_driver Christer already set; those
+    survive a rebuild untouched - only visit_count/parked_count/
+    no_parking_count (and, for a place `existing` has never seen,
+    point/label) are recomputed from `knowledge`."""
 
     existing = existing or {}
     points: dict[str, tuple[float, float]] = {}
     visit_counts: dict[str, int] = {}
-    short_counts: dict[str, int] = {}
-    long_counts: dict[str, int] = {}
+    parked_counts: dict[str, int] = {}
+    no_parking_counts: dict[str, int] = {}
 
     for entry in knowledge:
         key = entry.away_place_key
@@ -513,10 +594,10 @@ def build_common_places(
             continue
         points.setdefault(key, entry.away_point)  # type: ignore[arg-type]
         visit_counts[key] = visit_counts.get(key, 0) + 1
-        if entry.stop_category == "short":
-            short_counts[key] = short_counts.get(key, 0) + 1
-        elif entry.stop_category == "long":
-            long_counts[key] = long_counts.get(key, 0) + 1
+        if entry.stop_category == "parked":
+            parked_counts[key] = parked_counts.get(key, 0) + 1
+        elif entry.stop_category == "no-parking":
+            no_parking_counts[key] = no_parking_counts.get(key, 0) + 1
 
     places: dict[str, CommonPlace] = {}
     for key, visit_count in visit_counts.items():
@@ -531,10 +612,12 @@ def build_common_places(
                 else f"Place near {point[0]:.3f}, {point[1]:.3f}"
             ),
             visit_count=visit_count,
-            short_stay_count=short_counts.get(key, 0),
-            long_stay_count=long_counts.get(key, 0),
-            short_stay_driver=(prior.short_stay_driver if prior is not None else None),
-            long_stay_driver=(prior.long_stay_driver if prior is not None else None),
+            parked_count=parked_counts.get(key, 0),
+            no_parking_count=no_parking_counts.get(key, 0),
+            parked_driver=(prior.parked_driver if prior is not None else None),
+            no_parking_driver=(
+                prior.no_parking_driver if prior is not None else None
+            ),
         )
 
     return places
@@ -547,9 +630,9 @@ def _resolve_trip_driver(
     override_label: str | None,
 ) -> TripKnowledge:
     """Resolution order: (1) a manual override on this specific trip
-    always wins; (2) else the matching short/long-stay rule on this
-    trip's CommonPlace, if Christer has set one; (3) else the best
-    driver_detect.match_driver() named-pattern candidate, if any;
+    always wins; (2) else the matching parked/no-parking-stay rule on
+    this trip's CommonPlace, if Christer has set one; (3) else the
+    best driver_detect.match_driver() named-pattern candidate, if any;
     (4) else stays "undecided" (entry's own defaults, unchanged)."""
 
     display_names = {driver.label: driver.display_name for driver in profiles.drivers}
@@ -565,9 +648,9 @@ def _resolve_trip_driver(
 
     if place is not None and entry.stop_category is not None:
         rule_driver = (
-            place.short_stay_driver
-            if entry.stop_category == "short"
-            else place.long_stay_driver
+            place.no_parking_driver
+            if entry.stop_category == "no-parking"
+            else place.parked_driver
         )
         if rule_driver is not None:
             return replace(
@@ -748,8 +831,8 @@ def undecided_places(
         for place in places.values()
         if place.visit_count >= min_visits
         and (
-            (place.short_stay_count > 0 and place.short_stay_driver is None)
-            or (place.long_stay_count > 0 and place.long_stay_driver is None)
+            (place.no_parking_count > 0 and place.no_parking_driver is None)
+            or (place.parked_count > 0 and place.parked_driver is None)
         )
     ]
 
@@ -769,8 +852,8 @@ def group_trips_by_place(
     """Every trip that resolved to a given away-place, keyed by
     CommonPlace.key and sorted most-recent-first - Christer's own
     follow-up ask ("common places should show each trip with all what
-    that means"): a CommonPlace row's visit_count/short_stay_count/
-    long_stay_count only say *how many* trips went there, not *which*
+    that means"): a CommonPlace row's visit_count/parked_count/
+    no_parking_count only say *how many* trips went there, not *which*
     ones, so the web form groups the same TripKnowledge entries
     build_common_places() already counts back out into actual per-trip
     lists to show under each place."""
@@ -813,24 +896,38 @@ def _place_to_dict(place: CommonPlace) -> dict:
         "point": list(place.point),
         "label": place.label,
         "visit_count": place.visit_count,
-        "short_stay_count": place.short_stay_count,
-        "long_stay_count": place.long_stay_count,
-        "short_stay_driver": place.short_stay_driver,
-        "long_stay_driver": place.long_stay_driver,
+        "parked_count": place.parked_count,
+        "no_parking_count": place.no_parking_count,
+        "parked_driver": place.parked_driver,
+        "no_parking_driver": place.no_parking_driver,
     }
 
 
 def _place_from_dict(key: str, data: dict) -> CommonPlace:
+    # Backward-compat migration: a driver_knowledge.json written before
+    # Christer's "long and short doesn't exist any more" redesign (see
+    # stop_category()'s own docstring) still has short_stay_*/
+    # long_stay_* keys - "long stay" loosely corresponds to what's now
+    # "parked" (the whole point of the redesign was Christer's own
+    # observation that a long stay is what leaves a P recording behind),
+    # so long_stay_driver -> parked_driver and short_stay_driver ->
+    # no_parking_driver is the closest honest carry-forward of a rule
+    # Christer already set by hand - better than silently discarding it
+    # and making him re-fill the form. New keys always win if present.
     point = data.get("point") or [0.0, 0.0]
     return CommonPlace(
         key=key,
         point=(float(point[0]), float(point[1])),
         label=data.get("label", key),
         visit_count=int(data.get("visit_count", 0)),
-        short_stay_count=int(data.get("short_stay_count", 0)),
-        long_stay_count=int(data.get("long_stay_count", 0)),
-        short_stay_driver=data.get("short_stay_driver"),
-        long_stay_driver=data.get("long_stay_driver"),
+        parked_count=int(data.get("parked_count", data.get("long_stay_count", 0))),
+        no_parking_count=int(
+            data.get("no_parking_count", data.get("short_stay_count", 0))
+        ),
+        parked_driver=data.get("parked_driver", data.get("long_stay_driver")),
+        no_parking_driver=data.get(
+            "no_parking_driver", data.get("short_stay_driver")
+        ),
     )
 
 
@@ -893,7 +990,16 @@ def _trip_from_dict(data: dict) -> TripKnowledge:
             else None
         ),
         dwell_minutes=data.get("dwell_minutes"),
-        stop_category=data.get("stop_category"),
+        # Backward-compat migration: a driver_knowledge.json written
+        # before the P-file-based redesign (see stop_category()'s own
+        # docstring) may still have the old "short"/"long" category
+        # values - "long" loosely corresponds to what's now "parked".
+        # This only affects already-persisted entries; a fresh
+        # `bv-drivers build` always recomputes stop_category from
+        # scratch via the new signal.
+        stop_category=_STOP_CATEGORY_MIGRATION.get(
+            data.get("stop_category"), data.get("stop_category")
+        ),
         candidates=tuple(
             _candidate_from_dict(c) for c in data.get("candidates", [])
         ),

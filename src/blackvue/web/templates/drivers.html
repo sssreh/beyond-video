@@ -55,8 +55,8 @@ driver KB</a> first.</p>
     <tr>
       <th>Place</th>
       <th>Visits</th>
-      <th>Short stays (&lt;15 min)</th>
-      <th>Long stays (&ge;15 min)</th>
+      <th>No parking file</th>
+      <th>Parked (has P file)</th>
       <th></th>
     </tr>
   </thead>
@@ -74,29 +74,29 @@ driver KB</a> first.</p>
       </td>
       <td>{{ place.visit_count }}</td>
       <td>
-        {{ place.short_stay_count }}
-        {% if place.short_stay_count > 0 %}
-        <select name="short_stay_driver">
-          <option value=""{% if not place.short_stay_driver %} selected{% endif %}>&mdash; none &mdash;</option>
+        {{ place.no_parking_count }}
+        {% if place.no_parking_count > 0 %}
+        <select name="no_parking_driver">
+          <option value=""{% if not place.no_parking_driver %} selected{% endif %}>&mdash; none &mdash;</option>
           {% for label, display_name in driver_choices %}
-          <option value="{{ label }}"{% if place.short_stay_driver == label %} selected{% endif %}>{{ display_name }}</option>
+          <option value="{{ label }}"{% if place.no_parking_driver == label %} selected{% endif %}>{{ display_name }}</option>
           {% endfor %}
         </select>
         {% else %}
-        <input type="hidden" name="short_stay_driver" value="{{ place.short_stay_driver or '' }}">
+        <input type="hidden" name="no_parking_driver" value="{{ place.no_parking_driver or '' }}">
         {% endif %}
       </td>
       <td>
-        {{ place.long_stay_count }}
-        {% if place.long_stay_count > 0 %}
-        <select name="long_stay_driver">
-          <option value=""{% if not place.long_stay_driver %} selected{% endif %}>&mdash; none &mdash;</option>
+        {{ place.parked_count }}
+        {% if place.parked_count > 0 %}
+        <select name="parked_driver">
+          <option value=""{% if not place.parked_driver %} selected{% endif %}>&mdash; none &mdash;</option>
           {% for label, display_name in driver_choices %}
-          <option value="{{ label }}"{% if place.long_stay_driver == label %} selected{% endif %}>{{ display_name }}</option>
+          <option value="{{ label }}"{% if place.parked_driver == label %} selected{% endif %}>{{ display_name }}</option>
           {% endfor %}
         </select>
         {% else %}
-        <input type="hidden" name="long_stay_driver" value="{{ place.long_stay_driver or '' }}">
+        <input type="hidden" name="parked_driver" value="{{ place.parked_driver or '' }}">
         {% endif %}
       </td>
       <td><button type="submit">Save</button></td>
@@ -128,11 +128,14 @@ driver KB</a> first.</p>
                 <td>{{ trip.weekday }}</td>
                 <td>{{ trip.start_time_of_day }}</td>
                 <td>
-                  {% if trip.stop_category %}
-                  {{ trip.stop_category }}{% if trip.dwell_minutes is not none %} ({{ "%.0f"|format(trip.dwell_minutes) }} min){% endif %}
+                  {% if trip.stop_category == "parked" %}
+                  Parked
+                  {% elif trip.stop_category == "no-parking" %}
+                  No parking file
                   {% else %}
                   &mdash;
                   {% endif %}
+                  {% if trip.dwell_minutes is not none %} ({{ "%.0f"|format(trip.dwell_minutes) }} min){% endif %}
                 </td>
                 <td>
                   {% if trip.candidates %}

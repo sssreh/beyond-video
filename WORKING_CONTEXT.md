@@ -21195,3 +21195,74 @@ doesn't rule out the simpler possibility that Dao's trips were never
 actually pattern-matched/resolved in the first place (still sitting
 under "Undecided") - haven't yet confirmed which explains Christer's
 "0 rows" report; both are worth checking against the real archive.
+
+Christer, on the short/long-stay dwell-duration flag: "Long and short
+are not in the game anymore, more like if you get a P file after its
+long," then, when asked a clarifying follow-up he considered
+redundant: "I have already told you to long and short doesnt exists
+any more." Confirmed via AskUserQuestion that the replacement signal
+is exactly what bv_drivers.py's own pre-existing P-ending-trip filter
+already checks: a downloaded Parking-mode (P) recording at the end of
+the stop. Redesigned both increments that used the 15-minute
+wall-clock dwell threshold.
+
+driver_detect.py: RoutePattern's min_stay_minutes/max_stay_minutes
+fields replaced with a single requires_parking: bool | None. TripFix
+gained has_parking_footage (computed once per trip in
+resolve_trip_fix(), same last_recording.id.is_parking and
+any(asset.is_downloaded ...) check bv_drivers.py's P-filter uses).
+match_driver() reads the directional parking signal the same way
+dwell_at_destination() already paired legs - trip_fix's own value for
+a home->place leg, prev_fix's value for a place->home leg (only when
+prev_fix exists) - and disambiguates/rejects on
+parking_signal != pattern.requires_parking, with confidence dropping
+to 0.4 when the direction can't be verified (place->home with no
+prev_fix). christers_driver_profiles()'s two dwell-based patterns
+(wife's drop-offs, Christer's quick turnarounds) were the reason this
+mechanism was in scope at all - both switched to requires_parking.
+_dwell_minutes() helper removed as dead code.
+
+place_knowledge.py: STOP_THRESHOLD_MINUTES constant removed.
+stop_category() now takes has_parking_footage: bool | None and
+returns "parked"/"no-parking"/None (was "long"/"short"/None).
+CommonPlace's short_stay_count/long_stay_count/short_stay_driver/
+long_stay_driver renamed to no_parking_count/parked_count/
+no_parking_driver/parked_driver. _raw_trip_knowledge() computes the
+same directional parking-footage signal driver_detect.py does (own
+trip's tail for home->place, previous trip's tail for place->home,
+gated by the existing _near() same-place check so a place->home leg
+only reads back the P status if the previous trip actually ended at
+this place). dwell_minutes/dwell_at_destination() are unchanged and
+kept purely as the informational "Stay: ~N min" display value - no
+longer feeds the category decision.
+
+Backward compatibility: existing driver_profiles.json/
+driver_knowledge.json files on Christer's machine predate this
+redesign, so three migration paths were added rather than requiring a
+rebuild first. _pattern_from_dict() maps an old min_stay_minutes ->
+requires_parking=True, max_stay_minutes -> requires_parking=False, if
+the new key is absent. _place_from_dict() falls back through the old
+short_stay_*/long_stay_* keys via .get() chains if the new keys
+aren't present. _trip_from_dict() runs a stored stop_category value
+through a small "short"->"no-parking"/"long"->"parked" migration
+dict. All three are covered by dedicated tests
+(test_pattern_from_dict_migrates_old_min_max_stay_minutes,
+test_place_from_dict_migrates_old_short_long_stay_keys,
+test_trip_from_dict_migrates_old_short_long_stop_category).
+
+app.py's drivers_update_place() route and drivers.html's Common
+Places table/Specific Trips stop_category display were updated for
+the new field names and "Parked"/"No parking file" wording.
+bv_drivers.py's docstrings/comments/console message updated to match.
+docs/man/bv-drivers.md and docs/WEB_ARCHITECTURE.md's Driver-knowledge
+base section updated for the new vocabulary (WEB_ARCHITECTURE.md kept
+as a historical log, so the entry now notes the redesign happened
+rather than rewriting the original ask).
+
+test_driver_detect.py (20 tests), test_place_knowledge.py (38 tests),
+and test_bv_drivers.py (14 tests) all updated for the new field names
+and rewritten dwell-based test scenarios into parking-based
+equivalents (e.g. test_requires_parking_true_match_and_disambiguation,
+test_requires_parking_checked_via_prev_fix_for_return_leg). All 72
+tests pass via the pytest shim harness; py_compile clean on all seven
+touched files.

@@ -1,6 +1,6 @@
 """Tests for trip/place_knowledge.py - the driver-knowledge-base
-increment (common places + short/long stay rules + per-trip overrides)
-built on top of driver_detect.py's route/dwell-time matcher.
+increment (common places + parked/no-parking stay rules + per-trip
+overrides) built on top of driver_detect.py's route/dwell-time matcher.
 
 Coordinates are fabricated stand-ins, same convention as
 test_driver_detect.py - chosen far enough apart that
@@ -20,7 +20,6 @@ from blackvue.trip.driver_detect import DriverProfile
 from blackvue.trip.driver_detect import DriverProfiles
 from blackvue.trip.driver_detect import TripFix
 from blackvue.trip.place_knowledge import CommonPlace
-from blackvue.trip.place_knowledge import STOP_THRESHOLD_MINUTES
 from blackvue.trip.place_knowledge import TripKnowledge
 from blackvue.trip.place_knowledge import _resolve_trip_driver
 from blackvue.trip.place_knowledge import build_common_places
@@ -47,7 +46,7 @@ PLACE_B = (59.4200, 17.9200)
 
 
 class FakeRecordingId:
-    def __init__(self, timestamp: datetime) -> None:
+    def __init__(self, timestamp: datetime, *, is_parking: bool = False) -> None:
         self.timestamp = timestamp
         # _raw_trip_knowledge() reads first_recording.id.value/
         # last_recording.id.value (for the video-link fields added
@@ -56,19 +55,40 @@ class FakeRecordingId:
         # stand-in is enough for these tests, it never has to parse
         # back into a real RecordingId.
         self.value = f"{timestamp:%Y%m%d_%H%M%S}"
+        # _trip_has_downloaded_parking_footage() reads .id.is_parking -
+        # a plain bool stand-in for RecordingId's own is_parking
+        # property (see that function's own docstring for why this,
+        # not the old wall-clock dwell threshold, is what
+        # stop_category() now gates on).
+        self.is_parking = is_parking
+
+
+class FakeAsset:
+    """Stand-in for archive.asset.Asset - _trip_has_downloaded_parking_
+    footage() only ever reads .is_downloaded off whatever's in
+    Recording.assets."""
+
+    def __init__(self, is_downloaded: bool = True) -> None:
+        self.is_downloaded = is_downloaded
 
 
 class FakeRecording:
-    def __init__(self, timestamp: datetime) -> None:
-        self.id = FakeRecordingId(timestamp)
+    def __init__(self, timestamp: datetime, *, is_parking: bool = False) -> None:
+        self.id = FakeRecordingId(timestamp, is_parking=is_parking)
+        # A downloaded asset only when is_parking - mirrors the real
+        # "generated-only P id isn't camera evidence" distinction
+        # _trip_has_downloaded_parking_footage()'s own docstring warns
+        # about, even though these fakes never actually need to
+        # exercise that distinction on its own.
+        self.assets = (FakeAsset(is_downloaded=True),) if is_parking else ()
 
 
 def make_fix(start, end, start_t, end_t) -> TripFix:
     return TripFix(start=start, end=end, start_time=start_t, end_time=end_t)
 
 
-def make_trip(timestamp: datetime) -> Trip:
-    return Trip(recordings=(FakeRecording(timestamp),))
+def make_trip(timestamp: datetime, *, is_parking: bool = False) -> Trip:
+    return Trip(recordings=(FakeRecording(timestamp, is_parking=is_parking),))
 
 
 def make_profiles() -> DriverProfiles:
@@ -93,11 +113,14 @@ def test_local_weekday_and_time_uses_raw_timestamp_no_dst_math():
     assert time_of_day == "14:05"
 
 
-def test_stop_category_threshold():
+def test_stop_category_reflects_parking_footage_presence():
+    # Christer: "Long and short are not in the game anymore, more like
+    # if you get a P file after its long" - stop_category() now gates
+    # on whether the stop ended in a downloaded Parking-mode recording,
+    # not a wall-clock dwell-minutes threshold.
     assert stop_category(None) is None
-    assert stop_category(STOP_THRESHOLD_MINUTES - 0.1) == "short"
-    assert stop_category(STOP_THRESHOLD_MINUTES) == "long"
-    assert stop_category(STOP_THRESHOLD_MINUTES + 30) == "long"
+    assert stop_category(False) == "no-parking"
+    assert stop_category(True) == "parked"
 
 
 def test_place_key_is_deterministic_within_a_grid_cell():
@@ -111,6 +134,10 @@ def test_dwell_at_destination_excludes_home_only_trips():
 
 
 def test_dwell_at_destination_home_to_away_uses_next_trip_start():
+    # dwell_at_destination() is informational-only now (the "Stay: ~N
+    # min" a trip displays) - stop_category() no longer derives from
+    # it (see that function's own docstring), so this only checks the
+    # minute count itself.
     t0 = datetime(2026, 1, 5, 8, 0)
     outbound = make_fix(HOME, PLACE_A, t0, t0 + timedelta(minutes=20))
     t_return_start = t0 + timedelta(minutes=60)
@@ -118,7 +145,6 @@ def test_dwell_at_destination_home_to_away_uses_next_trip_start():
 
     dwell = dwell_at_destination(outbound, None, inbound, HOME, 300.0)
     assert dwell is not None and abs(dwell - 40.0) < 0.01
-    assert stop_category(dwell) == "long"
 
 
 def test_dwell_at_destination_returns_none_when_adjacent_trip_missing():
@@ -155,23 +181,23 @@ def _knowledge_entry(place_point, category, dwell) -> TripKnowledge:
 
 def test_build_common_places_counts_visits_by_stop_category():
     entries = [
-        _knowledge_entry(PLACE_A, "long", 40.0),
-        _knowledge_entry(PLACE_A, "short", 5.0),
-        _knowledge_entry(PLACE_A, "short", 3.0),
+        _knowledge_entry(PLACE_A, "parked", 40.0),
+        _knowledge_entry(PLACE_A, "no-parking", 5.0),
+        _knowledge_entry(PLACE_A, "no-parking", 3.0),
     ]
     places = build_common_places(entries)
 
     assert len(places) == 1
     place = next(iter(places.values()))
     assert place.visit_count == 3
-    assert place.long_stay_count == 1
-    assert place.short_stay_count == 2
-    assert place.short_stay_driver is None
-    assert place.long_stay_driver is None
+    assert place.parked_count == 1
+    assert place.no_parking_count == 2
+    assert place.no_parking_driver is None
+    assert place.parked_driver is None
 
 
 def test_build_common_places_carries_forward_existing_rules_and_label():
-    entries = [_knowledge_entry(PLACE_A, "long", 40.0)]
+    entries = [_knowledge_entry(PLACE_A, "parked", 40.0)]
     key = place_key(PLACE_A)
     existing = {
         key: CommonPlace(
@@ -179,10 +205,10 @@ def test_build_common_places_carries_forward_existing_rules_and_label():
             point=PLACE_A,
             label="Grandma's house",
             visit_count=1,
-            short_stay_count=0,
-            long_stay_count=1,
-            short_stay_driver="driver1",
-            long_stay_driver="driver2",
+            parked_count=1,
+            no_parking_count=0,
+            no_parking_driver="driver1",
+            parked_driver="driver2",
         )
     }
 
@@ -190,8 +216,8 @@ def test_build_common_places_carries_forward_existing_rules_and_label():
 
     place = places[key]
     assert place.label == "Grandma's house"
-    assert place.short_stay_driver == "driver1"
-    assert place.long_stay_driver == "driver2"
+    assert place.no_parking_driver == "driver1"
+    assert place.parked_driver == "driver2"
     # visit_count itself is recomputed fresh from `entries`, not carried:
     assert place.visit_count == 1
 
@@ -200,16 +226,16 @@ def test_undecided_places_needs_min_visits_and_a_missing_rule():
     key = place_key(PLACE_A)
     rare_place = CommonPlace(
         key=key, point=PLACE_A, label="rare", visit_count=1,
-        short_stay_count=1, long_stay_count=0,
+        no_parking_count=1, parked_count=0,
     )
     common_undecided = CommonPlace(
         key="other", point=(1.0, 1.0), label="common", visit_count=5,
-        short_stay_count=3, long_stay_count=2,
+        no_parking_count=3, parked_count=2,
     )
     common_decided = CommonPlace(
         key="decided", point=(2.0, 2.0), label="decided", visit_count=5,
-        short_stay_count=3, long_stay_count=2,
-        short_stay_driver="driver1", long_stay_driver="driver2",
+        no_parking_count=3, parked_count=2,
+        no_parking_driver="driver1", parked_driver="driver2",
     )
 
     result = undecided_places(
@@ -222,10 +248,10 @@ def test_undecided_places_needs_min_visits_and_a_missing_rule():
 
 def test_resolve_trip_driver_prefers_manual_trip_override_over_place_rule():
     profiles = make_profiles()
-    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     place = CommonPlace(
         key=entry.away_place_key, point=PLACE_A, label="Place", visit_count=1,
-        short_stay_count=0, long_stay_count=1, long_stay_driver="driver1",
+        no_parking_count=0, parked_count=1, parked_driver="driver1",
     )
 
     resolved = _resolve_trip_driver(entry, place, profiles, "driver2")
@@ -236,30 +262,30 @@ def test_resolve_trip_driver_prefers_manual_trip_override_over_place_rule():
     assert resolved.confidence == 1.0
 
 
-def test_resolve_trip_driver_disambiguates_short_vs_long_stay_rule():
+def test_resolve_trip_driver_disambiguates_no_parking_vs_parked_rule():
     profiles = make_profiles()
     key = place_key(PLACE_A)
     place = CommonPlace(
         key=key, point=PLACE_A, label="Place", visit_count=2,
-        short_stay_count=1, long_stay_count=1,
-        short_stay_driver="driver2", long_stay_driver="driver1",
+        no_parking_count=1, parked_count=1,
+        no_parking_driver="driver2", parked_driver="driver1",
     )
 
-    long_entry = _knowledge_entry(PLACE_A, "long", 40.0)
-    short_entry = _knowledge_entry(PLACE_A, "short", 5.0)
+    parked_entry = _knowledge_entry(PLACE_A, "parked", 40.0)
+    no_parking_entry = _knowledge_entry(PLACE_A, "no-parking", 5.0)
 
-    resolved_long = _resolve_trip_driver(long_entry, place, profiles, None)
-    resolved_short = _resolve_trip_driver(short_entry, place, profiles, None)
+    resolved_parked = _resolve_trip_driver(parked_entry, place, profiles, None)
+    resolved_no_parking = _resolve_trip_driver(no_parking_entry, place, profiles, None)
 
-    assert resolved_long.driver_label == "driver1" and resolved_long.source == "place-rule"
-    assert resolved_short.driver_label == "driver2" and resolved_short.source == "place-rule"
+    assert resolved_parked.driver_label == "driver1" and resolved_parked.source == "place-rule"
+    assert resolved_no_parking.driver_label == "driver2" and resolved_no_parking.source == "place-rule"
 
 
 def test_resolve_trip_driver_falls_back_to_best_candidate_then_undecided():
     from blackvue.trip.driver_detect import DriverMatch
 
     profiles = make_profiles()
-    entry_no_place = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry_no_place = _knowledge_entry(PLACE_A, "parked", 40.0)
     entry_no_place = entry_no_place.__class__(
         **{**entry_no_place.__dict__, "away_place_key": None, "away_point": None}
     )
@@ -308,7 +334,7 @@ def test_resolve_trip_driver_pattern_match_uses_current_display_name_not_stale_c
             DriverProfile(label="driver2", display_name="Christer", patterns=()),
         ),
     )
-    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     entry = entry.__class__(
         **{
             **entry.__dict__,
@@ -326,7 +352,7 @@ def test_resolve_trip_driver_pattern_match_uses_current_display_name_not_stale_c
 
 
 def test_undecided_trips_filters_by_source():
-    resolved = _knowledge_entry(PLACE_A, "long", 40.0)  # source defaults "undecided"
+    resolved = _knowledge_entry(PLACE_A, "parked", 40.0)  # source defaults "undecided"
     decided = resolved.__class__(
         **{**resolved.__dict__, "driver_label": "driver1", "source": "place-rule"}
     )
@@ -334,7 +360,7 @@ def test_undecided_trips_filters_by_source():
 
 
 def _entry_on(day, *, trip_label="trip_x", source="undecided"):
-    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     start = datetime(2026, 8, day, 8, 0)
     return entry.__class__(
         **{
@@ -400,7 +426,7 @@ def _entry_at(place_point, day, *, trip_label, source="undecided"):
     own tests, which (unlike the bulk-assign tests) care about more
     than one distinct place."""
 
-    entry = _knowledge_entry(place_point, "long", 40.0)
+    entry = _knowledge_entry(place_point, "parked", 40.0)
     start = datetime(2026, 8, day, 8, 0)
     return entry.__class__(
         **{
@@ -452,7 +478,12 @@ def test_group_trips_by_place_skips_trips_with_no_away_place_key():
 def test_build_knowledge_base_end_to_end_with_real_trip_objects():
     profiles = make_profiles()
     t0 = datetime(2026, 1, 5, 8, 0)  # a Monday
-    trip_a = make_trip(t0)
+    # trip_a's own tail is the stop at PLACE_A (home->away leg) - give
+    # it a downloaded Parking-mode recording so both legs of this
+    # round trip resolve to stop_category "parked" (see
+    # _raw_trip_knowledge()'s own docstring for why the away->home leg
+    # borrows trip_a's parking status rather than having its own).
+    trip_a = make_trip(t0, is_parking=True)
     t1 = t0 + timedelta(minutes=60)
     trip_b = make_trip(t1)
 
@@ -468,9 +499,12 @@ def test_build_knowledge_base_end_to_end_with_real_trip_objects():
     assert resolved[0].weekday == "Monday"
     assert resolved[0].away_place_key == place_key(PLACE_A)
     # Both legs of the same round trip share the one 60-minute dwell -
-    # the gap between this trip's own end and the other trip's start.
+    # the gap between this trip's own end and the other trip's start
+    # (dwell_minutes is informational only now, see dwell_at_
+    # destination()'s own docstring - it no longer drives the category).
     assert resolved[0].dwell_minutes is not None and abs(resolved[0].dwell_minutes - 60.0) < 0.01
-    assert resolved[0].stop_category == "long"
+    assert resolved[0].stop_category == "parked"
+    assert resolved[1].stop_category == "parked"
     assert len(places) == 1
     assert next(iter(places.values())).visit_count == 2
 
@@ -504,11 +538,11 @@ def test_build_knowledge_base_defaults_camera_id_to_none():
 
 def test_save_and_load_knowledge_base_round_trip_preserves_overrides():
     profiles = make_profiles()
-    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     key = entry.away_place_key
     place = CommonPlace(
         key=key, point=PLACE_A, label="My place", visit_count=1,
-        short_stay_count=0, long_stay_count=1, long_stay_driver="driver1",
+        no_parking_count=0, parked_count=1, parked_driver="driver1",
     )
     resolved = _resolve_trip_driver(entry, place, profiles, None)
 
@@ -528,7 +562,7 @@ def test_save_and_load_knowledge_base_round_trip_preserves_overrides():
     assert loaded_trips[0].driver_label == "driver1"
     assert loaded_trips[0].away_point == PLACE_A
     assert loaded_places[key].label == "My place"
-    assert loaded_places[key].long_stay_driver == "driver1"
+    assert loaded_places[key].parked_driver == "driver1"
     assert loaded_overrides == {"trip_x": "driver2"}
 
 
@@ -537,10 +571,60 @@ def test_load_knowledge_base_returns_none_when_missing():
     assert load_knowledge_base(missing) is None
 
 
+def test_place_from_dict_migrates_old_short_long_stay_keys():
+    """A driver_knowledge.json written before the P-file redesign might
+    still have short_stay_*/long_stay_* keys - both should migrate to
+    the equivalent new field (see _place_from_dict()'s own docstring:
+    "long stay" loosely corresponds to what's now "parked")."""
+
+    from blackvue.trip.place_knowledge import _place_from_dict
+
+    old_data = {
+        "point": [PLACE_A[0], PLACE_A[1]],
+        "label": "Old place",
+        "visit_count": 5,
+        "short_stay_count": 2,
+        "long_stay_count": 3,
+        "short_stay_driver": "driver2",
+        "long_stay_driver": "driver1",
+    }
+
+    place = _place_from_dict("some_key", old_data)
+
+    assert place.no_parking_count == 2
+    assert place.parked_count == 3
+    assert place.no_parking_driver == "driver2"
+    assert place.parked_driver == "driver1"
+
+
+def test_trip_from_dict_migrates_old_short_long_stop_category():
+    """A driver_knowledge.json trip entry written before the P-file
+    redesign might still have stop_category "short"/"long" - both
+    should migrate to the equivalent new category so place-rule
+    resolution keeps working immediately after upgrade, without
+    requiring a fresh `bv-drivers build` first."""
+
+    from blackvue.trip.place_knowledge import _trip_to_dict, _trip_from_dict
+
+    entry = _knowledge_entry(PLACE_A, "parked", 40.0)
+    data = _trip_to_dict(entry)
+    data["stop_category"] = "long"
+    restored = _trip_from_dict(data)
+    assert restored.stop_category == "parked"
+
+    data["stop_category"] = "short"
+    restored = _trip_from_dict(data)
+    assert restored.stop_category == "no-parking"
+
+
 def test_rebuild_preserves_manual_place_rules_via_existing_places_arg():
     profiles = make_profiles()
     t0 = datetime(2026, 1, 5, 8, 0)
-    trip_a = make_trip(t0)
+    # trip_a's own tail is the stop at PLACE_A - needs a downloaded
+    # Parking recording for the round trip to resolve "parked" (see
+    # test_build_knowledge_base_end_to_end_with_real_trip_objects's own
+    # comment for why).
+    trip_a = make_trip(t0, is_parking=True)
     t1 = t0 + timedelta(minutes=60)
     trip_b = make_trip(t1)
     outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
@@ -556,7 +640,7 @@ def test_rebuild_preserves_manual_place_rules_via_existing_places_arg():
     key = next(iter(first_places))
     edited_places = dict(first_places)
     edited_places[key] = edited_places[key].__class__(
-        **{**edited_places[key].__dict__, "long_stay_driver": "driver1"}
+        **{**edited_places[key].__dict__, "parked_driver": "driver1"}
     )
 
     # Rebuild (as `bv-drivers build` would do again later) - the rule
@@ -565,7 +649,7 @@ def test_rebuild_preserves_manual_place_rules_via_existing_places_arg():
         [trip_a, trip_b], [outbound_fix, inbound_fix], profiles, {"home": HOME},
         existing_places=edited_places,
     )
-    assert second_places[key].long_stay_driver == "driver1"
+    assert second_places[key].parked_driver == "driver1"
     assert second_resolved[0].driver_label == "driver1"
     assert second_resolved[0].source == "place-rule"
 
@@ -663,12 +747,12 @@ def test_build_knowledge_base_threads_smoothness_values_by_index():
 
 def test_trip_knowledge_smoothness_raw_round_trips_through_save_load():
     profiles = make_profiles()
-    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     entry = entry.__class__(**{**entry.__dict__, "smoothness_raw": 2.75})
     key = entry.away_place_key
     place = CommonPlace(
         key=key, point=PLACE_A, label="My place", visit_count=1,
-        short_stay_count=0, long_stay_count=1, long_stay_driver="driver1",
+        no_parking_count=0, parked_count=1, parked_driver="driver1",
     )
     resolved = _resolve_trip_driver(entry, place, profiles, None)
 

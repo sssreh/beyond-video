@@ -6,17 +6,19 @@ detected trips (same TripBuilder gap logic bv-ls --trips/bv-export
 use, but - unlike those two - fed every recording in range, not just
 ones with front video; see this file's own trip-building comment
 below for why), computes each trip's weekday/time, away-from-home stop
-duration and
-short/long category, and its trip/driver_detect.py candidate driver
-matches, clusters recurring destinations into trip/place_knowledge.py's
+duration and parked/no-parking category (see trip/place_knowledge.py's
+stop_category() docstring - this used to be a short/long wall-clock
+threshold, now it's whether the stop ended in a downloaded Parking-mode
+recording), and its trip/driver_detect.py candidate driver matches,
+clusters recurring destinations into trip/place_knowledge.py's
 CommonPlace registry, and writes the result to driver_knowledge.json
 under --config-dir - read by bv-web's /drivers page, where Christer
-fills in each common place's short-stay/long-stay driver by hand (see
+fills in each common place's parked/no-parking driver by hand (see
 place_knowledge.py's own module docstring for the full design).
 
 Re-running this command is meant to be routine (Christer: scoped to
 the live Kirby (2026) archive, "the addresses will probably change
-over time") - every place's label and short_stay_driver/long_stay_driver,
+over time") - every place's label and parked_driver/no_parking_driver,
 and every per-trip manual override, survive a rebuild untouched (see
 build_knowledge_base()'s own docstring); only visit counts and the
 trip list itself are refreshed from the archive's current state.
@@ -331,13 +333,14 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         # TripBuilder in chronological order (it groups an already-
         # sorted `recordings` list, see build()'s own precondition), so
         # `trips[-1]` is always the most recent one. Dropping it
-        # unconditionally would also silently break dwell_at_
-        # destination()'s adjacent-trip short/long-stay categorization
-        # for the *second*-to-last trip: an outbound (home -> away) leg
-        # computes its own dwell from the *next* trip's start time (see
-        # that function's docstring), so losing the last trip loses the
-        # only evidence of how long the most recent stay actually was,
-        # not just the last trip's own data.
+        # unconditionally would also silently break the *second*-to-
+        # last trip's own parked/no-parking categorization (see
+        # place_knowledge.py's stop_category() docstring): an outbound
+        # (home -> away) leg's category comes from the *next* trip's
+        # own tail (see _raw_trip_knowledge()'s docstring), so losing
+        # the last trip loses the only evidence of whether the most
+        # recent stay was actually parked, not just the last trip's
+        # own data.
         before_parking_filter = len(trips)
         trips = [
             trip
@@ -426,7 +429,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         say(f"bv-drivers: {decided}/{len(resolved)} trip(s) resolved to a driver")
         say(
             f"bv-drivers: {len(undecided_place_list)} common place(s) "
-            f"(>= {args.min_visits} visits) still need a short/long-stay "
+            f"(>= {args.min_visits} visits) still need a parked/no-parking "
             "driver rule"
         )
         say(f"bv-drivers: {len(undecided_trip_list)} trip(s) still undecided")

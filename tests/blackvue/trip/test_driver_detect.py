@@ -7,7 +7,9 @@ just far enough apart that DEFAULT_RADIUS_METERS/home_radius_meters
 cleanly separate "near" from "far". Scenarios mirror Christer's own
 verbatim route descriptions (see driver_detect.py's
 christers_driver_profiles()), including the Norra Stationsgatan
-same-place-opposite-dwell-time disambiguation between the two drivers.
+same-place-opposite-parking-status disambiguation between the two
+drivers (his wife's drop-off leaves the car parked; his own run is a
+quick turnaround, no parking - see RoutePattern.requires_parking).
 """
 
 import json
@@ -74,11 +76,12 @@ def test_simple_commute_match():
     assert ("driver2", "Solna, Vintervägen 50") in labels
 
 
-def test_min_stay_minutes_match_and_disambiguation():
-    """Wife's Norra Stationsgatan pattern requires >10 min dwell - a
-    15-minute stay should match her pattern at high confidence and
-    must NOT also match Christer's own (max_stay_minutes=10) pattern
-    at the same place."""
+def test_requires_parking_true_match_and_disambiguation():
+    """Wife's Norra Stationsgatan pattern requires the arriving leg to
+    end in a downloaded Parking-mode recording - a leg with
+    has_parking_footage=True should match her pattern at high
+    confidence and must NOT also match Christer's own
+    (requires_parking=False) pattern at the same place."""
 
     profiles = christers_driver_profiles()
     leg1 = TripFix(
@@ -86,15 +89,10 @@ def test_min_stay_minutes_match_and_disambiguation():
         end=NORRA_STN,
         start_time=ts("2026-08-29 08:00:00"),
         end_time=ts("2026-08-29 08:15:00"),
-    )
-    leg2 = TripFix(
-        start=NORRA_STN,
-        end=HOME,
-        start_time=ts("2026-08-29 08:30:00"),
-        end_time=ts("2026-08-29 08:45:00"),
+        has_parking_footage=True,
     )
 
-    matches = match_driver(leg1, None, leg2, profiles, KNOWN_POINTS)
+    matches = match_driver(leg1, None, None, profiles, KNOWN_POINTS)
 
     wife_matches = [
         m for m in matches if m.driver_label == "driver1" and m.place == "Norra Stationsgatan"
@@ -107,11 +105,11 @@ def test_min_stay_minutes_match_and_disambiguation():
     assert christer_matches == []
 
 
-def test_max_stay_minutes_match_and_disambiguation():
-    """Christer's own Norra Stationsgatan pattern is a quick
-    turnaround (<=10 min) - a 5-minute stay should match his pattern
-    and must NOT match his wife's min-stay pattern at the same
-    place."""
+def test_requires_parking_false_match_and_disambiguation():
+    """Christer's own Norra Stationsgatan pattern is a quick turnaround
+    with no parking recording - a leg with has_parking_footage=False
+    should match his pattern and must NOT match his wife's
+    requires_parking=True pattern at the same place."""
 
     profiles = christers_driver_profiles()
     leg1 = TripFix(
@@ -119,15 +117,10 @@ def test_max_stay_minutes_match_and_disambiguation():
         end=NORRA_STN,
         start_time=ts("2026-08-29 09:00:00"),
         end_time=ts("2026-08-29 09:15:00"),
-    )
-    leg2 = TripFix(
-        start=NORRA_STN,
-        end=HOME,
-        start_time=ts("2026-08-29 09:20:00"),
-        end_time=ts("2026-08-29 09:35:00"),
+        has_parking_footage=False,
     )
 
-    matches = match_driver(leg1, None, leg2, profiles, KNOWN_POINTS)
+    matches = match_driver(leg1, None, None, profiles, KNOWN_POINTS)
 
     christer_matches = [
         m for m in matches if m.driver_label == "driver2" and m.place == "Norra Stationsgatan"
@@ -137,6 +130,41 @@ def test_max_stay_minutes_match_and_disambiguation():
     ]
     assert christer_matches
     assert wife_matches == []
+
+
+def test_requires_parking_checked_via_prev_fix_for_return_leg():
+    """A place->home leg's own parking status is irrelevant - what
+    matters is whether the *outbound* leg (prev_fix) that dropped the
+    vehicle off at the place ended in a downloaded Parking-mode
+    recording (see match_driver()'s own docstring for why the check
+    looks at the adjacent leg rather than this one)."""
+
+    profiles = christers_driver_profiles()
+    outbound = TripFix(
+        start=HOME,
+        end=NORRA_STN,
+        start_time=ts("2026-08-29 08:00:00"),
+        end_time=ts("2026-08-29 08:15:00"),
+        has_parking_footage=True,
+    )
+    return_leg = TripFix(
+        start=NORRA_STN,
+        end=HOME,
+        start_time=ts("2026-08-29 08:30:00"),
+        end_time=ts("2026-08-29 08:45:00"),
+    )
+
+    matches = match_driver(return_leg, outbound, None, profiles, KNOWN_POINTS)
+
+    wife_matches = [
+        m for m in matches if m.driver_label == "driver1" and m.place == "Norra Stationsgatan"
+    ]
+    christer_matches = [
+        m for m in matches if m.driver_label == "driver2" and m.place == "Norra Stationsgatan"
+    ]
+    assert wife_matches
+    assert wife_matches[0].confidence >= 0.85
+    assert christer_matches == []
 
 
 def test_any_short_trip_in_home_area_matches():
@@ -183,18 +211,22 @@ def test_no_match_for_unrelated_endpoints():
     assert matches == ()
 
 
-def test_unverifiable_dwell_still_matches_at_reduced_confidence():
-    """No adjacent trip to compute dwell time from - both drivers'
-    Norra Stationsgatan patterns should still surface (a false 'no
-    match' would be worse than a low-confidence maybe), but capped at
-    reduced confidence and flagged as unverified."""
+def test_unverifiable_parking_status_still_matches_at_reduced_confidence():
+    """A place->home leg with no prev_fix - there's no way to check
+    whether the outbound leg that dropped the vehicle off ended in a
+    Parking recording, so both drivers' Norra Stationsgatan patterns
+    should still surface (a false 'no match' would be worse than a
+    low-confidence maybe), but capped at reduced confidence and
+    flagged as unverified. (A home->place leg never hits this case -
+    its own has_parking_footage is always known, see TripFix's own
+    docstring - so only the place->home direction can be unverified.)"""
 
     profiles = christers_driver_profiles()
     trip = TripFix(
-        start=HOME,
-        end=NORRA_STN,
-        start_time=ts("2026-08-29 08:00:00"),
-        end_time=ts("2026-08-29 08:15:00"),
+        start=NORRA_STN,
+        end=HOME,
+        start_time=ts("2026-08-29 08:30:00"),
+        end_time=ts("2026-08-29 08:45:00"),
     )
 
     matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
@@ -245,7 +277,38 @@ def test_driver_profiles_json_round_trip():
 
     assert restored.home_query == profiles.home_query
     assert len(restored.drivers) == len(profiles.drivers)
-    assert restored.drivers[1].patterns[-1].max_stay_minutes == 10
+    assert restored.drivers[1].patterns[-1].requires_parking is False
+
+
+def test_pattern_from_dict_migrates_old_min_max_stay_minutes():
+    """A driver_profiles.json written before the P-file redesign might
+    still have min_stay_minutes/max_stay_minutes - both should migrate
+    to the equivalent requires_parking value (see _pattern_from_dict()'s
+    own docstring: min_stay meant "stayed a while" -> requires_parking
+    True, max_stay meant "quick turnaround" -> requires_parking False).
+    A pattern with neither key stays requires_parking=None (no dwell
+    condition at all)."""
+
+    data = {
+        "home": {"name": "Home", "query": "Home", "radius_meters": 300.0},
+        "drivers": {
+            "driver1": {
+                "display_name": "Dao",
+                "patterns": [
+                    {"place": "A", "min_stay_minutes": 10},
+                    {"place": "B", "max_stay_minutes": 10},
+                    {"place": "C"},
+                ],
+            },
+        },
+    }
+
+    restored = driver_profiles_from_dict(data)
+
+    patterns = restored.drivers[0].patterns
+    assert patterns[0].requires_parking is True
+    assert patterns[1].requires_parking is False
+    assert patterns[2].requires_parking is None
 
 
 def test_write_default_driver_profiles_seeds_and_is_idempotent(tmp_path=None):

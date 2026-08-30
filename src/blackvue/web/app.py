@@ -942,12 +942,12 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def drivers_update_place(
         key: str,
         label: str = Form(""),
-        short_stay_driver: str = Form(""),
-        long_stay_driver: str = Form(""),
+        parked_driver: str = Form(""),
+        no_parking_driver: str = Form(""),
         user: User = Depends(require_owner),
     ):
-        # Updates one CommonPlace's label/short_stay_driver/
-        # long_stay_driver, then re-resolves every trip's driver via
+        # Updates one CommonPlace's label/parked_driver/
+        # no_parking_driver, then re-resolves every trip's driver via
         # reresolve_trip_drivers() (no archive re-scan needed - see
         # that function's own docstring) and saves the whole knowledge
         # base back out. A blank driver field clears that rule
@@ -963,8 +963,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             places[key] = _dc_replace(
                 places[key],
                 label=label.strip() or places[key].label,
-                short_stay_driver=short_stay_driver.strip() or None,
-                long_stay_driver=long_stay_driver.strip() or None,
+                parked_driver=parked_driver.strip() or None,
+                no_parking_driver=no_parking_driver.strip() or None,
             )
             resolved = reresolve_trip_drivers(trips, places, profiles, trip_overrides)
             save_knowledge_base(
