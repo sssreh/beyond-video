@@ -21013,3 +21013,35 @@ Also updated christers_driver_profiles()' own seed display_name from
 "Fru" to "Dao" for consistency, though that alone doesn't rename data
 Christer's real driver_profiles.json already has - the actual fix for
 his live install is the new "Drivers" rename form.
+
+Added: a driver filter to the Specific trips section of /drivers.
+Christer: "pa specific trips hogst upp skulle jag vilja ha en
+selection for varje driver samt aven undecided som default." Until
+now that table only ever showed undecided_trips(trips) - useful for
+making new calls, but with no way to review or correct a trip already
+resolved to a driver short of hand-editing driver_knowledge.json.
+drivers_page() now takes a `driver_filter` query param (default "",
+meaning Undecided - today's behavior, unchanged): empty shows
+undecided_trips(trips) as before; a specific driver label instead
+shows every trip already resolved to them (trip.driver_label ==
+driver_filter), regardless of how it was resolved (pattern-match/
+place-rule/manual override). The list itself was renamed from
+undecided_trip_list to specific_trip_list throughout app.py and
+drivers.html (trip_addresses, smoothness_scores, closest_matches, and
+the template context key) since it's no longer undecided-only.
+A small GET form above the Specific trips table (its own
+content-panel, action="/drivers#specific-trips") holds the <select>;
+picking a driver and submitting re-renders the page filtered.
+Correctness fix that went with this: each row's own driver_label
+<select> (the one that actually assigns a driver on Save) previously
+had no `selected` option at all, safe only because the table used to
+be undecided-only (every option was equally "unselected" until
+changed). Now that the table can show already-decided trips, the
+dropdown marks the trip's current driver_label as selected - without
+this, viewing a filtered decided driver's trips and clicking Save
+without touching the dropdown would have silently reset that trip
+back to undecided. Empty-state message is filter-aware too ("No trips
+resolved to X" vs. "No undecided trips"). No web-level tests exist for
+/drivers routes (established precedent - none did before this task
+either), so verified via py_compile on app.py and a standalone Jinja2
+parse of drivers.html.

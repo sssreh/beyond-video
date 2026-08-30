@@ -748,6 +748,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         request: Request,
         user: User = Depends(require_login),
         min_visits: int = Query(default=2),
+        driver_filter: str = Query(default=""),
     ):
         # Christer's common-places/undecided-trips driver-assignment
         # form (see trip/place_knowledge.py's own module docstring) - a
@@ -771,13 +772,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "driver_choices": [],
                     "places": [],
                     "undecided_place_keys": set(),
-                    "undecided_trip_list": [],
+                    "specific_trip_list": [],
                     "place_trips": {},
                     "place_trip_addresses": {},
                     "driver_display_by_label": {},
                     "smoothness_scores": {},
                     "closest_matches": {},
                     "min_visits": min_visits,
+                    "driver_filter": driver_filter,
                     "trip_count": 0,
                     "decided_count": 0,
                 },
@@ -813,9 +815,27 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         undecided_place_keys = {
             place.key for place in undecided_places(places, min_visits=min_visits)
         }
-        undecided_trip_list = sorted(
-            undecided_trips(trips), key=lambda entry: entry.start_time, reverse=True
-        )
+        # Christer: "pa specific trips hogst upp skulle jag vilja ha en
+        # selection for varje driver samt aven undecided som default." -
+        # a driver filter at the top of the Specific trips section,
+        # separate from each row's own driver <select> (that one
+        # assigns a driver, this one chooses which trips to look at).
+        # Empty driver_filter (the default, "Undecided" in the
+        # dropdown) keeps today's behavior - only trips with no
+        # resolved driver at all. Picking a specific driver instead
+        # shows every trip already resolved to them, regardless of how
+        # (pattern-match/place-rule/manual-trip) - useful for
+        # reviewing or correcting an already-made call, not just
+        # making new ones.
+        if driver_filter:
+            specific_trip_list = sorted(
+                (entry for entry in trips if entry.driver_label == driver_filter),
+                key=lambda entry: entry.start_time, reverse=True,
+            )
+        else:
+            specific_trip_list = sorted(
+                undecided_trips(trips), key=lambda entry: entry.start_time, reverse=True
+            )
 
         # Reverse-geocoded address per place (keyed by CommonPlace.key)
         # and per undecided trip's start/stop point (keyed by
@@ -829,9 +849,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # driver_knowledge.json - place_knowledge.py stays a pure,
         # network-free module (see its own docstring) and the cache
         # itself already makes every address after the first page load
-        # free. Only undecided trips are geocoded (not every trip in
-        # the archive) - the only ones this page's Specific trips table
-        # actually shows.
+        # free. Only geocoded for specific_trip_list's own trips (not
+        # every trip in the archive) - the only ones this page's
+        # Specific trips table actually shows, whichever driver_filter
+        # currently narrows it to.
         geocode_cache_dir = default_config_dir() / ".osm_cache"
         place_addresses = {
             place.key: _reverse_geocode_or_none(place.point, geocode_cache_dir)
@@ -842,7 +863,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 _reverse_geocode_or_none(entry.start_point, geocode_cache_dir),
                 _reverse_geocode_or_none(entry.end_point, geocode_cache_dir),
             )
-            for entry in undecided_trip_list
+            for entry in specific_trip_list
         }
 
         # Every trip belonging to each Common Place, most-recent-first -
@@ -854,9 +875,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # weekday, time, stay length, driver/candidates, start/stop
         # addresses with Maps links, video links) rendered as a
         # collapsed <details> under that place's row. Unlike the
-        # Specific trips table (undecided only), this covers every
-        # trip at the place regardless of whether it's already been
-        # resolved to a driver - that's the whole point of "each trip".
+        # Specific trips table (undecided by default, or one driver's
+        # own trips when filtered), this covers every trip at the
+        # place regardless of driver - that's the whole point of "each
+        # trip".
         place_trips = group_trips_by_place(trips)
         place_trip_addresses = {
             entry.trip_label: (
@@ -872,22 +894,22 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         # Driving-smoothness score + "closest past match" suggestion -
         # Christer's own follow-up ask ("anything else you can do to
-        # make it easier for me to decide driver"), both scoped to the
-        # Specific trips table only (undecided_trip_list), same scope
-        # trip_addresses above already uses. smoothness_population is
-        # every trip's own smoothness_raw (not just undecided ones) -
-        # an undecided trip's score is its percentile rank against the
-        # whole archive, not just other undecided trips.
+        # make it easier for me to decide driver"), both scoped to
+        # specific_trip_list, same scope trip_addresses above already
+        # uses. smoothness_population is every trip's own
+        # smoothness_raw (not just the currently filtered ones) - a
+        # trip's score is always its percentile rank against the whole
+        # archive, regardless of which driver_filter is active.
         smoothness_population = [
             entry.smoothness_raw for entry in trips if entry.smoothness_raw is not None
         ]
         smoothness_scores = {
             entry.trip_label: smoothness_score(entry.smoothness_raw, smoothness_population)
-            for entry in undecided_trip_list
+            for entry in specific_trip_list
         }
         closest_matches = {
             entry.trip_label: suggest_closest_decided_trip(entry, trips)
-            for entry in undecided_trip_list
+            for entry in specific_trip_list
         }
 
         return templates.TemplateResponse(
@@ -900,7 +922,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "places": places_sorted,
                 "place_addresses": place_addresses,
                 "undecided_place_keys": undecided_place_keys,
-                "undecided_trip_list": undecided_trip_list,
+                "specific_trip_list": specific_trip_list,
                 "trip_addresses": trip_addresses,
                 "place_trips": place_trips,
                 "place_trip_addresses": place_trip_addresses,
@@ -908,6 +930,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "smoothness_scores": smoothness_scores,
                 "closest_matches": closest_matches,
                 "min_visits": min_visits,
+                "driver_filter": driver_filter,
                 "trip_count": len(trips),
                 "decided_count": sum(
                     1 for entry in trips if entry.source != "undecided"

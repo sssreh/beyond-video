@@ -224,10 +224,26 @@ driver KB</a> first.</p>
   aggressive) ranks this trip's g-sensor readings against every other
   trip's own - a relative scale, not a fixed threshold - and "most
   similar decided trip" points at the closest-matching trip you've
-  already assigned, as a hint toward who was probably driving.</p>
+  already assigned, as a hint toward who was probably driving. Use the
+  filter below to switch from Undecided (the default) to a specific
+  driver, to review or correct trips already resolved to them.</p>
 </div>
 <div class="content-panel">
-{% if undecided_trip_list %}
+<form method="get" action="/drivers#specific-trips">
+  <input type="hidden" name="min_visits" value="{{ min_visits }}">
+  <label>Driver
+    <select name="driver_filter">
+      <option value=""{% if not driver_filter %} selected{% endif %}>Undecided</option>
+      {% for label, display_name in driver_choices %}
+      <option value="{{ label }}"{% if driver_filter == label %} selected{% endif %}>{{ display_name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>
+</div>
+<div class="content-panel">
+{% if specific_trip_list %}
 <table>
   <thead>
     <tr>
@@ -243,7 +259,7 @@ driver KB</a> first.</p>
     </tr>
   </thead>
   <tbody>
-    {% for trip in undecided_trip_list %}
+    {% for trip in specific_trip_list %}
     <tr id="trip-{{ trip.trip_label }}">
       <td>{{ trip.start_time.strftime("%Y-%m-%d %H:%M") }}</td>
       <td>{{ trip.weekday }}</td>
@@ -306,9 +322,9 @@ driver KB</a> first.</p>
       <td>
         <form method="post" action="/drivers/trips/{{ trip.trip_label }}">
           <select name="driver_label">
-            <option value="">&mdash; undecided &mdash;</option>
+            <option value=""{% if not trip.driver_label %} selected{% endif %}>&mdash; undecided &mdash;</option>
             {% for label, display_name in driver_choices %}
-            <option value="{{ label }}">{{ display_name }}</option>
+            <option value="{{ label }}"{% if trip.driver_label == label %} selected{% endif %}>{{ display_name }}</option>
             {% endfor %}
           </select>
           <button type="submit">Save</button>
@@ -319,7 +335,13 @@ driver KB</a> first.</p>
   </tbody>
 </table>
 {% else %}
-<p class="empty">No undecided trips.</p>
+<p class="empty">
+  {% if driver_filter %}
+  No trips resolved to {{ driver_display_by_label.get(driver_filter, driver_filter) }}.
+  {% else %}
+  No undecided trips.
+  {% endif %}
+</p>
 {% endif %}
 </div>
 
