@@ -583,7 +583,25 @@ def _resolve_trip_driver(
         return replace(
             entry,
             driver_label=best.driver_label,
-            display_name=best.display_name,
+            # Not best.display_name: entry.candidates is match_driver()'s
+            # own snapshot, taken (and persisted to driver_knowledge.json)
+            # at whatever build/rescan filled it in - it never gets
+            # refreshed by a rename. reresolve_trip_drivers() re-runs this
+            # function against the *current* `profiles` precisely so an
+            # edit (a rename, a new place rule, ...) takes effect without a
+            # full rescan - using the stale candidate's own display_name
+            # here defeated that for the pattern-match branch specifically
+            # (the override/place-rule branches above already look this up
+            # fresh via `display_names`). Christer: renamed "Fru" to "Dao"
+            # via /drivers' inline rename form, then couldn't find her
+            # trips filtering the Specific trips list by "Dao" - the
+            # driver_label itself was still correct (rename never touches
+            # labels), but every pattern-match-resolved trip kept showing
+            # "Fru" everywhere its own persisted display_name was read
+            # directly instead of through app.py's driver_display_by_label
+            # lookup, which is what made it look like the trips had
+            # vanished rather than just being mislabeled.
+            display_name=display_names.get(best.driver_label, best.driver_label),
             confidence=best.confidence,
             source="pattern-match",
         )

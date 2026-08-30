@@ -285,6 +285,46 @@ def test_resolve_trip_driver_falls_back_to_best_candidate_then_undecided():
     assert resolved_undecided.source == "undecided"
 
 
+def test_resolve_trip_driver_pattern_match_uses_current_display_name_not_stale_candidate():
+    from blackvue.trip.driver_detect import DriverMatch
+
+    # Christer: renamed "Fru" to "Dao" via /drivers' inline rename form,
+    # then couldn't find her trips filtering the Specific trips list by
+    # "Dao". driver_label survived the rename fine (rename never touches
+    # labels), but this entry's own `candidates` are a snapshot from
+    # whatever build/rescan first produced them - taken *before* the
+    # rename, still saying "Fru" - and _resolve_trip_driver()'s
+    # pattern-match branch used to read display_name straight off that
+    # stale candidate instead of looking it up fresh in the *current*
+    # profiles, the same way the override/place-rule branches above it
+    # already do. profiles here already has driver1 renamed to "Dao";
+    # the candidate is deliberately built with the pre-rename "Fru" to
+    # prove the resolved display_name comes from `profiles`, not the
+    # candidate.
+    profiles = DriverProfiles(
+        home_name="Home", home_query="Home", home_radius_meters=300.0,
+        drivers=(
+            DriverProfile(label="driver1", display_name="Dao", patterns=()),
+            DriverProfile(label="driver2", display_name="Christer", patterns=()),
+        ),
+    )
+    entry = _knowledge_entry(PLACE_A, "long", 40.0)
+    entry = entry.__class__(
+        **{
+            **entry.__dict__,
+            "away_place_key": None,
+            "away_point": None,
+            "candidates": (DriverMatch("driver1", "Fru", "Somewhere", 0.6, "stale"),),
+        }
+    )
+
+    resolved = _resolve_trip_driver(entry, None, profiles, None)
+
+    assert resolved.driver_label == "driver1"
+    assert resolved.source == "pattern-match"
+    assert resolved.display_name == "Dao"
+
+
 def test_undecided_trips_filters_by_source():
     resolved = _knowledge_entry(PLACE_A, "long", 40.0)  # source defaults "undecided"
     decided = resolved.__class__(

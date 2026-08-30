@@ -21161,3 +21161,37 @@ trip dropped normally, and a last trip kept regardless despite ending
 in N) to cover the exemption specifically without relying on
 coincidental list order elsewhere. All 14 bv_drivers tests, plus
 place_knowledge (35) and driver_detect (18), pass.
+
+Follow-up: Christer renamed "Fru" to "Dao" via /drivers' inline rename
+form (confirmed: used the form, not a rescan or hand-edit), then
+reported filtering Specific trips by "Dao" showed zero rows - as if
+her trips had vanished. Reproduced the full round-trip (build
+knowledge base with a pattern-matched trip -> rename -> reresolve ->
+save/reload -> filter by label) in isolation: driver_label itself
+survived the rename correctly and the label-based filter still found
+the trip - but the trip's own persisted display_name stayed "Fru".
+Root cause: _resolve_trip_driver()'s pattern-match branch (the
+`if entry.candidates:` fallback, used when no manual override or
+place-rule applies) read display_name straight off
+`best.display_name` - a snapshot baked into the trip's `candidates`
+tuple by match_driver() at whatever build/rescan first produced it,
+persisted to driver_knowledge.json, and never touched again. The
+override and place-rule branches immediately above it already look
+the current display name up fresh via a `display_names` dict built
+from the live `profiles` argument each call - only the pattern-match
+branch skipped that and used the stale value instead, so
+reresolve_trip_drivers() (which the rename route calls specifically
+to make the rename take effect without a full rescan) silently failed
+to do so for every pattern-match-resolved trip. Fix: pattern-match
+branch now does the same `display_names.get(best.driver_label,
+best.driver_label)` lookup the other two branches use - driver_label
+itself was never the bug, only what got shown for it. Added
+test_resolve_trip_driver_pattern_match_uses_current_display_name_not_
+stale_candidate (a renamed-profiles + deliberately-stale-candidate
+setup) to place_knowledge.py's test suite; all 36 place_knowledge, 18
+driver_detect, and 14 bv_drivers tests pass. Note: this explains why
+already-resolved trips would still show "Fru" post-rename, but
+doesn't rule out the simpler possibility that Dao's trips were never
+actually pattern-matched/resolved in the first place (still sitting
+under "Undecided") - haven't yet confirmed which explains Christer's
+"0 rows" report; both are worth checking against the real archive.
