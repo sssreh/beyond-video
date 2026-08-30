@@ -20946,3 +20946,24 @@ save, sa hamnar jag hogst upp pa sidan, valdigt irriterande"). Fix:
 now-vanished row id - not as precise as landing on the exact row, but
 always resolves, unlike the dangling fragment it replaces. No existing
 test covered this redirect target, so nothing to update.
+
+Fixed: after the task #1355 sidecar-vs-video fix, Christer still saw
+one-visit rows in the Common Places table ("common places har vissa
+trips = 1"). Root cause is separate from #1355:
+build_common_places() itself creates a CommonPlace for every distinct
+away-place grid cell no matter how many visits it has (cheap to carry
+forward a label/rule even for a single sighting) - but the page's own
+stated definition ("every place the vehicle has been to more than
+once") and undecided_places()'s own min_visits=2 threshold both treat
+a "common" place as one with at least 2 visits. A visit_count=1 row is
+exactly the shape of the original bogus-Common-Place report: a one-off
+stop (traffic light, roundabout, a place visited exactly once) that
+was never meant to clutter the places table. Confirmed with Christer
+via AskUserQuestion he wants these hidden entirely (not just left
+unflagged, and not sorted to the bottom). Fix: drivers_page() now
+filters places_sorted to place.visit_count >= min_visits before
+rendering - display-only, not in build_common_places() itself, so a
+place that reaches a second visit on a future rebuild still gets
+picked up correctly. Its one trip still shows up in the Specific
+trips table below regardless (undecided_trips() doesn't filter by
+place visit count at all).

@@ -787,8 +787,27 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             (driver.label, driver.display_name) for driver in profiles.drivers
         ]
 
+        # build_common_places() itself creates one CommonPlace per
+        # distinct away-place grid cell regardless of visit_count (see
+        # its own docstring - carrying forward existing labels/rules is
+        # cheap and doesn't need a threshold) - but a place visited only
+        # once isn't "common" by this page's own stated definition
+        # ("every place the vehicle has been to more than once", see
+        # the command-help text above) and is exactly the shape of
+        # task #1355's bogus-Common-Place report: a one-off stop (a
+        # traffic light, a roundabout, anywhere GPS dwell logic
+        # mis-detected a stop) that will never repeat. Christer,
+        # spotting these still in the table after the #1355 fix: "common
+        # places har vissa trips = 1" - confirmed via AskUserQuestion he
+        # wants them hidden entirely, not just left unflagged. Filtered
+        # here (display only) rather than in build_common_places()
+        # itself so a place that reaches a second visit on some future
+        # rebuild still gets recomputed correctly - nothing is lost by
+        # not showing it meanwhile, since undecided_trips() already
+        # surfaces its (single) trip in the Specific trips table below.
         places_sorted = sorted(
-            places.values(), key=lambda place: place.visit_count, reverse=True
+            (place for place in places.values() if place.visit_count >= min_visits),
+            key=lambda place: place.visit_count, reverse=True,
         )
         undecided_place_keys = {
             place.key for place in undecided_places(places, min_visits=min_visits)
