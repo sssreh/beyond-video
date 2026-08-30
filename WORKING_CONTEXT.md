@@ -20967,3 +20967,27 @@ place that reaches a second visit on a future rebuild still gets
 picked up correctly. Its one trip still shows up in the Specific
 trips table below regardless (undecided_trips() doesn't filter by
 place visit count at all).
+
+Added: bv-drivers now drops any pre-JULY_6_CUTOVER (2026-07-06) trip
+whose last recording isn't Parking-mode (P). Christer, extending the
+task #1355 sidecar-vs-video fix: "Resor fore 6 juli bor inte finnas
+med om dom inte avslutas med en P handelse." Before the sidecar-
+completeness cutover, a trip's own ending (where TripBuilder's gap
+logic happened to split it) isn't a reliably real stop the way it is
+afterward - it could just as easily be a data gap. A trip that ends
+with a Parking-mode recording is a verified real stop (the camera
+itself switched into parking mode), so those survive regardless of
+date; every other pre-cutover trip ending is dropped as unverifiable.
+Trips starting on/after the cutover are never filtered by this rule -
+the sidecar-completeness guarantee already makes their own endings
+trustworthy. Implemented as a filter on the TripBuilder output in
+bv_drivers.py's _run(), right after the (already-unfiltered, see
+#1355) trip-building call. test_bv_drivers.py's _make_trip() test
+helper needed a `kind` param added (it built bare 15-char timestamps
+with no kind letter at all, which .is_parking's underlying .kind
+property indexes into and would've IndexError'd) - the three existing
+generic tests were also nudged from 2026-07-02 to 2026-07-09 (same
+weekday, past the cutover) so they keep validating ordinary trip-
+building behavior unaffected by the new date-based filter, and a new
+dedicated test covers all three cases (pre-cutover+N dropped,
+pre-cutover+P kept, post-cutover+N kept regardless).

@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..adapters.registry import get_adapter
@@ -63,6 +63,14 @@ EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
 
 TRACE_INTERVAL_TRIPS = 10
+
+# The sidecar-completeness cutover date (see the recordings_with_
+# front_video() removal comment below) - before this date, a trip's
+# own ending isn't a reliably real stop the way it is afterward, so a
+# pre-cutover trip is only trusted if it ends with a verified real
+# stop: a Parking-mode (P) recording. Christer: "Resor fore 6 juli bor
+# inte finnas med om dom inte avslutas med en P handelse."
+JULY_6_CUTOVER = date(2026, 7, 6)
 
 
 class DotProgress:
@@ -275,6 +283,31 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         trips = TripBuilder(
             max_gap=max_gap, gap_tolerance=gap_tolerance,
         ).build(recordings)
+
+        # Christer, on top of the sidecar-vs-video fix above: trips
+        # before JULY_6_CUTOVER shouldn't be trusted just because
+        # TripBuilder's gap logic happened to end them there - without
+        # every sidecar guaranteed downloaded yet (see the comment
+        # above), a "trip end" before that date can just as easily be
+        # a data gap as a real stop. A trip that ends with a Parking-
+        # mode (P) recording is a verified real stop (the camera
+        # itself switched into parking mode), so those are kept
+        # regardless of date; any other pre-cutover trip ending is
+        # dropped as unverifiable. Trips starting on/after the cutover
+        # are never filtered here - the sidecar-completeness guarantee
+        # already makes their own endings trustworthy.
+        before_date_filter = len(trips)
+        trips = [
+            trip for trip in trips
+            if trip.start_timestamp.date() >= JULY_6_CUTOVER
+            or trip.last_recording.id.is_parking
+        ]
+        if args.debug and len(trips) != before_date_filter:
+            say(
+                f"bv-drivers: debug: dropped {before_date_filter - len(trips)} "
+                f"pre-{JULY_6_CUTOVER} trip(s) not ending in Parking mode"
+            )
+
         if args.debug:
             say(
                 f"bv-drivers: debug: detected {len(trips)} trip(s) in "

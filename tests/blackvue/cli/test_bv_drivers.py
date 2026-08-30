@@ -8,13 +8,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from blackvue.adapters.blackvue.adapter import BlackVueAdapter
 from blackvue.archive.recording import Recording
 from blackvue.archive.recording_id import RecordingId
 from blackvue.cli import bv_drivers
+from blackvue.cli.bv_drivers import JULY_6_CUTOVER
 from blackvue.cli.bv_drivers import parse_args
 from blackvue.trip.driver_detect import DriverMatch
 from blackvue.trip.driver_detect import DriverProfile
@@ -122,10 +123,19 @@ class _FakeTripBuilder:
         return _FakeTripBuilder.trips_to_return
 
 
-def _make_trip(label_timestamp: str, minutes_span: int = 10) -> Trip:
-    start = RecordingId(label_timestamp)
+def _make_trip(label_timestamp: str, minutes_span: int = 10, *, kind: str = "N") -> Trip:
+    """`kind` (default "N", Normal) is stamped onto both the start and
+    end RecordingId - only the end recording's own kind actually
+    matters (see the JULY_6_CUTOVER filter test below, which needs a
+    trip whose *last* recording is Parking-mode specifically), but a
+    bare RecordingId needs a real kind letter regardless (a 15-char
+    "YYYYMMDD_HHMMSS" string with no trailing "_K" isn't a valid
+    RecordingId - .kind indexes position 16, which doesn't exist
+    without one)."""
+
+    start = RecordingId(f"{label_timestamp}_{kind}")
     end_dt = start.timestamp + timedelta(minutes=minutes_span)
-    end = RecordingId(f"{end_dt:%Y%m%d_%H%M%S}")
+    end = RecordingId(f"{end_dt:%Y%m%d_%H%M%S}_{kind}")
     return Trip(
         recordings=(Recording(id=start), Recording(id=end)),
     )
@@ -191,8 +201,8 @@ def test_run_reports_no_trips_found_when_archive_is_empty(tmp_path, monkeypatch)
 
 
 def test_run_builds_and_saves_knowledge_base(tmp_path, monkeypatch):
-    trip1 = _make_trip("20260702_080000")  # Thursday morning, home -> work
-    trip2 = _make_trip("20260702_180000")  # Thursday evening, work -> home
+    trip1 = _make_trip("20260709_080000")  # Thursday morning, home -> work
+    trip2 = _make_trip("20260709_180000")  # Thursday evening, work -> home
 
     fix1 = TripFix(
         start=HOME, end=WORK,
@@ -224,6 +234,43 @@ def test_run_builds_and_saves_knowledge_base(tmp_path, monkeypatch):
     assert trip_overrides == {}
 
 
+def test_run_drops_pre_cutover_trips_not_ending_in_parking(tmp_path, monkeypatch):
+    # Christer: "Resor fore 6 juli bor inte finnas med om dom inte
+    # avslutas med en P handelse." Three trips: one before
+    # JULY_6_CUTOVER ending in a normal (N) recording - dropped; one
+    # before the cutover ending in a Parking (P) recording - a
+    # verified real stop, kept; one on/after the cutover ending in a
+    # normal recording - kept regardless, since the sidecar-
+    # completeness guarantee (task #1355) already makes its own ending
+    # trustworthy.
+    assert JULY_6_CUTOVER == date(2026, 7, 6)
+
+    dropped = _make_trip("20260701_080000", kind="N")
+    kept_parking_ending = _make_trip("20260701_180000", kind="P")
+    kept_post_cutover = _make_trip("20260709_080000", kind="N")
+
+    trips = [dropped, kept_parking_ending, kept_post_cutover]
+    fixes = [
+        TripFix(
+            start=HOME, end=WORK,
+            start_time=trip.start_timestamp, end_time=trip.end_timestamp,
+        )
+        for trip in trips
+    ]
+    _install_fakes(monkeypatch, trips=trips, fixes=fixes)
+
+    config_dir = tmp_path / "config"
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(config_dir / "driver_knowledge.json")
+    assert loaded is not None
+    saved_trips, _, _ = loaded
+    saved_labels = {entry.trip_label for entry in saved_trips}
+    assert saved_labels == {kept_parking_ending.label, kept_post_cutover.label}
+
+
 def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):
     # Two separate bv-drivers runs over the same trips: the first
     # names the common place, the second (a fresh scan) must not
@@ -231,8 +278,8 @@ def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):
     # carry-forward contract, exercised here through the CLI's own
     # load-existing/save-merged path rather than calling
     # place_knowledge functions directly.
-    trip1 = _make_trip("20260702_080000")
-    trip2 = _make_trip("20260702_180000")
+    trip1 = _make_trip("20260709_080000")
+    trip2 = _make_trip("20260709_180000")
     fix1 = TripFix(
         start=HOME, end=WORK,
         start_time=trip1.start_timestamp, end_time=trip1.end_timestamp,
@@ -260,8 +307,8 @@ def test_run_rebuild_preserves_existing_place_label(tmp_path, monkeypatch):
     )
 
     # Rebuild - fresh fakes (new Trip instances, same underlying data).
-    trip1b = _make_trip("20260702_080000")
-    trip2b = _make_trip("20260702_180000")
+    trip1b = _make_trip("20260709_080000")
+    trip2b = _make_trip("20260709_180000")
     fix1b = TripFix(
         start=HOME, end=WORK,
         start_time=trip1b.start_timestamp, end_time=trip1b.end_timestamp,
@@ -292,8 +339,8 @@ def test_run_wires_smoothness_raw_into_knowledge_base(tmp_path, monkeypatch):
     # idea. bv_drivers._run() pools every recording in a trip's own
     # g-sensor samples via read_recording_gsensor() and stamps the
     # mean lateral+accel/brake magnitude onto each TripKnowledge.
-    trip1 = _make_trip("20260702_080000")
-    trip2 = _make_trip("20260702_180000")
+    trip1 = _make_trip("20260709_080000")
+    trip2 = _make_trip("20260709_180000")
     fix1 = TripFix(
         start=HOME, end=WORK,
         start_time=trip1.start_timestamp, end_time=trip1.end_timestamp,
