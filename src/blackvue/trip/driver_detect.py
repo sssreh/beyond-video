@@ -174,7 +174,7 @@ def christers_driver_profiles() -> DriverProfiles:
 
     wife = DriverProfile(
         label="driver1",
-        display_name="Fru",
+        display_name="Dao",
         patterns=(
             RoutePattern(place="Åkervägen 100, 121 33 Enskededalen"),
             RoutePattern(place="Fallskärmsgatan, Skarpnäck"),
@@ -368,6 +368,35 @@ def add_driver(profiles: DriverProfiles, display_name: str) -> DriverProfiles:
     new_driver = DriverProfile(label=f"driver{next_number}", display_name=display_name)
 
     return replace(profiles, drivers=(*profiles.drivers, new_driver))
+
+
+def rename_driver(
+    profiles: DriverProfiles, label: str, display_name: str
+) -> DriverProfiles:
+    """Return `profiles` with the driver whose opaque `label` matches
+    given a new `display_name` - the pure half of /drivers' inline
+    driver-rename form. `label` (not the old display_name) is the
+    lookup key, same "opaque label is the real identity" convention
+    add_driver() and every DriverMatch/TripKnowledge.driver_label
+    reference already follow - display_name is presentation only, so
+    renaming it never touches any stored override/place-rule, which
+    all key off `label`. A `label` that doesn't match any driver
+    leaves `profiles` unchanged (no-op, not an error - same
+    forgiving-caller shape as this module's other pure functions).
+
+    Note: display_name is also snapshotted onto each already-built
+    TripKnowledge.display_name at resolve time (see
+    _resolve_trip_driver() in place_knowledge.py) - callers need to
+    re-run reresolve_trip_drivers() and re-save driver_knowledge.json
+    after this, the same "profiles change, trips need a re-resolve
+    pass" contract drivers_update_place() already follows for place
+    rules."""
+
+    updated = tuple(
+        replace(driver, display_name=display_name) if driver.label == label else driver
+        for driver in profiles.drivers
+    )
+    return replace(profiles, drivers=updated)
 
 
 # --------------------------------------------------------------------

@@ -129,6 +129,7 @@ from ..cli.bv_stats import _format_value as _format_stat_value
 from ..trip.driver_detect import add_driver
 from ..trip.driver_detect import default_driver_profiles_path
 from ..trip.driver_detect import load_driver_profiles
+from ..trip.driver_detect import rename_driver
 from ..trip.driver_detect import save_driver_profiles
 from ..trip.place_knowledge import bulk_assign_undecided_trips
 from ..trip.place_knowledge import default_driver_knowledge_path
@@ -1077,6 +1078,51 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         if profiles is not None and display_name:
             updated = add_driver(profiles, display_name)
             save_driver_profiles(profiles_path, updated)
+
+        return RedirectResponse(
+            url="/drivers#add-driver", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.post("/drivers/rename-driver")
+    async def drivers_rename_driver(
+        label: str = Form(...),
+        display_name: str = Form(""),
+        user: User = Depends(require_owner),
+    ):
+        # Christer: "Jag vill aven byta namn pa 'Fru' till 'Dao'." -
+        # add_driver() above only ever appends a new driver; there was
+        # no way to fix a display_name already sitting in
+        # driver_profiles.json short of hand-editing the file. `label`
+        # (the opaque "driverN" key, not the old display_name) is the
+        # lookup - see rename_driver()'s own docstring for why. Every
+        # already-built TripKnowledge.display_name snapshotted the old
+        # name at resolve time (place_knowledge.py's own
+        # _resolve_trip_driver()), so - same as drivers_update_place()
+        # below it for place-rule edits - a rename also needs a
+        # reresolve_trip_drivers() + re-save pass over
+        # driver_knowledge.json, not just the profiles file, or every
+        # already-decided trip and the driver summary line at the top
+        # of the page would keep showing the stale name.
+        config_dir = default_config_dir()
+        profiles_path = default_driver_profiles_path(config_dir)
+        profiles = load_driver_profiles(profiles_path)
+
+        display_name = display_name.strip()
+        if profiles is not None and display_name:
+            updated_profiles = rename_driver(profiles, label, display_name)
+            save_driver_profiles(profiles_path, updated_profiles)
+
+            knowledge_path = default_driver_knowledge_path(config_dir)
+            knowledge = load_knowledge_base(knowledge_path)
+            if knowledge is not None:
+                trips, places, trip_overrides = knowledge
+                resolved = reresolve_trip_drivers(
+                    trips, places, updated_profiles, trip_overrides
+                )
+                save_knowledge_base(
+                    knowledge_path, trips=resolved, places=places,
+                    trip_overrides=trip_overrides,
+                )
 
         return RedirectResponse(
             url="/drivers#add-driver", status_code=status.HTTP_303_SEE_OTHER

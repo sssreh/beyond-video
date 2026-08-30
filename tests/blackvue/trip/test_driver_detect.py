@@ -27,6 +27,7 @@ from blackvue.trip.driver_detect import (
     driver_profiles_to_dict,
     load_driver_profiles,
     match_driver,
+    rename_driver,
     save_driver_profiles,
     write_default_driver_profiles,
 )
@@ -53,7 +54,7 @@ def test_christers_driver_profiles_uses_opaque_labels():
     profiles = christers_driver_profiles()
 
     assert profiles.drivers[0].label == "driver1"
-    assert profiles.drivers[0].display_name == "Fru"
+    assert profiles.drivers[0].display_name == "Dao"
     assert profiles.drivers[1].label == "driver2"
     assert profiles.drivers[1].display_name == "Christer"
 
@@ -271,7 +272,7 @@ def test_load_driver_profiles_returns_none_when_missing():
 
 
 def test_add_driver_appends_next_opaque_label():
-    profiles = christers_driver_profiles()  # driver1 (Fru), driver2 (Christer)
+    profiles = christers_driver_profiles()  # driver1 (Dao), driver2 (Christer)
 
     updated = add_driver(profiles, "Sofia")
 
@@ -306,6 +307,29 @@ def test_add_driver_on_empty_profiles_starts_at_driver1():
     updated = add_driver(empty, "First")
 
     assert updated.drivers[0].label == "driver1"
+
+
+def test_rename_driver_updates_display_name_by_label():
+    # Christer: "Jag vill aven byta namn pa 'Fru' till 'Dao'." - the
+    # web /drivers form this backs looks up by opaque label (driver1),
+    # not the current/old display_name.
+    profiles = christers_driver_profiles()  # driver1 (Dao), driver2 (Christer)
+
+    updated = rename_driver(profiles, "driver1", "Sofia")
+
+    assert updated.drivers[0].label == "driver1"
+    assert updated.drivers[0].display_name == "Sofia"
+    assert updated.drivers[1].display_name == "Christer"
+    # Original untouched (pure function).
+    assert profiles.drivers[0].display_name == "Dao"
+
+
+def test_rename_driver_unknown_label_is_a_no_op():
+    profiles = christers_driver_profiles()
+
+    updated = rename_driver(profiles, "driver99", "Nobody")
+
+    assert updated == profiles
 
 
 def test_save_driver_profiles_round_trips():

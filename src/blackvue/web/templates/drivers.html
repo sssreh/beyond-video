@@ -26,13 +26,21 @@ driver KB</a> first.</p>
 
 <h3 id="add-driver">Drivers</h3>
 <div class="content-panel">
-<p class="hint">
+{% if driver_choices %}
+<ul>
   {% for label, display_name in driver_choices %}
-  {{ display_name }}{% if not loop.last %}, {% endif %}
-  {% else %}
-  No drivers yet.
+  <li>
+    <form method="post" action="/drivers/rename-driver">
+      <input type="hidden" name="label" value="{{ label }}">
+      <input type="text" name="display_name" value="{{ display_name }}">
+      <button type="submit">Save</button>
+    </form>
+  </li>
   {% endfor %}
-</p>
+</ul>
+{% else %}
+<p class="hint">No drivers yet.</p>
+{% endif %}
 <form method="post" action="/drivers/add-driver">
   <label>Name <input type="text" name="display_name" placeholder="e.g. Sofia" required></label>
   <button type="submit">Add driver</button>

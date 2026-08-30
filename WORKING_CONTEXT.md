@@ -20991,3 +20991,25 @@ weekday, past the cutover) so they keep validating ordinary trip-
 building behavior unaffected by the new date-based filter, and a new
 dedicated test covers all three cases (pre-cutover+N dropped,
 pre-cutover+P kept, post-cutover+N kept regardless).
+
+Added: rename a driver's display_name from /drivers. Christer: "Jag
+vill aven byta namn pa 'Fru' till 'Dao'." add_driver() (task #1346)
+only ever appended a new driver - there was no way to fix a name
+already sitting in driver_profiles.json short of hand-editing the
+file. New pure rename_driver(profiles, label, display_name) in
+driver_detect.py looks up by the opaque "driverN" label (not the old
+display_name - same identity convention every other driver_label
+reference in this codebase already follows), and a new POST
+/drivers/rename-driver route wires it into the "Drivers" section of
+the page: each driver now gets its own inline text-input+Save form
+instead of a plain comma-separated name list. Renaming isn't just a
+profiles.json edit, though - every already-built TripKnowledge.
+display_name snapshotted the old name at resolve time
+(place_knowledge.py's _resolve_trip_driver()), so the route also
+re-runs reresolve_trip_drivers() and re-saves driver_knowledge.json,
+same "profiles change -> re-resolve + re-save" contract
+drivers_update_place() already follows for place-rule edits.
+Also updated christers_driver_profiles()' own seed display_name from
+"Fru" to "Dao" for consistency, though that alone doesn't rename data
+Christer's real driver_profiles.json already has - the actual fix for
+his live install is the new "Drivers" rename form.
