@@ -230,14 +230,26 @@ def christers_driver_profiles() -> DriverProfiles:
     return DriverProfiles(
         home_name="Hammarby Sjöstad",
         home_query="Hammarby Sjöstad, Stockholm",
-        # Was 800.0 - Christer's own real data showed home and Sickla
-        # (his next-closest common place) are only 861m apart, so 800m
-        # left almost no margin; lowered to match DEFAULT_RADIUS_METERS
-        # (the same 300m every per-place pattern already uses) after
-        # Christer noted he often makes short local trips (e.g. Max
-        # Hamburgers) that a looser home radius could otherwise still
-        # count as "still at home" and never register as a real trip.
-        home_radius_meters=DEFAULT_RADIUS_METERS,
+        # 800.0, NOT DEFAULT_RADIUS_METERS (300.0) - tried lowering
+        # this once (Christer noted short local trips like Max
+        # Hamburgers could otherwise register as "still at home"
+        # instead of a real trip) and it broke home detection
+        # entirely: home_query is a whole neighborhood name, not a
+        # precise address, and Nominatim's own geocoded point for it
+        # sits ~750-760m from where Christer's car actually arrives/
+        # departs home (confirmed against his real archive: a tight
+        # 65-point cluster of real home-adjacent GPS fixes, spread
+        # only ~28m from each other, sitting 745-780m from the
+        # geocoded point - no trip endpoint in his whole 164-trip
+        # archive ever lands within 360m of it). A radius below ~800m
+        # therefore misses every single home-adjacent GPS fix, which
+        # cascades into zero away_point assignments and zero common
+        # places. Fixing "Max Hamburgers gets swallowed as at-home"
+        # properly needs a *more precise* home point (a real street
+        # address, or a coordinate derived from Christer's own
+        # densest overnight-parking cluster), not a smaller radius
+        # around an already-imprecise neighborhood centroid.
+        home_radius_meters=800.0,
         drivers=(wife, christer),
     )
 
