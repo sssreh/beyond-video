@@ -21,6 +21,8 @@ A place whose own trips are already resolved (via those per-trip overrides) to m
 
 The result is written to `driver_knowledge.json` under `--config-dir`, which `/drivers` reads and edits. Re-running this command is meant to be routine - every place's label and driver, and every per-trip manual override, survive a rebuild untouched; only visit counts, weekday/time, and the trip list itself are refreshed from the archive's current state. A run scoped with `--from`/`--until`/`--timestamp` only rescans that window - any trip/place outside it is carried forward untouched, never dropped.
 
+Every save also updates a second, separate file - `common_places.json`, alongside `driver_knowledge.json` under the same `--config-dir` - as redundant insurance against exactly the same kind of loss the carry-forward behavior above already guards against, working even if a bug ever broke that primary path. It's a "living mirror": a place already in it gets its label/driver refreshed to match `driver_knowledge.json`'s current state on every save, but a place that's in it and *missing* from the current build (dropped by a scoped rebuild, or filtered out upstream) is left untouched rather than removed - so a place, once known, can never be silently lost from this file specifically.
+
 This command is scoped to the live archive it's pointed at - there's no cross-year aggregation, and no attempt to reconcile place labels across separate archives. Christer's own framing: addresses and routines will drift over time, so this is a hand-reviewed, continuously-refreshed registry, not something meant to stay accurate forever without revisiting.
 
 ## OPTIONS

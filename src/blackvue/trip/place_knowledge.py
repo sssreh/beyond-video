@@ -1240,6 +1240,81 @@ def _trip_from_dict(data: dict) -> TripKnowledge:
     )
 
 
+def default_common_places_path(config_dir: Path) -> Path:
+    """Where the append-only common_places.json mirror lives -
+    alongside driver_knowledge.json under the same config_dir. See
+    save_knowledge_base()'s own docstring for why this separate file
+    exists at all."""
+
+    return config_dir / "common_places.json"
+
+
+def _update_common_places_mirror(path: Path, places: dict[str, CommonPlace]) -> None:
+    """Christer's own "crazy idea", confirmed wanted: a common-places
+    registry that lives in its own file, separate from
+    driver_knowledge.json, as redundant insurance against exactly the
+    kind of loss the rolling .bak backup above (and the scoped-rebuild
+    carry-forward in build_common_places()) already guard against -
+    working even if a bug ever broke one of those primary paths.
+
+    Confirmed via AskUserQuestion: a "living mirror", not a frozen
+    audit log - a place already in the mirror gets its label/driver/
+    point/visit_count refreshed to `places`' current values every time
+    this runs, so relabeling a place or setting its driver rule on
+    /drivers stays reflected here too. What makes it append-only is
+    one-directional: a place that's in the mirror but missing from
+    `places` (dropped by a scoped `--from`/`--until` rebuild, or by
+    min-visits filtering upstream) is left exactly as it was, never
+    removed - the whole point is that a place already known here can't
+    be silently lost by anything that runs afterward. Called from
+    save_knowledge_base() itself, on every save, rather than from each
+    of its call sites individually - a future save_knowledge_base()
+    caller gets this for free instead of having to remember it."""
+
+    existing: dict = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8")).get("places", {})
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+
+    existing.update({key: _place_to_dict(place) for key, place in places.items()})
+
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "places": existing,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        # Same "degrade instead of crash" posture as the rolling
+        # .bak backup below - a failed mirror write shouldn't block
+        # the actual driver_knowledge.json save.
+        pass
+
+
+def load_common_places_mirror(path: Path) -> dict[str, CommonPlace] | None:
+    """None if `path` doesn't exist yet or can't be read/parsed - same
+    "absent is normal, not an error" contract as load_knowledge_base().
+    Nothing currently reads this back into the running app (the mirror
+    is a safety net, not (yet) a recovery UI) - this exists so the
+    mirror is inspectable/testable on its own terms."""
+
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return {
+        key: _place_from_dict(key, place_data)
+        for key, place_data in data.get("places", {}).items()
+    }
+
+
 def save_knowledge_base(
     path: Path,
     *,
@@ -1284,6 +1359,7 @@ def save_knowledge_base(
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    _update_common_places_mirror(default_common_places_path(path.parent), places)
 
 
 def load_knowledge_base(

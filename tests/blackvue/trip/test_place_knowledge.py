@@ -22,6 +22,8 @@ from blackvue.trip.driver_detect import DriverProfiles
 from blackvue.trip.driver_detect import TripFix
 from blackvue.trip.place_knowledge import CommonPlace
 from blackvue.trip.place_knowledge import TripKnowledge
+from blackvue.trip.place_knowledge import default_common_places_path
+from blackvue.trip.place_knowledge import load_common_places_mirror
 from blackvue.trip.place_knowledge import _assign_place_clusters
 from blackvue.trip.place_knowledge import _merge_nearby_places
 from blackvue.trip.place_knowledge import _resolve_trip_driver
@@ -1031,6 +1033,91 @@ def test_save_knowledge_base_first_save_creates_no_backup():
 
     backup_path = tmp_path.with_suffix(tmp_path.suffix + ".bak")
     assert not backup_path.exists()
+
+
+def test_save_knowledge_base_writes_common_places_mirror(tmp_path):
+    # Christer's "crazy idea": a separate common_places.json, never
+    # overwritten wholesale, only appended to / kept in sync -
+    # save_knowledge_base() writes it alongside driver_knowledge.json
+    # on every save.
+    knowledge_path = tmp_path / "driver_knowledge.json"
+    place = CommonPlace(
+        key="place_a", point=PLACE_A, label="Grandma's house",
+        visit_count=3, driver="driver1",
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_a": place}, trip_overrides={},
+    )
+
+    mirror_path = default_common_places_path(tmp_path)
+    assert mirror_path.is_file()
+
+    mirror = load_common_places_mirror(mirror_path)
+    assert mirror is not None
+    assert mirror["place_a"].label == "Grandma's house"
+    assert mirror["place_a"].driver == "driver1"
+
+
+def test_common_places_mirror_keeps_a_place_dropped_from_a_later_save(tmp_path):
+    # The whole point of "append-only": a place that was known once
+    # (e.g. before a scoped `--from`/`--until` rebuild, or filtered out
+    # by min-visits somewhere upstream) must survive even if a later
+    # save_knowledge_base() call doesn't include it in `places` at all.
+    knowledge_path = tmp_path / "driver_knowledge.json"
+    place_a = CommonPlace(
+        key="place_a", point=PLACE_A, label="Grandma's house",
+        visit_count=3, driver="driver1",
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_a": place_a}, trip_overrides={},
+    )
+
+    # A later save only knows about a different place - place_a is
+    # absent from `places` this time, simulating a scoped rebuild.
+    place_b = CommonPlace(
+        key="place_b", point=PLACE_B, label="Work", visit_count=5, driver="driver2",
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_b": place_b}, trip_overrides={},
+    )
+
+    mirror = load_common_places_mirror(default_common_places_path(tmp_path))
+    assert mirror is not None
+    assert mirror["place_a"].label == "Grandma's house"
+    assert mirror["place_b"].label == "Work"
+
+
+def test_common_places_mirror_refreshes_an_existing_place(tmp_path):
+    # Confirmed via AskUserQuestion: a "living mirror", not a frozen
+    # audit log - relabeling a place or changing its driver on
+    # /drivers (a later save_knowledge_base() call with the same key
+    # but different label/driver) must be reflected in the mirror too.
+    knowledge_path = tmp_path / "driver_knowledge.json"
+    place = CommonPlace(
+        key="place_a", point=PLACE_A, label="Old label",
+        visit_count=1, driver=None,
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_a": place}, trip_overrides={},
+    )
+
+    renamed = CommonPlace(
+        key="place_a", point=PLACE_A, label="Renamed place",
+        visit_count=2, driver="driver1",
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_a": renamed}, trip_overrides={},
+    )
+
+    mirror = load_common_places_mirror(default_common_places_path(tmp_path))
+    assert mirror is not None
+    assert mirror["place_a"].label == "Renamed place"
+    assert mirror["place_a"].driver == "driver1"
+    assert mirror["place_a"].visit_count == 2
+
+
+def test_load_common_places_mirror_returns_none_when_missing(tmp_path):
+    assert load_common_places_mirror(default_common_places_path(tmp_path)) is None
 
 
 def test_place_from_dict_prefers_new_driver_key():

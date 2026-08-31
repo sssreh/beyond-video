@@ -22374,3 +22374,60 @@ overwritten only appended with new common places") is confirmed wanted
 but not yet built - tracked as follow-up work, since its exact
 semantics (a frozen audit log vs. a living-but-additive mirror) still
 need deciding.
+
+## Add a separate, append-only common_places.json mirror
+
+The second half of Christer's message that started the Mixed-drivers
+entry above: *"What about another crazy idea, having a separate
+common_place file by its own, never overwritten only appended with new
+common places"*. Asked via `AskUserQuestion` whether an appended place
+should stay frozen forever or keep tracking later `/drivers` edits;
+Christer picked "Living mirror" - new places get appended, but an
+existing place's label/driver stays in sync with whatever `/drivers`
+saves next. What makes it append-only is one-directional: a place
+that's in the mirror but *missing* from a later save's `places` dict
+(dropped by a scoped `--from`/`--until` rebuild, or filtered out
+upstream) is left exactly as it was, never removed.
+
+`trip/place_knowledge.py` gained `default_common_places_path()`
+(`config_dir / "common_places.json"`, alongside `driver_knowledge.json`),
+`_update_common_places_mirror()` (loads whatever's on disk, merges in
+the current `places` dict - new keys added, existing keys refreshed,
+nothing else touched - then writes it back, degrading silently on
+`OSError` the same way the existing `.bak` rolling backup already
+does), and `load_common_places_mirror()` (mirrors `load_knowledge_base()`'s
+"absent is normal" contract, for testability/future recovery use - not
+wired into any UI yet).
+
+Rather than adding a call at each of `save_knowledge_base()`'s five
+call sites (`bv_drivers.py`'s build flow plus four spots in `app.py`'s
+`/drivers` edit routes), `save_knowledge_base()` itself now calls
+`_update_common_places_mirror()` at the very end, after writing
+`driver_knowledge.json`. Every save - a fresh `bv-drivers build`, a
+label edit, a driver-rule change, a rename - keeps the mirror current
+automatically, and any future `save_knowledge_base()` caller gets this
+for free instead of having to remember to wire it in separately.
+
+This is intentionally a second, independent implementation from the
+carry-forward behavior `build_common_places()` and the `.bak` rolling
+backup already provide for `driver_knowledge.json` itself (see the
+"0-places regression" and "round-trip via_point" WORKING_CONTEXT.md
+entries above) - Christer's own framing was that this should be
+redundant insurance, catching a place a bug in one of those primary
+paths might otherwise lose.
+
+`docs/man/bv-drivers.md` updated with a paragraph on the mirror file
+right after the carry-forward explanation.
+
+Tests added to `tests/blackvue/trip/test_place_knowledge.py`:
+`test_save_knowledge_base_writes_common_places_mirror`,
+`test_common_places_mirror_keeps_a_place_dropped_from_a_later_save`
+(the append-only guarantee), `test_common_places_mirror_refreshes_an_existing_place`
+(the living-mirror guarantee), and `test_load_common_places_mirror_returns_none_when_missing`.
+
+Verified: `python3 -m py_compile` on `place_knowledge.py` and the test
+file, plus a standalone script exercising the exact scenarios the new
+tests cover (write mirror on first save; a later save that drops a
+place leaves it in the mirror untouched; a later save with the same
+key but new label/driver/visit_count updates the mirror in place; a
+missing mirror file loads as `None`) - all four checks passed.
