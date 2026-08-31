@@ -13,8 +13,8 @@ recording), and its trip/driver_detect.py candidate driver matches,
 clusters recurring destinations into trip/place_knowledge.py's
 CommonPlace registry, and writes the result to driver_knowledge.json
 under --config-dir - read by bv-web's /drivers page, where Christer
-fills in each common place's parked/no-parking driver by hand (see
-place_knowledge.py's own module docstring for the full design).
+fills in each common place's driver by hand (see place_knowledge.py's
+own module docstring for the full design).
 
 Re-running this command is meant to be routine (Christer: scoped to
 the live Kirby (2026) archive, "the addresses will probably change
@@ -505,8 +505,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         say(f"bv-drivers: {decided}/{len(resolved)} trip(s) resolved to a driver")
         say(
             f"bv-drivers: {len(undecided_place_list)} common place(s) "
-            f"(>= {args.min_visits} visits) still need a parked/no-parking "
-            "driver rule"
+            f"(>= {args.min_visits} visits) still need a driver rule"
         )
         say(f"bv-drivers: {len(undecided_trip_list)} trip(s) still undecided")
         say(f"bv-drivers: wrote {knowledge_path}")
