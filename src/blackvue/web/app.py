@@ -1019,10 +1019,32 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             place_addresses = {
                 place.key: _geocode(place.point) for place in places_sorted
             }
+
+            def _via_address(entry: TripKnowledge) -> str | None:
+                # A round trip's away_point (see place_knowledge.py's
+                # away_point docstring / driver_detect.resolve_via_point())
+                # is the furthest point reached, not just start/end - for
+                # an ordinary one-way trip it's literally the same value as
+                # start_point or end_point, already shown by those columns,
+                # so only geocode/show it here when it's genuinely a third
+                # location. Christer: "I cant really find the half away
+                # destination when i drive my wife to work" - the via_point
+                # was already being computed and clustered into Common
+                # Places, but neither the Specific trips table nor a
+                # Common Place's own per-trip list ever showed it, so a
+                # round trip's real destination was invisible on this page
+                # no matter where you looked.
+                if entry.away_point is None:
+                    return None
+                if entry.away_point == entry.start_point or entry.away_point == entry.end_point:
+                    return None
+                return _geocode(entry.away_point)
+
             trip_addresses = {
                 entry.trip_label: (
                     _geocode(entry.start_point),
                     _geocode(entry.end_point),
+                    _via_address(entry),
                 )
                 for entry in specific_trip_list
             }
@@ -1069,6 +1091,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 entry.trip_label: (
                     _geocode(entry.start_point),
                     _geocode(entry.end_point),
+                    _via_address(entry),
                 )
                 for entries in place_trips.values()
                 for entry in entries

@@ -9,7 +9,10 @@
   driver rule you can set once per place - every trip to that place,
   past or future, inherits whichever rule matches its own stay length.
   A one-off destination that never repeats falls through to the
-  specific-trip list below instead. Run <a href="/jobs/bv-drivers">Build
+  specific-trip list below instead. A trip that starts and ends at home
+  (e.g. dropping someone off and immediately turning around) shows its
+  real destination in the "Via" column instead of Start/Stop, which are
+  both just home for that kind of trip. Run <a href="/jobs/bv-drivers">Build
   driver KB</a> first, and again any time you want this page to pick up
   new trips - place labels and rules you've already set survive a
   rebuild untouched.</p>
@@ -99,6 +102,7 @@ driver KB</a> first.</p>
                 <th>Candidates</th>
                 <th>Start</th>
                 <th>Stop</th>
+                <th>Via</th>
                 <th>Driver</th>
               </tr>
             </thead>
@@ -127,7 +131,7 @@ driver KB</a> first.</p>
                   &mdash;
                   {% endif %}
                 </td>
-                {% set p_addresses = place_trip_addresses.get(trip.trip_label, (none, none)) %}
+                {% set p_addresses = place_trip_addresses.get(trip.trip_label, (none, none, none)) %}
                 <td>
                   {% if trip.start_point %}
                   {% set p_start_label = p_addresses[0] or ("%.4f"|format(trip.start_point[0]) ~ ", " ~ "%.4f"|format(trip.start_point[1])) %}
@@ -158,6 +162,14 @@ driver KB</a> first.</p>
                   {% else %}
                   <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}?autoplay=1">Video</a></div>
                   {% endif %}
+                  {% endif %}
+                </td>
+                <td>
+                  {% if trip.away_point and trip.away_point != trip.start_point and trip.away_point != trip.end_point %}
+                  {% set p_via_label = p_addresses[2] or ("%.4f"|format(trip.away_point[0]) ~ ", " ~ "%.4f"|format(trip.away_point[1])) %}
+                  <a href="https://www.google.com/maps?q={{ trip.away_point[0] }},{{ trip.away_point[1] }}" target="_blank" rel="noopener">{{ p_via_label }}</a>
+                  {% else %}
+                  &mdash;
                   {% endif %}
                 </td>
                 <td>
@@ -249,6 +261,7 @@ driver KB</a> first.</p>
       <th>Smoothness</th>
       <th>Start</th>
       <th>Stop</th>
+      <th>Via</th>
       <th>Driver</th>
     </tr>
   </thead>
@@ -290,7 +303,7 @@ driver KB</a> first.</p>
         &mdash;
         {% endif %}
       </td>
-      {% set addresses = trip_addresses.get(trip.trip_label, (none, none)) %}
+      {% set addresses = trip_addresses.get(trip.trip_label, (none, none, none)) %}
       <td>
         {% if trip.start_point %}
         {% set start_label = addresses[0] or ("%.4f"|format(trip.start_point[0]) ~ ", " ~ "%.4f"|format(trip.start_point[1])) %}
@@ -321,6 +334,14 @@ driver KB</a> first.</p>
         {% else %}
         <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}?autoplay=1">Video</a></div>
         {% endif %}
+        {% endif %}
+      </td>
+      <td>
+        {% if trip.away_point and trip.away_point != trip.start_point and trip.away_point != trip.end_point %}
+        {% set via_label = addresses[2] or ("%.4f"|format(trip.away_point[0]) ~ ", " ~ "%.4f"|format(trip.away_point[1])) %}
+        <a href="https://www.google.com/maps?q={{ trip.away_point[0] }},{{ trip.away_point[1] }}" target="_blank" rel="noopener">{{ via_label }}</a>
+        {% else %}
+        &mdash;
         {% endif %}
       </td>
       <td>

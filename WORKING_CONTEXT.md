@@ -22244,3 +22244,50 @@ before. Matching pytest-style tests were also added to
 test_place_knowledge.py (4 new tests on `build_knowledge_base()`'s
 `existing_trips` param) and test_bv_drivers.py (3 new tests on `_run()`'s
 window-based carry-forward wiring).
+
+## Surface a round trip's real destination on the `/drivers` page (the "Via" column)
+
+Christer, after the round-trip `via_point` feature (see above) was built and
+committed: "I cant really find the half away destination when i drive my
+wife to work." The feature itself was working - `resolve_via_point()` was
+correctly computing a destination for his real round trips and feeding it
+into Common Place clustering - but nothing on `/drivers` ever displayed it.
+
+Root cause: both the Specific trips table and a Common Place's own per-trip
+list in `drivers.html` only ever show two address columns, Start and Stop,
+backed by `entry.start_point`/`entry.end_point`. For an ordinary one-way
+trip that's fine - `away_point` there is literally the same value as
+whichever end is away from home, so it's already visible. But for a round
+trip (drop wife off, immediately turn around) `start_point` and `end_point`
+are *both* home - so the actual destination, sitting only in `away_point`,
+had no column to appear in at all. It was computed, it was in
+`driver_knowledge.json`, it fed Common Place clustering same as any other
+trip - it just wasn't rendered anywhere on the page Christer was looking at.
+
+Fix: added a third "Via" column to both tables. `app.py`'s `drivers_page()`
+grew a `_via_address()` helper that geocodes `entry.away_point` only when it
+differs from both `start_point` and `end_point` - i.e. only for a genuine
+round trip - so an ordinary one-way trip's Via cell stays a plain dash
+instead of redundantly repeating its own Start or Stop address.
+`trip_addresses`/`place_trip_addresses` grew from 2-tuples to 3-tuples
+carrying this new geocoded value, and `drivers.html` renders it the same way
+Start/Stop already are - a Google Maps link, falling back to raw
+coordinates if the reverse-geocode fails. Added a sentence to the page's
+own intro text explaining the "starts and ends at home -> destination shows
+in Via, not Start/Stop" behavior, since it's not obvious at a glance.
+
+Verified: no existing test suite exercises `drivers_page()` directly (it's
+covered indirectly via `test_bv_drivers.py`/`test_place_knowledge.py`'s
+pure-logic tests), so this was verified with a standalone Jinja2-rendering
+harness against the real `drivers.html`/`app.py` source (no pytest in this
+sandbox) - constructed one round-trip `TripKnowledge` (`away_point` distinct
+from `start_point`/`end_point`) and one ordinary one-way trip (`away_point`
+== `end_point`), rendered both the Specific trips table and a Common
+Place's per-trip table, and confirmed: the Via column header renders, the
+round trip's geocoded destination appears in the Via cell (and its Maps
+link uses `away_point`'s own coordinates, not home's), the one-way trip's
+`_via_address()`-equivalent returns `None` (so its Via cell stays a dash,
+not a duplicate of its own Start/Stop), and Start/Stop themselves still
+show home's address twice for the round trip, unaffected. 6/6 checks
+passed on the Specific trips table, 1/1 (both header and value) on the
+per-place table.
