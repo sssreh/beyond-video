@@ -452,14 +452,38 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         knowledge_path = default_driver_knowledge_path(args.config_dir)
         existing = load_knowledge_base(knowledge_path)
+        existing_trips_all = existing[0] if existing is not None else []
         existing_places = existing[1] if existing is not None else None
         trip_overrides = existing[2] if existing is not None else {}
+
+        # Only carry forward a previously-known trip if it falls
+        # OUTSIDE the window this run actually scanned (`interval`,
+        # already resolved above from --from/--until/--timestamp) - a
+        # trip inside the scanned window is this run's own to rebuild
+        # authoritatively, so a boundary change (e.g. --max-gap) can
+        # still re-split/merge it instead of leaving a stale duplicate
+        # behind. Christer: "i rub Driver KB just for today, and voila
+        # common places name gone" - a scoped rebuild that never
+        # touches most of the archive was silently wiping every place
+        # (and trip) outside its own narrow window from
+        # driver_knowledge.json on save; see build_knowledge_base()'s
+        # own existing_trips docstring for the full reasoning. With no
+        # --from/--until/--timestamp at all, `interval` covers
+        # everything, so this list is empty and an ordinary full
+        # rebuild behaves exactly as before.
+        carried_forward_trips = [
+            entry for entry in existing_trips_all
+            if entry.first_recording_id is None
+            or entry.first_recording_id not in interval
+        ]
 
         resolve_start = time.monotonic()
         camera_id = camera_config.id if camera_config is not None else None
         resolved, places = build_knowledge_base(
             trips, fixes, profiles, known_points,
-            existing_places=existing_places, trip_overrides=trip_overrides,
+            existing_places=existing_places,
+            existing_trips=carried_forward_trips,
+            trip_overrides=trip_overrides,
             camera_id=camera_id, smoothness_values=smoothness_values,
         )
         if args.debug:

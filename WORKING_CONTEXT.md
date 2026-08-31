@@ -22188,3 +22188,59 @@ this sandbox: geocoding needs network (unavailable), and even a
 network-free scan via `adapter.open_archive()` alone timed out twice
 on the mounted folder's I/O. This step was not completed and Christer
 should be aware a live archive run wasn't possible here.
+
+## Fix scoped `bv-drivers build` silently wiping out-of-window trips/places
+
+Christer, right after running a scoped build to test the round-trip
+feature above: "i rub Driver KB just for today, and voila common
+places name gone." Root cause: `build_knowledge_base()`'s
+`build_common_places()` step only ever counted (and therefore only
+ever kept) a place if at least one entry in *this call's own* trip
+list still pointed at it. A normal, unscoped `bv-drivers build` scans
+the whole archive every time, so that was never visible - every place
+is always touched by at least one of "this run's" trips. But a build
+scoped with `--from`/`--until`/`--timestamp` only rescans that
+window's own trips; every place (and every trip) outside the window
+was silently dropped from `driver_knowledge.json` on save, not just
+hidden from view - confirmed with Christer: "yes i only wanted new
+trips," i.e. a scoped run was always meant to add/update just that
+window, never touch anything else.
+
+Fix: `build_knowledge_base()` (place_knowledge.py) gained an optional
+`existing_trips` param - TripKnowledge entries from a prior build that
+this call's own `trips`/`fixes` did NOT just rescan. They're merged in
+right before `build_common_places()` counts, not after, so a scoped
+rebuild's place registry (and saved trip list) always reflects the
+*full* known history, not just whatever slice was scanned this time.
+Each carried-forward entry is first reset to "undecided" (same
+reasoning `reresolve_trip_drivers()` already documents for its own
+reset) since a place rule or override may have changed since it was
+last resolved, then re-resolved through the normal path - its
+away_place_key/away_point (already correct from whichever build first
+computed them) are left untouched, since `_assign_place_clusters()`
+only ever looks at freshly-scanned entries.
+
+`bv_drivers.py`'s `_run()` decides what counts as "outside the window"
+using the *same* `interval` object it already builds from
+`--from`/`--until`/`--timestamp` (LexicalTimeParser) to filter which
+recordings get scanned in the first place - a previously-saved trip is
+carried forward only if its own `first_recording_id` is NOT in that
+interval. This matters: a trip *inside* the scanned window that the
+fresh rescan no longer produces (say, a `--max-gap` change re-splitting
+it) must not be carried forward as a stale duplicate - that window is
+this run's own to rebuild authoritatively. With no
+`--from`/`--until`/`--timestamp` at all, the interval covers
+everything, so nothing is ever "outside" it and an ordinary full
+rebuild behaves exactly as it did before this fix (full replace).
+
+Verified via standalone harness scripts against the real source (no
+pytest in this sandbox, same constraint as the round-trip feature
+above): 21/21 checks passed, covering carry-forward + place survival,
+de-duplication when a carried-forward label collides with a freshly
+built one, reset-to-undecided re-resolution against a place rule that
+changed in the meantime, a stale in-window trip correctly NOT being
+carried forward, and an unscoped full rebuild behaving identically to
+before. Matching pytest-style tests were also added to
+test_place_knowledge.py (4 new tests on `build_knowledge_base()`'s
+`existing_trips` param) and test_bv_drivers.py (3 new tests on `_run()`'s
+window-based carry-forward wiring).

@@ -323,6 +323,197 @@ def test_run_skips_via_point_when_resolver_finds_none(tmp_path, monkeypatch):
     assert loaded_places == {}
 
 
+def test_run_scoped_rebuild_preserves_trips_and_places_outside_scanned_window(
+    tmp_path, monkeypatch
+):
+    """Christer: 'i rub Driver KB just for today, and voila common
+    places name gone.' A build scoped to --from/--until only rescans
+    that window's own trips - build_common_places() used to only ever
+    count places from *this run's* trip list, so a place/trip outside
+    the scanned window was silently dropped from driver_knowledge.json
+    on save, not just hidden from view. A previously-saved trip/place
+    from well outside this run's own window must survive untouched."""
+
+    from blackvue.trip.place_knowledge import CommonPlace
+    from blackvue.trip.place_knowledge import TripKnowledge
+    from blackvue.trip.place_knowledge import place_key
+    from blackvue.trip.place_knowledge import save_knowledge_base
+
+    config_dir = tmp_path / "config"
+    knowledge_path = config_dir / "driver_knowledge.json"
+
+    old_place_point = (59.5000, 18.2000)
+    old_entry = TripKnowledge(
+        trip_label="trip_20260101_080000_20260101_083000",
+        start_time=datetime(2026, 1, 1, 8, 0),
+        end_time=datetime(2026, 1, 1, 8, 30),
+        weekday="Thursday",
+        start_time_of_day="08:00",
+        away_place_key=place_key(old_place_point),
+        away_point=old_place_point,
+        dwell_minutes=None,
+        stop_category=None,
+        candidates=(),
+        first_recording_id="20260101_080000_N",
+        last_recording_id="20260101_083000_P",
+    )
+    old_place = CommonPlace(
+        key=place_key(old_place_point), point=old_place_point,
+        label="Christer's beautiful old place", visit_count=1, driver="christer",
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[old_entry], places={old_place.key: old_place},
+        trip_overrides={},
+    )
+
+    # This run is scoped to just 2026-07-09 ("today").
+    trip_today = _make_trip("20260709_080000")
+    fix_today = TripFix(
+        start=HOME, end=WORK,
+        start_time=trip_today.start_timestamp, end_time=trip_today.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[trip_today], fixes=[fix_today])
+
+    args = parse_args([
+        str(tmp_path), "--config-dir", str(config_dir),
+        "--from", "20260709_000000", "--until", "20260709_235959",
+    ])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(knowledge_path)
+    assert loaded is not None
+    trips, places, _ = loaded
+    labels = {entry.trip_label for entry in trips}
+    assert old_entry.trip_label in labels
+    assert trip_today.label in labels
+    assert old_place.key in places
+    assert places[old_place.key].label == "Christer's beautiful old place"
+
+
+def test_run_scoped_rebuild_drops_stale_trip_inside_scanned_window(
+    tmp_path, monkeypatch
+):
+    """A previously-saved trip whose own first_recording_id falls
+    INSIDE this run's scanned window - but that this run's own rescan
+    no longer produces (e.g. a changed --max-gap re-split it) - must
+    not be carried forward as a stale duplicate. Only trips truly
+    outside the scanned window survive untouched (see the companion
+    test above)."""
+
+    from blackvue.trip.place_knowledge import CommonPlace
+    from blackvue.trip.place_knowledge import TripKnowledge
+    from blackvue.trip.place_knowledge import place_key
+    from blackvue.trip.place_knowledge import save_knowledge_base
+
+    config_dir = tmp_path / "config"
+    knowledge_path = config_dir / "driver_knowledge.json"
+
+    stale_point = (59.5000, 18.2000)
+    stale_entry = TripKnowledge(
+        trip_label="trip_20260709_070000_20260709_073000",
+        start_time=datetime(2026, 7, 9, 7, 0),
+        end_time=datetime(2026, 7, 9, 7, 30),
+        weekday="Thursday",
+        start_time_of_day="07:00",
+        away_place_key=place_key(stale_point),
+        away_point=stale_point,
+        dwell_minutes=None,
+        stop_category=None,
+        candidates=(),
+        first_recording_id="20260709_070000_N",
+        last_recording_id="20260709_073000_P",
+    )
+    stale_place = CommonPlace(
+        key=place_key(stale_point), point=stale_point,
+        label="Stale place", visit_count=1, driver=None,
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[stale_entry], places={stale_place.key: stale_place},
+        trip_overrides={},
+    )
+
+    trip_today = _make_trip("20260709_080000")
+    fix_today = TripFix(
+        start=HOME, end=WORK,
+        start_time=trip_today.start_timestamp, end_time=trip_today.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[trip_today], fixes=[fix_today])
+
+    args = parse_args([
+        str(tmp_path), "--config-dir", str(config_dir),
+        "--from", "20260709_000000", "--until", "20260709_235959",
+    ])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(knowledge_path)
+    assert loaded is not None
+    trips, places, _ = loaded
+    labels = {entry.trip_label for entry in trips}
+    assert stale_entry.trip_label not in labels
+    assert trip_today.label in labels
+
+
+def test_run_full_rebuild_unaffected_by_carry_forward(tmp_path, monkeypatch):
+    """No --from/--until/--timestamp at all -> the scanned interval
+    covers everything, so no previously-saved trip is ever "outside"
+    it - an ordinary full rebuild must behave exactly as before this
+    fix (build_knowledge_base()'s own existing_trips param), fully
+    replacing driver_knowledge.json's trip/place list from this run's
+    own fresh scan."""
+
+    from blackvue.trip.place_knowledge import CommonPlace
+    from blackvue.trip.place_knowledge import TripKnowledge
+    from blackvue.trip.place_knowledge import place_key
+    from blackvue.trip.place_knowledge import save_knowledge_base
+
+    config_dir = tmp_path / "config"
+    knowledge_path = config_dir / "driver_knowledge.json"
+
+    old_point = (59.5000, 18.2000)
+    old_entry = TripKnowledge(
+        trip_label="trip_20260101_080000_20260101_083000",
+        start_time=datetime(2026, 1, 1, 8, 0),
+        end_time=datetime(2026, 1, 1, 8, 30),
+        weekday="Thursday",
+        start_time_of_day="08:00",
+        away_place_key=place_key(old_point),
+        away_point=old_point,
+        dwell_minutes=None,
+        stop_category=None,
+        candidates=(),
+        first_recording_id="20260101_080000_N",
+        last_recording_id="20260101_083000_P",
+    )
+    old_place = CommonPlace(
+        key=place_key(old_point), point=old_point,
+        label="Old place", visit_count=1, driver=None,
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[old_entry], places={old_place.key: old_place},
+        trip_overrides={},
+    )
+
+    trip_today = _make_trip("20260709_080000")
+    fix_today = TripFix(
+        start=HOME, end=WORK,
+        start_time=trip_today.start_timestamp, end_time=trip_today.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[trip_today], fixes=[fix_today])
+
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(knowledge_path)
+    assert loaded is not None
+    trips, places, _ = loaded
+    labels = {entry.trip_label for entry in trips}
+    assert labels == {trip_today.label}
+    assert old_place.key not in places
+
+
 def test_run_drops_trips_not_ending_in_parking_mode(tmp_path, monkeypatch):
     # Christer, having reasoned it through himself: "En trip borjar och
     # slutar ju i hammarby sjostad aven om hon jobbar pa norra

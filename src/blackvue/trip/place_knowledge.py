@@ -832,6 +832,7 @@ def build_knowledge_base(
     known_points: dict[str, tuple[float, float]],
     *,
     existing_places: dict[str, CommonPlace] | None = None,
+    existing_trips: Sequence[TripKnowledge] | None = None,
     trip_overrides: dict[str, str] | None = None,
     camera_id: str | None = None,
     smoothness_values: Sequence[float | None] | None = None,
@@ -848,7 +849,30 @@ def build_knowledge_base(
     resolve_archive_path() call already produces, or None for a
     literal/unconfigured archive path) is stamped onto every resulting
     TripKnowledge so bv-web's /drivers page can link a trip's first/
-    last recording straight to /archive/{camera_id}/{recording_id}."""
+    last recording straight to /archive/{camera_id}/{recording_id}.
+
+    `existing_trips`, if given, are TripKnowledge entries from a prior
+    build (see load_knowledge_base()) that `trips` did NOT just rescan
+    - bv_drivers.py's own caller is expected to hand in only entries
+    whose first_recording_id falls outside whatever --from/--until/
+    --timestamp window this run scanned, never ones inside it (a
+    changed --max-gap, say, could re-split a trip this run *did*
+    rescan, and a stale duplicate of its old shape must not survive
+    that). They're merged in before common-place counting, not after:
+    Christer ran `bv-drivers build` scoped to just one day and reported
+    "voila common places name gone" - build_common_places() below only
+    ever counts (and therefore only ever keeps) a place if at least one
+    entry in this call's own trip list still points at it, so a scoped
+    rebuild that never touches a place at all used to silently drop it
+    from driver_knowledge.json on save, not just from view. Each
+    carried-forward entry is first reset to "undecided" (same reasoning
+    reresolve_trip_drivers() already documents for its own reset) since
+    a place rule or trip override may have changed since it was last
+    resolved, then re-resolved below exactly like any freshly-scanned
+    trip - its own away_place_key/away_point (already correct from
+    whichever build first computed them) are left untouched, since
+    _assign_place_clusters() below only ever looks at `trips`/`fixes`-
+    derived entries, never `existing_trips`."""
 
     trip_overrides = trip_overrides or {}
     merged_existing = (
@@ -859,6 +883,19 @@ def build_knowledge_base(
         camera_id=camera_id, smoothness_values=smoothness_values,
     )
     raw = _assign_place_clusters(raw, merged_existing)
+
+    if existing_trips:
+        new_labels = {entry.trip_label for entry in raw}
+        carried_forward = [
+            replace(
+                entry, driver_label=None, display_name=None,
+                confidence=0.0, source="undecided",
+            )
+            for entry in existing_trips
+            if entry.trip_label not in new_labels
+        ]
+        raw = carried_forward + raw
+
     places = build_common_places(raw, existing=merged_existing)
     resolved = [
         _resolve_trip_driver(

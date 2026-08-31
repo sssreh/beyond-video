@@ -13,6 +13,7 @@ key.
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -719,6 +720,130 @@ def test_build_knowledge_base_round_trip_without_via_point_has_no_destination():
     assert resolved[0].away_point is None
     assert resolved[0].away_place_key is None
     assert places == {}
+
+
+def test_build_knowledge_base_existing_trips_survive_a_scoped_rebuild():
+    """Christer: 'i rub Driver KB just for today, and voila common
+    places name gone.' bv_drivers.py's own caller only ever hands in
+    `existing_trips` entries that fall outside whatever window this
+    run actually rescanned (see that module's own carried_forward_
+    trips comment) - build_knowledge_base() itself just needs to make
+    sure those entries survive into `resolved` and still count toward
+    `places`, not just whatever this call's own `trips`/`fixes` cover."""
+
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+
+    # A place from a much earlier build - this run's own trips/fixes
+    # never go near it at all.
+    old_entry = _knowledge_entry(PLACE_B, "parked", 40.0)
+    old_place = CommonPlace(
+        key=place_key(PLACE_B), point=PLACE_B, label="Old place",
+        visit_count=1, driver="driver1",
+    )
+
+    # This run only rescanned a trip to PLACE_A.
+    trip_a = make_trip(t0)
+    outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
+
+    resolved, places = build_knowledge_base(
+        [trip_a], [outbound_fix], profiles, {"home": HOME},
+        existing_places={old_place.key: old_place},
+        existing_trips=[old_entry],
+    )
+
+    labels = {entry.trip_label for entry in resolved}
+    assert labels == {"trip_x", trip_a.label}
+    # The old place must still be in the returned registry - not
+    # silently dropped just because this run's own trip list never
+    # touched it.
+    assert old_place.key in places
+    assert places[old_place.key].label == "Old place"
+    assert places[old_place.key].visit_count == 1
+
+
+def test_build_knowledge_base_existing_trips_inside_scanned_window_are_not_duplicated():
+    """A carried-forward entry whose trip_label matches one this run
+    just (re)built must be replaced, not kept alongside it - the
+    caller is expected to only pass in entries outside the scanned
+    window, but build_knowledge_base() itself stays safe even if one
+    slips through (e.g. a --max-gap change re-splitting a trip this
+    run did rescan)."""
+
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+
+    trip_a = make_trip(t0)
+    outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
+
+    stale_entry = replace(
+        _knowledge_entry(PLACE_B, "parked", 40.0), trip_label=trip_a.label,
+    )
+
+    resolved, _ = build_knowledge_base(
+        [trip_a], [outbound_fix], profiles, {"home": HOME},
+        existing_trips=[stale_entry],
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].away_point == PLACE_A
+
+
+def test_build_knowledge_base_existing_trips_reresolve_against_current_place_rule():
+    """A carried-forward entry isn't just copied verbatim - it's reset
+    to undecided and re-resolved against the *current* places/
+    overrides, same reasoning reresolve_trip_drivers() already
+    documents for its own reset. Otherwise a place rule Christer since
+    removed would leave a scoped rebuild's carried-forward trips stuck
+    showing the old driver forever."""
+
+    profiles = make_profiles()
+    stale_entry = replace(
+        _knowledge_entry(PLACE_B, "parked", 40.0),
+        driver_label="driver1", display_name="Fru",
+        confidence=0.95, source="place-rule",
+    )
+    # No driver rule on this place anymore, and no trip in this run's
+    # own scan touches PLACE_B at all.
+    place_no_rule = CommonPlace(
+        key=place_key(PLACE_B), point=PLACE_B, label="Old place",
+        visit_count=1, driver=None,
+    )
+
+    t0 = datetime(2026, 1, 5, 8, 0)
+    trip_a = make_trip(t0)
+    outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
+
+    resolved, _ = build_knowledge_base(
+        [trip_a], [outbound_fix], profiles, {"home": HOME},
+        existing_places={place_no_rule.key: place_no_rule},
+        existing_trips=[stale_entry],
+    )
+
+    carried = next(entry for entry in resolved if entry.trip_label == "trip_x")
+    assert carried.source == "undecided"
+    assert carried.driver_label is None
+
+
+def test_build_knowledge_base_full_rebuild_unaffected_by_existing_trips_param():
+    """The ordinary unscoped rebuild (no --from/--until/--timestamp,
+    so bv_drivers.py's own caller passes existing_trips=[] - see
+    interval covering everything) must behave exactly as it did before
+    this parameter existed."""
+
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+    trip_a = make_trip(t0)
+    outbound_fix = make_fix(HOME, PLACE_A, t0, t0)
+
+    resolved, places = build_knowledge_base(
+        [trip_a], [outbound_fix], profiles, {"home": HOME},
+        existing_trips=[],
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].trip_label == trip_a.label
+    assert len(places) == 1
 
 
 def test_build_knowledge_base_defaults_camera_id_to_none():
