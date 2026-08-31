@@ -229,27 +229,31 @@ def christers_driver_profiles() -> DriverProfiles:
 
     return DriverProfiles(
         home_name="Hammarby Sjöstad",
-        home_query="Hammarby Sjöstad, Stockholm",
-        # 800.0, NOT DEFAULT_RADIUS_METERS (300.0) - tried lowering
-        # this once (Christer noted short local trips like Max
-        # Hamburgers could otherwise register as "still at home"
-        # instead of a real trip) and it broke home detection
-        # entirely: home_query is a whole neighborhood name, not a
-        # precise address, and Nominatim's own geocoded point for it
-        # sits ~750-760m from where Christer's car actually arrives/
-        # departs home (confirmed against his real archive: a tight
-        # 65-point cluster of real home-adjacent GPS fixes, spread
-        # only ~28m from each other, sitting 745-780m from the
-        # geocoded point - no trip endpoint in his whole 164-trip
-        # archive ever lands within 360m of it). A radius below ~800m
-        # therefore misses every single home-adjacent GPS fix, which
-        # cascades into zero away_point assignments and zero common
-        # places. Fixing "Max Hamburgers gets swallowed as at-home"
-        # properly needs a *more precise* home point (a real street
-        # address, or a coordinate derived from Christer's own
-        # densest overnight-parking cluster), not a smaller radius
-        # around an already-imprecise neighborhood centroid.
-        home_radius_meters=800.0,
+        # Was "Hammarby Sjöstad, Stockholm" - a whole neighborhood
+        # name, not a precise address. Its own geocoded point sat
+        # ~750-760m from where Christer's car actually arrives/departs
+        # home, which meant home_radius_meters had to stay huge (800m)
+        # just to reach real home-adjacent GPS fixes at all - dropping
+        # it to 300m once missed every one of them (0 away_points, 0
+        # common places, see driver_knowledge.json's own "164 trip(s),
+        # 0 place(s)" report). Christer: "My parking garage is next to
+        # Heliosgatan 38, maybe that help." Geocoding this address
+        # lands within 6m of the tight real-arrival cluster his own
+        # trip data already implied (59.303215, 18.093528) - i.e. this
+        # query resolves to his actual garage, not just the
+        # neighborhood it's in.
+        home_query="Heliosgatan 38, Stockholm",
+        # 200.0, down from 800.0, now that home_query resolves to the
+        # real garage rather than a neighborhood centroid. Verified
+        # against Christer's real 164-trip archive: every real
+        # home-adjacent GPS fix lands within 160m of the new geocoded
+        # point (a clean, obvious cluster - the next-nearest distinct
+        # place is 209m+ away), so 200m safely captures the whole
+        # home cluster with margin while excluding everywhere else -
+        # including "short trip" destinations well inside the old
+        # 800m radius, which was the whole point of Christer's
+        # original ask ("i often go to max hamburgers").
+        home_radius_meters=200.0,
         drivers=(wife, christer),
     )
 

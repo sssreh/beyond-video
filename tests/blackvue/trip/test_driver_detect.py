@@ -18,7 +18,6 @@ from datetime import datetime
 from pathlib import Path
 
 from blackvue.trip.driver_detect import (
-    DEFAULT_RADIUS_METERS,
     DriverProfile,
     DriverProfiles,
     RoutePattern,
@@ -62,21 +61,25 @@ def test_christers_driver_profiles_uses_opaque_labels():
     assert profiles.drivers[1].display_name == "Christer"
 
 
-def test_christers_driver_profiles_home_radius_stays_800m():
-    # Tried lowering this to DEFAULT_RADIUS_METERS (300.0) once and it
-    # broke home detection for Christer's entire real archive: his
-    # home_query ("Hammarby Sjöstad, Stockholm") is a neighborhood
-    # name, not a precise address, and the geocoded point for it sits
-    # ~750-760m from where his car actually arrives/departs home - no
-    # trip endpoint in his real 164-trip archive ever lands within
-    # 360m of it. A radius below ~800m therefore matches zero
-    # home-adjacent GPS fixes at all, which cascades into zero
-    # away_point assignments and zero common places (confirmed via a
-    # real production run: "164 trip(s), 0 place(s)"). See
-    # christers_driver_profiles()'s own comment for the full story and
-    # the real fix (a more precise home point, not a smaller radius).
+def test_christers_driver_profiles_home_is_precise_address():
+    # Was home_query="Hammarby Sjöstad, Stockholm" (a neighborhood name)
+    # with home_radius_meters=800.0, because the neighborhood's own
+    # geocoded point sat ~750-760m from where Christer's car actually
+    # arrives/departs home - dropping the radius to 300m once missed
+    # every real home-adjacent GPS fix (0 away_points, 0 common places,
+    # a real production run reported "164 trip(s), 0 place(s)").
+    # Christer: "My parking garage is next to Heliosgatan 38, maybe
+    # that help." Geocoding that address lands within 6m of the tight
+    # real-arrival cluster his own trip data already implied, so
+    # home_query now resolves to the actual garage, not the
+    # neighborhood - which lets home_radius_meters shrink to 200.0
+    # (verified: every real home-adjacent GPS fix in his 164-trip
+    # archive is within 160m of the new point, with the next-nearest
+    # distinct place 209m+ away). See christers_driver_profiles()'s own
+    # comment for the full story.
     profiles = christers_driver_profiles()
-    assert profiles.home_radius_meters == 800.0
+    assert profiles.home_query == "Heliosgatan 38, Stockholm"
+    assert profiles.home_radius_meters == 200.0
 
 
 def test_simple_commute_match():

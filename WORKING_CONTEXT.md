@@ -21590,3 +21590,45 @@ place_default` (removed - was asserting the wrong thing) into
 `test_christers_driver_profiles_home_radius_stays_800m`, documenting
 the full root cause inline. test_driver_detect 21/21,
 test_place_knowledge 48/48, test_bv_drivers 14/14 all still pass.
+
+## Follow-up: precise home point from Heliosgatan 38, radius down to 200m
+
+Christer, unprompted, gave the fix the previous entry said was needed:
+"My parking garage is next to Heliosgatan 38, maybe that help."
+
+Geocoded "Heliosgatan 38, Stockholm" via Nominatim (live lookup, not
+cached): (59.3032707, 18.0935404), house-level result (`"type":"house"`,
+address `38, Heliosgatan, Södra Hammarbyhamnen`). Compared this against
+the real home-arrival cluster centroid derived purely from Christer's
+own 164-trip archive in the previous entry (59.303215, 18.093528) - the
+two are only **6.2m apart**. Independent confirmation that this address
+is the real garage, not just "somewhere in the neighborhood."
+
+Re-measured every trip endpoint in the real archive against this new
+point. The home cluster now sits within **160.1m** of it (vs. 745-780m
+from the old neighborhood-centroid geocode), and the next-nearest
+distinct location is 209.3m+ away - a clean gap. Picked **200.0m** as
+the new `home_radius_meters`: comfortably covers the whole home cluster
+with margin, cleanly excludes everywhere else, and - checked directly -
+produces the exact same **64/164** away_point coverage the old 800m/
+imprecise-point setup did, so no place-detection regression. This also
+finally delivers Christer's original ask (short trips like Max
+Hamburgers no longer register as "still at home"): at 200m, short local
+trips well inside the old 800m radius now correctly get an away_point.
+
+Updated `christers_driver_profiles()` in driver_detect.py:
+`home_query="Heliosgatan 38, Stockholm"`, `home_radius_meters=200.0`,
+comment rewritten with the real numbers. Mirrored into Christer's real
+`driver_profiles.json`. Rewrote the home-radius test (now
+`test_christers_driver_profiles_home_is_precise_address`) to assert
+both the new query and the new radius, with the Heliosgatan 38 story
+in its docstring; dropped the now-unused `DEFAULT_RADIUS_METERS`
+import.
+
+Verified: `test_driver_detect` 21/21, `test_place_knowledge` 48/48,
+`test_bv_drivers` 14/14 all pass. Re-ran the away_point count directly
+against the real `driver_knowledge.json` at the new point/radius: 64/164,
+home-cluster max distance 160.07m - matches the analysis exactly. Next
+`bv-drivers build` should keep all previously-resolved places/drivers
+and additionally pick up short local trips that used to get swallowed
+as "at home."
