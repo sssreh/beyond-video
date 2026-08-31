@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from blackvue.trip.driver_detect import (
+    DEFAULT_RADIUS_METERS,
     DriverProfile,
     DriverProfiles,
     RoutePattern,
@@ -59,6 +60,18 @@ def test_christers_driver_profiles_uses_opaque_labels():
     assert profiles.drivers[0].display_name == "Dao"
     assert profiles.drivers[1].label == "driver2"
     assert profiles.drivers[1].display_name == "Christer"
+
+
+def test_christers_driver_profiles_home_radius_matches_place_default():
+    # Was 800.0 - Christer's own real data showed home and his
+    # next-closest common place (Sickla) are only 861m apart, leaving
+    # almost no margin, and he wanted short local trips (e.g. Max
+    # Hamburgers) to register as real trips rather than get absorbed
+    # into "still at home". Lowered to match DEFAULT_RADIUS_METERS,
+    # the same 300m every per-place pattern already uses.
+    profiles = christers_driver_profiles()
+    assert profiles.home_radius_meters == DEFAULT_RADIUS_METERS
+    assert profiles.home_radius_meters == 300.0
 
 
 def test_simple_commute_match():

@@ -21,6 +21,8 @@ from blackvue.trip.driver_detect import DriverProfiles
 from blackvue.trip.driver_detect import TripFix
 from blackvue.trip.place_knowledge import CommonPlace
 from blackvue.trip.place_knowledge import TripKnowledge
+from blackvue.trip.place_knowledge import _assign_place_clusters
+from blackvue.trip.place_knowledge import _merge_nearby_places
 from blackvue.trip.place_knowledge import _resolve_trip_driver
 from blackvue.trip.place_knowledge import build_common_places
 from blackvue.trip.place_knowledge import build_knowledge_base
@@ -43,6 +45,16 @@ from blackvue.trip.trip import Trip
 HOME = (59.3050, 18.1010)
 PLACE_A = (59.3600, 18.0000)
 PLACE_B = (59.4200, 17.9200)
+
+# Fabricated splinters near PLACE_A, standing in for Christer's real
+# Sickla-area fragmentation (single-visit "places" 15-160m apart that
+# used to land in different place_key() grid cells) - all at the same
+# longitude as PLACE_A so the offset is pure latitude, ~111320m/degree,
+# making the distances easy to reason about.
+PLACE_A_NEAR = (59.3600 + 0.0004, 18.0000)  # ~44m from PLACE_A - within _CLUSTER_RADIUS_METERS (150m)
+PLACE_A_TOO_FAR = (59.3600 + 0.002, 18.0000)  # ~223m from PLACE_A - outside the radius
+PLACE_A_CLUSTER_2 = (59.3600 + 0.0009, 18.0000)  # ~100m from PLACE_A, ~78m from PLACE_A_NEAR
+PLACE_A_NEARER_TO_CLUSTER_2 = (59.3600 + 0.0007, 18.0000)  # ~78m from PLACE_A, ~22m from PLACE_A_CLUSTER_2
 
 
 class FakeRecordingId:
@@ -126,6 +138,145 @@ def test_stop_category_reflects_parking_footage_presence():
 def test_place_key_is_deterministic_within_a_grid_cell():
     assert place_key((59.30512, 18.08912)) == place_key((59.30519, 18.08918))
     assert place_key(HOME) != place_key(PLACE_A)
+
+
+def _raw_entry(place_point, trip_label="trip_x", t0=None) -> TripKnowledge:
+    """A pre-clustering TripKnowledge - away_place_key=None, same as
+    _raw_trip_knowledge() itself produces (see that function's own
+    comment: place identity is filled in afterward, by
+    _assign_place_clusters(), not per-trip)."""
+
+    t0 = t0 or datetime(2026, 1, 5, 8, 0)
+    return TripKnowledge(
+        trip_label=trip_label,
+        start_time=t0,
+        end_time=t0,
+        weekday="Monday",
+        start_time_of_day="08:00",
+        away_place_key=None,
+        away_point=place_point,
+        dwell_minutes=None,
+        stop_category=None,
+        candidates=(),
+    )
+
+
+def test_merge_nearby_places_merges_places_within_cluster_radius():
+    # Christer's own real registry had two separately-keyed "Hemmet
+    # för gamla" entries only 46m apart - this is that scenario in
+    # miniature: same physical place, two grid-rounded keys.
+    existing = {
+        "key_big": CommonPlace(
+            key="key_big", point=PLACE_A, label="Big place",
+            visit_count=5, driver=None,
+        ),
+        "key_small": CommonPlace(
+            key="key_small", point=PLACE_A_NEAR, label="Small place",
+            visit_count=2, driver="driver1",
+        ),
+    }
+
+    merged = _merge_nearby_places(existing)
+
+    assert len(merged) == 1
+    place = merged["key_big"]
+    # Largest-visit_count-first: key_big is the anchor, its own label
+    # wins untouched.
+    assert place.label == "Big place"
+    assert place.visit_count == 7
+    # Anchor had no driver set; the merged-away place did - that
+    # already-made decision carries over rather than vanishing.
+    assert place.driver == "driver1"
+
+
+def test_merge_nearby_places_anchor_driver_wins_over_merged_away_driver():
+    existing = {
+        "key_big": CommonPlace(
+            key="key_big", point=PLACE_A, label="Big place",
+            visit_count=5, driver="driver2",
+        ),
+        "key_small": CommonPlace(
+            key="key_small", point=PLACE_A_NEAR, label="Small place",
+            visit_count=2, driver="driver1",
+        ),
+    }
+
+    merged = _merge_nearby_places(existing)
+
+    assert len(merged) == 1
+    assert merged["key_big"].driver == "driver2"
+
+
+def test_merge_nearby_places_leaves_distant_places_separate():
+    existing = {
+        "key_a": CommonPlace(key="key_a", point=PLACE_A, label="A", visit_count=3),
+        "key_b": CommonPlace(key="key_b", point=PLACE_B, label="B", visit_count=4),
+    }
+
+    merged = _merge_nearby_places(existing)
+
+    assert len(merged) == 2
+    assert merged["key_a"].visit_count == 3
+    assert merged["key_b"].visit_count == 4
+
+
+def test_assign_place_clusters_snaps_new_trip_onto_existing_place_within_radius():
+    existing = {
+        "key_a": CommonPlace(key="key_a", point=PLACE_A, label="A", visit_count=3),
+    }
+    entries = [_raw_entry(PLACE_A_NEAR)]
+
+    updated = _assign_place_clusters(entries, existing)
+
+    assert updated[0].away_place_key == "key_a"
+
+
+def test_assign_place_clusters_mints_new_place_beyond_radius():
+    existing = {
+        "key_a": CommonPlace(key="key_a", point=PLACE_A, label="A", visit_count=3),
+    }
+    entries = [_raw_entry(PLACE_A_TOO_FAR)]
+
+    updated = _assign_place_clusters(entries, existing)
+
+    assert updated[0].away_place_key == place_key(PLACE_A_TOO_FAR)
+    assert updated[0].away_place_key != "key_a"
+
+
+def test_assign_place_clusters_snaps_onto_nearest_cluster_when_multiple_in_range():
+    existing = {
+        "key_a": CommonPlace(key="key_a", point=PLACE_A, label="A", visit_count=3),
+        "key_c2": CommonPlace(
+            key="key_c2", point=PLACE_A_CLUSTER_2, label="C2", visit_count=3,
+        ),
+    }
+    entries = [_raw_entry(PLACE_A_NEARER_TO_CLUSTER_2)]
+
+    updated = _assign_place_clusters(entries, existing)
+
+    assert updated[0].away_place_key == "key_c2"
+
+
+def test_assign_place_clusters_passes_through_trips_with_no_away_point():
+    entry = _raw_entry(None)
+    updated = _assign_place_clusters([entry], None)
+
+    assert updated[0].away_place_key is None
+
+
+def test_assign_place_clusters_groups_new_nearby_trips_with_no_existing_registry():
+    # The core fragmentation fix, with no prior registry at all: two
+    # trips to points 44m apart both end up under the same key, rather
+    # than minting two separate single-visit "places" the way plain
+    # place_key() grid rounding used to.
+    entries = [
+        _raw_entry(PLACE_A, trip_label="trip_1"),
+        _raw_entry(PLACE_A_NEAR, trip_label="trip_2"),
+    ]
+
+    updated = _assign_place_clusters(entries, None)
+
+    assert updated[0].away_place_key == updated[1].away_place_key
 
 
 def test_dwell_at_destination_excludes_home_only_trips():

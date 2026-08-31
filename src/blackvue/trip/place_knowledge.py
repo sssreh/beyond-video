@@ -52,14 +52,23 @@ Two ideas drive the design:
    manual override on the trip itself (see TripKnowledge.source and
    `trip_overrides` throughout this module).
 
-2. Places are identified by a deterministic grid cell, not clustered
-   by a stateful algorithm. See place_key()'s own docstring - this is
-   what lets a manual driver assignment survive a rebuild (a fresh
-   `bv-drivers build` run) without needing
-   to persist/match previous cluster centroids at all: the same
-   destination always hashes to the same key, so
-   build_common_places(existing=...) just carries the prior CommonPlace's
-   label/driver fields forward under that same key.
+2. Places are identified by radius-based clustering, seeded from
+   whatever's already in `existing_places` so a manual driver
+   assignment survives a rebuild (a fresh `bv-drivers build` run)
+   without persisting a separate model. This was originally a plain
+   grid-cell rounding (place_key() alone) - simpler, and stable across
+   reruns with zero extra bookkeeping - but Christer's own real
+   registry showed the flaw: 0.001-degree cells are only ~111m x 57m
+   at his latitude, so the *same* physical Sickla-area parking spot
+   split into over a dozen single-visit "places" because each visit's
+   GPS fix happened to land in a different cell, and each stayed
+   below the min_visits=2 threshold to ever show up as "common" at
+   all. Christer: "I am trying to get more common places, fewer trips
+   to identify." See _assign_place_clusters()/_merge_nearby_places()
+   below for the fix: a new stop within _CLUSTER_RADIUS_METERS of an
+   already-known place snaps onto it instead of minting a new grid
+   cell; place_key() itself is kept only to mint a fresh, readable key
+   the first time a genuinely new place is seen.
 
 Copyright (C) 2026 Christer R. (sssreh)
 
@@ -92,18 +101,25 @@ from .trip import Trip
 # RoutePattern to carry its own radius_meters.
 _SAME_PLACE_RADIUS_METERS = 300.0
 
-# Grid-cell size for common-place identity (place_key()) - plain
-# decimal rounding, not a real clustering algorithm. ~111m of
-# latitude and ~57m of longitude at Stockholm's latitude (59N) per
-# 0.001 degrees - close enough to _SAME_PLACE_RADIUS_METERS/
-# driver_detect's own 300m default that two real visits to the same
-# parking spot should almost always land in the same cell. Tradeoff:
-# a destination whose GPS fix happens to straddle a cell boundary on
-# two different visits can occasionally split into two adjacent
-# places - acceptable for a hand-reviewed registry (Christer merges/
-# renames in the form) but worth knowing if "the same place" ever
-# shows up twice in the places list.
+# Grid-cell size used only to mint a readable key text (place_key())
+# the first time a genuinely new place is seen - identity itself now
+# comes from _assign_place_clusters()'s radius search, not from
+# whether two points round to the same cell. ~111m of latitude and
+# ~57m of longitude at Stockholm's latitude (59N) per 0.001 degrees.
 _GRID_DECIMALS = 3
+
+# How close a new stop has to be to an already-known place before
+# _assign_place_clusters() snaps it onto that place instead of
+# minting a new one. Chosen after checking Christer's own real
+# driver_knowledge.json: the fragmented Sickla-area splinters were
+# mostly 15-160m apart (a few pairs closer to 400-500m across a
+# bigger lot, which even this radius won't fully re-merge in one
+# pass - a known greedy-clustering tradeoff, acceptable for a
+# hand-reviewed registry Christer can still merge by hand), while
+# genuinely distinct places in his data are 2+km apart, so 150m
+# leaves a wide safety margin against merging two real destinations
+# that happen to be neighbors.
+_CLUSTER_RADIUS_METERS = 150.0
 
 _WEEKDAY_NAMES = (
     "Monday",
@@ -334,9 +350,11 @@ def suggest_closest_decided_trip(
 
 
 def place_key(point: tuple[float, float]) -> str:
-    """Deterministic grid-cell id for a destination point - see this
-    module's own docstring (point 2) for why identity is a plain
-    rounding rather than a stateful clustering algorithm."""
+    """Deterministic grid-cell id text for a brand-new place. No
+    longer *identity itself* (see this module's own docstring, point
+    2) - _assign_place_clusters() decides whether a point belongs to
+    an existing place before ever calling this; it's only reached to
+    mint a fresh, readable key the first time a place is truly new."""
 
     lat, lon = point
     return f"{round(lat, _GRID_DECIMALS)},{round(lon, _GRID_DECIMALS)}"
@@ -557,7 +575,12 @@ def _raw_trip_knowledge(
                 end_time=trip.end_timestamp,
                 weekday=weekday,
                 start_time_of_day=time_of_day,
-                away_place_key=place_key(away_point) if away_point is not None else None,
+                # Filled in afterward by _assign_place_clusters() -
+                # deciding which place a point belongs to needs to see
+                # every trip's away_point (and the prior registry)
+                # together, not one trip in isolation. See this
+                # module's own docstring, point 2.
+                away_place_key=None,
                 away_point=away_point,
                 dwell_minutes=dwell,
                 stop_category=category,
@@ -574,17 +597,116 @@ def _raw_trip_knowledge(
     return entries
 
 
+def _merge_nearby_places(
+    existing: dict[str, CommonPlace],
+) -> dict[str, CommonPlace]:
+    """Consolidates any leftover fragmented places in a previously-
+    saved registry - multiple keys whose points fall within
+    _CLUSTER_RADIUS_METERS of each other, the exact grid-rounding
+    artifact this radius-based redesign replaces (Christer's own real
+    registry had two separately-keyed "Hemmet för gamla" entries only
+    46m apart) - into one canonical entry before a fresh
+    `bv-drivers build` reclusters every trip against it via
+    _assign_place_clusters() below.
+
+    Processes places largest-visit_count-first so the canonical
+    anchor for a merged group is whichever place has already
+    accumulated the most real visits (ties broken by key text for
+    determinism); a smaller place's visit_count folds into the
+    anchor's own (recomputed properly from fresh trip data right
+    after anyway - see build_common_places()'s own docstring - so
+    this number is only used to decide merge order, not kept). The
+    anchor's label and driver both win untouched, *unless* the anchor
+    has no driver set and the place being merged away does - in which
+    case that already-made decision of Christer's carries over rather
+    than silently vanishing."""
+
+    ordered = sorted(existing.values(), key=lambda p: (-p.visit_count, p.key))
+    canonical: list[CommonPlace] = []
+    for place in ordered:
+        match_index = next(
+            (
+                i
+                for i, anchor in enumerate(canonical)
+                if _haversine_distance_meters(*place.point, *anchor.point)
+                <= _CLUSTER_RADIUS_METERS
+            ),
+            None,
+        )
+        if match_index is None:
+            canonical.append(place)
+            continue
+        anchor = canonical[match_index]
+        canonical[match_index] = replace(
+            anchor,
+            visit_count=anchor.visit_count + place.visit_count,
+            driver=anchor.driver if anchor.driver is not None else place.driver,
+        )
+    return {place.key: place for place in canonical}
+
+
+def _assign_place_clusters(
+    entries: list[TripKnowledge],
+    existing: dict[str, CommonPlace] | None,
+) -> list[TripKnowledge]:
+    """Assigns each entry's away_place_key by radius-based clustering
+    instead of place_key()'s plain grid rounding - see this module's
+    own docstring, point 2, and _CLUSTER_RADIUS_METERS's own comment
+    for why (Christer's real Sickla-area splinters).
+
+    Seeds one cluster per already-known place (`existing`, already
+    deduplicated by _merge_nearby_places() above) so a place's key -
+    and any driver rule Christer set on it - survives a rebuild; then
+    walks `entries` in the given (chronological) order, snapping each
+    trip's away_point onto whichever existing-or-just-created cluster
+    is *nearest* and within _CLUSTER_RADIUS_METERS, or anchoring a
+    brand new cluster (keyed by place_key() of this trip's own point)
+    if none qualifies. Deterministic given a fixed trip order and a
+    fixed `existing` snapshot - the same real archive always
+    reclusters the same way."""
+
+    clusters: list[tuple[str, tuple[float, float]]] = [
+        (place.key, place.point) for place in (existing or {}).values()
+    ]
+
+    updated: list[TripKnowledge] = []
+    for entry in entries:
+        if entry.away_point is None:
+            updated.append(entry)
+            continue
+
+        nearest_key: str | None = None
+        nearest_distance: float | None = None
+        for key, anchor in clusters:
+            distance = _haversine_distance_meters(*entry.away_point, *anchor)
+            if distance <= _CLUSTER_RADIUS_METERS and (
+                nearest_distance is None or distance < nearest_distance
+            ):
+                nearest_key, nearest_distance = key, distance
+
+        if nearest_key is None:
+            nearest_key = place_key(entry.away_point)
+            clusters.append((nearest_key, entry.away_point))
+
+        updated.append(replace(entry, away_place_key=nearest_key))
+
+    return updated
+
+
 def build_common_places(
     knowledge: Sequence[TripKnowledge],
     *,
     existing: dict[str, CommonPlace] | None = None,
 ) -> dict[str, CommonPlace]:
-    """Aggregate `knowledge` into one CommonPlace per distinct away
-    destination grid cell. `existing` (a previously-saved registry -
-    see load_knowledge_base()) supplies each place's own label and any
-    manual `driver` rule Christer already set; those survive a rebuild
-    untouched - only visit_count (and, for a place `existing` has
-    never seen, point/label) is recomputed from `knowledge`."""
+    """Aggregate `knowledge` into one CommonPlace per distinct
+    away_place_key - by this point already assigned by radius-based
+    clustering (_assign_place_clusters()), not a raw grid cell; this
+    function itself just counts. `existing` (a previously-saved
+    registry - see load_knowledge_base()) supplies each place's own
+    label and any manual `driver` rule Christer already set; those
+    survive a rebuild untouched - only visit_count (and, for a place
+    `existing` has never seen, point/label) is recomputed from
+    `knowledge`."""
 
     existing = existing or {}
     points: dict[str, tuple[float, float]] = {}
@@ -690,8 +812,11 @@ def build_knowledge_base(
     camera_id: str | None = None,
     smoothness_values: Sequence[float | None] | None = None,
 ) -> tuple[list[TripKnowledge], dict[str, CommonPlace]]:
-    """The whole pure pipeline: raw per-trip fields -> common places
-    (carrying forward `existing_places`' own labels/rules) -> each
+    """The whole pure pipeline: raw per-trip fields -> place identity
+    assigned by radius-based clustering (_assign_place_clusters(),
+    seeded from `existing_places` after _merge_nearby_places() has
+    consolidated any leftover fragmentation in it) -> common places
+    (carrying forward those same places' own labels/rules) -> each
     trip resolved to a driver via the order _resolve_trip_driver()
     documents. `fixes` must be the same length as `trips`, in the same
     chronological order (index-aligned - see resolve_all_trip_fixes()).
@@ -702,11 +827,15 @@ def build_knowledge_base(
     last recording straight to /archive/{camera_id}/{recording_id}."""
 
     trip_overrides = trip_overrides or {}
+    merged_existing = (
+        _merge_nearby_places(existing_places) if existing_places else None
+    )
     raw = _raw_trip_knowledge(
         trips, fixes, profiles, known_points,
         camera_id=camera_id, smoothness_values=smoothness_values,
     )
-    places = build_common_places(raw, existing=existing_places)
+    raw = _assign_place_clusters(raw, merged_existing)
+    places = build_common_places(raw, existing=merged_existing)
     resolved = [
         _resolve_trip_driver(
             entry, places.get(entry.away_place_key), profiles,

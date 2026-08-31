@@ -230,7 +230,14 @@ def christers_driver_profiles() -> DriverProfiles:
     return DriverProfiles(
         home_name="Hammarby Sjöstad",
         home_query="Hammarby Sjöstad, Stockholm",
-        home_radius_meters=800.0,
+        # Was 800.0 - Christer's own real data showed home and Sickla
+        # (his next-closest common place) are only 861m apart, so 800m
+        # left almost no margin; lowered to match DEFAULT_RADIUS_METERS
+        # (the same 300m every per-place pattern already uses) after
+        # Christer noted he often makes short local trips (e.g. Max
+        # Hamburgers) that a looser home radius could otherwise still
+        # count as "still at home" and never register as a real trip.
+        home_radius_meters=DEFAULT_RADIUS_METERS,
         drivers=(wife, christer),
     )
 

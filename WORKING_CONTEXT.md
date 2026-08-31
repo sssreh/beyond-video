@@ -21455,3 +21455,94 @@ of the driver key), test_bv_drivers (14/14), test_driver_detect
 (20/20) - test_bv_ls's own suite still can't run in this sandbox
 (pre-existing capsys harness gap, documented above, unrelated to this
 change).
+
+## Follow-up: home_radius_meters lowered to 300m, place identity redesigned as radius-based clustering
+
+Christer's own follow-up, three-part: "I agree, might even lower
+home_radius_meters, i often go to max hamburgers." then "I am
+surprised that common places for us are Globen Parking(just 4 common
+trips), Sickla parking, (0 common trips)." then "I am trying to get
+more common places, fewer trips to identify."
+
+**home_radius_meters: 800m -> 300m.** The 800m figure had been picked
+because home and Christer's own nearest common place (Sickla) were
+861m apart, leaving margin either way - but 800m also meant genuinely
+short local trips (a run to Max Hamburgers) could get swallowed as
+"still at home" rather than register as a real away-trip. Lowered
+both `christers_driver_profiles()`'s own default in driver_detect.py
+and his real driver_profiles.json's `home.radius_meters` to
+`DEFAULT_RADIUS_METERS` (300.0) - the same 300m every per-place
+pattern already uses, so home now gets no special-case radius at all.
+New test: `test_christers_driver_profiles_home_radius_matches_place_default`.
+
+**Root cause of the sparse-common-places complaint: grid-rounding
+place identity, not a data problem.** place_key()'s 0.001-degree
+grid cells are only ~111m x 57m at Stockholm's latitude - so the
+*same* physical parking spot split into a different "place" every
+time a visit's GPS fix happened to round into a neighboring cell.
+Checked directly against Christer's real driver_knowledge.json: ~20
+single-visit "Place near ..." entries clustered in the Sickla area
+alone, pairwise as close as 15-160m apart, each stuck below the
+min_visits=2 threshold to ever show up as "common." Globen parkering
+only worked as a common place (4 visits) by coincidence - all 4
+visits happened to land in the identical grid cell.
+
+**Fix: radius-based clustering replaces grid rounding as place
+identity**, per Christer's choice on the follow-up question ("Radius-
+based clustering (recommended)"). Two new pure functions in
+place_knowledge.py:
+
+- `_merge_nearby_places(existing)` - pre-pass that consolidates a
+  *previously-saved* registry's own leftover fragmentation (multiple
+  keys within `_CLUSTER_RADIUS_METERS` of each other) into one
+  canonical entry, largest-visit_count-first; the anchor's label/
+  driver win unless the anchor has no driver and the place being
+  merged away does, in which case that decision carries over.
+- `_assign_place_clusters(entries, existing)` - the real per-trip
+  identity pass: seeds one cluster per already-known place, then
+  walks trips chronologically, snapping each `away_point` onto the
+  *nearest* cluster within radius or minting a fresh one via
+  place_key() if none qualifies.
+
+`_CLUSTER_RADIUS_METERS = 150.0`, chosen from the same real data: the
+Sickla splinters were mostly 15-160m apart, while genuinely distinct
+places in Christer's archive are 2+km apart, leaving a wide safety
+margin. place_key() itself is demoted from "place identity" to just
+minting a fresh readable key text the first time a place is truly
+new. `build_knowledge_base()` now runs `_merge_nearby_places()` on
+`existing_places` before `_assign_place_clusters()`, so a rebuild
+both recovers from old fragmentation and stays fragmentation-free
+going forward.
+
+Verified against Christer's actual driver_knowledge.json (51 places,
+64 total visits) with a standalone script exercising
+`_merge_nearby_places()` directly: collapsed to 36 places, zero
+visits lost (64 -> 64), 15 individual merges performed, every one
+within the 150m radius and each one sensible by inspection (e.g. the
+two separately-keyed "Hemmet för gamla, Gamla Tyresövägen 349A"
+entries, 46m apart, merged into one place with visits 2+2 plus 4 more
+absorbed splinters = 8; Globen parkering absorbed one more nearby
+splinter; Mat Dax Hökarängen and Skarpnäck each absorbed two). Places
+with visit_count>=2 (what the UI calls "common") rose from 8 to 11 -
+directly answering "I am trying to get more common places, fewer
+trips to identify." All 6 of Christer's existing driver=driver1
+assignments survived the merge with no conflicts.
+
+Also answered a separate one-off ask: confirmed
+frame_calibration.jsonl (app.py's calibration route, pure append-only
+log, nothing reads it back programmatically) is safe for Christer to
+delete himself - declined to delete it directly per the standing
+prohibited-action rule on permanent deletion.
+
+New tests in test_place_knowledge.py: three for `_merge_nearby_places`
+(merges within radius, anchor's own driver wins over a merged-away
+place's driver, distant places stay separate) and five for
+`_assign_place_clusters` (snaps onto an existing place within radius,
+mints a new place beyond radius, picks the nearest of several in-range
+clusters, passes through a trip with no away_point unchanged, groups
+two brand-new nearby trips under one key with no prior registry at
+all - the core fragmentation fix with nothing to seed from).
+
+Verified via the pytest shim: test_place_knowledge (48/48),
+test_bv_drivers (14/14), test_driver_detect (21/21, +1 for the radius
+default). py_compile clean on all four changed files.
