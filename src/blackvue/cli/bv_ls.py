@@ -249,7 +249,7 @@ def print_trips(
     normal always-on column like Size or Recs. A trip with no
     candidate match at all (or when `adapter` is None) prints "-".
 
-    `use_driver_trips` (off by default - see --drivers-trip) swaps
+    `use_driver_trips` (off by default - see --drivers-trips) swaps
     which trips are shown for bv-drivers' own "sidecar trip" concept
     (trip/driver_detect.py's build_driver_trips()) instead of the
     front-video-filtered TripBuilder run above - Christer, after
@@ -434,7 +434,7 @@ def bv_ls(
 
     `drivers` (only meaningful with `trips` - see --drivers) adds
     print_trips()'s Driver column; see that function's own docstring
-    for the cost/why. `drivers_trip` (see --drivers-trip) additionally
+    for the cost/why. `drivers_trip` (see --drivers-trips) additionally
     swaps which trips are shown for bv-drivers' own sidecar-trip
     concept instead of this command's normal video-trip one - see
     print_trips()'s own docstring for why these differ. `config_dir`
@@ -776,7 +776,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--drivers-trip",
+        "--drivers-trips",
         dest="drivers_trip",
         action="store_true",
         default=False,

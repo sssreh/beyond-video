@@ -579,7 +579,7 @@ def build_driver_trips(
     trips, we are trying to get driver from sidecars. Not same trip
     concept."
 
-    Factored out of bv_drivers.py's _run() so bv-ls's --drivers-trip
+    Factored out of bv_drivers.py's _run() so bv-ls's --drivers-trips
     column (see bv_ls.py) can show driver matches against this same
     trip concept directly, without needing a full bv-drivers build/
     driver_knowledge.json round-trip first - Christer asked for this

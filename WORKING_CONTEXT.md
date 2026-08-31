@@ -21342,7 +21342,7 @@ stated target ("happy if we got drivers for 25% of trips since july
 6") - can't be verified from this sandbox due to the slow NAS mount;
 needs a real rerun on his own machine.
 
-## Feature: bv-ls --drivers-trip + GPS-radius false-positive analysis (done, this session)
+## Feature: bv-ls --drivers-trips + GPS-radius false-positive analysis (done, this session)
 
 Two small, independent follow-ups from the 0/468-drivers-resolved fix
 above, both prompted by Christer's own questions.
@@ -21363,7 +21363,7 @@ pair of Christer's real places is ~2300m apart, well clear of even
 radius_meters alone (300m -> 900m) looks safe against his real data,
 though it's only 9 real geocoded places, not exhaustive.
 
-**Question 2: bv-ls should have a --drivers-trip option.** bv-ls
+**Question 2: bv-ls should have a --drivers-trips option.** bv-ls
 --trips normally builds "video trips" (TripBuilder over
 recordings_with_front_video() only) - a different trip concept than
 bv-drivers build's own "sidecar trip" (TripBuilder over every
@@ -21389,7 +21389,7 @@ refactor was reverted, bv_drivers.py is unchanged). bv_ls.py's
 print_trips() gained a use_driver_trips param that swaps in
 build_driver_trips() for the normal TripBuilder-over-front-video call
 and forces show_drivers on; bv_ls() gained a matching drivers_trip
-param; parse_args() gained --drivers-trip, documented as implying
+param; parse_args() gained --drivers-trips, documented as implying
 --drivers and ignoring every other --trips flag (--movement,
 --gps-split, --no-duration, --max-gap/--gap-tolerance) since
 build_driver_trips() always uses TripBuilder's own plain gap logic to
