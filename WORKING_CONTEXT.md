@@ -21546,3 +21546,47 @@ all - the core fragmentation fix with nothing to seed from).
 Verified via the pytest shim: test_place_knowledge (48/48),
 test_bv_drivers (14/14), test_driver_detect (21/21, +1 for the radius
 default). py_compile clean on all four changed files.
+
+## Follow-up: home_radius_meters 300m regression - reverted to 800m
+
+Christer ran `bv-drivers build` right after the above change and got:
+"164 trip(s), 0 place(s) ... 1/164 trip(s) resolved to a driver" -
+total collapse from 51 places and ~145+ resolved trips.
+
+Root cause: `home_query` is `"Hammarby Sjöstad, Stockholm"` - a whole
+neighborhood name, not a precise address. Nominatim's geocoded point
+for that query is (59.3056121, 18.1060603). Checked where Christer's
+real car GPS fixes actually land relative to that point: across his
+164-trip archive, **no trip endpoint ever comes within 360m of it**.
+There's a tight, obvious cluster of 65 real home-adjacent points
+sitting 745-780m away (spread only ~28m between them - clearly his
+actual garage, just not where Nominatim thinks the neighborhood is
+centered). The jump is stark: 15/296 endpoints within 700m, 80/296
+within 800m - the entire home cluster sits right at that boundary.
+
+800m therefore wasn't generous margin, it was barely enough to reach
+the cluster at all. My change to 300m (verified only against a
+different number - the 861m home-to-Sickla distance, not against real
+home-arrival GPS data) missed the cluster entirely, so `away_point`
+came out `None` for all 164 trips - zero places, almost nothing
+resolved.
+
+Reverted `home_radius_meters` to 800.0 in both
+`christers_driver_profiles()` and Christer's real
+driver_profiles.json. Verified directly against his real archive:
+at 800m, 64/164 trips get a real away_point (0 at 300m) - matching
+pre-regression behavior.
+
+Christer's original ask (short trips like Max Hamburgers shouldn't
+count as "still at home") is still unsolved, but the real fix is a
+*more precise* home point, not a smaller radius around an already-
+imprecise neighborhood centroid - documented as the next step in
+`christers_driver_profiles()`'s own comment. The real home coordinate
+his own data implies (59.303215, 18.093528, derived from that tight
+65-point cluster) is recorded there for whoever picks this up next.
+
+Tests: rewrote `test_christers_driver_profiles_home_radius_matches_
+place_default` (removed - was asserting the wrong thing) into
+`test_christers_driver_profiles_home_radius_stays_800m`, documenting
+the full root cause inline. test_driver_detect 21/21,
+test_place_knowledge 48/48, test_bv_drivers 14/14 all still pass.
