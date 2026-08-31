@@ -74,6 +74,7 @@ from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from ..export.geocoding import GeocodeResult, load_or_forward_geocode
 from ..generate.media import MediaToolError
 from .trip import Trip
+from .trip_builder import TripBuilder
 
 # Used whenever a route pattern or the home place doesn't specify its
 # own radius_meters - generous enough to absorb ordinary GPS noise and
@@ -549,6 +550,91 @@ def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
         start_time=trip.start_timestamp,
         end_time=trip.end_timestamp,
         has_parking_footage=has_parking_footage,
+    )
+
+
+@dataclass(frozen=True)
+class DriverTripFilterCounts:
+    """How many trips build_driver_trips() dropped at each of its two
+    trust filters - purely informational, for a caller that wants to
+    print a --debug line about it (see bv_drivers.py's own --debug
+    output); build_driver_trips() itself never prints anything."""
+
+    detected: int
+    dropped_no_driving_evidence: int
+    dropped_not_ending_in_parking: int
+
+
+def build_driver_trips(
+    recordings,
+    *,
+    max_gap: timedelta,
+    gap_tolerance: timedelta,
+) -> tuple[list[Trip], DriverTripFilterCounts]:
+    """Build the same trip list bv-drivers.py's _run() does - the
+    "sidecar trip" concept, not bv-ls's/bv-export's own "video trip"
+    concept (see bv_ls.py's print_trips() docstring, which filters to
+    recordings_with_front_video() first). Christer, on why these
+    aren't interchangeable: "bv-ls and bv-export are building video
+    trips, we are trying to get driver from sidecars. Not same trip
+    concept."
+
+    Factored out of bv_drivers.py's _run() so bv-ls's --drivers-trip
+    column (see bv_ls.py) can show driver matches against this same
+    trip concept directly, without needing a full bv-drivers build/
+    driver_knowledge.json round-trip first - Christer asked for this
+    after being reminded bv-ls --drivers itself uses the other trip
+    concept and so isn't a real preview of what bv-drivers would
+    decide.
+
+    `recordings` is every recording in range - deliberately NOT
+    filtered to ones with front video, same reasoning as bv_drivers.py
+    _run()'s own trip-building comment. Two trust filters are applied
+    after TripBuilder splits by gap, in order:
+
+    1. Drop any trip where every recording is Parking-mode - a lone
+       motion-triggered Parking blip (commonly one triggered in
+       Christer's own underground home garage, which has no GPS
+       signal) trivially satisfies filter 2 below on its own and would
+       otherwise dominate the trip list with unresolvable noise.
+    2. Drop any trip that doesn't end in a downloaded Parking-mode
+       recording - the camera's own signal that the vehicle was
+       actually left somewhere, as opposed to a gap that's just a
+       data/download gap (see bv_drivers.py's own filter for Christer's
+       full reasoning and the real-archive numbers behind it). The
+       chronologically last trip is exempt - it may simply not have its
+       Parking-mode sidecars downloaded yet.
+
+    See bv_drivers.py's `_run()` for the identical logic this was
+    extracted from (kept there rather than calling through to here, to
+    avoid disturbing its own already-verified --debug reporting)."""
+
+    trips = TripBuilder(max_gap=max_gap, gap_tolerance=gap_tolerance).build(recordings)
+    detected = len(trips)
+
+    trips = [
+        trip
+        for trip in trips
+        if any(not recording.id.is_parking for recording in trip.recordings)
+    ]
+    dropped_no_driving_evidence = detected - len(trips)
+
+    before_parking_filter = len(trips)
+    trips = [
+        trip
+        for trip in trips
+        if trip is trips[-1]
+        or (
+            trip.last_recording.id.is_parking
+            and any(asset.is_downloaded for asset in trip.last_recording.assets)
+        )
+    ]
+    dropped_not_ending_in_parking = before_parking_filter - len(trips)
+
+    return trips, DriverTripFilterCounts(
+        detected=detected,
+        dropped_no_driving_evidence=dropped_no_driving_evidence,
+        dropped_not_ending_in_parking=dropped_not_ending_in_parking,
     )
 
 

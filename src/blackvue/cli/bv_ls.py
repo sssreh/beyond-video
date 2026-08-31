@@ -22,6 +22,7 @@ from blackvue.lexicaltimeparser import LexicalTimeParser
 from blackvue.telemetry.movement import gps_implies_impossible_jump
 from blackvue.telemetry.movement import movement_bridges_gap
 from blackvue.trip.driver_detect import DriverMatch
+from blackvue.trip.driver_detect import build_driver_trips
 from blackvue.trip.driver_detect import default_driver_profiles_path
 from blackvue.trip.driver_detect import match_driver
 from blackvue.trip.driver_detect import resolve_known_points
@@ -183,6 +184,7 @@ def print_trips(
     gap_tolerance: timedelta = DEFAULT_GAP_TOLERANCE,
     adapter: CameraAdapter | None = None,
     show_drivers: bool = False,
+    use_driver_trips: bool = False,
     config_dir: Path | None = None,
     say=print,
 ) -> None:
@@ -246,24 +248,47 @@ def print_trips(
     not archive_path), which is why this is opt-in rather than a
     normal always-on column like Size or Recs. A trip with no
     candidate match at all (or when `adapter` is None) prints "-".
-    """
 
-    bridge = movement_bridges_gap if use_movement else None
-    force_split = (
-        functools.partial(gps_implies_impossible_jump, adapter=adapter)
-        if use_gps_split and adapter is not None
-        else None
-    )
-    recording_duration = (
-        photo_aware_duration(read_duration_seconds) if use_duration else None
-    )
-    trips = TripBuilder(
-        max_gap=max_gap,
-        bridge=bridge,
-        recording_duration=recording_duration,
-        gap_tolerance=gap_tolerance,
-        force_split=force_split,
-    ).build(recordings_with_front_video(recordings))
+    `use_driver_trips` (off by default - see --drivers-trip) swaps
+    which trips are shown for bv-drivers' own "sidecar trip" concept
+    (trip/driver_detect.py's build_driver_trips()) instead of the
+    front-video-filtered TripBuilder run above - Christer, after
+    seeing --drivers work against this function's normal trip list:
+    "bv-ls and bv-export are building video trips, we are trying to
+    get driver from sidecars. Not same trip concept." Without this
+    flag, --drivers shows driver candidates for the wrong trip
+    boundaries - a real preview of what `bv-drivers build` will
+    actually decide needs the same all-recordings/P-ending-filtered
+    trip list bv-drivers.py's own _run() computes, not this function's
+    video-trip one. Implies `show_drivers` - there is no reason to ask
+    for the sidecar trip list without also wanting to see what it
+    matches to. Every other --trips flag (--movement, --gps-split,
+    --no-duration, --max-gap/--gap-tolerance) is ignored in this mode:
+    build_driver_trips() always uses TripBuilder's own plain gap logic
+    with no bridging/force-split, matching bv-drivers.py exactly."""
+
+    if use_driver_trips:
+        show_drivers = True
+        trips, _ = build_driver_trips(
+            recordings, max_gap=max_gap, gap_tolerance=gap_tolerance,
+        )
+    else:
+        bridge = movement_bridges_gap if use_movement else None
+        force_split = (
+            functools.partial(gps_implies_impossible_jump, adapter=adapter)
+            if use_gps_split and adapter is not None
+            else None
+        )
+        recording_duration = (
+            photo_aware_duration(read_duration_seconds) if use_duration else None
+        )
+        trips = TripBuilder(
+            max_gap=max_gap,
+            bridge=bridge,
+            recording_duration=recording_duration,
+            gap_tolerance=gap_tolerance,
+            force_split=force_split,
+        ).build(recordings_with_front_video(recordings))
 
     trip_width = max(
         [len("Trip")] + [len(trip.label) for trip in trips],
@@ -383,6 +408,7 @@ def bv_ls(
     duration: bool = True,
     gap_tolerance_seconds: int | None = None,
     drivers: bool = False,
+    drivers_trip: bool = False,
     config_dir: Path | None = None,
     adapter_id: str = DEFAULT_ADAPTER_ID,
     full: bool = False,
@@ -408,8 +434,12 @@ def bv_ls(
 
     `drivers` (only meaningful with `trips` - see --drivers) adds
     print_trips()'s Driver column; see that function's own docstring
-    for the cost/why. `config_dir` selects where driver_profiles.json
-    and its geocode cache live - defaults to default_config_dir(),
+    for the cost/why. `drivers_trip` (see --drivers-trip) additionally
+    swaps which trips are shown for bv-drivers' own sidecar-trip
+    concept instead of this command's normal video-trip one - see
+    print_trips()'s own docstring for why these differ. `config_dir`
+    selects where driver_profiles.json and its geocode cache live -
+    defaults to default_config_dir(),
     the same directory --config-dir already governs for camera config.
 
     `source` is the reverse of `timestamp`: `timestamp`/`from_`/`until`
@@ -478,6 +508,7 @@ def bv_ls(
             gap_tolerance=gap_tolerance,
             adapter=adapter,
             show_drivers=drivers,
+            use_driver_trips=drivers_trip,
             config_dir=config_dir,
             say=say,
         )
@@ -745,6 +776,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--drivers-trip",
+        dest="drivers_trip",
+        action="store_true",
+        default=False,
+        help=(
+            "With --trips, show driver candidates against bv-drivers' "
+            "own trip concept (every recording, filtered to trips "
+            "ending in a downloaded Parking-mode recording) instead of "
+            "this command's normal video-trip one (recordings with "
+            "front video only) - a real preview of what `bv-drivers "
+            "build` will decide, not a different grouping that happens "
+            "to also show a Driver column. Implies --drivers; other "
+            "--trips flags (--movement, --gps-split, --no-duration, "
+            "--max-gap/--gap-tolerance) are ignored in this mode."
+        ),
+    )
+
+    parser.add_argument(
         "--no-duration",
         dest="duration",
         action="store_false",
@@ -803,6 +852,7 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         duration=args.duration,
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         drivers=args.drivers,
+        drivers_trip=args.drivers_trip,
         config_dir=args.config_dir,
         adapter_id=adapter_id,
         full=args.full,

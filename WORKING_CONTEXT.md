@@ -21341,3 +21341,65 @@ confirmed against the real archive whether the fix reaches Christer's
 stated target ("happy if we got drivers for 25% of trips since july
 6") - can't be verified from this sandbox due to the slow NAS mount;
 needs a real rerun on his own machine.
+
+## Feature: bv-ls --drivers-trip + GPS-radius false-positive analysis (done, this session)
+
+Two small, independent follow-ups from the 0/468-drivers-resolved fix
+above, both prompted by Christer's own questions.
+
+**Question 1: would tripling the GPS search radius cause false
+positives?** Answer: yes, and the home radius (not the per-place
+radius) is the one to worry about. Checked against Christer's real
+geocoded places in beyond-video-data/.config/.osm_cache/ - "home"
+(Hammarby Sjöstad) and the "Sickla" commute pattern are only ~861m
+apart in real life. home_radius_meters is currently 800m (already
+right at that boundary); tripling it to 2400m would swallow Sickla's
+whole location inside the "near home" circle, so a genuine Sickla
+commute could misclassify as a short_local-near-home match instead of
+(or as well as) matching the Sickla pattern itself. The per-place
+default radius_meters (300m) is safer to triple - the next-closest
+pair of Christer's real places is ~2300m apart, well clear of even
+900m. Net: don't triple home_radius_meters; tripling place
+radius_meters alone (300m -> 900m) looks safe against his real data,
+though it's only 9 real geocoded places, not exhaustive.
+
+**Question 2: bv-ls should have a --drivers-trip option.** bv-ls
+--trips normally builds "video trips" (TripBuilder over
+recordings_with_front_video() only) - a different trip concept than
+bv-drivers build's own "sidecar trip" (TripBuilder over every
+recording, then two trust filters: drop trips with no driving
+evidence, drop trips not ending in a downloaded Parking-mode
+recording, with a last-trip exemption). Christer, after seeing
+--drivers show wrong-looking candidates: "bv-ls and bv-export are
+building video trips, we are trying to get driver from sidecars. Not
+same trip concept." So --drivers alone was showing driver candidates
+against the wrong trip boundaries.
+
+Fix: factored bv_drivers.py's own inline trip-building+filter logic
+out into a new pure function, driver_detect.build_driver_trips()
+(returns the trip list plus a DriverTripFilterCounts of how many were
+dropped at each filter, for an optional future --debug line) -
+purely additive, bv_drivers.py itself is untouched and still has its
+own copy of this logic (an earlier attempt to make bv_drivers.py call
+the shared function broke 6 of its own tests, because
+test_bv_drivers.py's _install_fakes() monkeypatches
+bv_drivers.TripBuilder directly - moving the real call into
+driver_detect.py silently stopped the mock from intercepting it; that
+refactor was reverted, bv_drivers.py is unchanged). bv_ls.py's
+print_trips() gained a use_driver_trips param that swaps in
+build_driver_trips() for the normal TripBuilder-over-front-video call
+and forces show_drivers on; bv_ls() gained a matching drivers_trip
+param; parse_args() gained --drivers-trip, documented as implying
+--drivers and ignoring every other --trips flag (--movement,
+--gps-split, --no-duration, --max-gap/--gap-tolerance) since
+build_driver_trips() always uses TripBuilder's own plain gap logic to
+match bv-drivers.py exactly.
+
+Verified with a standalone smoke script (test_bv_ls.py's own suite
+can't currently run in this sandbox - pre-existing harness gap, the
+custom /tmp/shim/run_tests.py doesn't support pytest's capsys
+fixture, confirmed via git stash/pop this predates the change) that
+exercises print_trips(..., use_driver_trips=True) end-to-end against
+a hand-built two-recording N->P trip and confirms the Driver column
+appears. test_driver_detect.py (20/20) and test_bv_drivers.py (14/14)
+both still pass - no regression to the underlying machinery.
