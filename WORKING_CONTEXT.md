@@ -22291,3 +22291,86 @@ not a duplicate of its own Start/Stop), and Start/Stop themselves still
 show home's address twice for the round trip, unaffected. 6/6 checks
 passed on the Specific trips table, 1/1 (both header and value) on the
 per-place table.
+
+## Rework "still need a driver rule" wording, add a real "Mixed drivers" status
+
+Christer, immediately after the Via-column fix above: *"I dont like the
+wording 'still need a driver rule', there is no need. Better wording is
+like ``` bv-drivers: 3 common place(s) (>= 2 visits) without a driver
+rule ``` Or should we introduce the concept of 'Mixed drivers'"*. Asked
+via `AskUserQuestion` whether this was a pure wording change or should
+add a real Mixed status; Christer picked "Add a real 'Mixed drivers'
+status" - not just relabeling, but actually detecting when a place's
+own trips are already resolved to more than one driver (his real
+"Globen Parking", 6 trips, all `source: manual-trip`, split
+driver1/driver2) and excluding it from the "needs a rule" count/warning
+entirely, since `_resolve_trip_driver()`'s own resolution order (a
+per-trip override always wins over a place's rule) already makes
+leaving a shared place's rule unset the correct, working pattern - not
+an oversight.
+
+`trip/place_knowledge.py` gained `mixed_driver_place_keys(trips)`:
+groups every trip with a known `away_place_key` and a resolved (not
+`source == "undecided"`) `driver_label` by place, and returns the keys
+where more than one distinct label shows up. `undecided_places()` grew
+an optional `trips` keyword - when given, it excludes places identified
+as mixed from its "needs a rule" result; omitted, it behaves exactly as
+before (a couple of older call sites/tests construct `CommonPlace`s
+directly with no matching trip list).
+
+`bv_drivers.py`: the summary line changed from `"... still need a
+driver rule"` to `"... without a driver rule"` (Christer's own
+suggested phrasing), and a new FYI-only line prints when
+`mixed_driver_place_keys()` finds any: `"N common place(s) with drivers
+split across trips (mixed - already handled per-trip)"`.
+`undecided_places()` is now called with `trips=resolved` so mixed
+places actually drop out of the "without a driver rule" count.
+
+`app.py`'s `drivers_page()` computes `mixed_place_keys =
+mixed_driver_place_keys(trips)` right after `undecided_place_keys` and
+threads it into both the early-return context dict (`set()`, matching
+the "nothing built yet" case) and the main context dict.
+`drivers.html`'s Common Places table now renders a `Mixed` hint next to
+a place's label when `place.key in mixed_place_keys`, replacing the
+&#9888; warning that place would otherwise get from
+`undecided_place_keys` (the two sets are disjoint by construction,
+since `undecided_places(trips=...)` excludes mixed places).
+
+`docs/man/bv-drivers.md` updated: the `--min-visits` option description
+and the example output's summary line both changed to "without a driver
+rule"; the example gained a "N common place(s) with drivers split
+across trips" line; and a new paragraph after the shared-place
+explanation documents the Mixed status directly.
+
+Tests: `tests/blackvue/trip/test_place_knowledge.py` gained
+`test_mixed_driver_place_keys_flags_a_place_split_across_drivers`,
+`test_mixed_driver_place_keys_ignores_undecided_and_placeless_entries`,
+and `test_undecided_places_excludes_mixed_places_when_trips_given`
+(plus verifying the old `trips=None` behavior is unchanged).
+`tests/blackvue/cli/test_bv_drivers.py` gained
+`test_run_summary_uses_without_a_driver_rule_wording` and
+`test_run_summary_reports_mixed_place_count_when_present` (the latter
+stubs `mixed_driver_place_keys()` directly to keep the test focused on
+`bv_drivers.py`'s own wiring/wording rather than re-deriving mixed-place
+detection).
+
+Verified: `python3 -m py_compile` on `place_knowledge.py`,
+`bv_drivers.py`, `app.py`, and both test files. Ran the new
+`place_knowledge.py` logic directly against a fabricated 4-trip/2-place
+scenario (no pytest in this sandbox) - `mixed_driver_place_keys()`
+correctly flagged only the place with a real driver1/driver2 split,
+ignored an `undecided`-source entry and a placeless entry, and
+`undecided_places(trips=...)` correctly excluded the mixed place from
+its result while `undecided_places()` without `trips=` stayed
+unfiltered. A standalone Jinja2 render of `drivers.html` with a mixed
+place, an undecided place, and a decided place confirmed: the mixed
+place shows a "Mixed" tag and no warning triangle, the undecided place
+shows the warning triangle and no "Mixed" tag, and the decided place
+shows neither (5/5 checks passed).
+
+The separate append-only `common_places.json` file Christer also asked
+about ("having a separate common_place file by its own, never
+overwritten only appended with new common places") is confirmed wanted
+but not yet built - tracked as follow-up work, since its exact
+semantics (a frozen audit log vs. a living-but-additive mirror) still
+need deciding.

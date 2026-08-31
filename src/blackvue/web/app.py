@@ -137,6 +137,7 @@ from ..trip.place_knowledge import default_driver_knowledge_path
 from ..trip.place_knowledge import group_trips_by_place
 from ..trip.place_knowledge import load_knowledge_base
 from ..trip.place_knowledge import reresolve_trip_drivers
+from ..trip.place_knowledge import mixed_driver_place_keys
 from ..trip.place_knowledge import save_knowledge_base
 from ..trip.place_knowledge import smoothness_score
 from ..trip.place_knowledge import suggest_closest_decided_trip
@@ -853,6 +854,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "driver_choices": [],
                     "places": [],
                     "undecided_place_keys": set(),
+                    "mixed_place_keys": set(),
                     "specific_trip_list": [],
                     "place_trips": {},
                     "place_trip_addresses": {},
@@ -912,8 +914,19 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 key=lambda place: place.visit_count, reverse=True,
             )
             undecided_place_keys = {
-                place.key for place in undecided_places(places, min_visits=min_visits)
+                place.key
+                for place in undecided_places(places, min_visits=min_visits, trips=trips)
             }
+            # Christer: "should we introduce the concept of Mixed
+            # drivers" - a place both drivers actually visit (e.g.
+            # Globen Parking) already has its own trips split across
+            # more than one driver via per-trip overrides;
+            # undecided_place_keys above already excludes these (see
+            # mixed_driver_place_keys()'s own docstring), so this is
+            # only computed to label them "Mixed" in the template
+            # instead of leaving their Driver cell looking identical to
+            # a place nobody's gotten around to yet.
+            mixed_place_keys = mixed_driver_place_keys(trips)
             # Christer: "pa specific trips hogst upp skulle jag vilja ha en
             # selection for varje driver samt aven undecided som default." -
             # a driver filter at the top of the Specific trips section,
@@ -1138,6 +1151,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "places": places_sorted,
                 "place_addresses": place_addresses,
                 "undecided_place_keys": undecided_place_keys,
+                "mixed_place_keys": mixed_place_keys,
                 "specific_trip_list": specific_trip_list,
                 "trip_addresses": trip_addresses,
                 "trip_video_status": trip_video_status,

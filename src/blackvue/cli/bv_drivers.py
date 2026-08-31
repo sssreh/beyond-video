@@ -54,6 +54,7 @@ from ..trip.driver_detect import write_default_driver_profiles
 from ..trip.place_knowledge import default_driver_knowledge_path
 from ..trip.place_knowledge import build_knowledge_base
 from ..trip.place_knowledge import load_knowledge_base
+from ..trip.place_knowledge import mixed_driver_place_keys
 from ..trip.place_knowledge import save_knowledge_base
 from ..trip.place_knowledge import smoothness_raw_from_samples
 from ..trip.place_knowledge import undecided_places
@@ -498,15 +499,30 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         )
 
         decided = sum(1 for entry in resolved if entry.source != "undecided")
-        undecided_place_list = undecided_places(places, min_visits=args.min_visits)
+        undecided_place_list = undecided_places(
+            places, min_visits=args.min_visits, trips=resolved
+        )
         undecided_trip_list = undecided_trips(resolved)
+        # Christer: "still need a driver rule ... there is no need" - a
+        # place both drivers actually visit (Globen Parking) is correctly
+        # handled entirely by per-trip overrides, so its place-level
+        # driver being unset was never a to-do, just how that place
+        # works. undecided_places() above already excludes these from
+        # the count; mixed_place_count here is purely an FYI line, not
+        # something requiring action.
+        mixed_place_count = len(mixed_driver_place_keys(resolved))
 
         say(f"bv-drivers: {len(trips)} trip(s), {len(places)} place(s)")
         say(f"bv-drivers: {decided}/{len(resolved)} trip(s) resolved to a driver")
         say(
             f"bv-drivers: {len(undecided_place_list)} common place(s) "
-            f"(>= {args.min_visits} visits) still need a driver rule"
+            f"(>= {args.min_visits} visits) without a driver rule"
         )
+        if mixed_place_count:
+            say(
+                f"bv-drivers: {mixed_place_count} common place(s) with drivers "
+                f"split across trips (mixed - already handled per-trip)"
+            )
         say(f"bv-drivers: {len(undecided_trip_list)} trip(s) still undecided")
         say(f"bv-drivers: wrote {knowledge_path}")
 

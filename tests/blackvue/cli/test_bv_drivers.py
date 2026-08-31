@@ -250,6 +250,68 @@ def test_run_builds_and_saves_knowledge_base(tmp_path, monkeypatch):
     assert trip_overrides == {}
 
 
+def test_run_summary_uses_without_a_driver_rule_wording(tmp_path, monkeypatch):
+    """Christer: 'I dont like the wording "still need a driver rule",
+    there is no need. Better wording is like ... without a driver
+    rule'."""
+
+    trip1 = _make_trip("20260709_080000")
+    trip2 = _make_trip("20260709_180000")
+    fix1 = TripFix(
+        start=HOME, end=WORK,
+        start_time=trip1.start_timestamp, end_time=trip1.end_timestamp,
+    )
+    fix2 = TripFix(
+        start=WORK, end=HOME,
+        start_time=trip2.start_timestamp, end_time=trip2.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[trip1, trip2], fixes=[fix1, fix2])
+
+    said = []
+    args = parse_args([str(tmp_path), "--config-dir", str(tmp_path / "config")])
+    exit_code = bv_drivers._run(args, say=said.append)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    assert any("without a driver rule" in line for line in said)
+    assert not any("still need a driver rule" in line for line in said)
+    # A single-visit place doesn't clear --min-visits, so no mixed-place
+    # FYI line is expected here - that's covered on its own below.
+    assert not any("mixed" in line for line in said)
+
+
+def test_run_summary_reports_mixed_place_count_when_present(tmp_path, monkeypatch):
+    """A place both drivers actually visit (Christer's real "Globen
+    Parking") is reported as an FYI "mixed" line, not folded into
+    "without a driver rule" - see mixed_driver_place_keys()'s own
+    docstring. Stubbing mixed_driver_place_keys() directly keeps this
+    test focused on bv_drivers.py's own wiring/wording, since the
+    detection logic itself is exercised in test_place_knowledge.py."""
+
+    trip1 = _make_trip("20260709_080000")
+    trip2 = _make_trip("20260709_180000")
+    fix1 = TripFix(
+        start=HOME, end=WORK,
+        start_time=trip1.start_timestamp, end_time=trip1.end_timestamp,
+    )
+    fix2 = TripFix(
+        start=WORK, end=HOME,
+        start_time=trip2.start_timestamp, end_time=trip2.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[trip1, trip2], fixes=[fix1, fix2])
+    monkeypatch.setattr(bv_drivers, "mixed_driver_place_keys", lambda trips: {"some_place"})
+
+    said = []
+    args = parse_args([str(tmp_path), "--config-dir", str(tmp_path / "config")])
+    exit_code = bv_drivers._run(args, say=said.append)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    assert any(
+        "1 common place(s) with drivers split across trips (mixed - already handled per-trip)"
+        in line
+        for line in said
+    )
+
+
 def test_run_computes_via_point_for_round_trip_and_feeds_it_into_knowledge_base(
     tmp_path, monkeypatch
 ):

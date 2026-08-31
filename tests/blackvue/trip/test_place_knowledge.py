@@ -32,6 +32,7 @@ from blackvue.trip.place_knowledge import dwell_at_destination
 from blackvue.trip.place_knowledge import group_trips_by_place
 from blackvue.trip.place_knowledge import load_knowledge_base
 from blackvue.trip.place_knowledge import local_weekday_and_time
+from blackvue.trip.place_knowledge import mixed_driver_place_keys
 from blackvue.trip.place_knowledge import place_key
 from blackvue.trip.place_knowledge import save_knowledge_base
 from blackvue.trip.place_knowledge import smoothness_raw_from_samples
@@ -388,6 +389,77 @@ def test_undecided_places_needs_min_visits_and_a_missing_rule():
     )
 
     assert result == [common_undecided]
+
+
+def _resolved_trip(place_point, driver_label, *, source="manual-trip") -> TripKnowledge:
+    """A trip already resolved to a driver at `place_point`, the shape
+    mixed_driver_place_keys() looks at - real ones come out of
+    _resolve_trip_driver(), but the tests below only care about
+    away_place_key/driver_label/source."""
+
+    t0 = datetime(2026, 1, 5, 8, 0)
+    return TripKnowledge(
+        trip_label="trip_x",
+        start_time=t0,
+        end_time=t0,
+        weekday="Monday",
+        start_time_of_day="08:00",
+        away_place_key=place_key(place_point),
+        away_point=place_point,
+        dwell_minutes=10.0,
+        stop_category="parked",
+        candidates=(),
+        driver_label=driver_label,
+        source=source,
+    )
+
+
+def test_mixed_driver_place_keys_flags_a_place_split_across_drivers():
+    # Christer's real "Globen Parking": both drivers actually go there,
+    # each trip resolved individually via a per-trip override.
+    trips = [
+        _resolved_trip(PLACE_A, "driver1"),
+        _resolved_trip(PLACE_A, "driver2"),
+        _resolved_trip(PLACE_B, "driver1"),
+        _resolved_trip(PLACE_B, "driver1"),
+    ]
+
+    assert mixed_driver_place_keys(trips) == {place_key(PLACE_A)}
+
+
+def test_mixed_driver_place_keys_ignores_undecided_and_placeless_entries():
+    undecided = _resolved_trip(PLACE_A, "driver1", source="undecided")
+    no_place = replace(_resolved_trip(PLACE_A, "driver2"), away_place_key=None)
+
+    assert mixed_driver_place_keys([undecided, no_place]) == set()
+
+
+def test_undecided_places_excludes_mixed_places_when_trips_given():
+    mixed_key = place_key(PLACE_A)
+    common_mixed = CommonPlace(
+        key=mixed_key, point=PLACE_A, label="Globen Parking", visit_count=6,
+    )
+    common_undecided = CommonPlace(
+        key="other", point=(1.0, 1.0), label="common", visit_count=5,
+    )
+    trips = [
+        _resolved_trip(PLACE_A, "driver1"),
+        _resolved_trip(PLACE_A, "driver2"),
+    ]
+
+    result = undecided_places(
+        {mixed_key: common_mixed, "other": common_undecided},
+        min_visits=2,
+        trips=trips,
+    )
+
+    assert result == [common_undecided]
+
+    # Backward-compatible: omitting trips= doesn't filter anything out,
+    # so older call sites that never learned about "mixed" still work.
+    assert undecided_places(
+        {mixed_key: common_mixed, "other": common_undecided}, min_visits=2,
+    ) == [common_mixed, common_undecided]
 
 
 def test_resolve_trip_driver_prefers_manual_trip_override_over_place_rule():

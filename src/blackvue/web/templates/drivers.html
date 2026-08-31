@@ -68,6 +68,7 @@ driver KB</a> first.</p>
       <form method="post" action="/drivers/places/{{ place.key }}">
       <td>
         {% if place.key in undecided_place_keys %}<strong title="Common place with no driver rule set yet">&#9888;</strong>{% endif %}
+        {% if place.key in mixed_place_keys %}<span class="hint" title="Both drivers visit this place; already handled per-trip, no single rule needed">Mixed</span>{% endif %}
         <input type="text" name="label" value="{{ place.label }}">
         {% set place_label = place_addresses.get(place.key) or ("%.4f"|format(place.point[0]) ~ ", " ~ "%.4f"|format(place.point[1])) %}
         <div class="hint">

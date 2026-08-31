@@ -996,17 +996,62 @@ def bulk_assign_undecided_trips(
     return updated
 
 
+def mixed_driver_place_keys(trips: Sequence[TripKnowledge]) -> set[str]:
+    """Places whose own trips are already resolved to more than one
+    distinct driver - a place both drivers actually visit, like
+    Christer's "Globen Parking" (6 trips, driver1/driver2 mix, all
+    `source: manual-trip`). `_resolve_trip_driver()`'s own resolution
+    order (per-trip override always wins over a place's rule) already
+    makes leaving the place-level `driver` unset and assigning each
+    trip individually the correct, working pattern for this case - see
+    docs/man/bv-drivers.md. The place-level `driver` being None there
+    isn't an oversight nobody's gotten around to; there's no single
+    rule that could ever be right for it. `undecided_places()` uses
+    this to stop flagging a place like this as needing a rule that was
+    never going to apply.
+
+    Only trips with a real resolved driver count (an `undecided` entry
+    says nothing about whether the place is mixed or just not looked
+    at yet), and only entries with a known `away_place_key` obviously
+    apply."""
+
+    labels_by_place: dict[str, set[str]] = {}
+    for entry in trips:
+        if entry.away_place_key is None or entry.driver_label is None:
+            continue
+        if entry.source == "undecided":
+            continue
+        labels_by_place.setdefault(entry.away_place_key, set()).add(
+            entry.driver_label
+        )
+    return {key for key, labels in labels_by_place.items() if len(labels) > 1}
+
+
 def undecided_places(
-    places: dict[str, CommonPlace], *, min_visits: int = 2
+    places: dict[str, CommonPlace],
+    *,
+    min_visits: int = 2,
+    trips: Sequence[TripKnowledge] | None = None,
 ) -> list[CommonPlace]:
     """Places visited at least `min_visits` times ("common") with no
     driver rule set yet - what the web form's "common places to fill
-    in" section lists."""
+    in" section lists.
 
+    `trips`, when given, excludes a place already identified as
+    `mixed_driver_place_keys()` - a place both drivers actually visit
+    was deliberately left without a place-level rule (see that
+    function's own docstring), not overlooked, so it shouldn't count
+    toward "needs a rule" at all. Optional and defaults to not
+    filtering (a couple of older call sites/tests construct
+    `CommonPlace`s directly without a matching trip list)."""
+
+    mixed = mixed_driver_place_keys(trips) if trips is not None else set()
     return [
         place
         for place in places.values()
-        if place.visit_count >= min_visits and place.driver is None
+        if place.visit_count >= min_visits
+        and place.driver is None
+        and place.key not in mixed
     ]
 
 
