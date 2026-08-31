@@ -539,6 +539,30 @@ def _raw_trip_knowledge(
             away_point = trip_fix.end
         elif end_near_home and not start_near_home:
             away_point = trip_fix.start
+        elif start_near_home and end_near_home and trip_fix.via_point is not None:
+            # A trip that starts and ends near home normally has no
+            # away_point at all (see this function's own
+            # dwell_at_destination() sibling guard just below) -
+            # usually because it never really left (e.g. a garage
+            # motion blip). Christer: "When i drive my wife to work in
+            # the morning, the trip starts and stops at Heliosgatan...
+            # it would be nice if we could get where i went, even if i
+            # returned to the starting place." trip_fix.via_point (see
+            # driver_detect.resolve_via_point()) is only ever set when
+            # this trip's own GPS track actually got further from home
+            # than home_radius away at some point in the middle, so
+            # using it here as this round trip's away_point is real
+            # evidence, not a guess - and it's "Full integration" per
+            # Christer's own choice: this feeds the exact same
+            # downstream machinery any other trip's away_point does -
+            # Common Place clustering (_assign_place_clusters(), just
+            # below) and driver-pattern matching (match_driver()'s own
+            # via_round_trip branch, in driver_detect.py). Left out of
+            # dwell_at_destination()/has_parking_footage below on
+            # purpose - there's no real "stop" here to measure a dwell
+            # or parking status for, just a via-point the vehicle
+            # passed through before turning back.
+            away_point = trip_fix.via_point
 
         dwell = dwell_at_destination(trip_fix, prev_fix, next_fix, home, home_radius)
 

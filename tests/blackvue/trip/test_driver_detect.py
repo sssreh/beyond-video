@@ -14,9 +14,11 @@ quick turnaround, no parking - see RoutePattern.requires_parking).
 
 import json
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
+import blackvue.trip.driver_detect as driver_detect
+from blackvue.telemetry.gps_reader import GpsFix
 from blackvue.trip.driver_detect import (
     DriverProfile,
     DriverProfiles,
@@ -30,9 +32,11 @@ from blackvue.trip.driver_detect import (
     load_driver_profiles,
     match_driver,
     rename_driver,
+    resolve_via_point,
     save_driver_profiles,
     write_default_driver_profiles,
 )
+from blackvue.trip.trip import Trip
 
 HOME = (59.3050, 18.1010)
 SOLNA = (59.3600, 18.0000)
@@ -430,3 +434,211 @@ def test_save_driver_profiles_round_trips():
         assert len(loaded.drivers) == 3
         assert loaded.drivers[-1].display_name == "Sofia"
         assert loaded.drivers[-1].label == "driver3"
+
+
+# --------------------------------------------------------------------
+# Round-trip via_point (Christer: "When i drive my wife to work in the
+# morning, the trip starts and stops at Heliosgatan... it would be nice
+# if we could get where i went, even if i returned to the starting
+# place.")
+# --------------------------------------------------------------------
+
+
+def _gps_fix(offset_seconds, point, *, valid=True, confirmed=True):
+    lat, lon = point
+    return GpsFix(
+        timestamp=datetime(2026, 8, 29, 7, 0, 0) + timedelta(seconds=offset_seconds),
+        valid=valid,
+        latitude=lat,
+        longitude=lon,
+        speed_kmh=30.0,
+        course=0.0,
+        confirmed=confirmed,
+    )
+
+
+def test_via_round_trip_matches_commute_pattern():
+    """A round trip whose via_point actually reached `place` should
+    match the same commute pattern a one-way trip would - the vehicle
+    really did go there before turning back."""
+
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=HOME,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:20:00"),
+        via_point=SOLNA,
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    solna_matches = [m for m in matches if m.place == "Solna, Vintervägen 50"]
+    assert solna_matches
+    assert any(m.driver_label == "driver2" for m in solna_matches)
+    assert all("round trip" in m.reason for m in solna_matches)
+
+
+def test_via_point_none_does_not_affect_ordinary_one_way_match():
+    """The overwhelming common case - no via_point at all - must match
+    exactly as before; the via_round_trip branch is purely additive."""
+
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=SOLNA,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:30:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    labels = {(m.driver_label, m.place) for m in matches}
+    assert ("driver2", "Solna, Vintervägen 50") in labels
+    assert all("round trip" not in m.reason for m in matches)
+
+
+def test_via_round_trip_parking_requirement_stays_unverified():
+    """A round trip via Norra Stationsgatan has no adjacent-trip
+    evidence of a real stop there (it's the same single trip there and
+    back, no parking involved) - both drivers' requires_parking
+    patterns should surface at reduced, unverified confidence rather
+    than one silently winning, same treatment as an unresolvable
+    place_to_home leg."""
+
+    profiles = christers_driver_profiles()
+    trip = TripFix(
+        start=HOME,
+        end=HOME,
+        start_time=ts("2026-08-29 08:00:00"),
+        end_time=ts("2026-08-29 08:20:00"),
+        via_point=NORRA_STN,
+    )
+
+    matches = match_driver(trip, None, None, profiles, KNOWN_POINTS)
+
+    norra_matches = [m for m in matches if m.place == "Norra Stationsgatan"]
+    assert norra_matches
+    assert all(m.confidence <= 0.5 for m in norra_matches)
+    assert all("unverified" in m.reason for m in norra_matches)
+
+
+def test_resolve_via_point_returns_furthest_confirmed_point(monkeypatch):
+    """A round trip (both ends near home) whose GPS track actually
+    reached somewhere far away should return that furthest point, not
+    an intermediate one."""
+
+    trip_fix = TripFix(
+        start=HOME,
+        end=HOME,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:20:00"),
+    )
+    trip = Trip(recordings=("rec1", "rec2"))
+    fixes_by_recording = {
+        "rec1": [_gps_fix(0, HOME), _gps_fix(300, NORRA_STN)],
+        "rec2": [_gps_fix(600, SOLNA), _gps_fix(900, HOME)],
+    }
+    monkeypatch.setattr(
+        driver_detect,
+        "read_recording_gps",
+        lambda adapter, recording: fixes_by_recording[recording],
+    )
+
+    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+
+    assert via_point == SOLNA
+
+
+def test_resolve_via_point_ignores_unconfirmed_glitches(monkeypatch):
+    """A lone unconfirmed GPS glitch far from home must not become the
+    via_point - only a confirmed fix counts (mirrors trip_stats.py's
+    own 'Require confirmed positions' redesign)."""
+
+    trip_fix = TripFix(
+        start=HOME,
+        end=HOME,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:20:00"),
+    )
+    trip = Trip(recordings=("rec1",))
+    fixes_by_recording = {
+        "rec1": [
+            _gps_fix(0, HOME),
+            _gps_fix(60, FAR_AWAY_A, confirmed=False),
+            _gps_fix(120, SOLNA, confirmed=True),
+            _gps_fix(300, HOME),
+        ],
+    }
+    monkeypatch.setattr(
+        driver_detect,
+        "read_recording_gps",
+        lambda adapter, recording: fixes_by_recording[recording],
+    )
+
+    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+
+    assert via_point == SOLNA
+
+
+def test_resolve_via_point_returns_none_when_trip_never_left_home(monkeypatch):
+    """A real garage-blip round trip (every fix within home_radius_meters)
+    must return None, not some noise point still technically "furthest" -
+    the exact case away_point/dwell_at_destination() were designed to
+    exclude."""
+
+    trip_fix = TripFix(
+        start=HOME,
+        end=HOME,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:05:00"),
+    )
+    trip = Trip(recordings=("rec1",))
+    fixes_by_recording = {"rec1": [_gps_fix(0, HOME), _gps_fix(60, NEAR_HOME)]}
+    monkeypatch.setattr(
+        driver_detect,
+        "read_recording_gps",
+        lambda adapter, recording: fixes_by_recording[recording],
+    )
+
+    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+
+    assert via_point is None
+
+
+def test_resolve_via_point_skips_one_way_trips_without_reading_gps(monkeypatch):
+    """resolve_via_point() must do nothing for an ordinary one-way trip
+    (start/end not both near home) - it should never even call
+    read_recording_gps(), since that full-track read is the whole cost
+    this function is meant to avoid paying for the common case."""
+
+    trip_fix = TripFix(
+        start=HOME,
+        end=SOLNA,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:20:00"),
+    )
+    trip = Trip(recordings=("rec1",))
+
+    def _boom(adapter, recording):
+        raise AssertionError("read_recording_gps() should not be called")
+
+    monkeypatch.setattr(driver_detect, "read_recording_gps", _boom)
+
+    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+
+    assert via_point is None
+
+
+def test_resolve_via_point_returns_none_without_home():
+    trip_fix = TripFix(
+        start=HOME,
+        end=HOME,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:20:00"),
+    )
+    trip = Trip(recordings=("rec1",))
+
+    via_point = resolve_via_point(None, trip, trip_fix, None, 300.0)
+
+    assert via_point is None

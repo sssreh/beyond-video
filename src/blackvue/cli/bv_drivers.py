@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from ..lexicaltimeparser import LexicalTimeParser
 from ..trip.driver_detect import default_driver_profiles_path
 from ..trip.driver_detect import resolve_known_points
 from ..trip.driver_detect import resolve_trip_fix
+from ..trip.driver_detect import resolve_via_point
 from ..trip.driver_detect import write_default_driver_profiles
 from ..trip.place_knowledge import default_driver_knowledge_path
 from ..trip.place_knowledge import build_knowledge_base
@@ -410,9 +412,25 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         fixes_start = time.monotonic()
         progress = DotProgress() if args.trace else None
+        home_point = known_points.get("home")
+        home_radius = profiles.home_radius_meters
         fixes = []
         for trip in trips:
-            fixes.append(resolve_trip_fix(adapter, trip))
+            trip_fix = resolve_trip_fix(adapter, trip)
+            # resolve_via_point() does nothing (returns None fast)
+            # unless trip_fix's own start/end are both near home, so
+            # this costs nothing extra for the common one-way trip -
+            # see that function's own docstring for why round trips
+            # alone are worth the full-track GPS read. Christer: "the
+            # trip starts and stops at Heliosgatan... it would be nice
+            # if we could get where i went, even if i returned to the
+            # starting place."
+            via_point = resolve_via_point(
+                adapter, trip, trip_fix, home_point, home_radius
+            )
+            if via_point is not None:
+                trip_fix = replace(trip_fix, via_point=via_point)
+            fixes.append(trip_fix)
             if progress is not None:
                 progress.tick()
         if progress is not None:

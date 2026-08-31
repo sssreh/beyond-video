@@ -667,6 +667,60 @@ def test_build_knowledge_base_end_to_end_with_real_trip_objects():
     assert resolved[1].camera_id == "kirby"
 
 
+def test_build_knowledge_base_round_trip_uses_via_point_as_away_point():
+    """Christer: 'When i drive my wife to work in the morning, the
+    trip starts and stops at Heliosgatan... it would be nice if we
+    could get where i went, even if i returned to the starting
+    place.' A single trip whose start/end are both near home but whose
+    trip_fix.via_point reached PLACE_A (see driver_detect.
+    resolve_via_point()) should cluster into a Common Place there -
+    exactly like a real one-way trip's away_point already does - not
+    be left with no destination at all."""
+
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+    round_trip = make_trip(t0)
+    round_trip_fix = TripFix(
+        start=HOME, end=HOME, start_time=t0, end_time=t0, via_point=PLACE_A,
+    )
+
+    resolved, places = build_knowledge_base(
+        [round_trip], [round_trip_fix], profiles, {"home": HOME},
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].away_point == PLACE_A
+    assert resolved[0].away_place_key == place_key(PLACE_A)
+    assert len(places) == 1
+    # No real "stop" happened here (see this test's own docstring) -
+    # there's no adjacent-trip dwell to measure and no parking
+    # footage evidence, so both stay unset, unlike a real one-way
+    # trip's stop.
+    assert resolved[0].dwell_minutes is None
+    assert resolved[0].stop_category is None
+
+
+def test_build_knowledge_base_round_trip_without_via_point_has_no_destination():
+    """The pre-existing behavior this feature must not disturb: a
+    round trip whose via_point was never resolved (e.g. the vehicle
+    genuinely never left home - a garage motion blip) still gets no
+    away_point at all, same as before this feature existed."""
+
+    profiles = make_profiles()
+    t0 = datetime(2026, 1, 5, 8, 0)
+    round_trip = make_trip(t0)
+    round_trip_fix = TripFix(start=HOME, end=HOME, start_time=t0, end_time=t0)
+
+    resolved, places = build_knowledge_base(
+        [round_trip], [round_trip_fix], profiles, {"home": HOME},
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].away_point is None
+    assert resolved[0].away_place_key is None
+    assert places == {}
+
+
 def test_build_knowledge_base_defaults_camera_id_to_none():
     profiles = make_profiles()
     t0 = datetime(2026, 1, 5, 8, 0)

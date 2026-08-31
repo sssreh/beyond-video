@@ -250,6 +250,79 @@ def test_run_builds_and_saves_knowledge_base(tmp_path, monkeypatch):
     assert trip_overrides == {}
 
 
+def test_run_computes_via_point_for_round_trip_and_feeds_it_into_knowledge_base(
+    tmp_path, monkeypatch
+):
+    """Christer: 'the trip starts and stops at Heliosgatan... it would
+    be nice if we could get where i went, even if i returned to the
+    starting place.' bv_drivers.py's fixes-building loop must call
+    resolve_via_point() for a round-trip TripFix (both start/end near
+    home) and thread its result into the TripFix passed into
+    build_knowledge_base(), so the round trip still ends up with a
+    real away_point/Common Place instead of none at all."""
+
+    round_trip = _make_trip("20260709_080000")
+    round_trip_fix = TripFix(
+        start=HOME, end=HOME,
+        start_time=round_trip.start_timestamp, end_time=round_trip.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[round_trip], fixes=[round_trip_fix])
+
+    calls = []
+
+    def fake_resolve_via_point(adapter, trip, trip_fix, home, home_radius_meters):
+        calls.append((trip, trip_fix, home, home_radius_meters))
+        return WORK
+
+    monkeypatch.setattr(bv_drivers, "resolve_via_point", fake_resolve_via_point)
+
+    config_dir = tmp_path / "config"
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    assert len(calls) == 1
+    called_trip, called_fix, called_home, called_radius = calls[0]
+    assert called_trip is round_trip
+    assert called_fix.start == HOME and called_fix.end == HOME
+    assert called_home == HOME
+    assert called_radius == 300.0
+
+    loaded = load_knowledge_base(config_dir / "driver_knowledge.json")
+    assert loaded is not None
+    loaded_trips, loaded_places, _ = loaded
+    assert loaded_trips[0].away_point == WORK
+    assert len(loaded_places) == 1
+
+
+def test_run_skips_via_point_when_resolver_finds_none(tmp_path, monkeypatch):
+    """A round trip that genuinely never left home (resolve_via_point()
+    returns None - see that function's own docstring) must keep the
+    pre-existing no-away_point behavior, not crash or invent one."""
+
+    round_trip = _make_trip("20260709_080000")
+    round_trip_fix = TripFix(
+        start=HOME, end=HOME,
+        start_time=round_trip.start_timestamp, end_time=round_trip.end_timestamp,
+    )
+    _install_fakes(monkeypatch, trips=[round_trip], fixes=[round_trip_fix])
+    monkeypatch.setattr(
+        bv_drivers, "resolve_via_point",
+        lambda adapter, trip, trip_fix, home, home_radius_meters: None,
+    )
+
+    config_dir = tmp_path / "config"
+    args = parse_args([str(tmp_path), "--config-dir", str(config_dir)])
+    exit_code = bv_drivers._run(args, say=lambda _: None)
+
+    assert exit_code == bv_drivers.EXIT_OK
+    loaded = load_knowledge_base(config_dir / "driver_knowledge.json")
+    assert loaded is not None
+    loaded_trips, loaded_places, _ = loaded
+    assert loaded_trips[0].away_point is None
+    assert loaded_places == {}
+
+
 def test_run_drops_trips_not_ending_in_parking_mode(tmp_path, monkeypatch):
     # Christer, having reasoned it through himself: "En trip borjar och
     # slutar ju i hammarby sjostad aven om hon jobbar pa norra

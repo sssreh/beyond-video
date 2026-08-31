@@ -70,6 +70,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..adapters.base import CameraAdapter
+from ..adapters.telemetry_bridge import read_recording_gps
 from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from ..export.geocoding import GeocodeResult, load_or_forward_geocode
 from ..generate.media import MediaToolError
@@ -468,13 +469,26 @@ class TripFix:
     own docstring) reads it off `trip_fix`/`prev_fix` rather than a
     wall-clock dwell computation. Resolved once per trip here, same
     reason start/end/start_time/end_time are, so match_driver() itself
-    still needs no Recording/adapter reference of its own."""
+    still needs no Recording/adapter reference of its own.
+
+    `via_point` is the furthest point from home reached anywhere along
+    this trip's own GPS track, set only for a round trip (`start` and
+    `end` both near home) whose track actually went somewhere - see
+    resolve_via_point()'s own docstring. Christer, on why this exists:
+    "When i drive my wife to work in the morning, the trip starts and
+    stops at Heliosgatan... it would be nice if we could get where i
+    went, even if i returned to the starting place." Left None for
+    every trip resolve_trip_fix() builds on its own; only bv_drivers.py's
+    build command (which has `home` and `home_radius_meters` in hand)
+    computes and attaches it via `dataclasses.replace()` - see that
+    module's own fixes-building loop."""
 
     start: tuple[float, float] | None
     end: tuple[float, float] | None
     start_time: datetime
     end_time: datetime
     has_parking_footage: bool = False
+    via_point: tuple[float, float] | None = None
 
 
 def _first_resolvable_start(
@@ -574,6 +588,74 @@ def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
         end_time=trip.end_timestamp,
         has_parking_footage=has_parking_footage,
     )
+
+
+def resolve_via_point(
+    adapter: CameraAdapter,
+    trip: Trip,
+    trip_fix: TripFix,
+    home: tuple[float, float] | None,
+    home_radius_meters: float,
+) -> tuple[float, float] | None:
+    """Find the furthest point from `home` anywhere along `trip`'s own
+    GPS track, for a round trip whose resolve_trip_fix()-resolved
+    `start`/`end` are both near home - see TripFix.via_point's own
+    docstring for why this exists (Christer's morning drop-off:
+    "the trip starts and stops at Heliosgatan").
+
+    Deliberately does nothing (returns None immediately) unless
+    `trip_fix.start` and `trip_fix.end` are both near `home` - a real
+    one-way trip already gets a perfectly good away_point from
+    resolve_trip_fix() alone (see place_knowledge._raw_trip_knowledge()),
+    so there's no reason to pay this function's own cost (reading every
+    recording's full GPS track, not just first/last - see TripFix's own
+    docstring for why resolve_trip_fix() normally doesn't need to) on
+    the common case.
+
+    Scans every recording in the trip (in order, front-to-back doesn't
+    matter here - unlike resolve_trip_fix()'s start/end search, every
+    fix is a candidate) and keeps whichever confirmed, positioned fix
+    sits furthest from `home` by the same haversine distance _near()
+    uses. Only trusts `fix.confirmed` positions (mirrors trip_stats.py's
+    own "Require confirmed positions" redesign - a lone GPS glitch
+    during acquisition becoming this trip's away_point would be worse
+    than missing one entirely).
+
+    Returns None whenever there's nothing real to report: `home` is
+    unknown, the trip isn't a round trip in the first place, no
+    recording yields a single confirmed positioned fix, or the furthest
+    fix found is still within `home_radius_meters` of home (a real
+    "never actually left" round trip - e.g. a garage motion blip - the
+    exact case away_point/dwell_at_destination() were originally
+    designed to exclude; see dwell_at_destination()'s own docstring)."""
+
+    if home is None:
+        return None
+    if not (
+        _near(trip_fix.start, home, home_radius_meters)
+        and _near(trip_fix.end, home, home_radius_meters)
+    ):
+        return None
+
+    furthest_point: tuple[float, float] | None = None
+    furthest_distance = 0.0
+
+    for recording in trip.recordings:
+        for fix in read_recording_gps(adapter, recording):
+            if not fix.valid or not fix.confirmed:
+                continue
+            if fix.latitude is None or fix.longitude is None:
+                continue
+            point = (fix.latitude, fix.longitude)
+            distance = _haversine_distance_meters(*point, *home)
+            if distance > furthest_distance:
+                furthest_distance = distance
+                furthest_point = point
+
+    if furthest_point is None or furthest_distance <= home_radius_meters:
+        return None
+
+    return furthest_point
 
 
 @dataclass(frozen=True)
@@ -805,8 +887,24 @@ def match_driver(
             place_to_home = _near(
                 trip_fix.start, place_point, pattern.radius_meters
             ) and _near(trip_fix.end, home, profiles.home_radius_meters)
+            # A round trip - both ends near home, nowhere near `place`
+            # by trip_fix.start/end alone - can still be a real
+            # home<->place commute if the vehicle actually reached
+            # `place` somewhere in the middle before returning (see
+            # TripFix.via_point's own docstring: Christer's morning
+            # drop-off at Heliosgatan is exactly this shape). Checked
+            # as its own separate condition, not folded into
+            # home_to_place/place_to_home above, so an ordinary one-way
+            # trip's matching is completely unaffected by via_point
+            # even existing.
+            via_round_trip = (
+                trip_fix.via_point is not None
+                and _near(trip_fix.start, home, profiles.home_radius_meters)
+                and _near(trip_fix.end, home, profiles.home_radius_meters)
+                and _near(trip_fix.via_point, place_point, pattern.radius_meters)
+            )
 
-            if not home_to_place and not place_to_home:
+            if not home_to_place and not place_to_home and not via_round_trip:
                 continue
 
             parking_signal: bool | None = None
@@ -822,12 +920,23 @@ def match_driver(
                     # return leg's.
                     parking_signal = prev_fix.has_parking_footage
                     parking_verified = True
+                # via_round_trip: there's no adjacent trip to check -
+                # it's the same single trip there and back, with no
+                # real "stop" at `place` at all (the vehicle never
+                # parked, just turned around) - parking_verified stays
+                # False, same as an unresolvable place_to_home leg
+                # below, rather than guessing from trip_fix's own tail
+                # (which is the arrival back home, not evidence about
+                # `place`).
 
                 if parking_verified and parking_signal != pattern.requires_parking:
                     continue
 
             confidence = 0.6
-            reason = f"{'home -> ' + pattern.place if home_to_place else pattern.place + ' -> home'}"
+            if via_round_trip and not home_to_place and not place_to_home:
+                reason = f"home -> {pattern.place} -> home (round trip)"
+            else:
+                reason = f"{'home -> ' + pattern.place if home_to_place else pattern.place + ' -> home'}"
             if pattern.requires_parking is not None:
                 if parking_verified:
                     confidence = 0.9

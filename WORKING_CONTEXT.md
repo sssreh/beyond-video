@@ -22109,3 +22109,82 @@ cleanly under a bare Jinja2 `Environment`; a standalone script computes
 renders just the dropdown snippet through Jinja2 and confirms the
 expected `"Christer (2)"`, `"Dao (1)"`, and `"Undecided (3)"` option
 text all appear.
+
+## Show a destination for round trips that start and end at home
+
+Christer: "I have a little problem. When i drive my wife to work in
+the morning, the trip starts and stops at Heliosgatan. I don't want to
+break our drivers trips to much, but it would be nice if we could get
+where i went, even if i returned to the starting place. Any thoughts?"
+A trip like this (drop wife at work, drive straight home) has both
+endpoints near home, so `place_knowledge.py`'s existing `away_point`
+logic — which only fires when exactly one end of the trip is near
+home — was leaving `away_point` as `None`. The trip showed up in
+`/drivers` with no destination at all. He also asked mid-design "Does
+that mean that it counts as 2 trips?" — no: this is enrichment of what
+a single trip displays, not a change to `TripBuilder`'s splitting
+logic, which is untouched.
+
+Fix: added `resolve_via_point(adapter, trip, trip_fix, home,
+home_radius_meters)` to `driver_detect.py`. It short-circuits to
+`None` immediately — no GPS read at all — unless `trip_fix.start` and
+`trip_fix.end` are both near `home`, so the cost of reading every
+recording's full GPS track only ever applies to round-trip candidates,
+not the common one-way trip. For a candidate, it reads all fixes
+across the trip's recordings (via `read_recording_gps`), keeps only
+`fix.valid and fix.confirmed` (the same "require confirmed positions"
+standard `trip_stats.py` uses, so a GPS-acquisition glitch can't
+produce a bogus destination), and returns whichever confirmed fix is
+furthest from `home`. If even the furthest point never left
+`home_radius_meters`, it returns `None` — that's a genuine "never
+left" trip (e.g. a garage motion blip), which is exactly the case the
+original `away_point` guard was designed to exclude, and it still
+shows no destination.
+
+`TripFix` gained a new `via_point: tuple[float, float] | None = None`
+field to carry this. It's never set by `resolve_trip_fix()` itself
+(which has no `home` to compare against) — only `bv_drivers.py`'s
+build loop computes it, per trip, after the normal `resolve_trip_fix`
+call, and attaches it via `dataclasses.replace(trip_fix,
+via_point=via_point)` before the fix is used downstream.
+
+Two consumers wired up for "full integration," per Christer's choice
+when asked how deep to take this:
+
+`place_knowledge.py`'s `_raw_trip_knowledge()` gained a third
+`away_point` branch: when both ends are near home and
+`trip_fix.via_point` is set, `away_point = trip_fix.via_point`. That
+feeds `_assign_place_clusters()` exactly like any other trip's
+`away_point`, so round-trip destinations cluster into Common Places
+the same way one-way destinations do. `dwell_at_destination()` and the
+`has_parking_footage`/`stop_category` block are deliberately left
+untouched for these trips — there's no real "stop" to measure a dwell
+or parking status against, just a moment furthest from home.
+
+`match_driver()` gained an independent `via_round_trip` condition
+(kept separate from the existing `home_to_place`/`place_to_home`
+checks, so trips without a `via_point` are provably unaffected) that
+lets a round trip match a named commute `RoutePattern` when
+`trip_fix.via_point` lands near that pattern's place. Parking-
+requirement verification stays unverified for this branch — a round
+trip has no adjacent "did you park" evidence, it's the same single
+trip there and back — so it surfaces at reduced confidence (≤0.5)
+with `"unverified"` in the reason string, the same treatment the
+existing "place_to_home leg with no prev_fix" case already gets. The
+reason string reports it as `"home -> {place} -> home (round trip)"`.
+
+Verified: no pytest or network available in this sandbox (`pip
+install pytest` hits a proxy 403; Nominatim is unreachable), so tests
+were written directly into the real pytest files (`test_driver_detect.py`,
+`test_place_knowledge.py`, `test_bv_drivers.py` — 8, 2, and 2 new tests
+respectively) and separately verified via standalone harness scripts
+that import the real source modules and replicate the same assertions
+by hand — 38/38 checks passed, including a regression check that
+re-ran the pre-existing one-way-trip-pair scenario in `bv_drivers.py`
+through the real, unfaked `resolve_via_point()` and confirmed no
+change. Attempted to also verify against Christer's real archive
+(mounted `Kirby` folder, ~1,831 GPS files) but couldn't complete it in
+this sandbox: geocoding needs network (unavailable), and even a
+network-free scan via `adapter.open_archive()` alone timed out twice
+on the mounted folder's I/O. This step was not completed and Christer
+should be aware a live archive run wasn't possible here.
