@@ -14,8 +14,8 @@ one-off/specific trips. Scoped to the live Kirby (2026) archive only -
 Christer: "i dont [think] we will check up on trips for previous years
 before 2026, the addresses will probably change over time" - so this
 module (and driver_knowledge.json) never looks at older per-year
-archives, and a place's label/parked_driver/no_parking_driver are plain
-hand-edited text/labels, not something meant to stay accurate forever.
+archives, and a place's label/driver are plain hand-edited text/labels,
+not something meant to stay accurate forever.
 
 The stay-category flag was originally a wall-clock 15-minute dwell
 threshold ("short"/"long", inferred from the gap between adjacent
@@ -54,8 +54,8 @@ Two ideas drive the design:
 
 2. Places are identified by a deterministic grid cell, not clustered
    by a stateful algorithm. See place_key()'s own docstring - this is
-   what lets a manual parked_driver/no_parking_driver assignment
-   survive a rebuild (a fresh `bv-drivers build` run) without needing
+   what lets a manual driver assignment survive a rebuild (a fresh
+   `bv-drivers build` run) without needing
    to persist/match previous cluster centroids at all: the same
    destination always hashes to the same key, so
    build_common_places(existing=...) just carries the prior CommonPlace's
@@ -460,25 +460,30 @@ class TripKnowledge:
 @dataclass(frozen=True)
 class CommonPlace:
     """One destination grid cell (see place_key()) Christer's vehicle
-    has visited away from home, with his own parked_driver/
-    no_parking_driver rules once he's set them - both start as None
-    ("undecided"), the exact state undecided_places() below surfaces
-    for the web form.
+    has visited away from home, with his own `driver` rule once he's
+    set it - starts as None ("undecided"), the exact state
+    undecided_places() below surfaces for the web form.
 
-    Named parked/no_parking (not short/long - see this module's
-    docstring for why) after stop_category()'s own two category
-    values: parked_count/parked_driver cover stops that ended in a
-    downloaded Parking-mode recording, no_parking_count/
-    no_parking_driver cover ones that didn't."""
+    One rule per place, not one per stop_category (parked/no-parking).
+    That split existed briefly but Christer found the resulting "No
+    parking file" column confusing, and rightly so: bv_drivers.py's
+    own P-ending trip filter (see that module's docstring) already
+    drops any trip that doesn't end in a downloaded Parking-mode
+    recording, except the single most-recent trip in the whole
+    archive - so a place's no-parking-category visits are essentially
+    always zero (confirmed against Christer's own real
+    driver_knowledge.json: 0 across all 51 places). Christer,
+    confirming the collapse: "If no parking sidecars, then there is no
+    trip." TripKnowledge.stop_category is still computed and shown per
+    trip (informational - "Parked"/"No parking file" next to a trip's
+    own Stay column) since it's real, just rare; it no longer drives a
+    separate place-level rule."""
 
     key: str
     point: tuple[float, float]
     label: str
     visit_count: int
-    parked_count: int
-    no_parking_count: int
-    parked_driver: str | None = None
-    no_parking_driver: str | None = None
+    driver: str | None = None
 
 
 # --------------------------------------------------------------------
@@ -577,16 +582,13 @@ def build_common_places(
     """Aggregate `knowledge` into one CommonPlace per distinct away
     destination grid cell. `existing` (a previously-saved registry -
     see load_knowledge_base()) supplies each place's own label and any
-    manual parked_driver/no_parking_driver Christer already set; those
-    survive a rebuild untouched - only visit_count/parked_count/
-    no_parking_count (and, for a place `existing` has never seen,
-    point/label) are recomputed from `knowledge`."""
+    manual `driver` rule Christer already set; those survive a rebuild
+    untouched - only visit_count (and, for a place `existing` has
+    never seen, point/label) is recomputed from `knowledge`."""
 
     existing = existing or {}
     points: dict[str, tuple[float, float]] = {}
     visit_counts: dict[str, int] = {}
-    parked_counts: dict[str, int] = {}
-    no_parking_counts: dict[str, int] = {}
 
     for entry in knowledge:
         key = entry.away_place_key
@@ -594,10 +596,6 @@ def build_common_places(
             continue
         points.setdefault(key, entry.away_point)  # type: ignore[arg-type]
         visit_counts[key] = visit_counts.get(key, 0) + 1
-        if entry.stop_category == "parked":
-            parked_counts[key] = parked_counts.get(key, 0) + 1
-        elif entry.stop_category == "no-parking":
-            no_parking_counts[key] = no_parking_counts.get(key, 0) + 1
 
     places: dict[str, CommonPlace] = {}
     for key, visit_count in visit_counts.items():
@@ -612,12 +610,7 @@ def build_common_places(
                 else f"Place near {point[0]:.3f}, {point[1]:.3f}"
             ),
             visit_count=visit_count,
-            parked_count=parked_counts.get(key, 0),
-            no_parking_count=no_parking_counts.get(key, 0),
-            parked_driver=(prior.parked_driver if prior is not None else None),
-            no_parking_driver=(
-                prior.no_parking_driver if prior is not None else None
-            ),
+            driver=(prior.driver if prior is not None else None),
         )
 
     return places
@@ -630,9 +623,9 @@ def _resolve_trip_driver(
     override_label: str | None,
 ) -> TripKnowledge:
     """Resolution order: (1) a manual override on this specific trip
-    always wins; (2) else the matching parked/no-parking-stay rule on
-    this trip's CommonPlace, if Christer has set one; (3) else the
-    best driver_detect.match_driver() named-pattern candidate, if any;
+    always wins; (2) else this trip's CommonPlace's own `driver` rule,
+    if Christer has set one; (3) else the best
+    driver_detect.match_driver() named-pattern candidate, if any;
     (4) else stays "undecided" (entry's own defaults, unchanged)."""
 
     display_names = {driver.label: driver.display_name for driver in profiles.drivers}
@@ -646,20 +639,14 @@ def _resolve_trip_driver(
             source="manual-trip",
         )
 
-    if place is not None and entry.stop_category is not None:
-        rule_driver = (
-            place.no_parking_driver
-            if entry.stop_category == "no-parking"
-            else place.parked_driver
+    if place is not None and place.driver is not None:
+        return replace(
+            entry,
+            driver_label=place.driver,
+            display_name=display_names.get(place.driver, place.driver),
+            confidence=PLACE_RULE_CONFIDENCE,
+            source="place-rule",
         )
-        if rule_driver is not None:
-            return replace(
-                entry,
-                driver_label=rule_driver,
-                display_name=display_names.get(rule_driver, rule_driver),
-                confidence=PLACE_RULE_CONFIDENCE,
-                source="place-rule",
-            )
 
     if entry.candidates:
         best = max(entry.candidates, key=lambda candidate: candidate.confidence)
@@ -822,18 +809,14 @@ def bulk_assign_undecided_trips(
 def undecided_places(
     places: dict[str, CommonPlace], *, min_visits: int = 2
 ) -> list[CommonPlace]:
-    """Places visited at least `min_visits` times ("common") that have
-    at least one stay-length category with no driver rule set yet -
-    what the web form's "common places to fill in" section lists."""
+    """Places visited at least `min_visits` times ("common") with no
+    driver rule set yet - what the web form's "common places to fill
+    in" section lists."""
 
     return [
         place
         for place in places.values()
-        if place.visit_count >= min_visits
-        and (
-            (place.no_parking_count > 0 and place.no_parking_driver is None)
-            or (place.parked_count > 0 and place.parked_driver is None)
-        )
+        if place.visit_count >= min_visits and place.driver is None
     ]
 
 
@@ -852,9 +835,9 @@ def group_trips_by_place(
     """Every trip that resolved to a given away-place, keyed by
     CommonPlace.key and sorted most-recent-first - Christer's own
     follow-up ask ("common places should show each trip with all what
-    that means"): a CommonPlace row's visit_count/parked_count/
-    no_parking_count only say *how many* trips went there, not *which*
-    ones, so the web form groups the same TripKnowledge entries
+    that means"): a CommonPlace row's visit_count only says *how many*
+    trips went there, not *which* ones, so the web form groups the
+    same TripKnowledge entries
     build_common_places() already counts back out into actual per-trip
     lists to show under each place."""
 
@@ -896,37 +879,35 @@ def _place_to_dict(place: CommonPlace) -> dict:
         "point": list(place.point),
         "label": place.label,
         "visit_count": place.visit_count,
-        "parked_count": place.parked_count,
-        "no_parking_count": place.no_parking_count,
-        "parked_driver": place.parked_driver,
-        "no_parking_driver": place.no_parking_driver,
+        "driver": place.driver,
     }
 
 
 def _place_from_dict(key: str, data: dict) -> CommonPlace:
-    # Backward-compat migration: a driver_knowledge.json written before
-    # Christer's "long and short doesn't exist any more" redesign (see
-    # stop_category()'s own docstring) still has short_stay_*/
-    # long_stay_* keys - "long stay" loosely corresponds to what's now
-    # "parked" (the whole point of the redesign was Christer's own
-    # observation that a long stay is what leaves a P recording behind),
-    # so long_stay_driver -> parked_driver and short_stay_driver ->
-    # no_parking_driver is the closest honest carry-forward of a rule
-    # Christer already set by hand - better than silently discarding it
-    # and making him re-fill the form. New keys always win if present.
+    # Backward-compat migration, two generations deep. A
+    # driver_knowledge.json written before the parked/no-parking split
+    # was collapsed back into one `driver` field (Christer found the
+    # "No parking file" column confusing - see CommonPlace's own
+    # docstring) still has parked_driver/no_parking_driver keys;
+    # prefer parked_driver (checked against Christer's real registry:
+    # 6 places had parked_driver set, 0 had no_parking_driver, so this
+    # loses nothing for him) and fall back to no_parking_driver. Older
+    # still, a driver_knowledge.json written before *that* redesign
+    # (see stop_category()'s own docstring) has long_stay_driver/
+    # short_stay_driver instead - "long stay" loosely corresponds to
+    # "parked". New `driver` key always wins if present.
     point = data.get("point") or [0.0, 0.0]
     return CommonPlace(
         key=key,
         point=(float(point[0]), float(point[1])),
         label=data.get("label", key),
         visit_count=int(data.get("visit_count", 0)),
-        parked_count=int(data.get("parked_count", data.get("long_stay_count", 0))),
-        no_parking_count=int(
-            data.get("no_parking_count", data.get("short_stay_count", 0))
-        ),
-        parked_driver=data.get("parked_driver", data.get("long_stay_driver")),
-        no_parking_driver=data.get(
-            "no_parking_driver", data.get("short_stay_driver")
+        driver=data.get(
+            "driver",
+            data.get(
+                "parked_driver",
+                data.get("no_parking_driver", data.get("long_stay_driver")),
+            ),
         ),
     )
 

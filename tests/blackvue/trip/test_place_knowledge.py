@@ -179,7 +179,12 @@ def _knowledge_entry(place_point, category, dwell) -> TripKnowledge:
     )
 
 
-def test_build_common_places_counts_visits_by_stop_category():
+def test_build_common_places_counts_visits():
+    # Visit counting no longer cares which stop_category a trip landed
+    # in - see CommonPlace's own docstring: the parked/no-parking split
+    # was collapsed to one driver rule per place, because the P-ending
+    # trip filter makes "no-parking" essentially always empty for real
+    # data anyway.
     entries = [
         _knowledge_entry(PLACE_A, "parked", 40.0),
         _knowledge_entry(PLACE_A, "no-parking", 5.0),
@@ -190,13 +195,10 @@ def test_build_common_places_counts_visits_by_stop_category():
     assert len(places) == 1
     place = next(iter(places.values()))
     assert place.visit_count == 3
-    assert place.parked_count == 1
-    assert place.no_parking_count == 2
-    assert place.no_parking_driver is None
-    assert place.parked_driver is None
+    assert place.driver is None
 
 
-def test_build_common_places_carries_forward_existing_rules_and_label():
+def test_build_common_places_carries_forward_existing_rule_and_label():
     entries = [_knowledge_entry(PLACE_A, "parked", 40.0)]
     key = place_key(PLACE_A)
     existing = {
@@ -205,10 +207,7 @@ def test_build_common_places_carries_forward_existing_rules_and_label():
             point=PLACE_A,
             label="Grandma's house",
             visit_count=1,
-            parked_count=1,
-            no_parking_count=0,
-            no_parking_driver="driver1",
-            parked_driver="driver2",
+            driver="driver2",
         )
     }
 
@@ -216,26 +215,19 @@ def test_build_common_places_carries_forward_existing_rules_and_label():
 
     place = places[key]
     assert place.label == "Grandma's house"
-    assert place.no_parking_driver == "driver1"
-    assert place.parked_driver == "driver2"
+    assert place.driver == "driver2"
     # visit_count itself is recomputed fresh from `entries`, not carried:
     assert place.visit_count == 1
 
 
 def test_undecided_places_needs_min_visits_and_a_missing_rule():
-    key = place_key(PLACE_A)
-    rare_place = CommonPlace(
-        key=key, point=PLACE_A, label="rare", visit_count=1,
-        no_parking_count=1, parked_count=0,
-    )
+    rare_place = CommonPlace(key="rare", point=PLACE_A, label="rare", visit_count=1)
     common_undecided = CommonPlace(
         key="other", point=(1.0, 1.0), label="common", visit_count=5,
-        no_parking_count=3, parked_count=2,
     )
     common_decided = CommonPlace(
         key="decided", point=(2.0, 2.0), label="decided", visit_count=5,
-        no_parking_count=3, parked_count=2,
-        no_parking_driver="driver1", parked_driver="driver2",
+        driver="driver1",
     )
 
     result = undecided_places(
@@ -251,7 +243,7 @@ def test_resolve_trip_driver_prefers_manual_trip_override_over_place_rule():
     entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     place = CommonPlace(
         key=entry.away_place_key, point=PLACE_A, label="Place", visit_count=1,
-        no_parking_count=0, parked_count=1, parked_driver="driver1",
+        driver="driver1",
     )
 
     resolved = _resolve_trip_driver(entry, place, profiles, "driver2")
@@ -262,13 +254,14 @@ def test_resolve_trip_driver_prefers_manual_trip_override_over_place_rule():
     assert resolved.confidence == 1.0
 
 
-def test_resolve_trip_driver_disambiguates_no_parking_vs_parked_rule():
+def test_resolve_trip_driver_applies_place_rule_regardless_of_stop_category():
+    # One driver per place now (Christer: "Remove it, one driver per
+    # place") - the same place.driver rule applies whether this
+    # particular trip ended "parked" or "no-parking".
     profiles = make_profiles()
     key = place_key(PLACE_A)
     place = CommonPlace(
-        key=key, point=PLACE_A, label="Place", visit_count=2,
-        no_parking_count=1, parked_count=1,
-        no_parking_driver="driver2", parked_driver="driver1",
+        key=key, point=PLACE_A, label="Place", visit_count=2, driver="driver1",
     )
 
     parked_entry = _knowledge_entry(PLACE_A, "parked", 40.0)
@@ -278,7 +271,7 @@ def test_resolve_trip_driver_disambiguates_no_parking_vs_parked_rule():
     resolved_no_parking = _resolve_trip_driver(no_parking_entry, place, profiles, None)
 
     assert resolved_parked.driver_label == "driver1" and resolved_parked.source == "place-rule"
-    assert resolved_no_parking.driver_label == "driver2" and resolved_no_parking.source == "place-rule"
+    assert resolved_no_parking.driver_label == "driver1" and resolved_no_parking.source == "place-rule"
 
 
 def test_resolve_trip_driver_falls_back_to_best_candidate_then_undecided():
@@ -541,8 +534,7 @@ def test_save_and_load_knowledge_base_round_trip_preserves_overrides():
     entry = _knowledge_entry(PLACE_A, "parked", 40.0)
     key = entry.away_place_key
     place = CommonPlace(
-        key=key, point=PLACE_A, label="My place", visit_count=1,
-        no_parking_count=0, parked_count=1, parked_driver="driver1",
+        key=key, point=PLACE_A, label="My place", visit_count=1, driver="driver1",
     )
     resolved = _resolve_trip_driver(entry, place, profiles, None)
 
@@ -562,7 +554,7 @@ def test_save_and_load_knowledge_base_round_trip_preserves_overrides():
     assert loaded_trips[0].driver_label == "driver1"
     assert loaded_trips[0].away_point == PLACE_A
     assert loaded_places[key].label == "My place"
-    assert loaded_places[key].parked_driver == "driver1"
+    assert loaded_places[key].driver == "driver1"
     assert loaded_overrides == {"trip_x": "driver2"}
 
 
@@ -571,11 +563,32 @@ def test_load_knowledge_base_returns_none_when_missing():
     assert load_knowledge_base(missing) is None
 
 
-def test_place_from_dict_migrates_old_short_long_stay_keys():
-    """A driver_knowledge.json written before the P-file redesign might
-    still have short_stay_*/long_stay_* keys - both should migrate to
-    the equivalent new field (see _place_from_dict()'s own docstring:
-    "long stay" loosely corresponds to what's now "parked")."""
+def test_place_from_dict_prefers_new_driver_key():
+    from blackvue.trip.place_knowledge import _place_from_dict
+
+    data = {
+        "point": [PLACE_A[0], PLACE_A[1]],
+        "label": "New place",
+        "visit_count": 5,
+        "driver": "driver1",
+        # Stale leftovers from an older generation's file must not
+        # override the new `driver` key once it's present.
+        "parked_driver": "driver2",
+    }
+
+    place = _place_from_dict("some_key", data)
+
+    assert place.driver == "driver1"
+
+
+def test_place_from_dict_migrates_parked_driver_over_no_parking_driver():
+    """A driver_knowledge.json written before the parked/no-parking
+    split was collapsed back into one `driver` field (Christer: "If no
+    parking sidecars, then there is no trip.") still has
+    parked_driver/no_parking_driver keys. Checked against Christer's
+    real registry: 6 places had parked_driver set, 0 had
+    no_parking_driver - so parked_driver must win when both (or only
+    parked_driver) are present."""
 
     from blackvue.trip.place_knowledge import _place_from_dict
 
@@ -583,18 +596,36 @@ def test_place_from_dict_migrates_old_short_long_stay_keys():
         "point": [PLACE_A[0], PLACE_A[1]],
         "label": "Old place",
         "visit_count": 5,
-        "short_stay_count": 2,
-        "long_stay_count": 3,
-        "short_stay_driver": "driver2",
-        "long_stay_driver": "driver1",
+        "parked_driver": "driver1",
+        "no_parking_driver": "driver2",
     }
 
     place = _place_from_dict("some_key", old_data)
 
-    assert place.no_parking_count == 2
-    assert place.parked_count == 3
-    assert place.no_parking_driver == "driver2"
-    assert place.parked_driver == "driver1"
+    assert place.driver == "driver1"
+
+
+def test_place_from_dict_falls_back_to_no_parking_driver_then_long_stay_driver():
+    from blackvue.trip.place_knowledge import _place_from_dict
+
+    only_no_parking = {
+        "point": [PLACE_A[0], PLACE_A[1]],
+        "label": "Old place",
+        "visit_count": 5,
+        "no_parking_driver": "driver2",
+    }
+    assert _place_from_dict("k1", only_no_parking).driver == "driver2"
+
+    # Oldest generation still, from before *that* redesign (see
+    # stop_category()'s own docstring): long_stay_driver/
+    # short_stay_driver instead of parked_driver/no_parking_driver.
+    only_long_stay = {
+        "point": [PLACE_A[0], PLACE_A[1]],
+        "label": "Old place",
+        "visit_count": 5,
+        "long_stay_driver": "driver1",
+    }
+    assert _place_from_dict("k2", only_long_stay).driver == "driver1"
 
 
 def test_trip_from_dict_migrates_old_short_long_stop_category():
@@ -640,7 +671,7 @@ def test_rebuild_preserves_manual_place_rules_via_existing_places_arg():
     key = next(iter(first_places))
     edited_places = dict(first_places)
     edited_places[key] = edited_places[key].__class__(
-        **{**edited_places[key].__dict__, "parked_driver": "driver1"}
+        **{**edited_places[key].__dict__, "driver": "driver1"}
     )
 
     # Rebuild (as `bv-drivers build` would do again later) - the rule
@@ -649,7 +680,7 @@ def test_rebuild_preserves_manual_place_rules_via_existing_places_arg():
         [trip_a, trip_b], [outbound_fix, inbound_fix], profiles, {"home": HOME},
         existing_places=edited_places,
     )
-    assert second_places[key].parked_driver == "driver1"
+    assert second_places[key].driver == "driver1"
     assert second_resolved[0].driver_label == "driver1"
     assert second_resolved[0].source == "place-rule"
 
@@ -751,8 +782,7 @@ def test_trip_knowledge_smoothness_raw_round_trips_through_save_load():
     entry = entry.__class__(**{**entry.__dict__, "smoothness_raw": 2.75})
     key = entry.away_place_key
     place = CommonPlace(
-        key=key, point=PLACE_A, label="My place", visit_count=1,
-        no_parking_count=0, parked_count=1, parked_driver="driver1",
+        key=key, point=PLACE_A, label="My place", visit_count=1, driver="driver1",
     )
     resolved = _resolve_trip_driver(entry, place, profiles, None)
 

@@ -18,8 +18,8 @@ place_knowledge.py's own module docstring for the full design).
 
 Re-running this command is meant to be routine (Christer: scoped to
 the live Kirby (2026) archive, "the addresses will probably change
-over time") - every place's label and parked_driver/no_parking_driver,
-and every per-trip manual override, survive a rebuild untouched (see
+over time") - every place's label and driver, and every per-trip
+manual override, survive a rebuild untouched (see
 build_knowledge_base()'s own docstring); only visit counts and the
 trip list itself are refreshed from the archive's current state.
 

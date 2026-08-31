@@ -942,16 +942,15 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     async def drivers_update_place(
         key: str,
         label: str = Form(""),
-        parked_driver: str = Form(""),
-        no_parking_driver: str = Form(""),
+        driver: str = Form(""),
         user: User = Depends(require_owner),
     ):
-        # Updates one CommonPlace's label/parked_driver/
-        # no_parking_driver, then re-resolves every trip's driver via
-        # reresolve_trip_drivers() (no archive re-scan needed - see
-        # that function's own docstring) and saves the whole knowledge
-        # base back out. A blank driver field clears that rule
-        # (reverts matching trips to pattern-match/undecided).
+        # Updates one CommonPlace's label/driver, then re-resolves
+        # every trip's driver via reresolve_trip_drivers() (no archive
+        # re-scan needed - see that function's own docstring) and
+        # saves the whole knowledge base back out. A blank driver
+        # field clears that rule (reverts matching trips to
+        # pattern-match/undecided).
         config_dir = default_config_dir()
         knowledge_path = default_driver_knowledge_path(config_dir)
         knowledge = load_knowledge_base(knowledge_path)
@@ -963,8 +962,7 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             places[key] = _dc_replace(
                 places[key],
                 label=label.strip() or places[key].label,
-                parked_driver=parked_driver.strip() or None,
-                no_parking_driver=no_parking_driver.strip() or None,
+                driver=driver.strip() or None,
             )
             resolved = reresolve_trip_drivers(trips, places, profiles, trip_overrides)
             save_knowledge_base(

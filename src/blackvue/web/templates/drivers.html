@@ -55,8 +55,7 @@ driver KB</a> first.</p>
     <tr>
       <th>Place</th>
       <th>Visits</th>
-      <th>No parking file</th>
-      <th>Parked (has P file)</th>
+      <th>Driver</th>
       <th></th>
     </tr>
   </thead>
@@ -74,30 +73,12 @@ driver KB</a> first.</p>
       </td>
       <td>{{ place.visit_count }}</td>
       <td>
-        {{ place.no_parking_count }}
-        {% if place.no_parking_count > 0 %}
-        <select name="no_parking_driver">
-          <option value=""{% if not place.no_parking_driver %} selected{% endif %}>&mdash; none &mdash;</option>
+        <select name="driver">
+          <option value=""{% if not place.driver %} selected{% endif %}>&mdash; none &mdash;</option>
           {% for label, display_name in driver_choices %}
-          <option value="{{ label }}"{% if place.no_parking_driver == label %} selected{% endif %}>{{ display_name }}</option>
+          <option value="{{ label }}"{% if place.driver == label %} selected{% endif %}>{{ display_name }}</option>
           {% endfor %}
         </select>
-        {% else %}
-        <input type="hidden" name="no_parking_driver" value="{{ place.no_parking_driver or '' }}">
-        {% endif %}
-      </td>
-      <td>
-        {{ place.parked_count }}
-        {% if place.parked_count > 0 %}
-        <select name="parked_driver">
-          <option value=""{% if not place.parked_driver %} selected{% endif %}>&mdash; none &mdash;</option>
-          {% for label, display_name in driver_choices %}
-          <option value="{{ label }}"{% if place.parked_driver == label %} selected{% endif %}>{{ display_name }}</option>
-          {% endfor %}
-        </select>
-        {% else %}
-        <input type="hidden" name="parked_driver" value="{{ place.parked_driver or '' }}">
-        {% endif %}
       </td>
       <td><button type="submit">Save</button></td>
       </form>

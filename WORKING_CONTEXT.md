@@ -21403,3 +21403,55 @@ exercises print_trips(..., use_driver_trips=True) end-to-end against
 a hand-built two-recording N->P trip and confirms the Driver column
 appears. test_driver_detect.py (20/20) and test_bv_drivers.py (14/14)
 both still pass - no regression to the underlying machinery.
+
+## Follow-up: Common Places "No parking file" column collapsed to one Driver per place
+
+Christer, looking at the /drivers web page: "In common trips i get
+confused by: No parking file, Parked (has P file)." Investigation
+against his real driver_knowledge.json (regenerated after the 0/468
+fix above) showed why: 51 places, 64 total visits, 48 parked, **0
+no-parking** - the P-ending trip filter in bv-drivers build (drops
+any trip whose last recording isn't a downloaded Parking-mode
+recording, except the single most-recent trip in the whole archive)
+already makes "no-parking" essentially always empty, so the whole
+second column and its own driver-rule slot existed for a case that
+structurally almost never occurs. Asked Christer what to do with it;
+he confirmed the root cause himself - "If no parking sidecars, then
+there is no trip." - and chose the fix directly: "Remove it, one
+driver per place."
+
+Collapsed `CommonPlace` (place_knowledge.py) from four fields
+(parked_count/no_parking_count/parked_driver/no_parking_driver) down
+to two (visit_count kept, driver: str | None replacing both driver
+fields). `_resolve_trip_driver()`'s place-rule branch no longer
+branches on the trip's own stop_category - one place, one driver,
+regardless of whether this particular trip happened to end "parked"
+or "no-parking". `build_common_places()`, `undecided_places()`,
+`_place_to_dict()` all simplified to match.
+
+`_place_from_dict()` keeps a three-generation backward-compat
+migration so Christer's existing driver_knowledge.json (6 places with
+parked_driver set, 0 with no_parking_driver) upgrades losslessly on
+next load: new `driver` key wins if present; else `parked_driver`
+(preferred over `no_parking_driver` since that matches his real data
+exactly); else `no_parking_driver`; else oldest-generation
+`long_stay_driver`. TripKnowledge.stop_category itself is untouched -
+it's still computed per trip and still shown informationally next to
+a trip's own Stay column ("Parked"/"No parking file"); only the
+place-level rule split is gone.
+
+app.py's `drivers_update_place()` route now takes one `driver` Form
+field instead of `parked_driver`/`no_parking_driver`. drivers.html's
+Common Places table lost the "No parking file"/"Parked (has P file)"
+header pair and its two separate dropdown `<td>`s, replaced with a
+single "Driver" column and one `<select name="driver">`.
+
+Verified via the pytest shim: test_place_knowledge (40/40, several
+tests rewritten - the old
+test_resolve_trip_driver_disambiguates_no_parking_vs_parked_rule
+became test_resolve_trip_driver_applies_place_rule_regardless_of_stop_category,
+new backward-compat-migration tests added for all three generations
+of the driver key), test_bv_drivers (14/14), test_driver_detect
+(20/20) - test_bv_ls's own suite still can't run in this sandbox
+(pre-existing capsys harness gap, documented above, unrelated to this
+change).
