@@ -26,6 +26,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import tempfile
@@ -805,15 +806,48 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # driver_knowledge.json lives under the shared
         # default_config_dir(), not any one camera's own archive - a
         # single household vehicle, one knowledge base.
-        config_dir = default_config_dir()
-        profiles = load_driver_profiles(default_driver_profiles_path(config_dir))
-        knowledge = load_knowledge_base(default_driver_knowledge_path(config_dir))
+        def _build_context() -> dict:
+            """Runs the actual page computation (knowledge/profile
+            reads, geocode/has-video lookups, sorting) synchronously -
+            called via asyncio.to_thread() below instead of directly
+            inline in this async route.
 
-        if knowledge is None or profiles is None:
-            return templates.TemplateResponse(
-                request,
-                "drivers.html",
-                {
+            Christer, possibly while a HEVC preview was mid-transcode-
+            and-streaming elsewhere: "Any change to pre partial hevc
+            to h264, its slow and sluggish, it used to flow without
+            pausing" - confirmed he might have had /drivers open at
+            the same time ("I might have been"). Nothing in
+            hevc_preview.py's own progressive-streaming code changed;
+            the real cause is that bv-web runs a single uvicorn
+            process with one event loop (no worker pool - see
+            cli/bv_web.py's plain uvicorn.run(app, host, port)), and
+            this route's own geocode/has-video lookups (see the "still
+            slow adding driver" profiling comment below) ran as plain
+            synchronous filesystem/network calls directly inside this
+            async def - a cache-miss render measured at ~30s against
+            Christer's real archive (tasks #1389/#1391). Since none of
+            that ever awaits, it can't yield control back to the event
+            loop for its entire duration, so it doesn't just make
+            *this* request slow - it blocks every other concurrent
+            request on the server too, including the async chunk-by-
+            chunk delivery of a video that's mid-transcode-and-
+            streaming to a browser elsewhere (open_hevc_preview_
+            stream()'s _consume_broadcast() generator can't get
+            scheduled to hand off its next chunk while this function
+            has the server's only event-loop thread tied up). Same
+            class of event-loop-stall bug task #1270 already fixed
+            once for the HEVC codec probe - just resurfacing here in a
+            much larger block. Wrapping the whole thing in
+            asyncio.to_thread() moves it onto a worker thread, so it
+            can take exactly as long as before without blocking
+            anything else on the server meanwhile.
+            """
+            config_dir = default_config_dir()
+            profiles = load_driver_profiles(default_driver_profiles_path(config_dir))
+            knowledge = load_knowledge_base(default_driver_knowledge_path(config_dir))
+
+            if knowledge is None or profiles is None:
+                return {
                     "user": user,
                     "built": False,
                     "driver_choices": [],
@@ -825,241 +859,256 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                     "driver_display_by_label": {},
                     "smoothness_scores": {},
                     "closest_matches": {},
+                    "driver_trip_counts": {},
+                    "undecided_trip_count": 0,
                     "min_visits": min_visits,
                     "driver_filter": driver_filter,
                     "trip_count": 0,
                     "decided_count": 0,
-                },
+                }
+
+            trips, places, trip_overrides = knowledge
+            driver_choices = [
+                (driver.label, driver.display_name) for driver in profiles.drivers
+            ]
+            # Christer: "A specific trip on driver, should have a count
+            # for no of trips" - the driver filter dropdown atop
+            # Specific trips only ever showed each driver's bare name,
+            # with no sense of how many trips are already resolved to
+            # them (or how many are still Undecided) without actually
+            # picking that option and looking at the table underneath.
+            # Counted against every trip in the knowledge base (not
+            # just specific_trip_list, which is only ever one filter's
+            # worth) so every option's count is stable regardless of
+            # which one is currently selected.
+            driver_trip_counts = {
+                driver.label: sum(
+                    1 for entry in trips if entry.driver_label == driver.label
+                )
+                for driver in profiles.drivers
+            }
+            undecided_trip_count = len(undecided_trips(trips))
+
+            # build_common_places() itself creates one CommonPlace per
+            # distinct away-place grid cell regardless of visit_count (see
+            # its own docstring - carrying forward existing labels/rules is
+            # cheap and doesn't need a threshold) - but a place visited only
+            # once isn't "common" by this page's own stated definition
+            # ("every place the vehicle has been to more than once", see
+            # the command-help text above) and is exactly the shape of
+            # task #1355's bogus-Common-Place report: a one-off stop (a
+            # traffic light, a roundabout, anywhere GPS dwell logic
+            # mis-detected a stop) that will never repeat. Christer,
+            # spotting these still in the table after the #1355 fix: "common
+            # places har vissa trips = 1" - confirmed via AskUserQuestion he
+            # wants them hidden entirely, not just left unflagged. Filtered
+            # here (display only) rather than in build_common_places()
+            # itself so a place that reaches a second visit on some future
+            # rebuild still gets recomputed correctly - nothing is lost by
+            # not showing it meanwhile, since undecided_trips() already
+            # surfaces its (single) trip in the Specific trips table below.
+            places_sorted = sorted(
+                (place for place in places.values() if place.visit_count >= min_visits),
+                key=lambda place: place.visit_count, reverse=True,
             )
+            undecided_place_keys = {
+                place.key for place in undecided_places(places, min_visits=min_visits)
+            }
+            # Christer: "pa specific trips hogst upp skulle jag vilja ha en
+            # selection for varje driver samt aven undecided som default." -
+            # a driver filter at the top of the Specific trips section,
+            # separate from each row's own driver <select> (that one
+            # assigns a driver, this one chooses which trips to look at).
+            # Empty driver_filter (the default, "Undecided" in the
+            # dropdown) keeps today's behavior - only trips with no
+            # resolved driver at all. Picking a specific driver instead
+            # shows every trip already resolved to them, regardless of how
+            # (pattern-match/place-rule/manual-trip) - useful for
+            # reviewing or correcting an already-made call, not just
+            # making new ones.
+            if driver_filter:
+                specific_trip_list = sorted(
+                    (entry for entry in trips if entry.driver_label == driver_filter),
+                    key=lambda entry: entry.start_time, reverse=True,
+                )
+            else:
+                specific_trip_list = sorted(
+                    undecided_trips(trips), key=lambda entry: entry.start_time, reverse=True
+                )
 
-        trips, places, trip_overrides = knowledge
-        driver_choices = [
-            (driver.label, driver.display_name) for driver in profiles.drivers
-        ]
+            # Reverse-geocoded address per place (keyed by CommonPlace.key)
+            # and per undecided trip's start/stop point (keyed by
+            # trip_label) - Christer's own follow-up asks ("i also need an
+            # address for Place ... not for that specific address all of
+            # them in the list" and "a link to first and last video with
+            # the adress of start and stop"). Computed live here, the same
+            # load_or_reverse_geocode()-with-on-disk-cache call the
+            # archive browser's own /location route already makes (see
+            # _describe_gps_fix()) rather than persisted into
+            # driver_knowledge.json - place_knowledge.py stays a pure,
+            # network-free module (see its own docstring) and the cache
+            # itself already makes every address after the first page load
+            # free. Only geocoded for specific_trip_list's own trips (not
+            # every trip in the archive) - the only ones this page's
+            # Specific trips table actually shows, whichever driver_filter
+            # currently narrows it to.
+            # Christer, after the loading-overlay/backup/HEVC fixes above:
+            # "still slow adding driver" - the overlay only ever addressed
+            # the *symptom* (a page that looks frozen), not this route's
+            # actual cost. Real profiling against his own driver_knowledge.json
+            # (164 trips, 37 places, 88 undecided) found two genuine waste
+            # sources in this block: (1) place_trip_addresses/
+            # place_trip_video_status below were computed for every trip
+            # under *every* Common Place, including the 27 of 37 places
+            # with visit_count==1 that task #1356 already hides from
+            # places_sorted/the template entirely - 27 of 64 places-trips
+            # (42%) worth of geocode + has_video lookups for rows that can
+            # never be seen; (2) an undecided trip that also belongs to a
+            # shown place got its start/stop geocoded and has_video-checked
+            # twice - once for trip_addresses/trip_video_status (the
+            # Specific trips table), once more for place_trip_addresses/
+            # place_trip_video_status (that place's own expandable trip
+            # list) - same (point) or (camera_id, recording_id) key, two
+            # separate network/filesystem round trips. Neither
+            # _reverse_geocode_or_none() nor _recording_has_video_or_none()
+            # itself caches across the distinct keys this route calls them
+            # with in one render (the on-disk geocode cache and the 2s
+            # ArchiveRecordingCache TTL only dedupe a *repeated* key, not a
+            # first-time lookup happening twice under two different dict
+            # comprehensions), so both are now routed through small
+            # helpers here instead of called directly. Backed by the two
+            # process-lifetime caches set up in create_app() (see
+            # app.state.drivers_page_recording_cache/_geocode_cache's own
+            # comments there, task #1390) rather than a fresh per-request
+            # dict, so the *next* /drivers render - the one every single
+            # trip-assignment POST redirects straight into - reuses this
+            # render's own lookups instead of repeating every one of them
+            # from zero.
+            geocode_cache_dir = default_config_dir() / ".osm_cache"
+            _geocode_memo = app.state.drivers_page_geocode_cache
 
-        # build_common_places() itself creates one CommonPlace per
-        # distinct away-place grid cell regardless of visit_count (see
-        # its own docstring - carrying forward existing labels/rules is
-        # cheap and doesn't need a threshold) - but a place visited only
-        # once isn't "common" by this page's own stated definition
-        # ("every place the vehicle has been to more than once", see
-        # the command-help text above) and is exactly the shape of
-        # task #1355's bogus-Common-Place report: a one-off stop (a
-        # traffic light, a roundabout, anywhere GPS dwell logic
-        # mis-detected a stop) that will never repeat. Christer,
-        # spotting these still in the table after the #1355 fix: "common
-        # places har vissa trips = 1" - confirmed via AskUserQuestion he
-        # wants them hidden entirely, not just left unflagged. Filtered
-        # here (display only) rather than in build_common_places()
-        # itself so a place that reaches a second visit on some future
-        # rebuild still gets recomputed correctly - nothing is lost by
-        # not showing it meanwhile, since undecided_trips() already
-        # surfaces its (single) trip in the Specific trips table below.
-        places_sorted = sorted(
-            (place for place in places.values() if place.visit_count >= min_visits),
-            key=lambda place: place.visit_count, reverse=True,
-        )
-        undecided_place_keys = {
-            place.key for place in undecided_places(places, min_visits=min_visits)
-        }
-        # Christer: "pa specific trips hogst upp skulle jag vilja ha en
-        # selection for varje driver samt aven undecided som default." -
-        # a driver filter at the top of the Specific trips section,
-        # separate from each row's own driver <select> (that one
-        # assigns a driver, this one chooses which trips to look at).
-        # Empty driver_filter (the default, "Undecided" in the
-        # dropdown) keeps today's behavior - only trips with no
-        # resolved driver at all. Picking a specific driver instead
-        # shows every trip already resolved to them, regardless of how
-        # (pattern-match/place-rule/manual-trip) - useful for
-        # reviewing or correcting an already-made call, not just
-        # making new ones.
-        if driver_filter:
-            specific_trip_list = sorted(
-                (entry for entry in trips if entry.driver_label == driver_filter),
-                key=lambda entry: entry.start_time, reverse=True,
-            )
-        else:
-            specific_trip_list = sorted(
-                undecided_trips(trips), key=lambda entry: entry.start_time, reverse=True
-            )
+            def _geocode(point: tuple[float, float]) -> str | None:
+                if point not in _geocode_memo:
+                    _geocode_memo[point] = _reverse_geocode_or_none(point, geocode_cache_dir)
+                return _geocode_memo[point]
 
-        # Reverse-geocoded address per place (keyed by CommonPlace.key)
-        # and per undecided trip's start/stop point (keyed by
-        # trip_label) - Christer's own follow-up asks ("i also need an
-        # address for Place ... not for that specific address all of
-        # them in the list" and "a link to first and last video with
-        # the adress of start and stop"). Computed live here, the same
-        # load_or_reverse_geocode()-with-on-disk-cache call the
-        # archive browser's own /location route already makes (see
-        # _describe_gps_fix()) rather than persisted into
-        # driver_knowledge.json - place_knowledge.py stays a pure,
-        # network-free module (see its own docstring) and the cache
-        # itself already makes every address after the first page load
-        # free. Only geocoded for specific_trip_list's own trips (not
-        # every trip in the archive) - the only ones this page's
-        # Specific trips table actually shows, whichever driver_filter
-        # currently narrows it to.
-        # Christer, after the loading-overlay/backup/HEVC fixes above:
-        # "still slow adding driver" - the overlay only ever addressed
-        # the *symptom* (a page that looks frozen), not this route's
-        # actual cost. Real profiling against his own driver_knowledge.json
-        # (164 trips, 37 places, 88 undecided) found two genuine waste
-        # sources in this block: (1) place_trip_addresses/
-        # place_trip_video_status below were computed for every trip
-        # under *every* Common Place, including the 27 of 37 places
-        # with visit_count==1 that task #1356 already hides from
-        # places_sorted/the template entirely - 27 of 64 places-trips
-        # (42%) worth of geocode + has_video lookups for rows that can
-        # never be seen; (2) an undecided trip that also belongs to a
-        # shown place got its start/stop geocoded and has_video-checked
-        # twice - once for trip_addresses/trip_video_status (the
-        # Specific trips table), once more for place_trip_addresses/
-        # place_trip_video_status (that place's own expandable trip
-        # list) - same (point) or (camera_id, recording_id) key, two
-        # separate network/filesystem round trips. Neither
-        # _reverse_geocode_or_none() nor _recording_has_video_or_none()
-        # itself caches across the distinct keys this route calls them
-        # with in one render (the on-disk geocode cache and the 2s
-        # ArchiveRecordingCache TTL only dedupe a *repeated* key, not a
-        # first-time lookup happening twice under two different dict
-        # comprehensions), so both are now routed through small
-        # helpers here instead of called directly. Backed by the two
-        # process-lifetime caches set up in create_app() (see
-        # app.state.drivers_page_recording_cache/_geocode_cache's own
-        # comments there, task #1390) rather than a fresh per-request
-        # dict, so the *next* /drivers render - the one every single
-        # trip-assignment POST redirects straight into - reuses this
-        # render's own lookups instead of repeating every one of them
-        # from zero.
-        geocode_cache_dir = default_config_dir() / ".osm_cache"
-        _geocode_memo = app.state.drivers_page_geocode_cache
+            def _video_status(camera_id: str, recording_id: str) -> bool | None:
+                return _recording_has_video_or_none(
+                    app.state.drivers_page_recording_cache,
+                    app.state.camera_config_cache,
+                    camera_id,
+                    recording_id,
+                )
 
-        def _geocode(point: tuple[float, float]) -> str | None:
-            if point not in _geocode_memo:
-                _geocode_memo[point] = _reverse_geocode_or_none(point, geocode_cache_dir)
-            return _geocode_memo[point]
+            # Reverse-geocoded address per place (keyed by CommonPlace.key)
+            # and per undecided trip's start/stop point (keyed by
+            # trip_label) - Christer's own follow-up asks ("i also need an
+            # address for Place ... not for that specific address all of
+            # them in the list" and "a link to first and last video with
+            # the adress of start and stop"). Computed live here, the same
+            # load_or_reverse_geocode()-with-on-disk-cache call the
+            # archive browser's own /location route already makes (see
+            # _describe_gps_fix()) rather than persisted into
+            # driver_knowledge.json - place_knowledge.py stays a pure,
+            # network-free module (see its own docstring) and the cache
+            # itself already makes every address after the first page load
+            # free. Only geocoded for specific_trip_list's own trips (not
+            # every trip in the archive) - the only ones this page's
+            # Specific trips table actually shows, whichever driver_filter
+            # currently narrows it to.
+            place_addresses = {
+                place.key: _geocode(place.point) for place in places_sorted
+            }
+            trip_addresses = {
+                entry.trip_label: (
+                    _geocode(entry.start_point),
+                    _geocode(entry.end_point),
+                )
+                for entry in specific_trip_list
+            }
+            # Whether the Start/Stop "Video" link's own recording actually
+            # has a downloaded video - see _recording_has_video_or_none()'s
+            # own docstring (Christer's "even if there is no video, it
+            # should be named 'No video' but still keep the link"). Same
+            # scope-to-what's-actually-shown reasoning as trip_addresses
+            # above: only computed for specific_trip_list's own trips.
+            trip_video_status = {
+                entry.trip_label: (
+                    _video_status(entry.camera_id, entry.first_recording_id),
+                    _video_status(entry.camera_id, entry.last_recording_id),
+                )
+                for entry in specific_trip_list
+            }
 
-        def _video_status(camera_id: str, recording_id: str) -> bool | None:
-            return _recording_has_video_or_none(
-                app.state.drivers_page_recording_cache,
-                app.state.camera_config_cache,
-                camera_id,
-                recording_id,
-            )
+            # Every trip belonging to each Common Place, most-recent-first -
+            # Christer's own follow-up ask ("common places should show each
+            # trip with all what that means"): the place row's aggregate
+            # visit/short/long counts don't say *which* trips they are, so
+            # this expands each place into its own per-trip list (same
+            # per-trip fields the Specific trips table shows - date,
+            # weekday, time, stay length, driver/candidates, start/stop
+            # addresses with Maps links, video links) rendered as a
+            # collapsed <details> under that place's row. Unlike the
+            # Specific trips table (undecided by default, or one driver's
+            # own trips when filtered), this covers every trip at the
+            # place regardless of driver - that's the whole point of "each
+            # trip". Filtered down to places_sorted's own keys (visit_count
+            # >= min_visits) right away - drivers.html only ever looks up
+            # `place_trips.get(place.key, [])` for a `place in places_sorted`
+            # loop, so a hidden (visit_count==1, task #1356) place's own
+            # entries here would never be read by the template; per the
+            # profiling above, on Christer's real archive that's 27 of 37
+            # places whose trips there was previously no reason to touch.
+            shown_place_keys = {place.key for place in places_sorted}
+            place_trips = {
+                key: entries
+                for key, entries in group_trips_by_place(trips).items()
+                if key in shown_place_keys
+            }
+            place_trip_addresses = {
+                entry.trip_label: (
+                    _geocode(entry.start_point),
+                    _geocode(entry.end_point),
+                )
+                for entries in place_trips.values()
+                for entry in entries
+            }
+            # Same has_video lookup as trip_video_status above, scoped to
+            # every trip shown under a Common Place's own expandable list
+            # instead of just the Specific trips table.
+            place_trip_video_status = {
+                entry.trip_label: (
+                    _video_status(entry.camera_id, entry.first_recording_id),
+                    _video_status(entry.camera_id, entry.last_recording_id),
+                )
+                for entries in place_trips.values()
+                for entry in entries
+            }
+            driver_display_by_label = {
+                driver.label: driver.display_name for driver in profiles.drivers
+            }
 
-        # Reverse-geocoded address per place (keyed by CommonPlace.key)
-        # and per undecided trip's start/stop point (keyed by
-        # trip_label) - Christer's own follow-up asks ("i also need an
-        # address for Place ... not for that specific address all of
-        # them in the list" and "a link to first and last video with
-        # the adress of start and stop"). Computed live here, the same
-        # load_or_reverse_geocode()-with-on-disk-cache call the
-        # archive browser's own /location route already makes (see
-        # _describe_gps_fix()) rather than persisted into
-        # driver_knowledge.json - place_knowledge.py stays a pure,
-        # network-free module (see its own docstring) and the cache
-        # itself already makes every address after the first page load
-        # free. Only geocoded for specific_trip_list's own trips (not
-        # every trip in the archive) - the only ones this page's
-        # Specific trips table actually shows, whichever driver_filter
-        # currently narrows it to.
-        place_addresses = {
-            place.key: _geocode(place.point) for place in places_sorted
-        }
-        trip_addresses = {
-            entry.trip_label: (
-                _geocode(entry.start_point),
-                _geocode(entry.end_point),
-            )
-            for entry in specific_trip_list
-        }
-        # Whether the Start/Stop "Video" link's own recording actually
-        # has a downloaded video - see _recording_has_video_or_none()'s
-        # own docstring (Christer's "even if there is no video, it
-        # should be named 'No video' but still keep the link"). Same
-        # scope-to-what's-actually-shown reasoning as trip_addresses
-        # above: only computed for specific_trip_list's own trips.
-        trip_video_status = {
-            entry.trip_label: (
-                _video_status(entry.camera_id, entry.first_recording_id),
-                _video_status(entry.camera_id, entry.last_recording_id),
-            )
-            for entry in specific_trip_list
-        }
+            # Driving-smoothness score + "closest past match" suggestion -
+            # Christer's own follow-up ask ("anything else you can do to
+            # make it easier for me to decide driver"), both scoped to
+            # specific_trip_list, same scope trip_addresses above already
+            # uses. smoothness_population is every trip's own
+            # smoothness_raw (not just the currently filtered ones) - a
+            # trip's score is always its percentile rank against the whole
+            # archive, regardless of which driver_filter is active.
+            smoothness_population = [
+                entry.smoothness_raw for entry in trips if entry.smoothness_raw is not None
+            ]
+            smoothness_scores = {
+                entry.trip_label: smoothness_score(entry.smoothness_raw, smoothness_population)
+                for entry in specific_trip_list
+            }
+            closest_matches = {
+                entry.trip_label: suggest_closest_decided_trip(entry, trips)
+                for entry in specific_trip_list
+            }
 
-        # Every trip belonging to each Common Place, most-recent-first -
-        # Christer's own follow-up ask ("common places should show each
-        # trip with all what that means"): the place row's aggregate
-        # visit/short/long counts don't say *which* trips they are, so
-        # this expands each place into its own per-trip list (same
-        # per-trip fields the Specific trips table shows - date,
-        # weekday, time, stay length, driver/candidates, start/stop
-        # addresses with Maps links, video links) rendered as a
-        # collapsed <details> under that place's row. Unlike the
-        # Specific trips table (undecided by default, or one driver's
-        # own trips when filtered), this covers every trip at the
-        # place regardless of driver - that's the whole point of "each
-        # trip". Filtered down to places_sorted's own keys (visit_count
-        # >= min_visits) right away - drivers.html only ever looks up
-        # `place_trips.get(place.key, [])` for a `place in places_sorted`
-        # loop, so a hidden (visit_count==1, task #1356) place's own
-        # entries here would never be read by the template; per the
-        # profiling above, on Christer's real archive that's 27 of 37
-        # places whose trips there was previously no reason to touch.
-        shown_place_keys = {place.key for place in places_sorted}
-        place_trips = {
-            key: entries
-            for key, entries in group_trips_by_place(trips).items()
-            if key in shown_place_keys
-        }
-        place_trip_addresses = {
-            entry.trip_label: (
-                _geocode(entry.start_point),
-                _geocode(entry.end_point),
-            )
-            for entries in place_trips.values()
-            for entry in entries
-        }
-        # Same has_video lookup as trip_video_status above, scoped to
-        # every trip shown under a Common Place's own expandable list
-        # instead of just the Specific trips table.
-        place_trip_video_status = {
-            entry.trip_label: (
-                _video_status(entry.camera_id, entry.first_recording_id),
-                _video_status(entry.camera_id, entry.last_recording_id),
-            )
-            for entries in place_trips.values()
-            for entry in entries
-        }
-        driver_display_by_label = {
-            driver.label: driver.display_name for driver in profiles.drivers
-        }
-
-        # Driving-smoothness score + "closest past match" suggestion -
-        # Christer's own follow-up ask ("anything else you can do to
-        # make it easier for me to decide driver"), both scoped to
-        # specific_trip_list, same scope trip_addresses above already
-        # uses. smoothness_population is every trip's own
-        # smoothness_raw (not just the currently filtered ones) - a
-        # trip's score is always its percentile rank against the whole
-        # archive, regardless of which driver_filter is active.
-        smoothness_population = [
-            entry.smoothness_raw for entry in trips if entry.smoothness_raw is not None
-        ]
-        smoothness_scores = {
-            entry.trip_label: smoothness_score(entry.smoothness_raw, smoothness_population)
-            for entry in specific_trip_list
-        }
-        closest_matches = {
-            entry.trip_label: suggest_closest_decided_trip(entry, trips)
-            for entry in specific_trip_list
-        }
-
-        return templates.TemplateResponse(
-            request,
-            "drivers.html",
-            {
+            return {
                 "user": user,
                 "built": True,
                 "driver_choices": driver_choices,
@@ -1075,14 +1124,18 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "driver_display_by_label": driver_display_by_label,
                 "smoothness_scores": smoothness_scores,
                 "closest_matches": closest_matches,
+                "driver_trip_counts": driver_trip_counts,
+                "undecided_trip_count": undecided_trip_count,
                 "min_visits": min_visits,
                 "driver_filter": driver_filter,
                 "trip_count": len(trips),
                 "decided_count": sum(
                     1 for entry in trips if entry.source != "undecided"
                 ),
-            },
-        )
+            }
+
+        context = await asyncio.to_thread(_build_context)
+        return templates.TemplateResponse(request, "drivers.html", context)
 
     @app.post("/drivers/places/{key}")
     async def drivers_update_place(

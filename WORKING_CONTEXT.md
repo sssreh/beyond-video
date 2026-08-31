@@ -22030,3 +22030,82 @@ exercises the real `/jobs/bv-download` HTTP route end-to-end (no
 app.py change here) - the `JobRunner.start_bv_download()` script above
 is the closest in-sandbox equivalent, since it drives the actual
 method bv-web's route calls, background thread and all.
+
+## Fix event-loop-blocking /drivers render + add per-driver trip counts to the filter dropdown
+
+Christer, after living with the fixes above for a while, reported "Any
+change to pre partial hevc to h264, its slow and sluggish, it used to
+flow without pausing" - asking whether anything about the progressive
+HEVC-to-H.264 streaming (tasks #840-846) had changed. It hadn't - the
+only later change there (task #1270's codec-probe cache) only ever
+makes things faster. Investigation instead pointed at `drivers_page()`
+itself: `GET /drivers` is an `async def` route, but every bit of its
+actual work - reading the knowledge base, the per-trip geocode and
+has-video lookups task #1389/#1391 already profiled at up to ~30s on a
+cache miss - ran as plain synchronous code directly inside that
+coroutine, never awaiting anything. bv-web runs as a single uvicorn
+process with one event loop (`cli/bv_web.py`'s plain `uvicorn.run(app,
+host, port)`, no worker pool), so while that ~30s block ran it didn't
+just make the `/drivers` request itself slow - it froze the *entire*
+server, including the async chunk-by-chunk delivery of a HEVC preview
+mid-transcode-and-streaming to a browser elsewhere
+(`open_hevc_preview_stream()`'s `_consume_broadcast()` generator can't
+get scheduled to hand off its next chunk while the event loop's only
+thread is tied up running `drivers_page()`'s synchronous body).
+Christer confirmed he "might have been" on `/drivers` at the same
+time. Same class of event-loop-stall bug task #1270 already fixed once
+for the HEVC codec probe - just resurfacing here in a much larger
+block that had never gotten the same treatment.
+
+Fixed by extracting `drivers_page()`'s entire body (both the
+knowledge-base-missing early return and the main computation/render
+path) into a nested plain `def _build_context() -> dict`, and running
+it via `await asyncio.to_thread(_build_context)` from the (still
+`async def`) route - the exact pattern task #1270 already used for the
+HEVC codec probe's own cache-miss case. `_build_context()`'s two return
+paths now return plain dict literals instead of calling
+`templates.TemplateResponse()` directly; the route's own final
+statement builds the actual `TemplateResponse` from that returned
+context once the thread finishes. The nested `_geocode()`/
+`_video_status()` closures (and everything else in the block) are
+completely unchanged - only where they run moved, off the event-loop
+thread and onto a worker thread, so a slow render can take exactly as
+long as before without blocking anything else on the server meanwhile.
+
+Verified: `python3 -m py_compile` on app.py. Wrote an AST-based check
+(no `fastapi` in this sandbox, the standing limitation for every
+`/drivers`-route change so far) confirming: `drivers_page` is still
+`async def`; the nested `_build_context` is a plain (non-async) `def`
+with zero `await` anywhere inside it (including its own nested
+`_geocode`/`_video_status` closures); `drivers_page`'s own body awaits
+exactly once, on `asyncio.to_thread(_build_context)`; both of
+`_build_context`'s own direct return statements are plain dict
+literals (not `TemplateResponse` calls); and `drivers_page`'s final
+statement builds `templates.TemplateResponse(request, "drivers.html",
+context)` from that returned context. Confirmed no existing test
+exercises `GET /drivers` directly (same standing limitation), so this
+AST check is the appropriate level of rigor here, consistent with
+every other `app.py` route change in this project.
+
+Christer, in the same session: "A specific trip on driver, should have
+a count for no of trips." - the driver filter dropdown atop the
+Specific trips section (`drivers.html`) only ever showed each driver's
+bare name, with no sense of how many trips are already resolved to
+them (or how many are still Undecided) without picking that option and
+looking at the table underneath. Added `driver_trip_counts: dict[str,
+int]` (keyed by driver label, counted across every trip in the
+knowledge base - not just `specific_trip_list`, so a count stays
+correct regardless of which filter is currently selected) and
+`undecided_trip_count: int` to `_build_context()`'s returned context
+(both branches, including the knowledge-base-missing fallback), and
+updated the dropdown's `<option>` labels to `{{ display_name }} ({{
+driver_trip_counts.get(label, 0) }})` and `Undecided ({{
+undecided_trip_count }})`.
+
+Verified: `python3 -m py_compile` on app.py; `drivers.html` parses
+cleanly under a bare Jinja2 `Environment`; a standalone script computes
+`driver_trip_counts`/`undecided_trip_count` against fake `Driver`/
+`Trip` objects mirroring `place_knowledge.py`'s real fields, then
+renders just the dropdown snippet through Jinja2 and confirms the
+expected `"Christer (2)"`, `"Dao (1)"`, and `"Undecided (3)"` option
+text all appear.

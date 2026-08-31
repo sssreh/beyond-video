@@ -227,9 +227,9 @@ driver KB</a> first.</p>
   <input type="hidden" name="min_visits" value="{{ min_visits }}">
   <label>Driver
     <select name="driver_filter">
-      <option value=""{% if not driver_filter %} selected{% endif %}>Undecided</option>
+      <option value=""{% if not driver_filter %} selected{% endif %}>Undecided ({{ undecided_trip_count }})</option>
       {% for label, display_name in driver_choices %}
-      <option value="{{ label }}"{% if driver_filter == label %} selected{% endif %}>{{ display_name }}</option>
+      <option value="{{ label }}"{% if driver_filter == label %} selected{% endif %}>{{ display_name }} ({{ driver_trip_counts.get(label, 0) }})</option>
       {% endfor %}
     </select>
   </label>
