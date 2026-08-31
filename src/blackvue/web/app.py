@@ -853,15 +853,75 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # every trip in the archive) - the only ones this page's
         # Specific trips table actually shows, whichever driver_filter
         # currently narrows it to.
+        # Christer, after the loading-overlay/backup/HEVC fixes above:
+        # "still slow adding driver" - the overlay only ever addressed
+        # the *symptom* (a page that looks frozen), not this route's
+        # actual cost. Real profiling against his own driver_knowledge.json
+        # (164 trips, 37 places, 88 undecided) found two genuine waste
+        # sources in this block: (1) place_trip_addresses/
+        # place_trip_video_status below were computed for every trip
+        # under *every* Common Place, including the 27 of 37 places
+        # with visit_count==1 that task #1356 already hides from
+        # places_sorted/the template entirely - 27 of 64 places-trips
+        # (42%) worth of geocode + has_video lookups for rows that can
+        # never be seen; (2) an undecided trip that also belongs to a
+        # shown place got its start/stop geocoded and has_video-checked
+        # twice - once for trip_addresses/trip_video_status (the
+        # Specific trips table), once more for place_trip_addresses/
+        # place_trip_video_status (that place's own expandable trip
+        # list) - same (point) or (camera_id, recording_id) key, two
+        # separate network/filesystem round trips. Neither
+        # _reverse_geocode_or_none() nor _recording_has_video_or_none()
+        # itself caches across the distinct keys this route calls them
+        # with in one render (the on-disk geocode cache and the 2s
+        # ArchiveRecordingCache TTL only dedupe a *repeated* key, not a
+        # first-time lookup happening twice under two different dict
+        # comprehensions), so both are now routed through small
+        # request-scoped memo dicts here instead of called directly.
         geocode_cache_dir = default_config_dir() / ".osm_cache"
+        _geocode_memo: dict[tuple[float, float], str | None] = {}
+
+        def _geocode(point: tuple[float, float]) -> str | None:
+            if point not in _geocode_memo:
+                _geocode_memo[point] = _reverse_geocode_or_none(point, geocode_cache_dir)
+            return _geocode_memo[point]
+
+        _video_status_memo: dict[tuple[str, str], bool | None] = {}
+
+        def _video_status(camera_id: str, recording_id: str) -> bool | None:
+            memo_key = (camera_id, recording_id)
+            if memo_key not in _video_status_memo:
+                _video_status_memo[memo_key] = _recording_has_video_or_none(
+                    app.state.archive_recording_cache,
+                    app.state.camera_config_cache,
+                    camera_id,
+                    recording_id,
+                )
+            return _video_status_memo[memo_key]
+
+        # Reverse-geocoded address per place (keyed by CommonPlace.key)
+        # and per undecided trip's start/stop point (keyed by
+        # trip_label) - Christer's own follow-up asks ("i also need an
+        # address for Place ... not for that specific address all of
+        # them in the list" and "a link to first and last video with
+        # the adress of start and stop"). Computed live here, the same
+        # load_or_reverse_geocode()-with-on-disk-cache call the
+        # archive browser's own /location route already makes (see
+        # _describe_gps_fix()) rather than persisted into
+        # driver_knowledge.json - place_knowledge.py stays a pure,
+        # network-free module (see its own docstring) and the cache
+        # itself already makes every address after the first page load
+        # free. Only geocoded for specific_trip_list's own trips (not
+        # every trip in the archive) - the only ones this page's
+        # Specific trips table actually shows, whichever driver_filter
+        # currently narrows it to.
         place_addresses = {
-            place.key: _reverse_geocode_or_none(place.point, geocode_cache_dir)
-            for place in places_sorted
+            place.key: _geocode(place.point) for place in places_sorted
         }
         trip_addresses = {
             entry.trip_label: (
-                _reverse_geocode_or_none(entry.start_point, geocode_cache_dir),
-                _reverse_geocode_or_none(entry.end_point, geocode_cache_dir),
+                _geocode(entry.start_point),
+                _geocode(entry.end_point),
             )
             for entry in specific_trip_list
         }
@@ -873,18 +933,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # above: only computed for specific_trip_list's own trips.
         trip_video_status = {
             entry.trip_label: (
-                _recording_has_video_or_none(
-                    app.state.archive_recording_cache,
-                    app.state.camera_config_cache,
-                    entry.camera_id,
-                    entry.first_recording_id,
-                ),
-                _recording_has_video_or_none(
-                    app.state.archive_recording_cache,
-                    app.state.camera_config_cache,
-                    entry.camera_id,
-                    entry.last_recording_id,
-                ),
+                _video_status(entry.camera_id, entry.first_recording_id),
+                _video_status(entry.camera_id, entry.last_recording_id),
             )
             for entry in specific_trip_list
         }
@@ -901,12 +951,23 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # Specific trips table (undecided by default, or one driver's
         # own trips when filtered), this covers every trip at the
         # place regardless of driver - that's the whole point of "each
-        # trip".
-        place_trips = group_trips_by_place(trips)
+        # trip". Filtered down to places_sorted's own keys (visit_count
+        # >= min_visits) right away - drivers.html only ever looks up
+        # `place_trips.get(place.key, [])` for a `place in places_sorted`
+        # loop, so a hidden (visit_count==1, task #1356) place's own
+        # entries here would never be read by the template; per the
+        # profiling above, on Christer's real archive that's 27 of 37
+        # places whose trips there was previously no reason to touch.
+        shown_place_keys = {place.key for place in places_sorted}
+        place_trips = {
+            key: entries
+            for key, entries in group_trips_by_place(trips).items()
+            if key in shown_place_keys
+        }
         place_trip_addresses = {
             entry.trip_label: (
-                _reverse_geocode_or_none(entry.start_point, geocode_cache_dir),
-                _reverse_geocode_or_none(entry.end_point, geocode_cache_dir),
+                _geocode(entry.start_point),
+                _geocode(entry.end_point),
             )
             for entries in place_trips.values()
             for entry in entries
@@ -916,18 +977,8 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # instead of just the Specific trips table.
         place_trip_video_status = {
             entry.trip_label: (
-                _recording_has_video_or_none(
-                    app.state.archive_recording_cache,
-                    app.state.camera_config_cache,
-                    entry.camera_id,
-                    entry.first_recording_id,
-                ),
-                _recording_has_video_or_none(
-                    app.state.archive_recording_cache,
-                    app.state.camera_config_cache,
-                    entry.camera_id,
-                    entry.last_recording_id,
-                ),
+                _video_status(entry.camera_id, entry.first_recording_id),
+                _video_status(entry.camera_id, entry.last_recording_id),
             )
             for entries in place_trips.values()
             for entry in entries

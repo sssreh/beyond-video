@@ -21797,3 +21797,62 @@ different intended behavior (the watch page autoplays by design).
 Confirmed no test in the suite asserts on the `preload` attribute value.
 Verified via a Jinja2 render of `archive_recording_detail.html` with a
 fake recording (`preload="none"` present, `preload="metadata"` absent).
+
+## Follow-up: actually speeding up drivers_page(), not just masking it
+
+Christer, after the loading-overlay fix landed: pasted his server log for
+assigning a driver to a specific trip - `POST /drivers/trips/{label}` ->
+`303` -> `GET /drivers` -> `200`, i.e. the redirect completing normally -
+with just "still slow adding driver." The overlay (Fix 2 above) only ever
+addressed the *symptom* (a page that looks frozen); it was never going to
+make this route itself faster, and it hadn't - I'd said as much when I
+built it, but he was right to push on the actual number.
+
+Went back into `drivers_page()` in app.py and profiled its real work
+against Christer's own `driver_knowledge.json` (164 trips, 37 places, 88
+undecided) rather than guessing. Found two genuine waste sources, both
+in the four `_reverse_geocode_or_none()`/`_recording_has_video_or_none()`
+dict-comprehension blocks that build `trip_addresses`/`trip_video_status`
+(the Specific trips table) and `place_trip_addresses`/`place_trip_video_status`
+(each Common Place's own expandable per-trip list):
+
+1. `place_trips = group_trips_by_place(trips)` grouped *every* trip into
+   its place bucket, including the 27 of Christer's 37 places with
+   `visit_count == 1` - task #1356 already hides those places from
+   `places_sorted`/the template entirely (`drivers.html` only ever calls
+   `place_trips.get(place.key, [])` for a `place in places_sorted` loop),
+   so their 27 trips' worth of geocode + has-video lookups were pure
+   waste - computed, discarded, never rendered.
+2. An undecided trip whose `away_place_key` also happens to point at a
+   *shown* place got looked up twice: once building `trip_addresses`/
+   `trip_video_status` for the Specific trips table, a second time
+   building `place_trip_addresses`/`place_trip_video_status` for that
+   place's own expandable list - same `(point)` or `(camera_id,
+   recording_id)` key, two separate calls. Neither `_reverse_geocode_or_none()`
+   nor `_recording_has_video_or_none()` has any way to know the other
+   dict comprehension just asked the same question a moment ago.
+
+Fixed both without changing anything the template renders: `place_trips`
+is now filtered down to `shown_place_keys = {place.key for place in
+places_sorted}` right after grouping, and both helpers are now called
+through small request-scoped memo dicts (`_geocode()`/`_video_status()`
+closures keyed by point / `(camera_id, recording_id)`) shared across all
+four blocks instead of called directly and separately in each. Measured
+the effect by replaying the same filtering/memoization logic (pure
+Python, no I/O) against Christer's real `driver_knowledge.json`: the 64
+place-trip entries `place_trip_addresses`/`place_trip_video_status` used
+to process drop to 37 (the ones actually shown), total geocode lookups
+per render drop from 304 to 201 (34% fewer), total has-video lookups
+from 304 to 220 (28% fewer). Every one of those numbers is a real
+Nominatim-cache-or-network round trip or `_find_archive_recording()`
+filesystem lookup on Christer's NAS-hosted archive, so this is real
+render-time saved, not just fewer Python calls.
+
+Verified: `test_place_knowledge` still 50/50 (this touches `group_trips_by_place()`'s
+*caller* in app.py, not the function itself). `python3 -m py_compile`
+on app.py. No existing test calls `drivers_page()` directly - this
+sandbox has no `fastapi` installed (documented limitation, same as
+every other app.py route change here) - so `_reverse_geocode_or_none()`/
+`_recording_has_video_or_none()`'s own direct-call tests in
+`test_app_reuse.py` (which don't change) are what CI/Christer's machine
+re-verifies against the real route.
