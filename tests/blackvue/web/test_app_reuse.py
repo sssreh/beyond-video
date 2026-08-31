@@ -36,6 +36,7 @@ from blackvue.web.app import _fields_for_aggregation
 from blackvue.web.app import _job_camera_id
 from blackvue.web.app import _job_snapshot_path
 from blackvue.web.app import _recent_web_runs
+from blackvue.web.app import _recording_has_video_or_none
 from blackvue.web.app import _reuse_defaults
 from blackvue.web.app import _reverse_geocode_or_none
 from blackvue.web.app import _selected_graph_fields
@@ -827,3 +828,73 @@ def test_reverse_geocode_or_none_degrades_to_none_on_media_tool_error(monkeypatc
     monkeypatch.setattr(app_module, "load_or_reverse_geocode", fake_geocode)
 
     assert _reverse_geocode_or_none((59.298, 18.087), Path("/cache")) is None
+
+
+# --------------------------------------------------------------------
+# _recording_has_video_or_none() - drivers.html's Start/Stop "Video"
+# links used to always say "Video" even when the linked recording had
+# nothing downloaded. Christer: "On specific trips i get a video link,
+# even if there is no video, it should be named 'No video' but still
+# keep the link" - then, on reflection, "the 'No video' link should
+# point to browse archive for the same day" instead of the specific
+# (video-less) recording (see drivers.html's own href swap). Same
+# monkeypatch-the-module-function shape as
+# test_reverse_geocode_or_none_* above, since _find_archive_recording()
+# needs a real CameraConfigCache/archive on disk otherwise.
+# --------------------------------------------------------------------
+
+
+def test_recording_has_video_or_none_returns_none_for_missing_ids():
+    assert _recording_has_video_or_none(object(), object(), None, "20260815_120000_N") is None
+    assert _recording_has_video_or_none(object(), object(), "kirby", None) is None
+    assert _recording_has_video_or_none(object(), object(), None, None) is None
+
+
+def test_recording_has_video_or_none_returns_true_when_video_present(monkeypatch):
+    import blackvue.web.app as app_module
+
+    class FakeRecording:
+        has_video = True
+
+    def fake_find(recording_cache, camera_config_cache, camera_id, recording_id):
+        assert camera_id == "kirby"
+        assert recording_id == "20260815_120000_N"
+        return FakeRecording()
+
+    monkeypatch.setattr(app_module, "_find_archive_recording", fake_find)
+
+    result = _recording_has_video_or_none(
+        object(), object(), "kirby", "20260815_120000_N"
+    )
+    assert result is True
+
+
+def test_recording_has_video_or_none_returns_false_when_video_missing(monkeypatch):
+    import blackvue.web.app as app_module
+
+    class FakeRecording:
+        has_video = False
+
+    monkeypatch.setattr(
+        app_module, "_find_archive_recording", lambda *a, **k: FakeRecording()
+    )
+
+    result = _recording_has_video_or_none(
+        object(), object(), "kirby", "20260815_120000_N"
+    )
+    assert result is False
+
+
+def test_recording_has_video_or_none_degrades_to_none_on_404(monkeypatch):
+    import blackvue.web.app as app_module
+    from fastapi import status
+
+    def fake_find(recording_cache, camera_config_cache, camera_id, recording_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="gone")
+
+    monkeypatch.setattr(app_module, "_find_archive_recording", fake_find)
+
+    result = _recording_has_video_or_none(
+        object(), object(), "kirby", "20260815_120000_N"
+    )
+    assert result is None

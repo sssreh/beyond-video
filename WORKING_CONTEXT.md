@@ -21632,3 +21632,66 @@ home-cluster max distance 160.07m - matches the analysis exactly. Next
 `bv-drivers build` should keep all previously-resolved places/drivers
 and additionally pick up short local trips that used to get swallowed
 as "at home."
+
+## Follow-up: "Can't decide" driver + "No video" archive-day link
+
+Christer: "I want to add driver like 'Can't decide' or something that
+would mean i give up on that trip. Undecided is more like, i havent
+decided yet. On specific trips i get a video link, even if there is no
+video, it should be named 'No video' but still keep the link."
+
+**"Can't decide" driver.** This needed zero new code. `place_knowledge.py`
+already tracks per-trip `source`, starting as `"undecided"` and flipping
+to `"manual-trip"` the moment *any* driver gets assigned to that trip;
+`undecided_trips()`/`decided_count` filter purely on `source != "undecided"`.
+So a trip assigned to a real driver labeled "Can't decide" already falls
+out of the Undecided list and counts as decided - exactly the "I gave up
+on deciding this one" state Christer described, distinct from "I haven't
+decided yet." Added it the same way task #1346's "Add a driver" form does
+under the hood: called the existing `add_driver()`/`save_driver_profiles()`
+pair against Christer's real `driver_profiles.json` directly. It now has
+driver1=Dao, driver2=Christer, driver3=Hempijit, driver4="Can't decide",
+all with `patterns: []` (manual-only, like Hempijit) - live on Christer's
+disk, ready to pick from the per-trip driver dropdown on `/drivers` today,
+no `bv-drivers build` or restart required.
+
+**"No video" link.** The Start/Stop links on `/drivers` (both the Common
+Places per-trip listing and the Specific trips table) always said "Video"
+and pointed at `/archive/{camera_id}/{recording_id}`, even when that
+recording has a resolvable id (GPS/thumbnail sidecar downloaded) but no
+video file ever downloaded - `ArchiveRecording.has_video` (task #799) is
+`bool(self.videos)`, and the two can diverge. Added `_recording_has_video_or_none()`
+to app.py: resolves (camera_id, recording_id) via the existing
+`_find_archive_recording()` helper and returns its `.has_video`, or `None`
+if either id is missing or the recording can't be resolved at all -
+same "degrade instead of 500" shape as `_reverse_geocode_or_none()`.
+`drivers_page()` now builds `trip_video_status`/`place_trip_video_status`
+dicts (keyed by trip_label, one `(start_status, stop_status)` tuple per
+trip) and passes them to the template.
+
+Christer's original ask was to keep the "No video" link pointed at that
+same (video-less) recording page, just relabeled. Mid-implementation he
+changed his mind: "I changed my mind, the 'No video' link should point
+to browse archive for the same day." Revised: when `has_video` is
+explicitly `False` (checked with `is sameas false` in the template, so
+an unresolved `None` still falls back to the normal "Video" link/behavior
+rather than being misread as "no video"), the link now reads "No video"
+and points at `/archive/{camera_id}?timestamp={trip.start_time/end_time
+strftime('%Y%m%d')}` - the existing `/archive/{camera_id}` route already
+accepts a `timestamp` query param and threads it through `LexicalTimeParser`,
+which expands an 8-digit `YYYYMMDD` string into a whole-day interval, so
+this reuses the archive browser's existing day-filter rather than adding
+new routing. Applied identically to all four link sites: Common Places
+Start/Stop and Specific trips Start/Stop.
+
+Tests: four new tests in `test_app_reuse.py` for `_recording_has_video_or_none()`,
+following the exact `monkeypatch.setattr(app_module, "_find_archive_recording", fake)`
+pattern already established by `test_reverse_geocode_or_none_*` - missing
+ids -> `None`, resolves + `has_video=True` -> `True`, resolves +
+`has_video=False` -> `False`, `_find_archive_recording` raising 404 ->
+degrades to `None`. This sandbox has no `fastapi` installed (a pre-existing,
+already-documented limitation of both `test_app_reuse.py` and
+`test_app_routes.py`), so verification here is `python3 -m py_compile` on
+app.py and the test file plus a Jinja2 render/syntax check on drivers.html;
+full pytest execution happens in CI / on Christer's machine, same as every
+other app.py-touching change in this project.

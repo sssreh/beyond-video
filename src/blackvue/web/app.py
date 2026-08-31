@@ -865,6 +865,29 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             )
             for entry in specific_trip_list
         }
+        # Whether the Start/Stop "Video" link's own recording actually
+        # has a downloaded video - see _recording_has_video_or_none()'s
+        # own docstring (Christer's "even if there is no video, it
+        # should be named 'No video' but still keep the link"). Same
+        # scope-to-what's-actually-shown reasoning as trip_addresses
+        # above: only computed for specific_trip_list's own trips.
+        trip_video_status = {
+            entry.trip_label: (
+                _recording_has_video_or_none(
+                    app.state.archive_recording_cache,
+                    app.state.camera_config_cache,
+                    entry.camera_id,
+                    entry.first_recording_id,
+                ),
+                _recording_has_video_or_none(
+                    app.state.archive_recording_cache,
+                    app.state.camera_config_cache,
+                    entry.camera_id,
+                    entry.last_recording_id,
+                ),
+            )
+            for entry in specific_trip_list
+        }
 
         # Every trip belonging to each Common Place, most-recent-first -
         # Christer's own follow-up ask ("common places should show each
@@ -884,6 +907,27 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             entry.trip_label: (
                 _reverse_geocode_or_none(entry.start_point, geocode_cache_dir),
                 _reverse_geocode_or_none(entry.end_point, geocode_cache_dir),
+            )
+            for entries in place_trips.values()
+            for entry in entries
+        }
+        # Same has_video lookup as trip_video_status above, scoped to
+        # every trip shown under a Common Place's own expandable list
+        # instead of just the Specific trips table.
+        place_trip_video_status = {
+            entry.trip_label: (
+                _recording_has_video_or_none(
+                    app.state.archive_recording_cache,
+                    app.state.camera_config_cache,
+                    entry.camera_id,
+                    entry.first_recording_id,
+                ),
+                _recording_has_video_or_none(
+                    app.state.archive_recording_cache,
+                    app.state.camera_config_cache,
+                    entry.camera_id,
+                    entry.last_recording_id,
+                ),
             )
             for entries in place_trips.values()
             for entry in entries
@@ -924,8 +968,10 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "undecided_place_keys": undecided_place_keys,
                 "specific_trip_list": specific_trip_list,
                 "trip_addresses": trip_addresses,
+                "trip_video_status": trip_video_status,
                 "place_trips": place_trips,
                 "place_trip_addresses": place_trip_addresses,
+                "place_trip_video_status": place_trip_video_status,
                 "driver_display_by_label": driver_display_by_label,
                 "smoothness_scores": smoothness_scores,
                 "closest_matches": closest_matches,
@@ -4115,6 +4161,39 @@ def _reverse_geocode_or_none(
         return load_or_reverse_geocode(point[0], point[1], geocode_cache_dir)
     except MediaToolError:
         return None
+
+
+def _recording_has_video_or_none(
+    recording_cache: ArchiveRecordingCache,
+    camera_config_cache: CameraConfigCache,
+    camera_id: str | None,
+    recording_id: str | None,
+) -> bool | None:
+    """ArchiveRecording.has_video for (camera_id, recording_id), or
+    None if either is missing or the recording can't be resolved at
+    all (camera/recording gone, bad id, ...) - same "degrade instead
+    of 500" shape as _reverse_geocode_or_none() above. Used by
+    drivers_page() so its Start/Stop "Video" links can say "No video"
+    and point at the archive browser for that day instead of the
+    specific (video-less) recording, when the linked recording has no
+    video downloaded - Christer: "On specific trips i get a video
+    link, even if there is no video, it should be named 'No video' but
+    still keep the link" then, on reflection, "the 'No video' link
+    should point to browse archive for the same day" (see drivers.html
+    for the href swap this drives). A recording can have a resolvable
+    id (a GPS/thumbnail sidecar was downloaded) without its own video
+    ever having downloaded - see ArchiveRecording.has_video's own
+    docstring on why that's a real, common gap, not a bug."""
+
+    if not camera_id or not recording_id:
+        return None
+    try:
+        recording = _find_archive_recording(
+            recording_cache, camera_config_cache, camera_id, recording_id
+        )
+    except HTTPException:
+        return None
+    return recording.has_video
 
 
 def _describe_gps_fix(
