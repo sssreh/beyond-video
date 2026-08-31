@@ -21856,3 +21856,74 @@ every other app.py route change here) - so `_reverse_geocode_or_none()`/
 `_recording_has_video_or_none()`'s own direct-call tests in
 `test_app_reuse.py` (which don't change) are what CI/Christer's machine
 re-verifies against the real route.
+
+## Follow-up: cross-render caching for drivers_page() (task #1390)
+
+Christer, after the above fix shipped and he'd pushed it: "Assigning
+driver still takes 30 seconds per trip." The previous fix was real - 34%
+fewer geocode lookups, 28% fewer has-video lookups - but it only ever
+deduplicated lookups *within one render*. It did nothing about the
+actual workflow: every single trip assignment is its own fresh `POST
+/drivers/trips/{label}` -> `303` -> `GET /drivers`, and `drivers_page()`
+rebuilds the whole page from zero on each of those GETs. Even at the
+reduced count, that's still ~201 geocode lookups and ~220 has-video
+lookups repeated, unchanged, on every click, because nothing carried
+state across requests.
+
+The general-purpose `archive_recording_cache` (`app.state`, built for
+the archive browser's own playback/thumbnail routes) already caches
+`find_recording()` results, but at a 2-second TTL - tuned so a
+`bv-download` run finishing mid-playback-session gets noticed quickly.
+That TTL is far shorter than one `/drivers` render takes, so it had
+already expired by the time the *next* redirect landed and provided no
+cross-render benefit. `_reverse_geocode_or_none()`'s own on-disk cache
+(`.osm_cache/`) avoids the network round trip on a repeat lookup, but
+still does a real `Path.exists()` + `read_text()` + `json.loads()` on
+every single call, with no in-memory layer of its own.
+
+Added two new caches, specific to this page and separate from the
+playback-tuned one:
+
+- `app.state.drivers_page_recording_cache = ArchiveRecordingCache(ttl_seconds=300.0)`
+  for has-video lookups. 5 minutes is safe here in a way it wouldn't be
+  for the archive browser's playback routes (which keep using the
+  2-second `archive_recording_cache` unchanged): these are historical,
+  already-downloaded recordings, and "has video" for one of them only
+  ever flips when a fresh `bv-download` run finishes - never mid-
+  `/drivers`-session.
+- `app.state.drivers_page_geocode_cache: dict[tuple[float, float], str | None] = {}`
+  for reverse-geocoded addresses, with no TTL at all - a `(lat, lon)`
+  pair's own street address never changes, so once resolved once in
+  this process's lifetime there's nothing to ever re-check.
+
+Both live in `create_app()`, keeping `place_knowledge.py` itself
+untouched - it stays the "pure, network-free" module it was designed to
+be; all caching lives in the web layer. `drivers_page()`'s `_geocode()`/
+`_video_status()` closures now read/write through these process-
+lifetime caches instead of the fresh-per-request dicts the previous fix
+introduced; the now-redundant per-request `_video_status_memo` dict was
+removed. The four call sites that build `trip_addresses`/
+`trip_video_status`/`place_trip_addresses`/`place_trip_video_status`
+didn't need to change - they already just call `_geocode()`/
+`_video_status()` by name.
+
+Net effect: the first `/drivers` render in a session (or after 5
+minutes idle) still pays the real NAS/geocoder cost, same as before.
+Every trip-assignment redirect after that, for the next 5 minutes,
+reuses the previous render's own lookups instead of repeating all ~200
+of them from zero - which is the actual workflow Christer's "30 seconds
+per trip" describes.
+
+Verified: `python3 -m py_compile` on app.py. Confirmed
+`ArchiveRecordingCache(ttl_seconds=300.0)` instantiates and stores the
+TTL correctly via a standalone script. Could not reproduce a quantified
+before/after timing the way the previous fix's lookup-count numbers
+were reproduced, since the actual win here is cross-request NAS/network
+I/O latency, which this sandbox has no access to - that's a limitation
+of this environment, not of the fix; the previous fix's own numbers
+(304->201 geocode, 304->220 has-video per render) still stand as the
+baseline this now avoids repeating on every click. No existing test
+calls `drivers_page()` directly (no `fastapi` in this sandbox, same
+documented limitation as every other app.py change here); confirmed no
+test references the removed `_video_status_memo` dict or asserts on
+`archive_recording_cache` being the only cache on `app.state`.

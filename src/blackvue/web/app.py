@@ -274,6 +274,35 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # single request.
     app.state.camera_config_cache = CameraConfigCache()
 
+    # drivers_page()'s own pair of longer-lived caches (task #1390).
+    # Christer, after task #1389's render-scoped fixes: "Assigning
+    # driver still takes 30 seconds per trip." #1389 stopped one
+    # render from doing the same geocode/has-video lookup twice, but
+    # every trip assignment is its own fresh POST -> redirect -> GET,
+    # and drivers_page() re-renders the whole page from zero each
+    # time - the general-purpose archive_recording_cache's 2-second TTL
+    # (tuned for video playback, where a download finishing mid-session
+    # needs to be noticed quickly) had always expired well before the
+    # *next* redirect, so all ~200 has-video lookups against Christer's
+    # NAS-hosted archive were repeated, unchanged, on every single
+    # click. These are historical, already-downloaded recordings -
+    # "has video" for one of them only ever flips when a fresh
+    # bv-download run finishes, never mid-/drivers-session - so a much
+    # longer TTL is safe here in a way it wouldn't be for the archive
+    # browser's own playback routes, which keep using the 2-second
+    # archive_recording_cache above unchanged.
+    app.state.drivers_page_recording_cache = ArchiveRecordingCache(ttl_seconds=300.0)
+    # Reverse-geocoded addresses get the same treatment, but with no
+    # TTL at all - a (lat, lon) pair's own street address never
+    # changes, so once resolved once in this process's lifetime
+    # there's nothing to ever re-check. _reverse_geocode_or_none()'s
+    # own on-disk cache (default_config_dir()/.osm_cache) avoids the
+    # network round trip on repeat lookups, but still does a real
+    # file-exists check + read + JSON parse on every single call with
+    # no in-memory layer of its own - this dict is that missing layer,
+    # shared across every /drivers render for this process's lifetime.
+    app.state.drivers_page_geocode_cache: dict[tuple[float, float], str | None] = {}
+
     # See tts_voices()'s own docstring - a tiny process-lifetime cache
     # so the "Read aloud" voice picker doesn't hit the ElevenLabs API
     # on every single archive recording detail page view.
@@ -877,27 +906,29 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         # ArchiveRecordingCache TTL only dedupe a *repeated* key, not a
         # first-time lookup happening twice under two different dict
         # comprehensions), so both are now routed through small
-        # request-scoped memo dicts here instead of called directly.
+        # helpers here instead of called directly. Backed by the two
+        # process-lifetime caches set up in create_app() (see
+        # app.state.drivers_page_recording_cache/_geocode_cache's own
+        # comments there, task #1390) rather than a fresh per-request
+        # dict, so the *next* /drivers render - the one every single
+        # trip-assignment POST redirects straight into - reuses this
+        # render's own lookups instead of repeating every one of them
+        # from zero.
         geocode_cache_dir = default_config_dir() / ".osm_cache"
-        _geocode_memo: dict[tuple[float, float], str | None] = {}
+        _geocode_memo = app.state.drivers_page_geocode_cache
 
         def _geocode(point: tuple[float, float]) -> str | None:
             if point not in _geocode_memo:
                 _geocode_memo[point] = _reverse_geocode_or_none(point, geocode_cache_dir)
             return _geocode_memo[point]
 
-        _video_status_memo: dict[tuple[str, str], bool | None] = {}
-
         def _video_status(camera_id: str, recording_id: str) -> bool | None:
-            memo_key = (camera_id, recording_id)
-            if memo_key not in _video_status_memo:
-                _video_status_memo[memo_key] = _recording_has_video_or_none(
-                    app.state.archive_recording_cache,
-                    app.state.camera_config_cache,
-                    camera_id,
-                    recording_id,
-                )
-            return _video_status_memo[memo_key]
+            return _recording_has_video_or_none(
+                app.state.drivers_page_recording_cache,
+                app.state.camera_config_cache,
+                camera_id,
+                recording_id,
+            )
 
         # Reverse-geocoded address per place (keyed by CommonPlace.key)
         # and per undecided trip's start/stop point (keyed by
