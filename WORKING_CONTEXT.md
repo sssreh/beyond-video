@@ -21266,3 +21266,78 @@ equivalents (e.g. test_requires_parking_true_match_and_disambiguation,
 test_requires_parking_checked_via_prev_fix_for_return_leg). All 72
 tests pass via the pytest shim harness; py_compile clean on all seven
 touched files.
+
+## Fix: bv-drivers regressed to 0/468 resolved, 0 places (done, this session)
+
+Christer ran `bv-drivers Kirby --debug` after the requires_parking
+redesign above and got 468 trips, 0 places, 0/468 resolved to a
+driver - a total regression from the working state. His own
+`bv-ls Kirby --trips --drivers` showed real matches ("Christer 90%")
+on the same archive, which he explicitly flagged as not proof
+bv-drivers itself works: "bv-ls and bv-export are building video
+trips, we are trying to get driver from sidecars. Not same trip
+concept" - bv-ls/bv-export build trips from
+`recordings_with_front_video()` only, while bv-drivers deliberately
+builds trips from *every* recording per Christer's own earlier design
+("sidecars build trips", not videos).
+
+Root cause, found by reading Christer's real driver_knowledge.json
+directly (not by reproducing against X:\BEYOND-VIDEO\Kirby, which is
+too slow to run interactively from this sandbox - ls -la alone times
+out over that mount): two independently-reasoned, pre-existing design
+decisions compounded. (1) bv-drivers builds trips from all recordings,
+including sidecar-only ones. (2) The P-ending-requirement filter
+(added in an earlier session) only trusts a trip whose *last*
+recording is a downloaded Parking-mode one. Combined: isolated
+single-recording Parking-mode motion-trigger blips - overwhelmingly
+in Christer's underground home garage, which has no GPS signal (see
+bv-drivers.md's own DESCRIPTION) - trivially pass the P-filter as
+their own degenerate "trip" and came to dominate the list (291 of 468
+= 62%, 290 of which had no resolvable GPS at all). Worse, even
+genuine multi-recording driving trips lost their *end* GPS point,
+because the P-filter forces the trip's last recording to be
+Parking-mode, and BlackVue's own download policy ("only E/M-kind
+video + the one right before each") normally skips downloading a
+Parking recording's own front video - starving
+resolve_recording_gps_span()'s EXIF/container-tag fallback - even
+though the actual driving leg immediately before it (the N/E
+recording) has perfectly good GPS. Across the real data: 349/468
+trips resolved *neither* endpoint, only 1/468 resolved both.
+
+Two-part fix. (1) driver_detect.py's resolve_trip_fix() no longer
+trusts only trip.first_recording/trip.last_recording for GPS - two
+new helpers, _first_resolvable_start()/_last_resolvable_end(), scan
+forward/backward through the trip's full trip.recordings tuple via
+resolve_recording_gps_span() and return the first real fix found in
+each direction, so a trip's genuine driving-leg GPS is used even when
+the literal first/last recording (home-garage blip, Parking tail)
+has none. (2) bv_drivers.py's _run() now drops trips with zero
+driving evidence - `all(recording.id.is_parking for recording in
+trip.recordings)` - before the P-ending filter runs, with its own
+--debug line and empty-list guard, eliminating the 291-trip
+home-garage-blip cluster outright rather than letting it dominate the
+undecided list.
+
+Test fallout: the new no-driving-evidence filter broke 6 of 14
+bv_drivers tests, because the _make_trip() test helper stamped the
+same `kind` (default "P") onto *both* the start and end RecordingId,
+so every test using the default built an all-Parking trip the new
+filter now (correctly) drops - despite the helper's own docstring
+already claiming `kind` only controlled the end recording. Fixed
+_make_trip() to hardcode the start recording's kind to "N" always,
+matching what was already documented. Separately,
+test_run_drops_parking_trip_whose_only_asset_is_generated builds its
+"dropped" trip by hand (bypassing _make_trip() entirely) and had its
+start recording hardcoded to kind "P" too - fixed to "N" so the trip
+has real driving evidence and reaches the P-ending/generated-asset
+check the test is actually about, instead of being incidentally
+caught by the new evidence filter for an unrelated reason. All 14
+bv_drivers, 20 driver_detect, and 38 place_knowledge tests pass.
+
+Christer's real driver_knowledge.json (in beyond-video-data/.config)
+is now stale, written by the pre-fix code - it'll regenerate correctly
+next time he runs `bv-drivers Kirby build` (or --debug). Not yet
+confirmed against the real archive whether the fix reaches Christer's
+stated target ("happy if we got drivers for 25% of trips since july
+6") - can't be verified from this sandbox due to the slow NAS mount;
+needs a real rerun on his own machine.

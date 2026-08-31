@@ -288,6 +288,40 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
             say(f"bv-drivers: {archive_path} - no trips found in range.")
             return EXIT_OK
 
+        # Drop trips with no driving evidence at all - every recording
+        # in them is Parking-mode. Building trips from *every*
+        # recording (see the sidecar-vs-video comment above) means a
+        # single motion-triggered Parking clip that never got bridged
+        # to anything else - most commonly one triggered by a passer-by
+        # while the car sits in Christer's own underground home garage,
+        # where there's no GPS signal at all to begin with - becomes
+        # its own one-recording "trip." It trivially satisfies the
+        # P-ending-requirement filter just below (a lone P recording
+        # both starts and ends the trip), so without this check those
+        # blips don't just fail to resolve, they dominate the trips
+        # list and drown out the real drives. Confirmed on Christer's
+        # real archive (2026-08-31): 291 of 468 post-P-filter trips
+        # were exactly this - single-recording, Parking-kind, almost
+        # all with no resolvable GPS at all (290/291). A trip with at
+        # least one non-Parking recording always has real driving
+        # evidence somewhere in it and is kept regardless of shape.
+        before_evidence_filter = len(trips)
+        trips = [
+            trip
+            for trip in trips
+            if any(not recording.id.is_parking for recording in trip.recordings)
+        ]
+        if args.debug and len(trips) != before_evidence_filter:
+            say(
+                f"bv-drivers: debug: dropped "
+                f"{before_evidence_filter - len(trips)} trip(s) with no "
+                "driving evidence (every recording Parking-mode)"
+            )
+
+        if not trips:
+            say(f"bv-drivers: {archive_path} - no trips found in range.")
+            return EXIT_OK
+
         # Christer, on top of the sidecar-vs-video fix above: a trip's
         # own end (wherever TripBuilder's gap logic happened to split
         # it) is only trusted as a real stop if it ends with a

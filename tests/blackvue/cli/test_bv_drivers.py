@@ -125,26 +125,27 @@ class _FakeTripBuilder:
 
 
 def _make_trip(label_timestamp: str, minutes_span: int = 10, *, kind: str = "P") -> Trip:
-    """`kind` (default "P", Parking) is stamped onto both the start and
-    end RecordingId - only the end recording's own kind actually
-    matters (see the Parking-mode filter test below, which needs a
-    trip whose *last* recording is Parking-mode specifically), but a
-    bare RecordingId needs a real kind letter regardless (a 15-char
-    "YYYYMMDD_HHMMSS" string with no trailing "_K" isn't a valid
-    RecordingId - .kind indexes position 16, which doesn't exist
-    without one). Defaulting to "P" (rather than the old "N") means
-    every test that doesn't care about the Parking-filter survives it
-    by default, since bv_drivers.py's real filter now requires it.
+    """`kind` (default "P", Parking) is stamped onto the *end*
+    RecordingId only - the *start* recording is always kind "N"
+    (Normal/driving), since bv_drivers.py's own "drop trips with no
+    driving evidence" filter (see its own comment) now requires at
+    least one non-Parking recording somewhere in the trip, same as any
+    real trip: it starts on a driving recording and, per the
+    Parking-mode filter tested below, is only trusted once it also
+    ends on one. A bare RecordingId needs a real kind letter regardless
+    (a 15-char "YYYYMMDD_HHMMSS" string with no trailing "_K" isn't a
+    valid RecordingId - .kind indexes position 16, which doesn't exist
+    without one).
 
     The end recording also gets a downloaded GPS asset attached - the
-    filter requires not just `.id.is_parking` but also at least one
-    *downloaded* asset (Christer: "bara nedladdade P assets raknas,
-    inte genererade" - only downloaded P assets count, not generated
-    ones), so a bare id-only Recording with no assets at all would be
-    wrongly dropped by every test that doesn't care about that
+    Parking-mode filter requires not just `.id.is_parking` but also at
+    least one *downloaded* asset (Christer: "bara nedladdade P assets
+    raknas, inte genererade" - only downloaded P assets count, not
+    generated ones), so a bare id-only Recording with no assets at all
+    would be wrongly dropped by every test that doesn't care about that
     distinction either."""
 
-    start = RecordingId(f"{label_timestamp}_{kind}")
+    start = RecordingId(f"{label_timestamp}_N")
     end_dt = start.timestamp + timedelta(minutes=minutes_span)
     end = RecordingId(f"{end_dt:%Y%m%d_%H%M%S}_{kind}")
     end_recording = Recording(id=end)
@@ -302,7 +303,11 @@ def test_run_drops_parking_trip_whose_only_asset_is_generated(tmp_path, monkeypa
     )
     dropped = Trip(
         recordings=(
-            Recording(id=RecordingId("20260701_180000_P")),
+            # Kind "N" (not "P") so this trip has real driving
+            # evidence and reaches the P-ending/generated-asset check
+            # below rather than being caught earlier by the
+            # no-driving-evidence filter for an unrelated reason.
+            Recording(id=RecordingId("20260701_180000_N")),
             dropped_end,
         ),
     )

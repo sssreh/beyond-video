@@ -453,9 +453,75 @@ class TripFix:
     has_parking_footage: bool = False
 
 
+def _first_resolvable_start(
+    adapter: CameraAdapter, recordings: tuple
+) -> tuple[float, float] | None:
+    """Scan `recordings` in order and return the first (lat, lon) any
+    of them yields as a *start* fix, or None if none do.
+
+    Needed because bv-drivers' own P-ending-trip filter (see
+    bv_drivers.py's own docstring) guarantees every trip's *first*
+    recording can be anything - it only constrains the *last* one.
+    In practice the first recording is almost always a real driving
+    (N/E) recording with a genuine GPS fix, so this loop typically
+    returns on its first iteration - it only matters for the rarer
+    trip that happens to open on a recording with no resolvable
+    position of its own (a corrupted/empty .gps file, a brief motion
+    trigger with no lock yet, ...)."""
+
+    for recording in recordings:
+        start_fix, _ = resolve_recording_gps_span(adapter, recording)
+        if (
+            start_fix is not None
+            and start_fix.latitude is not None
+            and start_fix.longitude is not None
+        ):
+            return (start_fix.latitude, start_fix.longitude)
+    return None
+
+
+def _last_resolvable_end(
+    adapter: CameraAdapter, recordings: tuple
+) -> tuple[float, float] | None:
+    """Same as _first_resolvable_start(), scanning backward from the
+    end for an *end* fix.
+
+    This one matters far more often: bv-drivers' P-ending filter
+    forces every trip's *last* recording to be a Parking-mode one, and
+    Parking-mode recordings' own front video normally isn't downloaded
+    at all (bv-download's policy: only E/M-kind video + the one right
+    before each - see bv_drivers.py's own filter docstring), which
+    knocks out resolve_recording_gps_span()'s EXIF/container-tag
+    fallback path entirely, and a brief motion-triggered Parking clip
+    often hasn't held a GPS lock long enough for its own .gps sidecar
+    to carry a valid fix either. Confirmed on Christer's real archive
+    (2026-08-31): with only the literal last recording's own fix
+    trusted, 467 of 468 trips came back with no usable end point at
+    all (0 resolved, 0 common places) even though the *driving* portion
+    of nearly every one of those trips - the N/E recording(s) right
+    before the car parked - has a perfectly good fix. Falling back to
+    the last recording that actually has one is the real trip's own
+    last known position either way; a Parking-mode tail recording with
+    no fix of its own was never going to add real information."""
+
+    for recording in reversed(recordings):
+        _, end_fix = resolve_recording_gps_span(adapter, recording)
+        if (
+            end_fix is not None
+            and end_fix.latitude is not None
+            and end_fix.longitude is not None
+        ):
+            return (end_fix.latitude, end_fix.longitude)
+    return None
+
+
 def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
-    """Build a TripFix for `trip`: start point from its first
-    recording, end point from its last (the same one-probe-per-end
+    """Build a TripFix for `trip`: start point from the first
+    recording (in order) that resolves one at all, end point from the
+    last recording (in order) that resolves one at all - see
+    _first_resolvable_start()/_last_resolvable_end()'s own docstrings
+    for why this scans instead of only trusting trip.first_recording/
+    trip.last_recording specifically, the same one-probe-per-recording
     approach cli/bv_ls.py's GPS column and the /location route already
     use via resolve_recording_gps_span() - see that function's own
     docstring for the real-telemetry-then-EXIF/container-tag fallback
@@ -469,23 +535,8 @@ def resolve_trip_fix(adapter: CameraAdapter, trip: Trip) -> TripFix:
     docstring for why a generated-only P id doesn't count as camera
     evidence of a real stop."""
 
-    start_fix, _ = resolve_recording_gps_span(adapter, trip.first_recording)
-    _, end_fix = resolve_recording_gps_span(adapter, trip.last_recording)
-
-    start = (
-        (start_fix.latitude, start_fix.longitude)
-        if start_fix is not None
-        and start_fix.latitude is not None
-        and start_fix.longitude is not None
-        else None
-    )
-    end = (
-        (end_fix.latitude, end_fix.longitude)
-        if end_fix is not None
-        and end_fix.latitude is not None
-        and end_fix.longitude is not None
-        else None
-    )
+    start = _first_resolvable_start(adapter, trip.recordings)
+    end = _last_resolvable_end(adapter, trip.recordings)
 
     last_recording = trip.last_recording
     has_parking_footage = last_recording.id.is_parking and any(
