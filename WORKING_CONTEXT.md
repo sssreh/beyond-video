@@ -21927,3 +21927,50 @@ calls `drivers_page()` directly (no `fastapi` in this sandbox, same
 documented limitation as every other app.py change here); confirmed no
 test references the removed `_video_status_memo` dict or asserts on
 `archive_recording_cache` being the only cache on `app.state`.
+
+## Follow-up: auto-start video from /drivers "Video" links only (task #1390)
+
+Christer, after the above: "Now i need to press play to get hevc h264
+to start." That's the direct, working-as-designed consequence of task
+#1388's `preload="none"` fix on `archive_recording_detail.html` -
+explained that trade-off back to him. He clarified: "yes, but i was
+talking about the link in specific trip, it shouldnt kick it of, but
+when i visit the video by clicking the link, it should start." Reading
+that carefully resolves what first looked like a contradiction with
+#1388's own fix: he never meant that landing on this page from
+`/drivers` should stay silent - he meant clicking a `/drivers` "Video"
+link is already a deliberate "let me see this trip's footage" action,
+so it should start playing on arrival rather than need a second Play
+click; the concern #1388 fixed (idle browsing accidentally kicking off
+a transcode) still applies to *other* ways of reaching this same page
+(general archive browsing, thumbnail-grid clicks) and shouldn't change.
+
+Rather than reverting #1388 wholesale, made the autoplay behavior
+opt-in per-link via a query parameter. `archive_recording_detail()` in
+app.py gained an `autoplay: bool = False` query param, passed straight
+through to the template as `autoplay`. `archive_recording_detail.html`'s
+`<video>` tag now renders `preload="metadata" autoplay` when `autoplay`
+is true (matching `archive_recording_watch.html`'s own long-standing
+autoplay behavior) and keeps `preload="none"` with no autoplay
+otherwise - so every existing entry point into this page (archive
+browser grid, search results, trip pages) is completely unaffected.
+Updated all four "Video" links in `drivers.html` - the Specific trips
+table's start/stop links (using `trip_video_status`) and the per-place
+expandable list's own start/stop links (using
+`place_trip_video_status`) - to append `?autoplay=1`.
+
+Verified: `python3 -m py_compile` on app.py; `ast.unparse()` on the
+`archive_recording_detail` route's own arguments confirms the
+`autoplay: bool = False` parameter lands correctly ahead of the
+existing `Depends(require_login)` parameter. Confirmed via `grep` that
+all four `/drivers` "Video" links (lines 143, 159 in the per-place
+list; 306, 322 in the Specific trips table) now carry `?autoplay=1`.
+Rendered the conditional-attribute Jinja snippet standalone to confirm
+it produces `preload="metadata" autoplay` when true and `preload="none"`
+(no `autoplay` token at all) when false. Both `archive_recording_detail.html`
+and `drivers.html` parse cleanly under a bare Jinja2 `Environment` (a
+full in-sandbox render through `base.html` isn't possible here without
+a real FastAPI `Request`/`user` object - not attempted, consistent with
+this project's standing "no fastapi in this sandbox" limitation for
+app.py/template changes; CI and Christer's own machine are what
+exercise the real route end-to-end).
