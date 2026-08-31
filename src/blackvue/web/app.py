@@ -291,7 +291,25 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # longer TTL is safe here in a way it wouldn't be for the archive
     # browser's own playback routes, which keep using the 2-second
     # archive_recording_cache above unchanged.
-    app.state.drivers_page_recording_cache = ArchiveRecordingCache(ttl_seconds=300.0)
+    #
+    # Follow-up (task #1391) - Christer: "Cant the 5 minute cashed be
+    # solved another way, its irritating that after 5 minutes i need
+    # to wait 30 seconds." The 300s TTL just traded one problem for a
+    # smaller, recurring one: every 5 minutes of active /drivers use
+    # paid the same 30s cost the render-scoped fix was meant to avoid,
+    # for no reason - nothing had actually changed. The real signal
+    # for "safe to keep serving this" was never a clock, it was
+    # "has a bv-download for this camera finished since this was
+    # cached" - and JobRunner.start_bv_download() already knows
+    # exactly when that happens, so it now calls this cache's own
+    # clear() the moment a real (non-dry-run) download job succeeds
+    # (see that method's own docstring). With that in place the TTL
+    # below is just a distant backstop for the one case explicit
+    # invalidation can't see - a bv-download run kicked off outside
+    # bv-web entirely (a direct CLI call against the same archive) -
+    # so it's raised from 5 minutes to 1 hour rather than removed
+    # outright.
+    app.state.drivers_page_recording_cache = ArchiveRecordingCache(ttl_seconds=3600.0)
     # Reverse-geocoded addresses get the same treatment, but with no
     # TTL at all - a (lat, lon) pair's own street address never
     # changes, so once resolved once in this process's lifetime
@@ -2719,6 +2737,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
             verbose=verbose,
             trace=trace,
             username=user.username,
+            # task #1391 - clear drivers_page()'s has-video cache the
+            # instant this download actually succeeds, instead of
+            # leaving it to that cache's own TTL backstop. See
+            # start_bv_download()'s own docstring for the full
+            # reasoning (Christer: "Cant the 5 minute cashed be solved
+            # another way, its irritating that after 5 minutes i need
+            # to wait 30 seconds").
+            on_success=app.state.drivers_page_recording_cache.clear,
         )
         return RedirectResponse(
             url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER

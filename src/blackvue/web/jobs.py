@@ -1080,6 +1080,7 @@ class JobRunner:
         verbose: bool,
         trace: bool,
         username: str,
+        on_success: Callable[[], None] | None = None,
     ) -> Job:
         """Start bv-download as a job, against an already-configured
         camera id only - --host/--target (a one-off connection with no
@@ -1117,6 +1118,25 @@ class JobRunner:
         pre-check" approach start_bv_generate's own route already
         uses, rather than a BvExportArgError-style exception class
         built for a much larger validator surface.
+
+        `on_success` (task #1391): Christer, after drivers_page()'s
+        cross-render has-video cache (task #1390) stopped the 30s
+        wait on *every* click but replaced it with the same 30s wait
+        every 5 minutes instead - "Cant the 5 minute cashed be solved
+        another way, its irritating that after 5 minutes i need to
+        wait 30 seconds." The TTL was never really about a schedule;
+        it was standing in for "has a download finished since this
+        was cached" - and this job runner already knows exactly when
+        that happens. app.py's /jobs/bv-download route passes a
+        callback here that clears app.state.drivers_page_recording_cache
+        (see ArchiveRecordingCache.clear()) the moment this job
+        succeeds, so a freshly downloaded recording's has_video status
+        is correct on the very next /drivers render instead of
+        whenever the TTL next happens to lapse. Only called on a real,
+        non-dry-run success (`code == 0 and not args.dry_run`) - a
+        dry run never writes anything, so there's nothing to
+        invalidate, and a failed run may not have written a complete
+        video either.
         """
 
         from ..cli import bv_download
@@ -1149,7 +1169,10 @@ class JobRunner:
 
         def run() -> int:
             say = job.append_output
-            return bv_download._run(args, say=say, warn=say)
+            code = bv_download._run(args, say=say, warn=say)
+            if code == 0 and not dry_run and on_success is not None:
+                on_success()
+            return code
 
         self._spawn(job, run)
         return job

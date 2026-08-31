@@ -21974,3 +21974,59 @@ a real FastAPI `Request`/`user` object - not attempted, consistent with
 this project's standing "no fastapi in this sandbox" limitation for
 app.py/template changes; CI and Christer's own machine are what
 exercise the real route end-to-end).
+
+## Follow-up: event-driven invalidation instead of the 5-minute TTL cliff (task #1391)
+
+Christer, after living with task #1389's fix for a while: "Cant the 5
+minute cashed be solved another way, its irritating that afyer 5
+minutes i need to wait 30 seconds." Task #1389 introduced
+`app.state.drivers_page_recording_cache` (an `ArchiveRecordingCache`
+with `ttl_seconds=300.0`) precisely to avoid re-scanning ~220
+NAS-hosted recordings' has-video status on every `/drivers` render -
+but a blind wall-clock TTL just relocated the pain: instead of "always
+slow," it became "slow again every 5 minutes," since the cache had no
+way to know whether anything had actually changed - it could only
+guess "probably stale by now" and pay the ~30-second re-scan cost
+regardless.
+
+The real signal for staleness isn't time, it's "did a download finish
+and possibly add a video file bv-web didn't know about" - and bv-web's
+own `JobRunner` already knows the exact instant that happens for any
+`bv-download` job it runs. So this fix replaces the guess with the
+actual event: `ArchiveRecordingCache` (`archive_browser.py`) gained a
+`clear()` method that drops every cached entry immediately, and
+`JobRunner.start_bv_download()` (`jobs.py`) gained an `on_success:
+Callable[[], None] | None = None` parameter, invoked from inside the
+job's `run()` closure only when the download genuinely succeeded
+(`code == 0 and not dry_run` - never on failure, never on a dry run).
+The POST `/jobs/bv-download` route in `app.py` now passes
+`on_success=app.state.drivers_page_recording_cache.clear`, so the
+moment a real download finishes, the has-video cache is wiped and the
+very next `/drivers` render picks up the new video with a fresh scan -
+no more waiting for a clock to run out.
+
+The TTL itself wasn't removed - it's now a backstop for the one case
+`JobRunner` can't observe: a `bv-download` run from the CLI directly
+against the same archive while bv-web's process is also running.
+Raised it from 300s (5 minutes) to 3600s (1 hour) to reflect that
+new role - a rare-case fallback rather than the primary correctness
+mechanism, so it no longer manufactures a recurring 30-second wait
+during normal active use.
+
+Verified: `python3 -m py_compile` on `app.py`, `jobs.py`, and
+`archive_browser.py` together. A standalone script confirmed
+`ArchiveRecordingCache(ttl_seconds=3600.0)` instantiates with the new
+TTL and that `clear()` empties `_entries`. A more thorough standalone
+script faked out `blackvue.cli.bv_download` via `sys.modules`,
+constructed a real `JobRunner()`, and called the real
+`start_bv_download()` with a counting `on_success` lambda: confirmed
+the background-thread job reaches `SUCCEEDED`, `bv_download._run` is
+called exactly once, and `on_success` fires exactly once. Two further
+negative-case runs confirmed `on_success` does *not* fire for a
+dry-run (even with a success exit code) or for a genuine failure exit
+code - both printed `invoked: 0` as expected. No existing test
+exercises the real `/jobs/bv-download` HTTP route end-to-end (no
+`fastapi` in this sandbox, same standing limitation as every other
+app.py change here) - the `JobRunner.start_bv_download()` script above
+is the closest in-sandbox equivalent, since it drives the actual
+method bv-web's route calls, background thread and all.

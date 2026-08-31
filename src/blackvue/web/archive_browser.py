@@ -1822,6 +1822,19 @@ class ArchiveRecordingCache:
             self._entries.pop(key, None)
         return recording
 
+    def clear(self) -> None:
+        """Drop every cached entry immediately, instead of waiting out
+        the TTL. Added for drivers_page()'s own longer-lived cache
+        (task #1391) - JobRunner.start_bv_download() calls this on
+        success so a freshly downloaded recording's has_video status
+        is visible on the very next /drivers render, rather than
+        Christer having to wait out however long the TTL happens to
+        be. Safe to call on the short-TTL playback cache too (it's a
+        no-op in practice there, since that TTL is already seconds
+        long), but nothing currently does."""
+
+        self._entries.clear()
+
 
 def group_by_day(
     recordings: list[ArchiveRecording],
