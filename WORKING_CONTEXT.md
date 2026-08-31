@@ -21695,3 +21695,105 @@ already-documented limitation of both `test_app_reuse.py` and
 app.py and the test file plus a Jinja2 render/syntax check on drivers.html;
 full pytest execution happens in CI / on Christer's machine, same as every
 other app.py-touching change in this project.
+
+## Follow-up: backup safety net, page-loading overlay, eager-transcode fix
+
+After the "Can't decide"/"No video" fixes above, Christer worked through
+`/drivers` and reported four things in quick succession: whether he
+needed to re-run `bv-drivers build` (yes - the on-disk `driver_knowledge.json`
+at that point had 0 places/0 away_point trips, a stale/broken snapshot
+from before the Heliosgatan 38 fix landed); that adding a driver was
+very slow (root-caused to `/drivers/add-driver`'s POST redirecting into
+the same expensive `drivers_page()` GET that recomputes per-trip video
+status, geocoding, and smoothness for the whole Undecided list on every
+render - the list was all 164 trips against that broken 0-places KB);
+that the *first* `/drivers` load after a real rebuild was also slow and
+"Do you think bv-web needs a icon showing its working?" (yes - separately,
+a fresh build changes which points need reverse-geocoding, and
+`geocoding.py`'s Nominatim throttle allows only 1 request/second by
+policy, so a cold cache after rebuild serializes into a real 20-30+
+second wait); and, worst, that "All common places has lost the beautiful
+names i gave them."
+
+**Root cause of the lost names.** `bv-drivers build` (`bv_drivers.py`)
+loads whatever `driver_knowledge.json` is currently on disk as `existing`,
+passes it into `build_common_places(knowledge, existing=existing)`
+(place_knowledge.py) so each rebuilt `CommonPlace` can carry forward its
+prior hand-set `label`/`driver` by matching on place `key`, then
+overwrites the file with the result. Christer ran `build` while the
+on-disk file was in the broken 0-places state described above - so
+`existing` had nothing to carry forward from, and every place fell back
+to `build_common_places()`'s generic default, `f"Place near {lat:.3f},
+{lon:.3f}"`, with `driver=None`. There was no backup of any kind anywhere
+under `.config`, so the original hand-picked text was gone for good by
+the time this was diagnosed - confirmed via `find`, nothing recoverable.
+Told Christer this plainly rather than suggesting a false fix.
+
+**Fix 1: rolling backup in `save_knowledge_base()`.** Every caller that
+persists `driver_knowledge.json` - the CLI build command, and
+`drivers_update_place()`/`drivers_update_trip()`/the driver-rename
+re-resolve flow in app.py - already funnels through this one function
+in place_knowledge.py, making it the single correct point to add
+insurance. It now rolls whatever was already at `path` into a
+`path.bak` sibling (`path.with_suffix(path.suffix + ".bak")`) before
+writing the new content, wrapped in `try/except OSError` so a failed
+backup (read-only mount, disk full, ...) never blocks the real save -
+same degrade-instead-of-crash posture as the rest of this module's I/O.
+One generation of undo doesn't prevent a bad build from happening again,
+but it means "restore the `.bak` over the live file" is always available
+as an escape hatch from here on, which didn't exist when Christer hit
+this. Two new tests in `test_place_knowledge.py`:
+`test_save_knowledge_base_backs_up_existing_file_first()` (writes a
+hand-labeled place, simulates a broken rebuild overwriting it with a
+generic-labeled one, asserts the `.bak` file still holds the original
+label/driver while the live file holds the new content) and
+`test_save_knowledge_base_first_save_creates_no_backup()` (no `.bak`
+appears on a brand-new file with nothing to back up yet).
+`test_place_knowledge`: 50/50 pass (48 pre-existing + 2 new).
+
+**Fix 2: full-page loading overlay.** Added to `base.html`: a
+`.nav-loading-overlay` (fixed, `z-index: 1000`, blurred translucent
+background using the existing `--bg-rgb` theme variable, spinner built
+from a rotating bordered circle) plus a small script near the end of
+`<body>` that shows it - after a 150ms delay, so a normal fast
+navigation never flashes it - on any internal link click or form submit
+that isn't a hash link, a new-tab/modified click, a `download` link, or
+a non-http(s) scheme (mailto:, tel:, ...). Deliberately has no explicit
+hide-on-success call: a real page navigation replaces the whole document,
+so the overlay just stops existing along with everything else once the
+new page arrives. The one edge case that does need an explicit hide is
+back/forward-cache restore, where the browser can redisplay this exact
+DOM (spinner and all) without re-running this script's setup - handled
+with a `pageshow` listener checking `event.persisted`. This doesn't fix
+either of the two real slowness causes Christer asked about (the
+`drivers_page()` per-trip computation, or the Nominatim cold-cache
+throttle) - it just gives him a working-indicator instead of a
+seemingly-frozen tab while either one runs. Verified via a Jinja2
+render of `base.html` (`nav-loading-overlay`/`nav-loading-spinner`
+present in output) and `node --check` on the extracted script block -
+no pytest coverage, consistent with this project's other pure-client-side
+JS features (e.g. `submarine.js`).
+
+**Fix 3: stop the eager HEVC transcode.** Mid-turn, Christer reported:
+"look like i kick of a hevc to h264 every time i add a driver." Not
+literally the add-driver action - traced to his actual workflow of
+opening a trip's Start/Stop "Video" link from `/drivers` to check
+footage before deciding, which lands on `archive_recording_detail.html`.
+That template's `<video controls preload="metadata">` makes the browser
+fetch a byte range from the video `src` as soon as the page loads, before
+Play is ever pressed - and that request hits the `/archive/.../files/...`
+route, which unconditionally calls `open_hevc_preview_stream()`
+(hevc_preview.py) for any genuinely-HEVC recording. That function is a
+real transcode kickoff (or reuse of an already-transcoded cache entry),
+not a passive metadata read, so simply opening the page to look was
+enough to start one - regardless of whether Christer ever pressed Play.
+Changed `preload="metadata"` to `preload="none"` on that one `<video>`
+tag so every request to the video `src`, including the transcode-triggering
+one, waits for an explicit Play click. Scoped to just this template -
+`archive_recording_watch.html` and `trip_detail.html` both still use
+`preload="metadata"` on their own `<video>` tags, left untouched since
+neither was implicated in what Christer described and both have
+different intended behavior (the watch page autoplays by design).
+Confirmed no test in the suite asserts on the `preload` attribute value.
+Verified via a Jinja2 render of `archive_recording_detail.html` with a
+fake recording (`preload="none"` present, `preload="metadata"` absent).

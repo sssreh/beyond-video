@@ -925,6 +925,38 @@
     }
     .frame-card-saved { color: var(--success, #3a8f5a); font-size: 0.78rem; margin: 0.35rem 0 0; }
     .frame-card-gap { font-size: 0.75rem; color: var(--warn, #b8860b); margin: -0.4rem 0 0.6rem; }
+    /* Full-page navigation loading overlay (task #1387). Christer,
+       after building Drivers KB and opening /drivers for the first
+       time: "its also very slow first time. Do you think bv-web needs
+       a icon showing its working?" - the slowness itself has two real
+       causes documented in WORKING_CONTEXT.md (the drivers page's
+       per-trip video-status/geocode/smoothness computation on every
+       render, and Nominatim's 1 req/sec reverse-geocode throttle on a
+       cold cache) and isn't fixed by this overlay - this just gives
+       Christer something other than a frozen-looking tab to look at
+       while any slow full page navigation or form submit is in
+       flight. Shown by the script near the end of this file; hidden
+       implicitly once the new page's DOM replaces this one, so there
+       is no explicit hide-on-success path to get wrong - only a
+       bfcache pageshow listener (see that script) hides it again if
+       the user navigates back into a page where it was left visible. */
+    .nav-loading-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(var(--bg-rgb), 0.55);
+      backdrop-filter: blur(2px);
+      -webkit-backdrop-filter: blur(2px);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.15s ease;
+    }
+    .nav-loading-overlay.visible { opacity: 1; pointer-events: auto; }
+    .nav-loading-spinner {
+      width: 3rem; height: 3rem; border-radius: 50%;
+      border: 4px solid var(--panel-border);
+      border-top-color: var(--link);
+      animation: nav-loading-spin 0.8s linear infinite;
+    }
+    @keyframes nav-loading-spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -972,5 +1004,68 @@
   {% endif %}
   {% block content %}{% endblock %}
   </div>
+  <div id="nav-loading-overlay" class="nav-loading-overlay" aria-hidden="true">
+    <div class="nav-loading-spinner"></div>
+  </div>
+  <script>
+    // Task #1387: show a full-page spinner overlay while a real page
+    // navigation or form submit is in flight, so a slow render (the
+    // /drivers page especially - see the .nav-loading-overlay CSS
+    // comment above for why that one's slow) reads as "working" rather
+    // than a frozen tab. Deliberately dumb: there is no explicit hide
+    // call on success, because a real navigation replaces this whole
+    // document - the overlay just stops existing along with everything
+    // else on the page once the new page arrives. The only edge case
+    // that needs an explicit hide is the back/forward-cache restore
+    // path (pageshow with persisted=true), where the browser can show
+    // this exact DOM again, spinner and all, without re-running any of
+    // this script's setup - see that listener below.
+    (function () {
+      var overlay = document.getElementById('nav-loading-overlay');
+      if (!overlay) return;
+
+      var showTimer = null;
+
+      function showSoon() {
+        // Delayed rather than instant so a fast navigation never
+        // flashes the overlay for a frame - only a genuinely slow one
+        // (the case this exists for) makes it visible at all.
+        showTimer = window.setTimeout(function () {
+          overlay.classList.add('visible');
+        }, 150);
+      }
+
+      document.addEventListener('click', function (event) {
+        if (event.defaultPrevented || event.button !== 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+        var link = event.target.closest('a[href]');
+        if (!link) return;
+
+        var href = link.getAttribute('href');
+        if (!href || href.charAt(0) === '#') return;
+        if (link.target && link.target !== '' && link.target !== '_self') return;
+        if (link.hasAttribute('download')) return;
+        // mailto:, tel:, javascript: and similar don't navigate this
+        // tab away, so they'd never trigger the hide-by-DOM-replacement
+        // path above - leave those alone entirely.
+        if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !/^https?:/i.test(href)) return;
+
+        showSoon();
+      }, true);
+
+      document.addEventListener('submit', function (event) {
+        if (event.defaultPrevented) return;
+        showSoon();
+      }, true);
+
+      window.addEventListener('pageshow', function (event) {
+        if (event.persisted) {
+          if (showTimer) window.clearTimeout(showTimer);
+          overlay.classList.remove('visible');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

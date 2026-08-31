@@ -14,7 +14,19 @@
 {% if recording.videos[0][0] != "Front" %}
 <p class="hint">No Front video for this recording - showing {{ recording.videos[0][0] }} instead.</p>
 {% endif %}
-<video controls preload="metadata"
+{# preload="none" (task #1388) - Christer: "look like i kick of a hevc
+   to h264 every time i add a driver." Traced to this page, not the
+   add-driver action itself: opening a trip's Start/Stop "Video" link
+   from /drivers to check footage before deciding lands here, and
+   preload="metadata" makes the browser fetch a byte range from the
+   video src on page load, before Play is ever pressed. That request
+   hits /archive/.../files/... which unconditionally calls
+   open_hevc_preview_stream() for genuinely-HEVC recordings (see
+   hevc_preview.py) - a real transcode kickoff, not just a metadata
+   read, so just opening this page to look was enough to start one.
+   preload="none" defers every request to the video src until Play is
+   actually clicked. #}
+<video controls preload="none"
        src="/archive/{{ camera_id }}/{{ recording.id }}/files/{{ recording.videos[0][1] }}"></video>
 {% else %}
 <p class="empty">No video available for this recording.</p>

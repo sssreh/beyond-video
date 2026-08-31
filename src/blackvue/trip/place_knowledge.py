@@ -1141,6 +1141,33 @@ def save_knowledge_base(
     places: dict[str, CommonPlace],
     trip_overrides: dict[str, str],
 ) -> None:
+    """Overwrites `path` with `trips`/`places`/`trip_overrides`, first
+    rolling the file that was there (if any) into `path.bak` - a single
+    generation of undo, cheap insurance against exactly the loss
+    Christer hit once already: a `bv-drivers build` (or any of this
+    module's other save_knowledge_base() callers - drivers_update_
+    place()/drivers_update_trip()/rename in app.py) running against a
+    driver_knowledge.json that was itself already broken (0 places, see
+    WORKING_CONTEXT.md's "0-places regression" entry) silently wipes
+    every hand-picked CommonPlace label and driver rule with no way
+    back, because build_common_places()'s own label-carry-forward only
+    ever has *this on-disk file* to carry forward from. One rolling
+    backup doesn't fix a bad build, but it means "restore driver_
+    knowledge.json.bak over driver_knowledge.json" is always available
+    as an escape hatch for whoever hits this next - Christer's own
+    labels from before the regression are gone for good precisely
+    because this didn't exist yet when it happened."""
+
+    if path.exists():
+        backup_path = path.with_suffix(path.suffix + ".bak")
+        try:
+            backup_path.write_bytes(path.read_bytes())
+        except OSError:
+            # Same "degrade instead of crash" posture as the rest of
+            # this module's I/O - a failed backup (read-only mount,
+            # disk full, ...) shouldn't block the actual save.
+            pass
+
     data = {
         "generated_at": datetime.now().isoformat(),
         "places": {key: _place_to_dict(place) for key, place in places.items()},

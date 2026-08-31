@@ -714,6 +714,74 @@ def test_load_knowledge_base_returns_none_when_missing():
     assert load_knowledge_base(missing) is None
 
 
+def test_save_knowledge_base_backs_up_existing_file_first():
+    # Christer: "All common places has lost the beautiful names i gave
+    # them" - traced to a `bv-drivers build` running against a
+    # driver_knowledge.json that was itself already broken (0 places),
+    # so build_common_places()'s label-carry-forward had nothing to
+    # carry forward from and every place got the generic "Place near
+    # lat, lon" fallback name instead. save_knowledge_base() now rolls
+    # whatever was on disk into a `.bak` sibling before every overwrite
+    # - this test is the "his labels would have survived" regression
+    # check: an old, hand-labeled file gets clobbered by a fresh build,
+    # but the pre-clobber content is recoverable from the backup.
+    tmp_path = Path(tempfile.mkdtemp()) / "driver_knowledge.json"
+    profiles = make_profiles()
+
+    old_entry = _knowledge_entry(PLACE_A, "parked", 40.0)
+    old_key = old_entry.away_place_key
+    old_place = CommonPlace(
+        key=old_key, point=PLACE_A, label="Christer's beautiful name",
+        visit_count=3, driver="driver1",
+    )
+    old_resolved = _resolve_trip_driver(old_entry, old_place, profiles, None)
+    save_knowledge_base(
+        tmp_path, trips=[old_resolved], places={old_key: old_place},
+        trip_overrides={},
+    )
+
+    # Simulate a broken rebuild overwriting it with a fresh, unlabeled
+    # place (build_common_places() would do this for real if `existing`
+    # had no matching key).
+    new_entry = _knowledge_entry(PLACE_A, "parked", 45.0)
+    new_key = new_entry.away_place_key
+    new_place = CommonPlace(
+        key=new_key, point=PLACE_A,
+        label=f"Place near {PLACE_A[0]:.3f}, {PLACE_A[1]:.3f}",
+        visit_count=1, driver=None,
+    )
+    save_knowledge_base(
+        tmp_path, trips=[new_entry], places={new_key: new_place},
+        trip_overrides={},
+    )
+
+    backup_path = tmp_path.with_suffix(tmp_path.suffix + ".bak")
+    assert backup_path.is_file()
+
+    backed_up = load_knowledge_base(backup_path)
+    assert backed_up is not None
+    _, backed_up_places, _ = backed_up
+    assert backed_up_places[old_key].label == "Christer's beautiful name"
+    assert backed_up_places[old_key].driver == "driver1"
+
+    # The live file itself now holds the new (unlabeled) content -
+    # the backup is a separate recovery copy, not a silent revert.
+    current = load_knowledge_base(tmp_path)
+    assert current is not None
+    _, current_places, _ = current
+    assert current_places[new_key].label.startswith("Place near")
+
+
+def test_save_knowledge_base_first_save_creates_no_backup():
+    # Nothing to back up yet - shouldn't create a stray .bak file out
+    # of nowhere on a brand-new driver_knowledge.json.
+    tmp_path = Path(tempfile.mkdtemp()) / "driver_knowledge.json"
+    save_knowledge_base(tmp_path, trips=[], places={}, trip_overrides={})
+
+    backup_path = tmp_path.with_suffix(tmp_path.suffix + ".bak")
+    assert not backup_path.exists()
+
+
 def test_place_from_dict_prefers_new_driver_key():
     from blackvue.trip.place_knowledge import _place_from_dict
 
