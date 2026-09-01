@@ -22,6 +22,7 @@ from blackvue.telemetry.gps_reader import GpsFix
 from blackvue.trip.driver_detect import (
     DriverProfile,
     DriverProfiles,
+    HomePoint,
     RoutePattern,
     TripFix,
     add_driver,
@@ -54,6 +55,18 @@ KNOWN_POINTS = {
 
 def ts(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+
+
+def _home_profiles(radius=300.0, extra_points=()):
+    """Bare-bones DriverProfiles for resolve_via_point()/_near_home()
+    tests below - just enough to exercise home_radius_meters/
+    home_extra_points without pulling in christers_driver_profiles()'s
+    unrelated real route patterns."""
+
+    return DriverProfiles(
+        home_name="Home", home_query="Home", home_radius_meters=radius,
+        drivers=(), home_extra_points=extra_points,
+    )
 
 
 def test_christers_driver_profiles_uses_opaque_labels():
@@ -262,6 +275,77 @@ def test_unverifiable_parking_status_still_matches_at_reduced_confidence():
     assert all("unverified" in m.reason for m in unverified)
 
 
+def test_short_local_matches_via_home_extra_point():
+    """Christer: "Usually when we drive north from garage, the GPS finds
+    us at Skansbrogatan" - match_driver()'s short_local branch (see its
+    rewired _near_home() calls in driver_detect.py) must recognize a trip
+    that starts/ends at a home_extra_points entry as home-adjacent too,
+    not just christers_driver_profiles()'s own primary home_query point.
+    cold_start here sits ~278m from HOME - just outside the real
+    home_radius_meters=200.0, so this only matches via the extra point,
+    not the primary home check."""
+
+    base = christers_driver_profiles()
+    cold_start = (59.3075, 18.1010)
+    profiles = DriverProfiles(
+        home_name=base.home_name,
+        home_query=base.home_query,
+        home_radius_meters=base.home_radius_meters,
+        drivers=base.drivers,
+        home_extra_points=(HomePoint(name="cold_start", query="x", radius_meters=300.0),),
+    )
+    known_points = dict(KNOWN_POINTS)
+    known_points["home_extra:cold_start"] = cold_start
+    trip = TripFix(
+        start=cold_start,
+        end=cold_start,
+        start_time=ts("2026-08-29 12:00:00"),
+        end_time=ts("2026-08-29 12:10:00"),
+    )
+
+    matches = match_driver(trip, None, None, profiles, known_points)
+
+    local_matches = [m for m in matches if m.place == profiles.home_name]
+    assert local_matches
+
+
+def test_resolve_known_points_geocodes_home_extra_points(monkeypatch):
+    """resolve_known_points() must forward-geocode each home_extra_points
+    entry too, alongside the primary home_query and every pattern place,
+    keyed "home_extra:{name}" (see that function's own docstring) - this
+    is what lets Christer's real driver_profiles.json point a
+    HomePoint's own `query` (e.g. "Skansbrogatan, Stockholm") at an
+    address rather than requiring him to hand-compute coordinates."""
+
+    import blackvue.trip.driver_detect as dd
+    from blackvue.export.geocoding import GeocodeResult
+
+    profiles = DriverProfiles(
+        home_name="Home",
+        home_query="Real Home Address",
+        home_radius_meters=200.0,
+        drivers=(),
+        home_extra_points=(
+            HomePoint(name="cold_start", query="Skansbrogatan, Stockholm", radius_meters=300.0),
+        ),
+    )
+
+    calls = []
+
+    def fake_geocode(query, cache_dir, **kwargs):
+        calls.append(query)
+        return GeocodeResult(point=(59.3060, 18.1015))
+
+    monkeypatch.setattr(dd, "load_or_forward_geocode", fake_geocode)
+
+    points = dd.resolve_known_points(profiles, Path("/tmp/does-not-matter"))
+
+    assert "Real Home Address" in calls
+    assert "Skansbrogatan, Stockholm" in calls
+    assert points["home"] == (59.3060, 18.1015)
+    assert points["home_extra:cold_start"] == (59.3060, 18.1015)
+
+
 def test_place_resolution_caching_via_known_points_dict():
     """resolve_known_points() itself does real network I/O (forward
     geocoding), so it isn't exercised here - but match_driver() must
@@ -340,6 +424,51 @@ def test_default_from_absent_from_json_loads_as_none():
     }
 
     assert driver_profiles_from_dict(data).default_from is None
+
+
+def test_christers_driver_profiles_leaves_home_extra_points_unset():
+    """Same personal-data-only convention as default_from (see that
+    field's own test above) - christers_driver_profiles() never seeds
+    home_extra_points itself; it's purely something Christer hand-adds
+    to his own driver_profiles.json once he's noticed his own GPS-cold-
+    start artifact (see HomePoint's own docstring: "Usually when we
+    drive north from garage, the GPS finds us at Skansbrogatan")."""
+
+    assert christers_driver_profiles().home_extra_points == ()
+
+
+def test_home_extra_points_round_trip_through_json():
+    profiles = DriverProfiles(
+        home_name="Home", home_query="Home", home_radius_meters=300.0,
+        drivers=(),
+        home_extra_points=(
+            HomePoint(name="cold_start", query="Skansbrogatan, Stockholm", radius_meters=250.0),
+        ),
+    )
+
+    data = driver_profiles_to_dict(profiles)
+    restored = driver_profiles_from_dict(json.loads(json.dumps(data)))
+
+    assert data["home"]["extra_points"] == [
+        {"name": "cold_start", "query": "Skansbrogatan, Stockholm", "radius_meters": 250.0}
+    ]
+    assert restored.home_extra_points == (
+        HomePoint(name="cold_start", query="Skansbrogatan, Stockholm", radius_meters=250.0),
+    )
+
+
+def test_home_extra_points_absent_from_json_loads_as_empty_tuple():
+    """A driver_profiles.json written before this field existed has no
+    "extra_points" key under "home" at all - should load as an empty
+    tuple, not KeyError (same shape of backward-compatibility guarantee
+    as test_default_from_absent_from_json_loads_as_none above)."""
+
+    data = {
+        "home": {"name": "Home", "query": "Home", "radius_meters": 300.0},
+        "drivers": {},
+    }
+
+    assert driver_profiles_from_dict(data).home_extra_points == ()
 
 
 def test_pattern_from_dict_migrates_old_min_max_stay_minutes():
@@ -582,7 +711,7 @@ def test_resolve_via_point_returns_furthest_confirmed_point(monkeypatch):
         lambda adapter, recording: fixes_by_recording[recording],
     )
 
-    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+    via_point = resolve_via_point(None, trip, trip_fix, KNOWN_POINTS, _home_profiles())
 
     assert via_point == SOLNA
 
@@ -613,7 +742,7 @@ def test_resolve_via_point_ignores_unconfirmed_glitches(monkeypatch):
         lambda adapter, recording: fixes_by_recording[recording],
     )
 
-    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+    via_point = resolve_via_point(None, trip, trip_fix, KNOWN_POINTS, _home_profiles())
 
     assert via_point == SOLNA
 
@@ -638,7 +767,7 @@ def test_resolve_via_point_returns_none_when_trip_never_left_home(monkeypatch):
         lambda adapter, recording: fixes_by_recording[recording],
     )
 
-    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+    via_point = resolve_via_point(None, trip, trip_fix, KNOWN_POINTS, _home_profiles())
 
     assert via_point is None
 
@@ -662,7 +791,7 @@ def test_resolve_via_point_skips_one_way_trips_without_reading_gps(monkeypatch):
 
     monkeypatch.setattr(driver_detect, "read_recording_gps", _boom)
 
-    via_point = resolve_via_point(None, trip, trip_fix, HOME, 300.0)
+    via_point = resolve_via_point(None, trip, trip_fix, KNOWN_POINTS, _home_profiles())
 
     assert via_point is None
 
@@ -676,6 +805,38 @@ def test_resolve_via_point_returns_none_without_home():
     )
     trip = Trip(recordings=("rec1",))
 
-    via_point = resolve_via_point(None, trip, trip_fix, None, 300.0)
+    via_point = resolve_via_point(None, trip, trip_fix, {}, _home_profiles())
 
     assert via_point is None
+
+
+def test_resolve_via_point_checks_home_extra_points_too(monkeypatch):
+    """Christer: "Usually when we drive north from garage, the GPS
+    finds us at Skansbrogatan" - a round trip whose start/end land near
+    a home_extra_points entry (not the primary home point) must still
+    be treated as a real round trip, not silently skipped."""
+
+    cold_start = (59.3060, 18.1015)  # just outside HOME's own radius
+    profiles = _home_profiles(
+        radius=50.0,
+        extra_points=(HomePoint(name="cold_start", query="x", radius_meters=300.0),),
+    )
+    known_points = {"home": HOME, "home_extra:cold_start": cold_start}
+    trip_fix = TripFix(
+        start=cold_start, end=cold_start,
+        start_time=ts("2026-08-29 07:00:00"),
+        end_time=ts("2026-08-29 07:20:00"),
+    )
+    trip = Trip(recordings=("rec1",))
+    fixes_by_recording = {
+        "rec1": [_gps_fix(0, cold_start), _gps_fix(300, SOLNA), _gps_fix(600, cold_start)],
+    }
+    monkeypatch.setattr(
+        driver_detect,
+        "read_recording_gps",
+        lambda adapter, recording: fixes_by_recording[recording],
+    )
+
+    via_point = resolve_via_point(None, trip, trip_fix, known_points, profiles)
+
+    assert via_point == SOLNA

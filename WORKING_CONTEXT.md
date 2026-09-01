@@ -22759,3 +22759,115 @@ Christer's own real `driver_profiles.json` (outside the repo, under
 `~/beyond-video-data/.config/` - a data edit, not a commit) - the
 feature has no effect on his real environment until that value is
 actually set, so this was the step that makes the guard live.
+
+## home_extra_points: recognizing a GPS-cold-start departure point as "home"
+
+Christer: "Usualy when we drive north from garage, the GPS finds us
+at Skansbrogatan." His underground garage has no GPS signal, so a
+trip that pulls out heading north doesn't get a resolvable GPS fix
+until it's already some distance away - meaning `driver_detect.py`'s
+`_first_resolvable_start()`/`_last_resolvable_end()` scan (which
+finds the first/last recording with *any* fix, not literally the
+garage) reports the trip as starting/ending at that cold-start point
+instead of at home itself. Since `match_driver()` and
+`resolve_via_point()` both only recognize "at home" via a single
+tight radius check around `home_query`'s own geocoded point, a
+north-bound departure silently fails every home-adjacent match, not
+just get miscategorized - confirmed independently against Christer's
+real archive data: a Common Place cluster he'd already hand-labeled
+"Mitt garage" sits 346m north of `home_query`'s geocoded point,
+`visit_count=2`, `driver` still unset - just outside the real
+`home_radius_meters=200.0`, exactly the shape of bug being described.
+
+Asked via `AskUserQuestion` whether to actually fix home-radius
+detection, just note it, or something else - Christer picked "Fix
+home-radius detection." The naive fix (widening `home_radius_meters`
+itself) was rejected on the spot: that radius was already tuned down
+twice in earlier sessions (800m -> 300m -> 200m) specifically to stop
+a too-generous radius from capturing unrelated nearby destinations as
+false "at home" matches, so widening it again to cover Skansbrogatan
+would reopen that exact false-positive problem.
+
+Implementation (`trip/driver_detect.py`): a new frozen dataclass,
+`HomePoint(name: str, query: str, radius_meters: float =
+DEFAULT_RADIUS_METERS)` - one additional place that counts as "home,"
+geocoded independently via its own `query` and matched with its own
+`radius_meters`, deliberately not reusing `home_radius_meters` since a
+cold-start cluster's own tightness has nothing to do with the real
+garage's. `DriverProfiles` gained `home_extra_points: tuple[HomePoint,
+...] = ()` - same personal-data-only convention as `default_from`:
+`christers_driver_profiles()` never seeds it, so the actual query
+string/coordinates for Christer's own Skansbrogatan point live only in
+his own `driver_profiles.json`, never as a literal in tracked source.
+It round-trips through `driver_profiles_to_dict()`/
+`driver_profiles_from_dict()` (as `home.extra_points`, a list of
+`{"name", "query", "radius_meters"}` objects) and loads as `()` for
+any pre-existing file with no such key. `resolve_known_points()`
+geocodes each extra point under a `f"home_extra:{name}"` key alongside
+the existing `"home"` key and every pattern's own place name.
+
+A new `_near_home(point, known_points, profiles)` helper centralizes
+every "is this point at home" check - near the primary `home_query`
+point, OR near any `home_extra_points` entry (each checked at its own
+radius) - replacing four previously-separate `_near(x, home,
+home_radius_meters)` call sites inside `match_driver()`'s
+`short_local`/`home_to_place`/`place_to_home`/`via_round_trip`
+branches, plus `resolve_via_point()`'s own round-trip gate.
+`resolve_via_point()`'s signature changed from `(adapter, trip,
+trip_fix, home, home_radius_meters)` to `(adapter, trip, trip_fix,
+known_points, profiles)` so it can consult the full known-points dict
+and profile rather than just the primary home tuple/radius - an
+internal signature change with both call sites (`bv_drivers.py`'s real
+one, and every test caller) inside the repo, so changed freely per
+this project's usual convention. The furthest-point distance
+`resolve_via_point()` measures is still always relative to the
+*primary* home point specifically (`known_points["home"]`), not
+whichever home point the trip happened to touch - an extra point is
+just another way of being "at home," not a second reference for "how
+far away."
+
+Tests: `test_driver_detect.py` gained `HomePoint`/`home_extra_points`
+schema coverage (`christers_driver_profiles()` leaves it unset, JSON
+round-trip via `driver_profiles_to_dict()`/`driver_profiles_from_dict()`,
+and a pre-existing file with no `extra_points` key loading as `()`),
+a `match_driver()` test confirming a `short_local` pattern matches a
+trip whose start/end land ~278m from home - just outside the real
+200m primary radius, only reachable via a `home_extra_points` entry's
+own 300m radius, a `resolve_known_points()` test (with
+`load_or_forward_geocode()` monkeypatched, since the real function
+does live network I/O) confirming each extra point gets geocoded under
+its own `home_extra:{name}` key, and a `resolve_via_point()` test
+confirming a round trip whose start/end land at an extra point (not
+the primary home point) still resolves a real `via_point` from the
+full GPS track scan. All 38 tests in `test_driver_detect.py` pass via
+the same no-pytest standalone-harness approach as every other session
+in this project (a `tomllib` stub in `sys.modules` for this sandbox's
+Python 3.10, then `importlib` loading the real test module and running
+each test against a minimal hand-rolled `monkeypatch` stand-in).
+
+`test_bv_drivers.py`'s two existing `resolve_via_point()`-mocking
+tests (`test_run_computes_via_point_for_round_trip_and_feeds_it_into_
+knowledge_base`, `test_run_skips_via_point_when_resolver_finds_none`)
+were updated for the new 5-argument signature - the fake's positional
+arity was already correct (still 5 args), but the 4th/5th argument
+names and the assertions reading them (`called_home == HOME` ->
+`called_known_points == {"home": HOME}`, `called_radius == 300.0` ->
+`called_profiles.home_radius_meters == 300.0`) needed to match what
+`bv_drivers.py`'s call site now actually passes. All 25 tests in
+`test_bv_drivers.py` pass via the same standalone harness (with a
+hand-rolled `tmp_path` fixture added on top, since these tests also
+take that parameter).
+
+Updated `docs/man/bv-drivers.md` with a new DESCRIPTION paragraph
+explaining the GPS-cold-start problem and `home.extra_points`'
+hand-edit-only schema, right after the existing "Home itself... is
+never counted as a stop" paragraph.
+
+Christer's own real `driver_profiles.json` has *not* been edited to
+add a real `home_extra_points` entry yet - the mechanism is built,
+tested, and documented, but has no effect on his real environment
+until a real query string (or known coordinates) for his own
+Skansbrogatan/garage-exit point is actually added, which should be
+confirmed with him first rather than guessed at, mirroring how
+`default_from`'s real value was only set after the mechanism itself
+was already built and verified.

@@ -144,6 +144,39 @@ class RoutePattern:
 
 
 @dataclass(frozen=True)
+class HomePoint:
+    """One additional place that counts as "home" for matching
+    purposes, alongside the profile's own `home_query`/
+    `home_radius_meters` - Christer: "Usually when we drive north from
+    garage, the GPS finds us at Skansbrogatan" (his underground garage
+    has no GPS signal, so a north-bound departure's first real fix
+    lands at a consistent, different point instead of at the garage
+    itself - confirmed against his real archive: a cluster 346m north
+    of `home_query`'s own geocoded point, just outside its 200m
+    `home_radius_meters`, which he'd already hand-labeled "Mitt
+    garage" as its own Common Place on /drivers rather than recognizing
+    it as a home-adjacent GPS artifact). Without this, every trip whose
+    first/last resolvable fix lands here instead of at the real garage
+    silently fails every `_near(..., home, home_radius_meters)` check
+    match_driver()/resolve_via_point() do, not just this one named
+    cluster - a departure that quietly starts 346m away from what the
+    matcher treats as "home" never counts as a home-originating leg at
+    all.
+
+    `name` is a short label (used only as resolve_known_points()'
+    dict key and in test/debug output, never shown to a driver).
+    `query` is forward-geocoded exactly like a RoutePattern's own
+    `place`. `radius_meters` defaults to DEFAULT_RADIUS_METERS, same
+    as a RoutePattern - deliberately its own field rather than reusing
+    `home_radius_meters`, since a GPS-cold-start artifact's own cluster
+    tightness has nothing to do with the real garage's."""
+
+    name: str
+    query: str
+    radius_meters: float = DEFAULT_RADIUS_METERS
+
+
+@dataclass(frozen=True)
 class DriverProfile:
     """One driver's known patterns. `label` is the opaque key
     ("driver1") this profile is stored under - kept on the instance
@@ -179,6 +212,16 @@ class DriverProfiles:
     i mean permanently for me" when offered a config-file-based
     default instead of a one-off CLI reminder. Setting it is a runtime
     edit to Christer's own driver_profiles.json, never a code change.
+
+    `home_extra_points` (default: ()) is a tuple of HomePoint - see
+    that dataclass's own docstring - additional places that also count
+    as "home" for every `_near_home()` check (match_driver()'s
+    home_to_place/place_to_home/short_local/via_round_trip conditions,
+    resolve_via_point()'s own round-trip gate). Same personal-data-only
+    convention as `default_from`: christers_driver_profiles() below
+    never populates it, so it's only ever real data Christer (or a
+    future user) hand-adds to their own driver_profiles.json once
+    they've noticed their own GPS-cold-start artifact.
     """
 
     home_name: str
@@ -186,6 +229,7 @@ class DriverProfiles:
     home_radius_meters: float
     drivers: tuple[DriverProfile, ...]
     default_from: str | None = None
+    home_extra_points: tuple[HomePoint, ...] = ()
 
 
 def default_driver_profiles_path(config_dir: Path) -> Path:
@@ -320,6 +364,22 @@ def _pattern_from_dict(data: dict) -> RoutePattern:
     )
 
 
+def _home_point_to_dict(point: HomePoint) -> dict:
+    return {
+        "name": point.name,
+        "query": point.query,
+        "radius_meters": point.radius_meters,
+    }
+
+
+def _home_point_from_dict(data: dict) -> HomePoint:
+    return HomePoint(
+        name=data.get("name", data.get("query", "")),
+        query=data.get("query", ""),
+        radius_meters=float(data.get("radius_meters", DEFAULT_RADIUS_METERS)),
+    )
+
+
 def driver_profiles_to_dict(profiles: DriverProfiles) -> dict:
     """Serialize to the plain-dict shape write_default_driver_profiles()/
     load_driver_profiles() read and write as JSON."""
@@ -329,6 +389,9 @@ def driver_profiles_to_dict(profiles: DriverProfiles) -> dict:
             "name": profiles.home_name,
             "query": profiles.home_query,
             "radius_meters": profiles.home_radius_meters,
+            "extra_points": [
+                _home_point_to_dict(p) for p in profiles.home_extra_points
+            ],
         },
         "default_from": profiles.default_from,
         "drivers": {
@@ -359,6 +422,9 @@ def driver_profiles_from_dict(data: dict) -> DriverProfiles:
         home_radius_meters=float(home.get("radius_meters", DEFAULT_RADIUS_METERS)),
         drivers=drivers,
         default_from=data.get("default_from"),
+        home_extra_points=tuple(
+            _home_point_from_dict(p) for p in home.get("extra_points", [])
+        ),
     )
 
 
@@ -617,17 +683,19 @@ def resolve_via_point(
     adapter: CameraAdapter,
     trip: Trip,
     trip_fix: TripFix,
-    home: tuple[float, float] | None,
-    home_radius_meters: float,
+    known_points: dict[str, tuple[float, float]],
+    profiles: DriverProfiles,
 ) -> tuple[float, float] | None:
-    """Find the furthest point from `home` anywhere along `trip`'s own
+    """Find the furthest point from home anywhere along `trip`'s own
     GPS track, for a round trip whose resolve_trip_fix()-resolved
-    `start`/`end` are both near home - see TripFix.via_point's own
-    docstring for why this exists (Christer's morning drop-off:
+    `start`/`end` are both near home (via `_near_home()` - see that
+    function's own docstring for why this checks `home_extra_points`
+    too, not just the primary home point) - see TripFix.via_point's
+    own docstring for why this exists (Christer's morning drop-off:
     "the trip starts and stops at Heliosgatan").
 
     Deliberately does nothing (returns None immediately) unless
-    `trip_fix.start` and `trip_fix.end` are both near `home` - a real
+    `trip_fix.start` and `trip_fix.end` are both near home - a real
     one-way trip already gets a perfectly good away_point from
     resolve_trip_fix() alone (see place_knowledge._raw_trip_knowledge()),
     so there's no reason to pay this function's own cost (reading every
@@ -638,25 +706,30 @@ def resolve_via_point(
     Scans every recording in the trip (in order, front-to-back doesn't
     matter here - unlike resolve_trip_fix()'s start/end search, every
     fix is a candidate) and keeps whichever confirmed, positioned fix
-    sits furthest from `home` by the same haversine distance _near()
-    uses. Only trusts `fix.confirmed` positions (mirrors trip_stats.py's
-    own "Require confirmed positions" redesign - a lone GPS glitch
-    during acquisition becoming this trip's away_point would be worse
-    than missing one entirely).
+    sits furthest from the *primary* home point (known_points["home"],
+    not an extra point - an extra point is just another way of being
+    "at home", not a second reference for measuring "how far away") by
+    the same haversine distance _near() uses. Only trusts
+    `fix.confirmed` positions (mirrors trip_stats.py's own "Require
+    confirmed positions" redesign - a lone GPS glitch during
+    acquisition becoming this trip's away_point would be worse than
+    missing one entirely).
 
-    Returns None whenever there's nothing real to report: `home` is
-    unknown, the trip isn't a round trip in the first place, no
-    recording yields a single confirmed positioned fix, or the furthest
-    fix found is still within `home_radius_meters` of home (a real
-    "never actually left" round trip - e.g. a garage motion blip - the
-    exact case away_point/dwell_at_destination() were originally
-    designed to exclude; see dwell_at_destination()'s own docstring)."""
+    Returns None whenever there's nothing real to report: the primary
+    home point is unknown, the trip isn't a round trip in the first
+    place, no recording yields a single confirmed positioned fix, or
+    the furthest fix found is still within `profiles.home_radius_meters`
+    of home (a real "never actually left" round trip - e.g. a garage
+    motion blip - the exact case away_point/dwell_at_destination() were
+    originally designed to exclude; see dwell_at_destination()'s own
+    docstring)."""
 
+    home = known_points.get("home")
     if home is None:
         return None
     if not (
-        _near(trip_fix.start, home, home_radius_meters)
-        and _near(trip_fix.end, home, home_radius_meters)
+        _near_home(trip_fix.start, known_points, profiles)
+        and _near_home(trip_fix.end, known_points, profiles)
     ):
         return None
 
@@ -675,7 +748,7 @@ def resolve_via_point(
                 furthest_distance = distance
                 furthest_point = point
 
-    if furthest_point is None or furthest_distance <= home_radius_meters:
+    if furthest_point is None or furthest_distance <= profiles.home_radius_meters:
         return None
 
     return furthest_point
@@ -776,9 +849,11 @@ def resolve_known_points(
     cache - see web/app.py's geocode_preview_voice_search() docstring
     for why cache_dir must be a writable location, not archive_path).
 
-    Returns a dict keyed "home" plus each pattern's own `place` string,
-    each mapped to its resolved (lat, lon) - place names load_or_
-    forward_geocode() can't resolve are silently omitted (a pattern
+    Returns a dict keyed "home", plus `"home_extra:{name}"` for each of
+    `profiles.home_extra_points` (see HomePoint's own docstring),
+    plus each pattern's own `place` string - each mapped to its
+    resolved (lat, lon). Place names load_or_forward_geocode() can't
+    resolve are silently omitted (a pattern - or a home extra point -
     referencing a missing key just never matches, rather than this
     function raising)."""
 
@@ -793,6 +868,9 @@ def resolve_known_points(
             points[key] = result.point
 
     _resolve("home", profiles.home_query)
+
+    for extra in profiles.home_extra_points:
+        _resolve(f"home_extra:{extra.name}", extra.query)
 
     seen_places: set[str] = set()
     for driver in profiles.drivers:
@@ -835,6 +913,27 @@ def _near(
     return _haversine_distance_meters(*point, *target) <= radius_meters
 
 
+def _near_home(
+    point: tuple[float, float] | None,
+    known_points: dict[str, tuple[float, float]],
+    profiles: DriverProfiles,
+) -> bool:
+    """Every "is this point at home" check match_driver()/
+    resolve_via_point() do, in one place - near the profile's own
+    home_query/home_radius_meters, OR near any of its
+    home_extra_points (see that field's own docstring: a GPS-cold-
+    start artifact like Christer's north-bound "Skansbrogatan" garage
+    exit is still, for matching purposes, home). Each extra point uses
+    its own radius_meters, not the primary home's."""
+
+    if _near(point, known_points.get("home"), profiles.home_radius_meters):
+        return True
+    for extra in profiles.home_extra_points:
+        if _near(point, known_points.get(f"home_extra:{extra.name}"), extra.radius_meters):
+            return True
+    return False
+
+
 def match_driver(
     trip_fix: TripFix,
     prev_fix: TripFix | None,
@@ -872,8 +971,8 @@ def match_driver(
         for pattern in driver.patterns:
             if pattern.kind == "short_local":
                 if not (
-                    _near(trip_fix.start, home, profiles.home_radius_meters)
-                    and _near(trip_fix.end, home, profiles.home_radius_meters)
+                    _near_home(trip_fix.start, known_points, profiles)
+                    and _near_home(trip_fix.end, known_points, profiles)
                 ):
                     continue
                 duration_minutes = (
@@ -904,12 +1003,12 @@ def match_driver(
             if place_point is None or home is None:
                 continue
 
-            home_to_place = _near(
-                trip_fix.start, home, profiles.home_radius_meters
+            home_to_place = _near_home(
+                trip_fix.start, known_points, profiles
             ) and _near(trip_fix.end, place_point, pattern.radius_meters)
             place_to_home = _near(
                 trip_fix.start, place_point, pattern.radius_meters
-            ) and _near(trip_fix.end, home, profiles.home_radius_meters)
+            ) and _near_home(trip_fix.end, known_points, profiles)
             # A round trip - both ends near home, nowhere near `place`
             # by trip_fix.start/end alone - can still be a real
             # home<->place commute if the vehicle actually reached
@@ -922,8 +1021,8 @@ def match_driver(
             # even existing.
             via_round_trip = (
                 trip_fix.via_point is not None
-                and _near(trip_fix.start, home, profiles.home_radius_meters)
-                and _near(trip_fix.end, home, profiles.home_radius_meters)
+                and _near_home(trip_fix.start, known_points, profiles)
+                and _near_home(trip_fix.end, known_points, profiles)
                 and _near(trip_fix.via_point, place_point, pattern.radius_meters)
             )
 

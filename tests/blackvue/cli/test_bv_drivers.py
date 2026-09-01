@@ -433,8 +433,8 @@ def test_run_computes_via_point_for_round_trip_and_feeds_it_into_knowledge_base(
 
     calls = []
 
-    def fake_resolve_via_point(adapter, trip, trip_fix, home, home_radius_meters):
-        calls.append((trip, trip_fix, home, home_radius_meters))
+    def fake_resolve_via_point(adapter, trip, trip_fix, known_points, profiles):
+        calls.append((trip, trip_fix, known_points, profiles))
         return WORK
 
     monkeypatch.setattr(bv_drivers, "resolve_via_point", fake_resolve_via_point)
@@ -445,11 +445,11 @@ def test_run_computes_via_point_for_round_trip_and_feeds_it_into_knowledge_base(
 
     assert exit_code == bv_drivers.EXIT_OK
     assert len(calls) == 1
-    called_trip, called_fix, called_home, called_radius = calls[0]
+    called_trip, called_fix, called_known_points, called_profiles = calls[0]
     assert called_trip is round_trip
     assert called_fix.start == HOME and called_fix.end == HOME
-    assert called_home == HOME
-    assert called_radius == 300.0
+    assert called_known_points == {"home": HOME}
+    assert called_profiles.home_radius_meters == 300.0
 
     loaded = load_knowledge_base(config_dir / "driver_knowledge.json")
     assert loaded is not None
@@ -471,7 +471,7 @@ def test_run_skips_via_point_when_resolver_finds_none(tmp_path, monkeypatch):
     _install_fakes(monkeypatch, trips=[round_trip], fixes=[round_trip_fix])
     monkeypatch.setattr(
         bv_drivers, "resolve_via_point",
-        lambda adapter, trip, trip_fix, home, home_radius_meters: None,
+        lambda adapter, trip, trip_fix, known_points, profiles: None,
     )
 
     config_dir = tmp_path / "config"

@@ -444,8 +444,6 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
 
         fixes_start = time.monotonic()
         progress = DotProgress() if args.trace else None
-        home_point = known_points.get("home")
-        home_radius = profiles.home_radius_meters
         fixes = []
         for trip in trips:
             trip_fix = resolve_trip_fix(adapter, trip)
@@ -458,7 +456,7 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
             # if we could get where i went, even if i returned to the
             # starting place."
             via_point = resolve_via_point(
-                adapter, trip, trip_fix, home_point, home_radius
+                adapter, trip, trip_fix, known_points, profiles
             )
             if via_point is not None:
                 trip_fix = replace(trip_fix, via_point=via_point)
