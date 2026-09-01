@@ -25,8 +25,10 @@ from blackvue.trip.driver_detect import (
     HomePoint,
     RoutePattern,
     TripFix,
+    DEFAULT_RADIUS_METERS,
     add_driver,
     christers_driver_profiles,
+    default_driver_profiles,
     default_driver_profiles_path,
     driver_profiles_from_dict,
     driver_profiles_to_dict,
@@ -503,13 +505,21 @@ def test_pattern_from_dict_migrates_old_min_max_stay_minutes():
 
 
 def test_write_default_driver_profiles_seeds_and_is_idempotent(tmp_path=None):
+    # Seeds a generic, empty template (default_driver_profiles()), not
+    # Christer's own real data (christers_driver_profiles()) - see both
+    # functions' docstrings for why: this is a public repo, and every
+    # other user's first-ever driver_profiles.json shouldn't start out
+    # populated with Christer's real home address and driver names.
     with tempfile.TemporaryDirectory() as tmp:
         path = default_driver_profiles_path(Path(tmp))
         assert not path.exists()
 
         written = write_default_driver_profiles(path)
         assert path.exists()
-        assert written.drivers[1].display_name == "Christer"
+        assert written.drivers == ()
+        assert written.home_extra_points == ()
+        assert written.default_from is None
+        assert "REPLACE ME" in written.home_query
 
         loaded = load_driver_profiles(path)
         assert loaded is not None
@@ -517,6 +527,23 @@ def test_write_default_driver_profiles_seeds_and_is_idempotent(tmp_path=None):
 
         again = write_default_driver_profiles(path)
         assert again.home_query == loaded.home_query
+
+
+def test_default_driver_profiles_is_generic_not_christers():
+    # The seed used by write_default_driver_profiles() must not carry any
+    # of Christer's own real data - no drivers, no real home address, no
+    # extra points, no default_from. christers_driver_profiles() stays
+    # only for tests/his own already-existing file (see its docstring).
+    profiles = default_driver_profiles()
+    assert profiles.drivers == ()
+    assert profiles.home_extra_points == ()
+    assert profiles.default_from is None
+    assert profiles.home_name == "Home"
+    assert profiles.home_radius_meters == DEFAULT_RADIUS_METERS
+    assert "REPLACE ME" in profiles.home_query
+    # Deliberately unresolvable as a real address, so a fresh install's
+    # config doesn't silently geocode to some unrelated real place.
+    assert profiles.home_query != christers_driver_profiles().home_query
 
 
 def test_load_driver_profiles_returns_none_when_missing():

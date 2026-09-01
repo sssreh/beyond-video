@@ -22871,3 +22871,72 @@ Skansbrogatan/garage-exit point is actually added, which should be
 confirmed with him first rather than guessed at, mirroring how
 `default_from`'s real value was only set after the mechanism itself
 was already built and verified.
+
+Update: Christer confirmed adding the extra point, so his real
+`driver_profiles.json` now has a `home.extra_points` entry -
+`skansbrogatan_cold_start`, query `"Skansbrogatan, Stockholm"`,
+`radius_meters: 300.0` - verified to parse and geocode correctly via
+`load_driver_profiles()` against the real file.
+
+## write_default_driver_profiles() no longer seeds every new user with Christer's own real data
+
+After the `home_extra_points` work above, Christer asked *"Good i
+have you, how should other user manage stuff like this"* - prompted
+by seeing how much of `driver_profiles.json` was his own personal
+data (his real home address, his and his wife's real commute
+places). Looking at `write_default_driver_profiles()`, the answer
+was a genuine gap, not just a hypothetical one: it seeded *every*
+brand-new user's first-ever `driver_profiles.json` with
+`christers_driver_profiles()` - Christer's real Hammarby Sjöstad
+address, "Christer"/"Dao" as driver names, his wife's real commute
+route places. Anyone else running `bv-ls --drivers` or `bv-drivers
+build` for the first time would get a stranger's home town and
+family members as their own starting template, not a blank one. I
+offered to fix it - *"Want me to change write_default_driver_
+profiles() to seed an empty/generic template instead, and keep your
+own real data only in your own file?"* - and Christer said *"yes,
+that sounds great."*
+
+The fix: a new `default_driver_profiles()` function in
+`driver_detect.py` returns a generic, empty seed - `home_name="Home"`,
+`home_query="REPLACE ME: your home address, e.g. 123 Main St, City"`,
+`home_radius_meters=DEFAULT_RADIUS_METERS`, `drivers=()`, everything
+else at its default (no `home_extra_points`, no `default_from`).
+`write_default_driver_profiles()` now calls this instead of
+`christers_driver_profiles()`. The placeholder `home_query` string is
+deliberately an obvious "replace me" instruction rather than an empty
+string - an empty string could read as a config bug, whereas this
+reads unmistakably as a prompt to edit it, and `resolve_known_points()`
+already silently no-ops on anything `load_or_forward_geocode()` can't
+resolve, so it costs nothing until the user actually edits it.
+
+`christers_driver_profiles()` itself is unchanged in behavior - it's
+still used by every test that wants realistic route data to exercise
+`match_driver()` against, and it's still the one-time seed Christer's
+own already-existing file was originally written from - but its
+docstring now explicitly says it's not the generic seed anymore, and
+points to `default_driver_profiles()` for that role.
+
+Also updated wording (not behavior) in `bv_ls.py`'s docstring and
+`docs/man/bv-ls.md` (the `--drivers` option row and the Driver-column
+OUTPUT section), which both used to describe the seed as "default
+route data"/"default example route/dwell-time patterns" - now
+"an empty starting template - no drivers, a placeholder home address."
+`bv_drivers.py` needed no wording changes (confirmed via grep - it
+never described the seed's content). `docs/man/bv-drivers.md`'s
+DESCRIPTION section also needed no changes - it never described the
+seed's specific content either, only the schema.
+
+Test coverage: rewrote `test_write_default_driver_profiles_seeds_
+and_is_idempotent` (previously asserted `written.drivers[1].
+display_name == "Christer"`, which would now fail) to assert the
+generic-seed shape instead (`drivers == ()`, `home_extra_points == ()`,
+`default_from is None`, placeholder `home_query`). Added a new
+`test_default_driver_profiles_is_generic_not_christers` asserting
+the same shape directly against `default_driver_profiles()`, plus
+that its `home_query` differs from `christers_driver_profiles()`'s
+real address. Checked `test_bv_ls.py`'s two `write_default_driver_
+profiles` call sites - both stub it out entirely (`lambda path:
+object()`), so neither depends on the old seed's content. All 39
+tests in `test_driver_detect.py` and all 25 in `test_bv_drivers.py`
+pass via the standalone harnesses.

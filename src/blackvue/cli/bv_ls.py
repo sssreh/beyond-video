@@ -380,10 +380,10 @@ def _driver_column_labels(
     (see match_driver()'s own docstring for when that happens), or
     "-" for a trip with no candidate at all.
 
-    Seeds driver_profiles.json with Christer's own real route data on
-    first use (write_default_driver_profiles()) rather than requiring
-    a separate setup step - the file is meant to be hand-edited
-    afterward (add places, retune stay minutes, add a third driver),
+    Seeds driver_profiles.json with a generic, empty starting profile
+    on first use (write_default_driver_profiles()) rather than
+    requiring a separate setup step - the file is meant to be
+    hand-edited afterward (real home address, drivers, route places),
     not regenerated.
     """
 

@@ -241,14 +241,51 @@ def default_driver_profiles_path(config_dir: Path) -> Path:
     return config_dir / "driver_profiles.json"
 
 
+def default_driver_profiles() -> DriverProfiles:
+    """Generic, empty starting profile for write_default_driver_profiles()
+    to seed a brand-new driver_profiles.json with - no real address, no
+    drivers, nothing specific to Christer. Before this existed,
+    write_default_driver_profiles() seeded every first-time user's file
+    with christers_driver_profiles() (Christer's own real home address
+    and driver names), which meant anyone else running this tool for
+    the first time got a stranger's home town as their own starting
+    point instead of a blank template - a real rough edge for the
+    public repo, not just a cosmetic one.
+
+    `home_query` is deliberately an obvious, unresolvable placeholder
+    string rather than an empty one - an empty string could plausibly
+    look like a config bug rather than a prompt to edit it, whereas
+    this reads unmistakably as "replace me" and resolve_known_points()
+    quietly skips it (nothing geocodes) until the user does. Every
+    other field starts as empty/default: no drivers, no
+    home_extra_points, no default_from - all opt-in, hand-added by
+    each user to their own file exactly the way home_extra_points and
+    default_from's own docstrings already describe."""
+
+    return DriverProfiles(
+        home_name="Home",
+        home_query="REPLACE ME: your home address, e.g. 123 Main St, City",
+        home_radius_meters=DEFAULT_RADIUS_METERS,
+        drivers=(),
+    )
+
+
 def christers_driver_profiles() -> DriverProfiles:
     """The real starting profile data Christer gave verbatim: his
     wife's calm-driving routes and his own stressed/heavy-braking
-    routes, home base Hammarby Sjöstad. Used to seed a fresh
-    driver_profiles.json (see write_default_driver_profiles()) - not
-    hardcoded into match_driver() itself, so Christer can edit the
-    file (add places, retune stay minutes, add a third driver) without
-    touching code.
+    routes, home base Hammarby Sjöstad. Not hardcoded into
+    match_driver() itself, so Christer can edit the file (add places,
+    retune stay minutes, add a third driver) without touching code.
+
+    This is Christer's own personal data, not a generic starting
+    point - write_default_driver_profiles() seeds a fresh
+    driver_profiles.json with default_driver_profiles() instead (see
+    that function's own docstring for why: seeding every new user's
+    first-ever file with Christer's real home address was a real
+    rough edge for anyone else actually using this repo). This
+    function stays only for tests that want realistic route data to
+    exercise match_driver() against, and as the one-time seed for
+    Christer's own already-existing file.
     """
 
     wife = DriverProfile(
@@ -445,17 +482,19 @@ def load_driver_profiles(path: Path) -> DriverProfiles | None:
 
 
 def write_default_driver_profiles(path: Path) -> DriverProfiles:
-    """Seed `path` with Christer's real profile data
-    (christers_driver_profiles()) if nothing is there yet, and return
-    whatever profiles now live at `path` either way - so callers (the
-    bv-ls --trips wiring) can just call this unconditionally at
-    startup instead of separately checking existence first."""
+    """Seed `path` with a generic, empty starting profile
+    (default_driver_profiles() - see that function's own docstring for
+    why it's generic rather than christers_driver_profiles()) if
+    nothing is there yet, and return whatever profiles now live at
+    `path` either way - so callers (the bv-ls --trips wiring) can just
+    call this unconditionally at startup instead of separately
+    checking existence first."""
 
     existing = load_driver_profiles(path)
     if existing is not None:
         return existing
 
-    profiles = christers_driver_profiles()
+    profiles = default_driver_profiles()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(driver_profiles_to_dict(profiles), indent=2, ensure_ascii=False)
