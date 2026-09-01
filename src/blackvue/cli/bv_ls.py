@@ -33,6 +33,26 @@ from blackvue.trip.trip_builder import DEFAULT_MAX_GAP
 from blackvue.trip.trip_builder import TripBuilder
 from blackvue.trip.trip_builder import recordings_with_front_video
 
+# bv-drivers' own --max-gap default (cli/bv_drivers.py's own
+# DEFAULT_MAX_GAP) is 3 minutes, deliberately shorter than this
+# module's DEFAULT_MAX_GAP above (5 min, still what --trips/--max-gap
+# use for this command's normal video-trip mode). --drivers-trips
+# builds bv-drivers' own "sidecar trip" concept instead (see
+# build_driver_trips()) specifically so it can be a faithful preview
+# of what `bv-drivers build` will actually decide - which means it
+# needs bv-drivers' own 3-minute default, not this command's 5-minute
+# one. Christer, after the two commands' defaults drifted apart and
+# --drivers-trips silently kept using the stale 5-minute one: "Maybe
+# we need a --drivers-trips-max-gap 3 min for bv-ls." Given its own
+# flag (see --drivers-trips-max-gap below) rather than just changing
+# what --max-gap defaults to in this mode, so it's independently
+# tunable without disturbing --max-gap's own meaning for the video
+# -trip mode --drivers-trips doesn't use. Kept as a local constant
+# rather than imported from bv_drivers.py - these are separate CLI
+# entry points, and this mirrors how bv_drivers.py itself keeps its
+# own copy rather than importing DEFAULT_MAX_GAP from trip_builder.
+DRIVERS_TRIP_DEFAULT_MAX_GAP = timedelta(minutes=3)
+
 
 def format_size(size: int) -> str:
     """Format a size in bytes."""
@@ -263,9 +283,17 @@ def print_trips(
     video-trip one. Implies `show_drivers` - there is no reason to ask
     for the sidecar trip list without also wanting to see what it
     matches to. Every other --trips flag (--movement, --gps-split,
-    --no-duration, --max-gap/--gap-tolerance) is ignored in this mode:
-    build_driver_trips() always uses TripBuilder's own plain gap logic
-    with no bridging/force-split, matching bv-drivers.py exactly."""
+    --no-duration) is ignored in this mode: build_driver_trips()
+    always uses TripBuilder's own plain gap logic with no bridging/
+    force-split, matching bv-drivers.py exactly. `--max-gap` is
+    ignored too - `max_gap` here is instead whatever bv_ls() computed
+    from --drivers-trips-max-gap (default: DRIVERS_TRIP_DEFAULT_MAX_GAP,
+    matching bv-drivers.py's own 3-minute default), a separate knob
+    so a faithful driver-trips preview doesn't depend on whatever
+    --max-gap happens to be set to for this command's own, unrelated
+    video-trip mode. `--gap-tolerance` still applies as-is - bv-ls's
+    and bv-drivers' own defaults for it already match (10s), so there
+    was no drift to fix there the way there was for --max-gap."""
 
     if use_driver_trips:
         show_drivers = True
@@ -409,6 +437,7 @@ def bv_ls(
     gap_tolerance_seconds: int | None = None,
     drivers: bool = False,
     drivers_trip: bool = False,
+    drivers_trip_max_gap_minutes: int | None = None,
     config_dir: Path | None = None,
     adapter_id: str = DEFAULT_ADAPTER_ID,
     full: bool = False,
@@ -437,9 +466,13 @@ def bv_ls(
     for the cost/why. `drivers_trip` (see --drivers-trips) additionally
     swaps which trips are shown for bv-drivers' own sidecar-trip
     concept instead of this command's normal video-trip one - see
-    print_trips()'s own docstring for why these differ. `config_dir`
-    selects where driver_profiles.json and its geocode cache live -
-    defaults to default_config_dir(),
+    print_trips()'s own docstring for why these differ.
+    `drivers_trip_max_gap_minutes` (see --drivers-trips-max-gap) is
+    that mode's own gap threshold, independent of `max_gap_minutes` -
+    see DRIVERS_TRIP_DEFAULT_MAX_GAP's own comment above for why a
+    separate default (3 min) is needed. `config_dir` selects where
+    driver_profiles.json and its geocode cache live - defaults to
+    default_config_dir(),
     the same directory --config-dir already governs for camera config.
 
     `source` is the reverse of `timestamp`: `timestamp`/`from_`/`until`
@@ -499,9 +532,20 @@ def bv_ls(
             if gap_tolerance_seconds is not None
             else DEFAULT_GAP_TOLERANCE
         )
+        # --drivers-trips builds a different trip concept entirely (see
+        # print_trips()'s own use_driver_trips docstring) and needs its
+        # own gap default to match - bv-drivers' own 3-minute one, not
+        # this command's 5-minute video-trip default above. Computed
+        # here rather than left to print_trips() so --max-gap's own
+        # value/default never leaks into this mode even indirectly.
+        driver_trip_max_gap = (
+            timedelta(minutes=drivers_trip_max_gap_minutes)
+            if drivers_trip_max_gap_minutes is not None
+            else DRIVERS_TRIP_DEFAULT_MAX_GAP
+        )
         print_trips(
             recordings,
-            max_gap=max_gap,
+            max_gap=driver_trip_max_gap if drivers_trip else max_gap,
             use_movement=movement,
             use_duration=duration,
             use_gps_split=gps_split,
@@ -789,7 +833,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "build` will decide, not a different grouping that happens "
             "to also show a Driver column. Implies --drivers; other "
             "--trips flags (--movement, --gps-split, --no-duration, "
-            "--max-gap/--gap-tolerance) are ignored in this mode."
+            "--max-gap) are ignored in this mode - use "
+            "--drivers-trips-max-gap instead of --max-gap. "
+            "--gap-tolerance still applies."
+        ),
+    )
+
+    parser.add_argument(
+        "--drivers-trips-max-gap",
+        dest="drivers_trip_max_gap_minutes",
+        type=int,
+        metavar="MINUTES",
+        default=None,
+        help=(
+            "With --drivers-trips, the largest gap (in minutes) "
+            "between two recordings that still counts as the same "
+            "bv-drivers 'sidecar trip' - independent of --max-gap, "
+            "which only governs this command's own video-trip mode "
+            "and is ignored when --drivers-trips is given. Default: 3, "
+            "matching bv-drivers' own default (see bv-drivers(1))."
         ),
     )
 
@@ -853,6 +915,7 @@ def _run(args: argparse.Namespace, *, say=print) -> int:
         gap_tolerance_seconds=args.gap_tolerance_seconds,
         drivers=args.drivers,
         drivers_trip=args.drivers_trip,
+        drivers_trip_max_gap_minutes=args.drivers_trip_max_gap_minutes,
         config_dir=args.config_dir,
         adapter_id=adapter_id,
         full=args.full,

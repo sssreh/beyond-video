@@ -590,6 +590,116 @@ def test_trips_without_drivers_flag_has_no_driver_column(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# --drivers-trips-max-gap - bv-ls --drivers-trips' own gap threshold
+# (DRIVERS_TRIP_DEFAULT_MAX_GAP, 3 minutes, matching bv-drivers.py's own
+# default - see that constant's comment in bv_ls.py). Added after
+# Christer noticed --drivers-trips had drifted onto this command's own
+# 5-minute --max-gap default instead: "Maybe we need a
+# --drivers-trips-max-gap 3 min for bv-ls."
+#
+# All three tests use the same two-recording fixture, 4 minutes apart
+# (20260715_100000_NF.mp4, 20260715_100400_NF.mp4) - inside the old,
+# stale 5-minute default (so they'd merge into one trip under the bug)
+# but outside the new 3-minute default (so they split into two).
+# build_driver_trips()'s own trust filters then drop the earlier,
+# non-Parking-ending trip - see that function's docstring - leaving
+# only the later trip (trip_20260715_100400_20260715_100400) visible
+# under the fixed 3-minute default, versus one merged trip
+# (trip_20260715_100000_20260715_100400) if the old 5-minute default
+# were still in effect. Driver-matching machinery is monkeypatched away
+# the same way test_trips_drivers_flag_adds_driver_column above does -
+# these tests are only about which trips get built, not about driver
+# labels.
+# ---------------------------------------------------------------------------
+
+
+def _stub_driver_matching(monkeypatch) -> None:
+    import blackvue.cli.bv_ls as bv_ls_module
+
+    monkeypatch.setattr(
+        bv_ls_module, "write_default_driver_profiles", lambda path: object()
+    )
+    monkeypatch.setattr(
+        bv_ls_module, "resolve_known_points", lambda profiles, cache_dir: {}
+    )
+    monkeypatch.setattr(
+        bv_ls_module, "resolve_trip_fix", lambda adapter, trip: trip
+    )
+    monkeypatch.setattr(
+        bv_ls_module,
+        "match_driver",
+        lambda trip_fix, prev_fix, next_fix, profiles, known_points: (),
+    )
+
+
+def test_drivers_trips_defaults_to_a_three_minute_gap(tmp_path, capsys, monkeypatch):
+    _stub_driver_matching(monkeypatch)
+
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100400_NF.mp4").write_bytes(b"x")
+
+    exit_code = bv_ls(
+        str(tmp_path), trips=True, drivers_trip=True, config_dir=tmp_path / "cfg"
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    # Split under the 3-minute default - the earlier, non-Parking
+    # -ending trip is dropped by build_driver_trips()'s own trust
+    # filter, leaving only the later one.
+    assert "trip_20260715_100400_20260715_100400" in out
+    assert "trip_20260715_100000" not in out
+
+
+def test_drivers_trips_max_gap_can_be_overridden(tmp_path, capsys, monkeypatch):
+    _stub_driver_matching(monkeypatch)
+
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100400_NF.mp4").write_bytes(b"x")
+
+    exit_code = bv_ls(
+        str(tmp_path),
+        trips=True,
+        drivers_trip=True,
+        drivers_trip_max_gap_minutes=10,
+        config_dir=tmp_path / "cfg",
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    # Widened to 10 minutes - the two recordings now merge into one
+    # trip instead of splitting.
+    assert "trip_20260715_100000_20260715_100400" in out
+
+
+def test_max_gap_is_ignored_in_drivers_trips_mode(tmp_path, capsys, monkeypatch):
+    _stub_driver_matching(monkeypatch)
+
+    (tmp_path / "20260715_100000_NF.mp4").write_bytes(b"x")
+    (tmp_path / "20260715_100400_NF.mp4").write_bytes(b"x")
+
+    # --max-gap widened to 10 minutes (which would merge them in this
+    # command's own video-trip mode) but --drivers-trips-max-gap left
+    # at its 3-minute default - the trips should still split, proving
+    # --max-gap has no effect here.
+    exit_code = bv_ls(
+        str(tmp_path),
+        trips=True,
+        drivers_trip=True,
+        max_gap_minutes=10,
+        config_dir=tmp_path / "cfg",
+    )
+
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "trip_20260715_100400_20260715_100400" in out
+    assert "trip_20260715_100000_20260715_100400" not in out
+
+
+# ---------------------------------------------------------------------------
 # adapter_id - bv-ls listing a "folder" adapter archive instead of the
 # default "blackvue" one (docs/CAMERA_ADAPTERS.md). Confirms the
 # adapter abstraction is really wired through bv_ls()/main(), not just

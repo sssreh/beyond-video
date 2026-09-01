@@ -22602,3 +22602,81 @@ the last-committed baseline with none of this session's changes
 applied, via `git stash` - a pre-existing timing sensitivity in this
 particular standalone-harness's event-loop scheduling, not something
 this change introduced).
+
+## Give bv-ls --drivers-trips its own --drivers-trips-max-gap, independent of --max-gap
+
+`bv-ls --drivers-trips` (task #1373, an earlier session) swaps the
+Driver column's trip list from this command's own video-trip logic to
+`bv-drivers build`'s own "sidecar trip" concept
+(`trip/driver_detect.py`'s `build_driver_trips()`), specifically so it
+would be a faithful CLI preview of what `bv-drivers build` will
+actually decide. That worked - until a later session (task #1406)
+changed `bv-drivers.py`'s own `--max-gap` default from 5 minutes to 3,
+kept as a local `DEFAULT_MAX_GAP` constant in `bv_drivers.py` itself
+rather than the shared 5-minute `trip_builder.DEFAULT_MAX_GAP`. Nobody
+touched `bv_ls.py`'s `--drivers-trips` path at the same time, so it
+kept silently passing its own `max_gap` (from `--max-gap`, still
+defaulting to 5 minutes) straight into `build_driver_trips()` -
+`print_trips()`'s own docstring already *claimed* `--max-gap` was
+"ignored" in this mode, but the actual code didn't honor that. The two
+commands' defaults had quietly drifted apart, and `--drivers-trips`
+was no longer the faithful preview it was built to be. Christer,
+noticing: "Maybe we need a --drivers-trips-max-gap 3 min for bv-ls."
+
+Fix: `bv_ls.py` now has its own `DRIVERS_TRIP_DEFAULT_MAX_GAP =
+timedelta(minutes=3)` module constant (mirroring `bv-drivers.py`'s own
+`DEFAULT_MAX_GAP`, and the same "each CLI entry point keeps its own
+local copy rather than importing the other's" convention task #1406
+established) plus a new, independent `--drivers-trips-max-gap MINUTES`
+flag (`drivers_trip_max_gap_minutes` param on `bv_ls()`, default
+`None` meaning "use `DRIVERS_TRIP_DEFAULT_MAX_GAP`"). Inside `bv_ls()`,
+when `drivers_trip` is set, `print_trips()` is now called with
+`max_gap=driver_trip_max_gap` (computed from the new flag/default)
+instead of the video-trip mode's own `max_gap` - so `--max-gap` now
+genuinely has no effect in `--drivers-trips` mode, matching what
+`print_trips()`'s docstring always said. `--gap-tolerance` was left
+alone: `bv-ls` and `bv-drivers` already share the same 10-second
+default there, so there was no drift to fix.
+
+Wrote three new tests in `tests/blackvue/cli/test_bv_ls.py` (there was
+previously zero test coverage at all for `--drivers-trips`, despite it
+being a real, already-shipped flag) sharing one fixture: two
+recordings 4 minutes apart, inside the old stale 5-minute default (so
+they'd merge into one trip under the bug) but outside the new
+3-minute one (so they split). `build_driver_trips()`'s own trust
+filter then drops the earlier, non-Parking-ending trip, leaving only
+the later one visible - so the three cases are cleanly distinguishable
+by which trip label(s) show up in the output:
+`test_drivers_trips_defaults_to_a_three_minute_gap` (no override -
+only `trip_20260715_100400_20260715_100400` appears, proving the
+default really is 3 minutes now), `test_drivers_trips_max_gap_can_be_
+overridden` (`--drivers-trips-max-gap 10` - the two recordings merge
+into `trip_20260715_100000_20260715_100400`), and `test_max_gap_is_
+ignored_in_drivers_trips_mode` (`--max-gap 10` with no
+`--drivers-trips-max-gap` override - still splits, proving `--max-gap`
+has no effect in this mode). All three monkeypatch the same driver
+-matching functions (`write_default_driver_profiles`,
+`resolve_known_points`, `resolve_trip_fix`, `match_driver`) the
+existing `--drivers` tests already do, since `--drivers-trips` implies
+`show_drivers=True` and would otherwise hit real geocoding/GPS-probe
+code.
+
+Also updated `docs/man/bv-ls.md`, which turned out to have never
+documented `--drivers-trips` at all (only `--drivers`) - added both
+`--drivers-trips` and `--drivers-trips-max-gap` to the synopsis and
+options table, corrected the CLI help text for `--drivers-trips` to
+say `--max-gap` is ignored (use `--drivers-trips-max-gap` instead)
+rather than the old, already-inaccurate "ignored" line with no
+replacement mentioned, and added a note under the Driver-column
+OUTPUT section that `--drivers-trips` matches against a different trip
+list than the default Driver column does.
+
+Verified: `python3 -m py_compile` on `bv_ls.py` and the test file,
+plus a standalone harness (same no-pytest-in-sandbox approach as
+every other session) confirming all three new tests pass with the
+exact expected trip-label output, and re-running the existing
+`--max-gap`/`--gap-tolerance`/default-5-minute-gap tests plus the
+existing `--drivers` Driver-column tests through the same harness to
+confirm no regressions. Also diffed the real `bv-ls --help` output
+against the new docs table to confirm the CLI help text and the man
+page say the same thing.
