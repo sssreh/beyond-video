@@ -1060,3 +1060,264 @@ def test_nvenc_available_checks_ffmpeg_encoders_output(monkeypatch):
     captured.clear()
     assert hevc_preview_module._nvenc_available() is True
     assert captured == {}
+
+
+# ---------------------------------------------------------------------------
+# Cancelling stale transcodes on video switch: Christer, after the
+# progressive-streaming feature above landed - "When i jump around
+# videos and try to guess driver, i leave behind a lot of prieview
+# caching that slows my next preview down. Are there any functionality
+# with which you can cancel the preview if i go somewhere else."
+# Confirmed via AskUserQuestion: opening a different video should
+# cancel any other still-running transcode immediately. These tests
+# cover _cancel_stale_transcodes() itself, _run_transcode_to_cache()'s
+# own `except asyncio.CancelledError` handler (which has to explicitly
+# kill the real ffmpeg child process - task cancellation alone never
+# touches it), and the end-to-end path through
+# open_hevc_preview_stream().
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_in_progress_registry():
+    """_IN_PROGRESS is a module-level dict, same rationale as
+    _clear_codec_probe_cache above - a broadcast left behind by a test
+    that cancels a task without letting it run to completion could
+    otherwise leak into (and confuse) a later test."""
+
+    hevc_preview_module._IN_PROGRESS.clear()
+    yield
+    hevc_preview_module._IN_PROGRESS.clear()
+
+
+class _HangingFakeStream:
+    """Like _FakeStream, but once its pre-seeded chunks run out, .read()
+    genuinely never returns - it suspends forever awaiting an Event
+    that's never set. Stands in for ffmpeg still mid-transcode, so a
+    test can cancel the task while it's truly suspended (real
+    asyncio.Task.cancel() only does anything meaningful while the task
+    is actually awaiting something, not while it's synchronously
+    running)."""
+
+    def __init__(self, chunks_before_hang=()):
+        self._chunks = list(chunks_before_hang)
+
+    async def read(self, _n=-1):
+        if self._chunks:
+            return self._chunks.pop(0)
+        await asyncio.Event().wait()
+        return b""  # unreachable - the Event above is never set
+
+
+class _KillableFakeProcess:
+    """Like _SlowFakeProcess, but its stdout hangs (via
+    _HangingFakeStream) after any pre-seeded chunks, and it tracks
+    whether .kill() was called - exercising _run_transcode_to_cache()'s
+    own cancellation handler for real, not just by inspecting code."""
+
+    def __init__(self, chunks_before_hang=(), returncode=0):
+        self.stdout = _HangingFakeStream(chunks_before_hang)
+        self.stderr = _FakeStream([])
+        self.returncode = None
+        self._final_returncode = returncode
+        self.killed = False
+
+    def kill(self):
+        # Real asyncio.subprocess.Process.kill() is a plain sync call.
+        self.killed = True
+        self.returncode = self._final_returncode
+
+    async def wait(self):
+        return self.returncode
+
+
+def test_cancel_stale_transcodes_cancels_other_sources_but_leaves_finished_ones_alone(
+    tmp_path,
+):
+    """Direct unit test of _cancel_stale_transcodes(): a still-running
+    broadcast for a different source gets cancelled; a broadcast whose
+    task has already finished is left untouched (nothing to cancel, and
+    calling .cancel() on a done task is harmless but pointless)."""
+
+    async def scenario():
+        source_a = tmp_path / "a.mp4"
+        source_b = tmp_path / "b.mp4"
+        source_c = tmp_path / "c.mp4"  # the video being opened now
+
+        async def hang_forever():
+            await asyncio.Event().wait()
+
+        async def already_done():
+            return None
+
+        broadcast_a = hevc_preview_module._TranscodeBroadcast(
+            source_a, tmp_path / "a-cache.mp4", tmp_path / "a.tmp"
+        )
+        broadcast_a.task = asyncio.create_task(hang_forever())
+
+        broadcast_b = hevc_preview_module._TranscodeBroadcast(
+            source_b, tmp_path / "b-cache.mp4", tmp_path / "b.tmp"
+        )
+        broadcast_b.task = asyncio.create_task(already_done())
+        # Let both tasks actually run: a's suspends on hang_forever(),
+        # b's runs to completion.
+        await broadcast_b.task
+
+        hevc_preview_module._IN_PROGRESS[broadcast_a.cache_path] = broadcast_a
+        hevc_preview_module._IN_PROGRESS[broadcast_b.cache_path] = broadcast_b
+
+        hevc_preview_module._cancel_stale_transcodes(except_source=source_c)
+        await asyncio.sleep(0)  # let the cancellation actually land
+
+        assert broadcast_a.task.cancelled()
+        assert not broadcast_b.task.cancelled()  # already done - never touched
+
+    asyncio.run(scenario())
+
+
+def test_cancel_stale_transcodes_does_not_cancel_the_video_just_opened(tmp_path):
+    """The one exception: a broadcast whose own source matches
+    except_source (the video just opened) is left running - joining an
+    already in-progress transcode of the very thing being watched now
+    is the normal dedup path (see the "late joiner" test above), not
+    something to cancel."""
+
+    async def scenario():
+        source_a = tmp_path / "a.mp4"
+
+        async def hang_forever():
+            await asyncio.Event().wait()
+
+        broadcast_a = hevc_preview_module._TranscodeBroadcast(
+            source_a, tmp_path / "a-cache.mp4", tmp_path / "a.tmp"
+        )
+        broadcast_a.task = asyncio.create_task(hang_forever())
+        hevc_preview_module._IN_PROGRESS[broadcast_a.cache_path] = broadcast_a
+        await asyncio.sleep(0)  # let it reach its suspend point
+
+        hevc_preview_module._cancel_stale_transcodes(except_source=source_a)
+        await asyncio.sleep(0)
+
+        assert not broadcast_a.task.cancelled()
+        assert not broadcast_a.task.done()
+
+        broadcast_a.task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await broadcast_a.task
+
+    asyncio.run(scenario())
+
+
+def test_run_transcode_to_cache_kills_ffmpeg_and_cleans_up_on_cancellation(
+    monkeypatch, tmp_path
+):
+    """Christer: "are there any functionality with which you can cancel
+    the preview if i go somewhere else." asyncio.Task.cancel() alone
+    only unwinds the awaiting coroutine - it does NOT touch the spawned
+    ffmpeg child process. Confirms _run_transcode_to_cache()'s own
+    `except asyncio.CancelledError` handler kills the real subprocess,
+    leaves no stray .tmp file behind, and still runs broadcast.finish()
+    and pops the _IN_PROGRESS entry so nothing hangs or blocks the next
+    request for the same source."""
+
+    source = _make_source(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_path = _expected_cache_path(source, cache_dir)
+    tmp_path_arg = cache_path.with_name(f"{cache_path.stem}.abcd1234.tmp")
+
+    fake_proc = _KillableFakeProcess(chunks_before_hang=[b"frag1"])
+
+    async def fake_spawn(_source, _extra_codec_args, *, hw_decode, codec):
+        return fake_proc
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: False)
+
+    broadcast = hevc_preview_module._TranscodeBroadcast(source, cache_path, tmp_path_arg)
+    hevc_preview_module._IN_PROGRESS[cache_path] = broadcast
+
+    async def scenario():
+        task = asyncio.create_task(hevc_preview_module._run_transcode_to_cache(broadcast))
+        broadcast.task = task
+
+        # Let the task actually run: spawn ffmpeg, publish the first
+        # chunk, and suspend on the (hanging) second read - proven by
+        # broadcast.history holding that first chunk.
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if broadcast.history:
+                break
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert fake_proc.killed
+    assert not tmp_path_arg.exists()
+    assert cache_path not in hevc_preview_module._IN_PROGRESS
+    assert broadcast.done  # finish() still ran despite the cancellation
+    assert not cache_path.exists()  # cancelled mid-transcode - nothing cached
+
+
+def test_open_hevc_preview_stream_cancels_a_stale_transcode_for_a_different_video(
+    monkeypatch, tmp_path
+):
+    """End-to-end version of the two _cancel_stale_transcodes() unit
+    tests above, going through the real open_hevc_preview_stream()
+    entry point: opening video B while video A is still transcoding
+    cancels A's background task (and kills its ffmpeg process) and lets
+    B's own transcode proceed and complete normally."""
+
+    source_a = _make_source(tmp_path, name="a.mp4")
+    source_b = _make_source(tmp_path, name="b.mp4")
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(hevc_preview_module, "probe_video_codec", lambda _path: "hevc")
+    monkeypatch.setattr(hevc_preview_module, "_nvdec_available", lambda: False)
+    monkeypatch.setattr(hevc_preview_module, "_nvenc_available", lambda: False)
+
+    proc_a = _KillableFakeProcess(chunks_before_hang=[b"a-frag"])
+    proc_b = _FakeProcess([b"b-frag"], returncode=0)
+
+    async def fake_spawn(source, _extra_codec_args, *, hw_decode, codec):
+        return proc_a if source == source_a else proc_b
+
+    monkeypatch.setattr(hevc_preview_module, "_spawn_ffmpeg", fake_spawn)
+
+    async def scenario():
+        result_a = await open_hevc_preview_stream(source_a, cache_dir)
+        assert not isinstance(result_a, Path)
+
+        cache_path_a = _expected_cache_path(source_a, cache_dir)
+        broadcast_a = hevc_preview_module._IN_PROGRESS[cache_path_a]
+
+        first_chunk_a = await result_a.__anext__()
+        assert first_chunk_a == b"a-frag"  # a's transcode is now hung mid-read
+
+        # Opening a different video now must cancel a's still-running
+        # background task.
+        result_b = await open_hevc_preview_stream(source_b, cache_dir)
+        assert not isinstance(result_b, Path)
+
+        with pytest.raises(asyncio.CancelledError):
+            await broadcast_a.task
+
+        return await _collect(result_b)
+
+    collected_b = asyncio.run(scenario())
+
+    assert collected_b == b"b-frag"
+    assert proc_a.killed
+    assert not hasattr(proc_b, "killed") or not proc_b.killed  # b ran to completion
+
+    cache_path_a = _expected_cache_path(source_a, cache_dir)
+    assert cache_path_a not in hevc_preview_module._IN_PROGRESS
+    assert not cache_path_a.is_file()  # a's transcode was cancelled, not cached
+
+    cache_path_b = _expected_cache_path(source_b, cache_dir)
+    assert cache_path_b.is_file()
+    assert cache_path_b.read_bytes() == b"b-frag"

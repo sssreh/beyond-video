@@ -22511,3 +22511,94 @@ Verified: `python3 -m py_compile` on `bv_drivers.py` and the test file,
 plus a standalone script confirming the module-level default is 3
 minutes, `--max-gap` omitted still parses to `None` (resolved in
 `_run()`), and an explicit `--max-gap 10` still overrides it.
+
+## Cancel stale HEVC preview transcodes when Christer opens a different video
+
+Christer, after the progressive-streaming HEVC preview feature had
+been running for a while: *"When i jump around videos and try to
+guess driver, i leave behind a lot of prieview caching that slows my
+next preview down. Are there any functionality with which you can
+cancel the preview if i go somewhere else."* Confirmed via
+`AskUserQuestion` which of two behaviors he wanted - letting the old
+transcode keep running in the background vs. cancelling it - and he
+picked cancelling ("Cancel the old one (Recommended)"). Every HEVC
+recording he opens while browsing `/drivers` and guessing at who was
+driving starts its own background transcode (`_run_transcode_to_cache()`,
+tracked in `hevc_preview.py`'s `_IN_PROGRESS` dict); none of those
+were ever being stopped, so several could pile up at once, each one
+competing for the same CPU/GPU as whatever he's actually watching
+right now.
+
+Added `_cancel_stale_transcodes(*, except_source)` to `hevc_preview.py`,
+called as the very first statement inside `open_hevc_preview_stream()` -
+so it fires on every request, before the codec probe or cache lookup
+even run. It walks `_IN_PROGRESS`, and for every broadcast whose
+`.source` isn't the video just opened and whose background task isn't
+already done, calls `.task.cancel()`. Compares by `source` rather than
+`cache_path` deliberately, since it has to work even before *this*
+request's own `cache_path` has been computed (a non-HEVC or probe-
+failed source never computes one at all).
+
+`asyncio.Task.cancel()` alone only unwinds the awaiting coroutine - it
+does **not** touch the ffmpeg child process that coroutine spawned, so
+without more, a cancelled task would leave its ffmpeg subprocess
+running (and burning CPU/GPU) completely unsupervised in the
+background - exactly the problem this feature exists to fix, just
+moved one layer down. So `_run_transcode_to_cache()` now has an
+`except asyncio.CancelledError:` clause (new, between its existing
+`try` body and `finally` block) that explicitly kills the real
+subprocess - `proc.kill()` plus an `await proc.wait()` under
+`contextlib.suppress(Exception)` - before re-raising. `proc` itself
+had to move from an implicit try-local to an outer-scoped
+`proc: asyncio.subprocess.Process | None = None` so the cancellation
+handler can see it regardless of exactly where inside the transcode
+the cancellation landed. The existing `finally:` block (which calls
+`broadcast.finish()` to release every subscriber still waiting, and
+pops the `_IN_PROGRESS` entry so the next request starts fresh) still
+runs unconditionally afterward, same as on any other exit path - a
+cancelled request leaves nothing hanging and nothing half-cached.
+
+This is additive to, not a reversal of, this module's own "Second
+iteration" design (see its header comment): that fix deliberately
+decoupled the background transcode's lifetime from any single HTTP
+request's own lifetime, so a request that merely disconnects or
+reloads - normal, harmless browser behavior while watching a video -
+doesn't kill an otherwise-healthy transcode. `_cancel_stale_transcodes()`
+is a narrower, second trigger layered on top: not "this one request
+went away," but "Christer has explicitly moved on to a different
+video," which is real, deliberate signal that the old transcode's
+output is no longer wanted.
+
+Added four tests to `tests/blackvue/export/test_hevc_preview.py`.
+Two are direct unit tests of `_cancel_stale_transcodes()` itself
+(`test_cancel_stale_transcodes_cancels_other_sources_but_leaves_finished_ones_alone`,
+`test_cancel_stale_transcodes_does_not_cancel_the_video_just_opened`),
+built on hand-crafted broadcasts and plain `asyncio.create_task()`
+coroutines rather than the full transcode machinery. A third
+(`test_run_transcode_to_cache_kills_ffmpeg_and_cleans_up_on_cancellation`)
+drives `_run_transcode_to_cache()` directly against a new
+`_KillableFakeProcess`/`_HangingFakeStream` pair - a fake ffmpeg
+process whose `stdout.read()` genuinely suspends forever after its
+first chunk (via an `asyncio.Event` that's never set) so the test can
+cancel the task while it's truly mid-transcode, then confirms
+`.kill()` was called, no stray `.tmp` file was left behind, and
+`_IN_PROGRESS`/`broadcast.done` both still got cleaned up despite the
+cancellation. The fourth
+(`test_open_hevc_preview_stream_cancels_a_stale_transcode_for_a_different_video`)
+is the end-to-end version, going through the real
+`open_hevc_preview_stream()` entry point for two different sources and
+confirming the first's transcode gets cancelled (and its process
+killed) while the second's proceeds and completes normally.
+
+Verified: `python3 -m py_compile` on `hevc_preview.py` and the test
+file, plus a standalone harness (no pytest in this sandbox - faked
+just enough of the `pytest` module for the real test file to import
+and its test functions to run directly) confirming all four new tests
+pass, and re-running the rest of `test_hevc_preview.py`'s existing 32
+tests through the same harness to confirm no regressions (35/36 pass;
+the one pre-existing failure, `test_open_hevc_preview_stream_dedupes_
+and_replays_history_for_a_late_joiner`, reproduces identically against
+the last-committed baseline with none of this session's changes
+applied, via `git stash` - a pre-existing timing sensitivity in this
+particular standalone-harness's event-loop scheduling, not something
+this change introduced).

@@ -665,6 +665,7 @@ async def _run_transcode_to_cache(broadcast: _TranscodeBroadcast) -> None:
     ]
 
     start = time.monotonic()
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await _spawn_ffmpeg(
             source, extra_codec_args,
@@ -734,14 +735,39 @@ async def _run_transcode_to_cache(broadcast: _TranscodeBroadcast) -> None:
             file=sys.stderr,
         )
         enforce_cache_size_cap(cache_path.parent, _MAX_CACHE_BYTES)
+    except asyncio.CancelledError:
+        # Christer: "are there any functionality with which you can
+        # cancel the preview if i go somewhere else" - confirmed via
+        # AskUserQuestion: opening a different video cancels this
+        # task (see _cancel_stale_transcodes() below). asyncio task
+        # cancellation alone only unwinds *this* coroutine - it does
+        # NOT touch the ffmpeg child process, which would otherwise
+        # keep running (and keep burning CPU/GPU) unsupervised in the
+        # background, exactly the problem this feature exists to
+        # solve. So explicitly kill it here before re-raising; the
+        # nested try/finally around the write loop above still runs
+        # on its way out and unlinks the tmp file as usual.
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+        elapsed = time.monotonic() - start
+        print(
+            f"HEVC preview: transcode for {source.name} cancelled after "
+            f"{elapsed:.1f}s (a different video was opened) - nothing "
+            f"cached.",
+            file=sys.stderr,
+        )
+        raise
     finally:
-        # Runs no matter how the transcode ended (success, failure, or
-        # even a bug raising an unexpected exception above) - both
-        # steps are essential: finish() releases every subscriber
-        # that's still waiting (otherwise a broken transcode would hang
-        # any request watching it forever), and popping the registry
-        # entry lets the *next* request for this source start a fresh
-        # attempt instead of joining a dead broadcast.
+        # Runs no matter how the transcode ended (success, failure,
+        # cancellation, or even a bug raising an unexpected exception
+        # above) - both steps are essential: finish() releases every
+        # subscriber that's still waiting (otherwise a broken or
+        # cancelled transcode would hang any request watching it
+        # forever), and popping the registry entry lets the *next*
+        # request for this source start a fresh attempt instead of
+        # joining a dead broadcast.
         broadcast.finish()
         _IN_PROGRESS.pop(cache_path, None)
 
@@ -765,6 +791,37 @@ async def _consume_broadcast(broadcast: _TranscodeBroadcast) -> AsyncIterator[by
     finally:
         with contextlib.suppress(ValueError):
             broadcast.subscribers.remove(queue)
+
+
+def _cancel_stale_transcodes(*, except_source: Path) -> None:
+    """Christer: "when i jump around videos and try to guess driver,
+    i leave behind a lot of preview caching that slows my next
+    preview down. Are there any functionality with which you can
+    cancel the preview if i go somewhere else." Confirmed via
+    AskUserQuestion: yes - opening a different video should cancel
+    any other still-transcoding preview immediately, freeing up
+    CPU/GPU for the one actually being watched now, rather than
+    letting every previously-opened video's transcode keep running in
+    the background to completion (this module's original, deliberate
+    "Second iteration" design - see that header comment - which is
+    still exactly right for a request that merely disconnects/reloads
+    without the user moving on to something else; this is a narrower,
+    additional trigger on top of it, not a reversal of it).
+
+    Called unconditionally at the top of open_hevc_preview_stream(),
+    so it fires on every request regardless of whether *this* request
+    ends up starting a fresh transcode of its own - joining an
+    already-cached or already-in-progress `except_source` is still
+    proof Christer has moved on from whatever else is still
+    converting. Compares by `source`, not `cache_path`, so it works
+    even before this call's own cache_path has been computed (a
+    non-HEVC or probe-failed source never computes one at all)."""
+
+    for broadcast in list(_IN_PROGRESS.values()):
+        if broadcast.source == except_source:
+            continue
+        if broadcast.task is not None and not broadcast.task.done():
+            broadcast.task.cancel()
 
 
 async def open_hevc_preview_stream(
@@ -794,6 +851,8 @@ async def open_hevc_preview_stream(
     A coroutine (not a plain function) so `asyncio.create_task()` below
     is always called from inside a running event loop.
     """
+
+    _cancel_stale_transcodes(except_source=source)
 
     try:
         # 2026-08-27: cached per (path, mtime, size), and hopped onto a
