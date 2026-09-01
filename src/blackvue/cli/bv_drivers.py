@@ -146,7 +146,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--from", dest="from_", metavar="TIMESTAMP",
-        help="Only consider recordings from this timestamp.",
+        help=(
+            "Only consider recordings from this timestamp. Defaults to "
+            "driver_profiles.json's own \"default_from\" field if it's "
+            "set and this flag is omitted - a personal, opt-in floor "
+            "(e.g. \"stop me from running this against data before my "
+            "sidecar downloads were reliable\") that lives only in that "
+            "file, never in this command's own defaults. Passing --from "
+            "always overrides it for that one run."
+        ),
     )
     parser.add_argument(
         "--until", metavar="TIMESTAMP",
@@ -240,10 +248,25 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
     if args.debug:
         say(f"bv-drivers: debug: scanned archive in {time.monotonic() - scan_start:.2f}s")
 
+    # Loaded here, ahead of --from resolution below, so
+    # profiles.default_from (see DriverProfiles' own docstring) is
+    # available as --from's fallback when it's omitted. Reused for the
+    # geocoding/matching passes further down rather than re-loaded.
+    profiles_path = default_driver_profiles_path(args.config_dir)
+    profiles = write_default_driver_profiles(profiles_path)
+
+    from_ = args.from_
+    if from_ is None and profiles.default_from is not None:
+        from_ = profiles.default_from
+        say(
+            f"bv-drivers: using default --from {from_} from driver_profiles.json "
+            "- pass --from to override for this run."
+        )
+
     try:
         try:
             interval = LexicalTimeParser(
-                timestamp=args.timestamp, from_=args.from_, until=args.until,
+                timestamp=args.timestamp, from_=from_, until=args.until,
             ).parse()
         except ValueError as exc:
             warn(f"bv-drivers: {exc}")
@@ -410,9 +433,6 @@ def _run(args: argparse.Namespace, *, say=print, warn=_default_warn) -> int:
         if not trips:
             say(f"bv-drivers: {archive_path} - no trips found in range.")
             return EXIT_OK
-
-        profiles_path = default_driver_profiles_path(args.config_dir)
-        profiles = write_default_driver_profiles(profiles_path)
 
         geocode_start = time.monotonic()
         known_points = resolve_known_points(profiles, args.config_dir / ".osm_cache")

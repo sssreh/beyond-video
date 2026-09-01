@@ -220,6 +220,91 @@ def test_run_defaults_max_gap_to_3_minutes_when_not_given(tmp_path, monkeypatch)
     assert _FakeTripBuilder.captured_kwargs["max_gap"] == timedelta(minutes=3)
 
 
+class _FakeLexicalTimeParser:
+    """Captures the from_/until/timestamp kwargs bv_drivers._run()
+    actually resolves and hands to the real LexicalTimeParser, so the
+    default_from fallback tests below can assert on what --from
+    resolved to without needing a real archive/interval - the fake
+    archive's recordings list is always empty (see _install_fakes),
+    so parse()'s return value is never even inspected by the `in
+    interval` filter that follows."""
+
+    captured_kwargs: dict = {}
+
+    def __init__(self, *, timestamp, from_, until):
+        _FakeLexicalTimeParser.captured_kwargs = {
+            "timestamp": timestamp, "from_": from_, "until": until,
+        }
+
+    def parse(self):
+        return None
+
+
+def test_run_uses_profiles_default_from_when_from_omitted(tmp_path, monkeypatch):
+    """Christer: "How do we stop me from run Drivers KB before
+    20260706" -> "No, i mean permanently for me": a personal
+    driver_profiles.json default_from (see DriverProfiles' own
+    docstring) is used as --from's fallback whenever --from itself is
+    omitted, and _run() announces it via say() so the substitution
+    isn't a silent surprise."""
+
+    profiles = DriverProfiles(
+        home_name="home", home_query="Hammarby Sjostad, Stockholm",
+        home_radius_meters=300.0, drivers=(), default_from="20260706",
+    )
+    _install_fakes(monkeypatch, trips=[], fixes=[], profiles=profiles)
+    monkeypatch.setattr(bv_drivers, "LexicalTimeParser", _FakeLexicalTimeParser)
+
+    said = []
+    args = parse_args([str(tmp_path), "--config-dir", str(tmp_path / "config")])
+    bv_drivers._run(args, say=said.append)
+
+    assert _FakeLexicalTimeParser.captured_kwargs["from_"] == "20260706"
+    assert any(
+        "using default --from 20260706 from driver_profiles.json" in line
+        for line in said
+    )
+
+
+def test_run_explicit_from_overrides_profiles_default_from(tmp_path, monkeypatch):
+    """Passing --from always wins for that one run, per DriverProfiles'
+    own docstring - the personal default never silently overrides an
+    explicit flag."""
+
+    profiles = DriverProfiles(
+        home_name="home", home_query="Hammarby Sjostad, Stockholm",
+        home_radius_meters=300.0, drivers=(), default_from="20260706",
+    )
+    _install_fakes(monkeypatch, trips=[], fixes=[], profiles=profiles)
+    monkeypatch.setattr(bv_drivers, "LexicalTimeParser", _FakeLexicalTimeParser)
+
+    said = []
+    args = parse_args([
+        str(tmp_path), "--config-dir", str(tmp_path / "config"),
+        "--from", "20260101_000000",
+    ])
+    bv_drivers._run(args, say=said.append)
+
+    assert _FakeLexicalTimeParser.captured_kwargs["from_"] == "20260101_000000"
+    assert not any("using default --from" in line for line in said)
+
+
+def test_run_no_fallback_when_default_from_unset(tmp_path, monkeypatch):
+    """christers_driver_profiles() (and any fresh install) leaves
+    default_from unset - _run() must not invent a fallback or print
+    the substitution note in that case."""
+
+    _install_fakes(monkeypatch, trips=[], fixes=[])  # _profiles() leaves default_from None
+    monkeypatch.setattr(bv_drivers, "LexicalTimeParser", _FakeLexicalTimeParser)
+
+    said = []
+    args = parse_args([str(tmp_path), "--config-dir", str(tmp_path / "config")])
+    bv_drivers._run(args, say=said.append)
+
+    assert _FakeLexicalTimeParser.captured_kwargs["from_"] is None
+    assert not any("using default --from" in line for line in said)
+
+
 def test_run_reports_no_trips_found_when_archive_is_empty(tmp_path, monkeypatch):
     _install_fakes(monkeypatch, trips=[], fixes=[])
 

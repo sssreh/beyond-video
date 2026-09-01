@@ -22680,3 +22680,82 @@ existing `--drivers` Driver-column tests through the same harness to
 confirm no regressions. Also diffed the real `bv-ls --help` output
 against the new docs table to confirm the CLI help text and the man
 page say the same thing.
+
+## Personal default_from floor for bv-drivers build, in Christer's own config only
+
+Christer: "How do we stop me from run Drivers KB before 20260706" -
+his sidecar (.gps/.3gf) downloads weren't complete before that date
+(the same era `--full` P-ending trip trust filter work, tasks
+#1360-1361, already treats as unreliable for driver detection), and
+he wanted a way to stop himself from accidentally running
+`bv-drivers build` against that pre-cutover data without remembering
+to pass `--from` by hand every time.
+
+`bv-drivers build` already had a `--from TIMESTAMP` flag (both the CLI
+and its bv-web job trigger), so the raw capability wasn't missing -
+the actual ask was a guard against forgetting to use it. This is the
+same "July 6" date a much earlier session tried hardcoding directly
+into `bv_drivers.py`'s own filtering logic as a `JULY_6_CUTOVER`
+module constant - Christer rejected that outright: "Notera att allt
+som rör 6 juli, bara gäller mig, ingenting som skall in i github" -
+which is what led to the current dateless universal "every trip must
+end in a downloaded Parking-mode recording" filter (tasks #1360-1361)
+that still runs today with no date comparison anywhere in
+`bv_drivers.py`'s trip-building code. Given that history, this was
+scoped with `AskUserQuestion` before writing anything - a personal
+config-file default, a hard CLI/web block, or no code change at all -
+and Christer picked the personal-config-default option, then followed
+up mid-turn to make sure it landed as a *permanent* setting rather
+than a one-off reminder: "No, i mean permanently for me."
+
+Implementation: `DriverProfiles` (`trip/driver_detect.py`) gained a
+new optional field, `default_from: str | None = None` - a
+`LexicalTimeParser` TIMESTAMP string, same format as `--from` itself.
+It round-trips through `driver_profiles_to_dict()`/
+`driver_profiles_from_dict()` like every other field, loads as `None`
+via `.get()` for any pre-existing `driver_profiles.json` with no such
+key, and `christers_driver_profiles()` - the repo's own seed function,
+which does already contain Christer's real home address and driver
+names as default seed data for a fresh install - deliberately never
+sets it, so it stays `None` for the shared repo and for any future
+public-repo user's own fresh file. Setting it is a runtime edit to a
+personal `driver_profiles.json`, never a code change.
+
+`bv_drivers.py`'s `_run()` now loads `driver_profiles.json` earlier
+than before (moved right after the archive scan, ahead of `--from`
+resolution, instead of its old spot just before the geocoding pass)
+specifically so `profiles.default_from` is available as `--from`'s
+fallback: `from_ = args.from_ or profiles.default_from`, with a
+`say()` line whenever the fallback actually fires ("using default
+--from 20260706 from driver_profiles.json - pass --from to override
+for this run.") so the substitution is never a silent, confusing
+behavior change. An explicit `--from` on the command line always wins
+for that one run. Because bv-web's `start_bv_drivers()` job trigger
+already threads `from_` straight through to the same `_run()`, this
+covers the web UI too with no separate web-layer change needed.
+
+Tests: `test_driver_detect.py` gained three tests covering the
+`DriverProfiles` field itself (`christers_driver_profiles()` leaves it
+unset, it round-trips through JSON, and a pre-existing file with no
+`default_from` key loads as `None` rather than raising).
+`test_bv_drivers.py` gained three more at the `_run()` level, using a
+`_FakeLexicalTimeParser` that captures the `from_`/`until`/`timestamp`
+kwargs `_run()` actually resolves (safe here since `_install_fakes`'s
+archive always has zero recordings, so `LexicalTimeParser.parse()`'s
+return value is never inspected by the `in interval` filter that
+follows): the fallback fires and is announced when `--from` is omitted
+and `default_from` is set, an explicit `--from` overrides it and
+suppresses the announcement, and no fallback/announcement happens at
+all when `default_from` is unset (the `_profiles()` test fixture's
+default). Verified via the same no-pytest standalone-harness approach
+as every other session (`importlib` loading the real test module,
+running each test function against a minimal `monkeypatch`
+stand-in) - all 6 new tests and the pre-existing `_run()` tests they
+share fixtures with pass.
+
+Updated `docs/man/bv-drivers.md`'s `--from` row to document the
+`default_from` fallback. Also set `default_from: "20260706"` on
+Christer's own real `driver_profiles.json` (outside the repo, under
+`~/beyond-video-data/.config/` - a data edit, not a commit) - the
+feature has no effect on his real environment until that value is
+actually set, so this was the step that makes the guard live.

@@ -159,12 +159,33 @@ class DriverProfile:
 class DriverProfiles:
     """Top-level driver_profiles.json contents: the shared home place
     every driver's "commute" patterns are relative to, plus each
-    driver's own patterns."""
+    driver's own patterns.
+
+    `default_from` (default: None) is a personal, opt-in floor on
+    which recordings `bv-drivers build` ever considers - a
+    LexicalTimeParser TIMESTAMP string (e.g. "20260706"), same format
+    as the CLI's own `--from`. bv_drivers.py's `_run()` uses it as the
+    fallback for `--from` whenever that flag is omitted; passing
+    `--from` explicitly always overrides it for that one run. This
+    field lives only in the JSON file on disk (default: None here, and
+    christers_driver_profiles() below deliberately never sets it) -
+    Christer, after asking how to stop himself from accidentally
+    running the driver knowledge base against his own pre-2026-07-06
+    data (before his sidecar downloads became complete - see
+    bv_drivers.py's own P-ending-requirement filter comment for why
+    that era's trip endings are unreliable), was firm that the date
+    itself has no business in tracked source: "Notera att allt som rör
+    6 juli, bara gäller mig, ingenting som skall in i github." - "No,
+    i mean permanently for me" when offered a config-file-based
+    default instead of a one-off CLI reminder. Setting it is a runtime
+    edit to Christer's own driver_profiles.json, never a code change.
+    """
 
     home_name: str
     home_query: str
     home_radius_meters: float
     drivers: tuple[DriverProfile, ...]
+    default_from: str | None = None
 
 
 def default_driver_profiles_path(config_dir: Path) -> Path:
@@ -309,6 +330,7 @@ def driver_profiles_to_dict(profiles: DriverProfiles) -> dict:
             "query": profiles.home_query,
             "radius_meters": profiles.home_radius_meters,
         },
+        "default_from": profiles.default_from,
         "drivers": {
             driver.label: {
                 "display_name": driver.display_name,
@@ -336,6 +358,7 @@ def driver_profiles_from_dict(data: dict) -> DriverProfiles:
         home_query=home.get("query", home.get("name", "Home")),
         home_radius_meters=float(home.get("radius_meters", DEFAULT_RADIUS_METERS)),
         drivers=drivers,
+        default_from=data.get("default_from"),
     )
 
 

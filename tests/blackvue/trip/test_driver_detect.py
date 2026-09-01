@@ -305,6 +305,43 @@ def test_driver_profiles_json_round_trip():
     assert restored.drivers[1].patterns[-1].requires_parking is False
 
 
+def test_christers_driver_profiles_leaves_default_from_unset():
+    """christers_driver_profiles() seeds the shared repo's own default
+    driver_profiles.json - default_from (see DriverProfiles' own
+    docstring) is a purely personal, opt-in value Christer sets by
+    hand-editing his own file, never something this seed function
+    should write. Christer, on why the once-considered "cutover date"
+    doesn't belong in tracked source: "Notera att allt som rör 6 juli,
+    bara gäller mig, ingenting som skall in i github."""
+
+    assert christers_driver_profiles().default_from is None
+
+
+def test_default_from_round_trips_through_json():
+    profiles = DriverProfiles(
+        home_name="Home", home_query="Home", home_radius_meters=300.0,
+        drivers=(), default_from="20260706",
+    )
+
+    data = driver_profiles_to_dict(profiles)
+    restored = driver_profiles_from_dict(json.loads(json.dumps(data)))
+
+    assert data["default_from"] == "20260706"
+    assert restored.default_from == "20260706"
+
+
+def test_default_from_absent_from_json_loads_as_none():
+    """A driver_profiles.json written before this field existed has no
+    "default_from" key at all - should load as None, not KeyError."""
+
+    data = {
+        "home": {"name": "Home", "query": "Home", "radius_meters": 300.0},
+        "drivers": {},
+    }
+
+    assert driver_profiles_from_dict(data).default_from is None
+
+
 def test_pattern_from_dict_migrates_old_min_max_stay_minutes():
     """A driver_profiles.json written before the P-file redesign might
     still have min_stay_minutes/max_stay_minutes - both should migrate

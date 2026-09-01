@@ -33,7 +33,7 @@ This command is scoped to the live archive it's pointed at - there's no cross-ye
 |---|---|
 | `PATH` | Archive directory, or a configured camera system id (see `bv-config`) - resolved to that camera's archive target. Defaults to `.`. |
 | `--config-dir DIR` | Directory camera configs, `driver_profiles.json`, and `driver_knowledge.json` live in (default: the usual `default_config_dir()`). |
-| `--from TIMESTAMP` | Only consider recordings from this timestamp onward. |
+| `--from TIMESTAMP` | Only consider recordings from this timestamp onward. Defaults to `driver_profiles.json`'s own `default_from` field if it's set and this flag is omitted - a personal, opt-in floor (e.g. "stop me from running this against data from before my sidecar downloads were reliable") that lives only in that file, never in this command's own defaults - set it by hand-editing `driver_profiles.json`, not via a flag. Passing `--from` always overrides it for that one run, and `_run()` prints which value it fell back to whenever the fallback actually fires. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. Can't be combined with `--from`/`--until`. |
 | `--max-gap MINUTES` | Largest gap between two recordings that still counts as the same trip (same meaning as `bv-export`'s own flag, but a shorter default here - 3 minutes, vs. `bv-export`/`bv-ls`'s 5 - so short visits still surface as their own trip; Christer: "In Drivers KB i want max gap time to be 3 min, in that way i get all small visits"). |
