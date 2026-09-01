@@ -1116,6 +1116,63 @@ def test_common_places_mirror_refreshes_an_existing_place(tmp_path):
     assert mirror["place_a"].visit_count == 2
 
 
+def test_common_places_mirror_skips_unnamed_places(tmp_path):
+    # Christer: "only save 'Named' common places" - a place still
+    # carrying build_common_places()'s own auto-generated placeholder
+    # ("Place near {lat:.3f}, {lon:.3f}") hasn't been reviewed on
+    # /drivers yet, so it shouldn't clutter common_places.json.
+    knowledge_path = tmp_path / "driver_knowledge.json"
+    named = CommonPlace(
+        key="named_place", point=PLACE_A, label="Grandma's house",
+        visit_count=3, driver="driver1",
+    )
+    unnamed = CommonPlace(
+        key="unnamed_place", point=PLACE_B,
+        label=f"Place near {PLACE_B[0]:.3f}, {PLACE_B[1]:.3f}",
+        visit_count=2, driver=None,
+    )
+    save_knowledge_base(
+        knowledge_path,
+        trips=[],
+        places={"named_place": named, "unnamed_place": unnamed},
+        trip_overrides={},
+    )
+
+    mirror = load_common_places_mirror(default_common_places_path(tmp_path))
+    assert mirror is not None
+    assert "named_place" in mirror
+    assert "unnamed_place" not in mirror
+
+
+def test_common_places_mirror_picks_up_a_place_once_it_gets_named(tmp_path):
+    # A place that was unnamed (and so absent from the mirror) at
+    # build time should start appearing once Christer gives it a real
+    # label on /drivers and a later save_knowledge_base() call runs.
+    knowledge_path = tmp_path / "driver_knowledge.json"
+    unnamed = CommonPlace(
+        key="place_a", point=PLACE_A,
+        label=f"Place near {PLACE_A[0]:.3f}, {PLACE_A[1]:.3f}",
+        visit_count=2, driver=None,
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_a": unnamed}, trip_overrides={},
+    )
+    mirror_before = load_common_places_mirror(default_common_places_path(tmp_path))
+    assert mirror_before is None or "place_a" not in mirror_before
+
+    named = CommonPlace(
+        key="place_a", point=PLACE_A, label="Grandpa's cabin",
+        visit_count=3, driver="driver2",
+    )
+    save_knowledge_base(
+        knowledge_path, trips=[], places={"place_a": named}, trip_overrides={},
+    )
+
+    mirror = load_common_places_mirror(default_common_places_path(tmp_path))
+    assert mirror is not None
+    assert mirror["place_a"].label == "Grandpa's cabin"
+
+
 def test_load_common_places_mirror_returns_none_when_missing(tmp_path):
     assert load_common_places_mirror(default_common_places_path(tmp_path)) is None
 

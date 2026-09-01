@@ -22431,3 +22431,49 @@ tests cover (write mirror on first save; a later save that drops a
 place leaves it in the mirror untouched; a later save with the same
 key but new label/driver/visit_count updates the mirror in place; a
 missing mirror file loads as `None`) - all four checks passed.
+
+## Only mirror Named common places into common_places.json
+
+Christer's follow-up: *"Could we change it to only save 'Named'
+common places."* A brand-new place still carries
+`build_common_places()`'s own auto-generated placeholder label -
+`f"Place near {lat:.3f}, {lon:.3f}"` - until Christer actually opens
+`/drivers` and gives it a real name. Those raw-coordinate clusters
+were getting written into `common_places.json` right alongside
+hand-named places, which defeats the point of the mirror being a
+curated, reviewed registry rather than just a copy of whatever the
+clustering happened to produce.
+
+Added `_is_named_place()` to `trip/place_knowledge.py`: compares a
+`CommonPlace`'s `label` against the exact default string
+`build_common_places()` would have generated for its `point`
+(the only place in the codebase that format is built, so this is a
+straight string comparison, not a regex). `_update_common_places_mirror()`
+now filters `places` down to `_is_named_place()`-true entries before
+merging into what's on disk. Everything else about the mirror is
+unchanged: still a living mirror for named places (a rename updates
+its entry, same as before), still append-only for absent keys (a
+place dropped from a later save's `places` dict - named or not -
+keeps whatever it last had in the mirror). An unnamed place is simply
+never written in the first place; once Christer names it, the very
+next save picks it up like any other place. This filter only affects
+`common_places.json` - `driver_knowledge.json` still gets every place,
+named or not, exactly as before.
+
+`docs/man/bv-drivers.md` updated with a short paragraph on the
+Named-only filter, right after the mirror's own paragraph.
+
+Tests added to `tests/blackvue/trip/test_place_knowledge.py`:
+`test_common_places_mirror_skips_unnamed_places` (an unnamed place is
+excluded while a named one in the same save is written) and
+`test_common_places_mirror_picks_up_a_place_once_it_gets_named` (a
+place absent from the mirror while unnamed appears once renamed and
+re-saved).
+
+Verified: `python3 -m py_compile` on `place_knowledge.py` and the test
+file, plus a standalone script covering all three real scenarios -
+named saved/unnamed excluded in the same save, a later rename making
+a previously-unnamed place appear, and a named place later reverted
+to its default label leaving its existing mirror entry untouched
+(same append-only guarantee, now also protecting against a place
+"unnaming" itself) - all three checks passed.

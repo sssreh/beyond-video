@@ -1249,6 +1249,20 @@ def default_common_places_path(config_dir: Path) -> Path:
     return config_dir / "common_places.json"
 
 
+def _is_named_place(place: CommonPlace) -> bool:
+    """True once Christer has actually relabeled `place` away from
+    build_common_places()'s own auto-generated placeholder ("Place
+    near {lat:.3f}, {lon:.3f}" - see that function). Used by
+    _update_common_places_mirror() below to keep common_places.json
+    limited to places Christer has actually reviewed and named,
+    rather than every raw coordinate cluster the archive happens to
+    produce - a place that's never been opened on /drivers is still
+    just a guess at a cluster boundary, not a place worth mirroring."""
+
+    default_label = f"Place near {place.point[0]:.3f}, {place.point[1]:.3f}"
+    return place.label != default_label
+
+
 def _update_common_places_mirror(path: Path, places: dict[str, CommonPlace]) -> None:
     """Christer's own "crazy idea", confirmed wanted: a common-places
     registry that lives in its own file, separate from
@@ -1269,7 +1283,19 @@ def _update_common_places_mirror(path: Path, places: dict[str, CommonPlace]) -> 
     be silently lost by anything that runs afterward. Called from
     save_knowledge_base() itself, on every save, rather than from each
     of its call sites individually - a future save_knowledge_base()
-    caller gets this for free instead of having to remember it."""
+    caller gets this for free instead of having to remember it.
+
+    Only *named* places (see _is_named_place() above) are written -
+    Christer, confirming: only save "Named" common places. An
+    unnamed place still carrying build_common_places()'s auto-generated
+    "Place near ..." placeholder hasn't been reviewed yet, so it's
+    skipped here entirely; it's still in driver_knowledge.json (and
+    still reclustered/recounted on every rebuild there) exactly as
+    before - this filter only affects what ends up in the separate
+    mirror file. A place named once and later somehow reverted to a
+    placeholder label is left alone here too, same as any other
+    key that's absent from this save's `places` - the mirror never
+    removes an entry, it just stops refreshing it."""
 
     existing: dict = {}
     if path.exists():
@@ -1278,7 +1304,8 @@ def _update_common_places_mirror(path: Path, places: dict[str, CommonPlace]) -> 
         except (OSError, json.JSONDecodeError):
             existing = {}
 
-    existing.update({key: _place_to_dict(place) for key, place in places.items()})
+    named_places = {key: place for key, place in places.items() if _is_named_place(place)}
+    existing.update({key: _place_to_dict(place) for key, place in named_places.items()})
 
     data = {
         "generated_at": datetime.now().isoformat(),

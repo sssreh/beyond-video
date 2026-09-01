@@ -23,6 +23,8 @@ The result is written to `driver_knowledge.json` under `--config-dir`, which `/d
 
 Every save also updates a second, separate file - `common_places.json`, alongside `driver_knowledge.json` under the same `--config-dir` - as redundant insurance against exactly the same kind of loss the carry-forward behavior above already guards against, working even if a bug ever broke that primary path. It's a "living mirror": a place already in it gets its label/driver refreshed to match `driver_knowledge.json`'s current state on every save, but a place that's in it and *missing* from the current build (dropped by a scoped rebuild, or filtered out upstream) is left untouched rather than removed - so a place, once known, can never be silently lost from this file specifically.
 
+Only *named* places are written to `common_places.json`, though - a place still carrying its auto-generated "Place near {lat}, {lon}" placeholder label hasn't been reviewed on `/drivers` yet, so it's skipped entirely until Christer actually gives it a real name. It still exists in `driver_knowledge.json` exactly as before (reclustered/recounted on every rebuild); this filter only narrows what ends up in the separate mirror.
+
 This command is scoped to the live archive it's pointed at - there's no cross-year aggregation, and no attempt to reconcile place labels across separate archives. Christer's own framing: addresses and routines will drift over time, so this is a hand-reviewed, continuously-refreshed registry, not something meant to stay accurate forever without revisiting.
 
 ## OPTIONS
