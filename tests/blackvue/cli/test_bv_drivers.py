@@ -204,6 +204,22 @@ def _install_fakes(monkeypatch, *, trips, fixes, known_points=None, profiles=Non
 # ---------------------------------------------------------------------------
 
 
+def test_run_defaults_max_gap_to_3_minutes_when_not_given(tmp_path, monkeypatch):
+    # Christer: "In Drivers KB i want max gap time to be 3 min, in that
+    # way i get all small visits." bv-drivers' own default is
+    # deliberately shorter than trip_builder.DEFAULT_MAX_GAP (5 min,
+    # still used by bv-export/bv-ls) - see bv_drivers.py's own
+    # DEFAULT_MAX_GAP comment.
+    from datetime import timedelta
+
+    _install_fakes(monkeypatch, trips=[], fixes=[])
+
+    args = parse_args([str(tmp_path), "--config-dir", str(tmp_path / "config")])
+    bv_drivers._run(args, say=lambda *_: None)
+
+    assert _FakeTripBuilder.captured_kwargs["max_gap"] == timedelta(minutes=3)
+
+
 def test_run_reports_no_trips_found_when_archive_is_empty(tmp_path, monkeypatch):
     _install_fakes(monkeypatch, trips=[], fixes=[])
 

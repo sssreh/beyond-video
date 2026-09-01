@@ -36,7 +36,7 @@ This command is scoped to the live archive it's pointed at - there's no cross-ye
 | `--from TIMESTAMP` | Only consider recordings from this timestamp onward. |
 | `--until TIMESTAMP` | Only consider recordings up to this timestamp. |
 | `--timestamp TIMESTAMP` | Only consider recordings matching this timestamp or prefix. Can't be combined with `--from`/`--until`. |
-| `--max-gap MINUTES` | Largest gap between two recordings that still counts as the same trip (same meaning as `bv-export`'s own flag). |
+| `--max-gap MINUTES` | Largest gap between two recordings that still counts as the same trip (same meaning as `bv-export`'s own flag, but a shorter default here - 3 minutes, vs. `bv-export`/`bv-ls`'s 5 - so short visits still surface as their own trip; Christer: "In Drivers KB i want max gap time to be 3 min, in that way i get all small visits"). |
 | `--gap-tolerance SECONDS` | Small fixed margin added on top of `--max-gap`. |
 | `--min-visits N` | How many visits make a place "common" enough to flag as without a driver rule (default: 2) - purely a reporting threshold for the summary counts and `/drivers`' warning marker; every place with 2+ visits is still built and saved regardless. |
 | `--trace` | Print a `.` every 10 trips resolved, so a long run over a large archive shows it's still active. |

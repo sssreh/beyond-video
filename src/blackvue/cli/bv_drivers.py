@@ -61,12 +61,23 @@ from ..trip.place_knowledge import undecided_places
 from ..trip.place_knowledge import undecided_trips
 from ..trip.trip import Trip
 from ..trip.trip_builder import DEFAULT_GAP_TOLERANCE
-from ..trip.trip_builder import DEFAULT_MAX_GAP
 from ..trip.trip_builder import TripBuilder
 from .errors import run_cli
 
 EXIT_OK = 0
 EXIT_ARGS_ERROR = 1
+
+# bv-drivers' own --max-gap default, deliberately shorter than
+# trip_builder.DEFAULT_MAX_GAP (5 min, shared by bv-export/bv-ls). A
+# stop right at home (garage, driveway) followed by a very short trip
+# is exactly the kind of "small visit" a 5-minute gap silently merges
+# into the trip before/after it. Christer: "In Drivers KB i want max
+# gap time to be 3 min, in that way i get all small visits." Scoped to
+# bv-drivers only - bv-export/bv-ls still use the shared 5-minute
+# default, since fragmenting *those* into more/shorter trips would
+# also fragment exported video and map/subtitle rendering, which isn't
+# what Christer asked for here.
+DEFAULT_MAX_GAP = timedelta(minutes=3)
 
 TRACE_INTERVAL_TRIPS = 10
 

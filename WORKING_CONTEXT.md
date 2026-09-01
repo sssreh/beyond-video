@@ -22477,3 +22477,37 @@ a previously-unnamed place appear, and a named place later reverted
 to its default label leaving its existing mirror entry untouched
 (same append-only guarantee, now also protecting against a place
 "unnaming" itself) - all three checks passed.
+
+## Give bv-drivers its own 3-minute --max-gap default
+
+Christer: *"In Drivers KB i want max gap time to be 3 min, in that way
+i get all small visits."* `bv-drivers` was inheriting
+`trip_builder.DEFAULT_MAX_GAP` (5 minutes) - the same constant
+`bv-export`/`bv-ls --trips` use - whenever `--max-gap` was left off.
+Explicitly scoped to "Drivers KB," so this only changes `bv-drivers`'
+own default, not the shared one: a `DEFAULT_MAX_GAP = timedelta(minutes=3)`
+constant now lives in `cli/bv_drivers.py` itself, shadowing the
+`trip_builder` import it used to fall back to (removed that import
+entirely - `bv_drivers.py` no longer references the shared 5-minute
+constant at all). `bv-export`/`bv-ls` are untouched, since fragmenting
+their own trip-splitting into more/shorter trips would also fragment
+exported video and map/subtitle rendering, which isn't what Christer
+asked for here - a shorter gap for the driver-detection use case
+specifically, so a brief stop right at home no longer gets silently
+absorbed into the trip before or after it.
+
+Updated the `--max-gap` help text (already computed from the module
+constant, so it picked up "3" automatically), `job_new_bv_drivers.html`'s
+placeholder/tooltip (was "default: 5" and claimed parity with
+`bv-ls --trips`, both now corrected), and `docs/man/bv-drivers.md`'s
+`--max-gap` row with the new default and Christer's own quote.
+
+Added `test_run_defaults_max_gap_to_3_minutes_when_not_given` to
+`tests/blackvue/cli/test_bv_drivers.py`, asserting via the existing
+`_FakeTripBuilder.captured_kwargs` harness that omitting `--max-gap`
+resolves to `timedelta(minutes=3)`.
+
+Verified: `python3 -m py_compile` on `bv_drivers.py` and the test file,
+plus a standalone script confirming the module-level default is 3
+minutes, `--max-gap` omitted still parses to `None` (resolved in
+`_run()`), and an explicit `--max-gap 10` still overrides it.
