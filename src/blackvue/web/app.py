@@ -98,6 +98,7 @@ from .users import UsersConfig
 from .voice_asr import known_places_from_learned
 from .voice_asr import known_places_from_params
 from .voice_asr import transcribe_voice_query
+from .voice_idle_unload import touch as touch_voice_model_idle_timer
 from .voice_llm import VALID_MODEL_CHOICES as VOICE_LLM_MODEL_CHOICES
 from .voice_llm import extract_voice_query_llm
 from .voice_query import parse_spoken_query
@@ -3595,6 +3596,14 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 else:
                     primary = llm_result
                     parser_used = "llm"
+
+        # Both the ASR model (always, above) and the small LLM (only
+        # when llm_model asked for one) may have just been loaded onto
+        # the GPU - (re)start the shared idle-unload countdown now that
+        # we know everything this request needed is done with them.
+        # See voice_idle_unload.py's own docstring for why idle-timeout
+        # rather than unload-after-every-request (Christer's choice).
+        touch_voice_model_idle_timer()
 
         return JSONResponse(
             {

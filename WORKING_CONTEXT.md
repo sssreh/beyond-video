@@ -23041,3 +23041,79 @@ incomplete `tomllib` shim missing `TOMLDecodeError`; a `capsys` stub
 that doesn't support a test's second `readouterr()` call mid-test) -
 none touch zoom/crop and all reproduce identically on `main` before
 this change.
+
+## Idle-timeout auto-unload for voice-search models
+
+Christer: "something is holding about 10GB of vram" - right after
+exercising voice search a few times testing Swedish place names.
+Traced it to both voice-search models never being unloaded: bv-web's
+`transcribe_voice_search()` route (`web/app.py`) lazily loads and
+caches Qwen3-ASR-1.7B (`voice_asr.py`'s `_ASR_MODEL_CACHE`) and,
+optionally, the small Qwen3-1.7B understanding model
+(`voice_llm.py`'s `_TEXT_MODEL_CACHE`) into the long-running bv-web
+server process. Both modules already had their own `unload_*_model()`
+functions - `unload_asr_model()`/`unload_text_model()` - mirroring
+`generate/scene.py`'s `unload_scene_model()`, but a full-tree grep
+confirmed neither was ever called from anywhere: `unload_scene_model()`
+gets called from `web/jobs.py` after every bv-scribe/bv-generate run
+(a natural "job finished" hook, since scene description runs as a
+JobRunner batch Job), but voice search is a plain FastAPI
+request/response, not a Job, so there's no equivalent hook - both
+`unload_*_model()` docstrings already said as much ("Not currently
+wired into any cleanup hook").
+
+Presented Christer two designs via `AskUserQuestion`: unload after
+every single search, or unload only after a period of inactivity. He
+picked idle-timeout. Immediate unload-after-every-request was the
+rejected option - a burst of several voice searches in a row is the
+common case, and reloading both models from disk before every single
+one would add several seconds of latency to searches that otherwise
+take a couple of seconds.
+
+Built `web/voice_idle_unload.py`: a tiny module holding one shared
+`threading.Timer`, guarded by a lock. `touch(idle_seconds=300.0)`
+cancels any pending timer and starts a new one; if it's not touched
+again within `IDLE_SECONDS` (5 minutes), the timer fires
+`_unload_all()`, which does deferred imports of
+`voice_asr.unload_asr_model`/`voice_llm.unload_text_model` and calls
+both. `cancel_pending_unload()` is exposed for tests only (avoids a
+lingering background Timer thread outliving a test), not called
+anywhere in the app. Deliberately its own module rather than folded
+into `voice_asr.py`/`voice_llm.py`: it needs to import both to unload
+them, and neither of those modules should import the other or know
+this scheduling exists.
+
+Wired a single `touch_voice_model_idle_timer()` call into
+`transcribe_voice_search()` in `web/app.py`, right before its final
+`return JSONResponse(...)` - by that point both the ASR model (always
+used) and the small LLM (only when `llm_model` asked for one) have
+already done whatever loading they were going to do for this request,
+so one call site covers both regardless of which models this
+particular search touched. A burst of searches keeps re-pushing the
+deadline out and never fires mid-burst; a lone search - or the last
+one of a session - unloads a few minutes later, same as if voice
+search had never been touched at all.
+
+Wrote `tests/blackvue/web/test_voice_idle_unload.py`: `touch()`/
+`cancel_pending_unload()` tested against the real `threading.Timer`
+with tiny `idle_seconds` (well under a second, so the suite stays
+fast) and `_unload_all()` monkeypatched out; `_unload_all()` itself
+tested separately by calling it directly with
+`voice_asr.unload_asr_model`/`voice_llm.unload_text_model`
+monkeypatched, so it doesn't need a GPU/qwen_asr/torch in CI - same
+reasoning `test_voice_asr.py`/`test_voice_llm.py` already document for
+not exercising the real model-loading code. A `teardown_function()`
+calls `cancel_pending_unload()` after every test so no test leaves a
+real background Timer thread scheduled past its own lifetime.
+
+Verified: `py_compile` on `voice_idle_unload.py`, `app.py`, and the
+new test file; manually exercised the real `threading.Timer` logic
+standalone in this sandbox (touch-then-fire, touch-reschedule-doesn't-
+fire-early, cancel-prevents-firing, cancel-with-nothing-scheduled) and
+`_unload_all()`'s wiring to both real `unload_asr_model()`/
+`unload_text_model()` functions (both with monkeypatched fakes to
+confirm the call sequence, and once for real against empty caches to
+confirm the harmless-no-op path) - no pytest in this sandbox, so the
+new pytest-style test file itself is unverified by pytest here, same
+limitation as every other test file in this repo when worked on from
+this sandbox.
