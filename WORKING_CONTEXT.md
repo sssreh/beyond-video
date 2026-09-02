@@ -22994,3 +22994,50 @@ network here), same reasoning `test_scene.py` already documents for
 running all 30 tests in `test_voice_llm.py` through a standalone
 harness (no pytest in this sandbox) - all pass, unaffected by the
 constant/kwarg change since none of them touch that code path.
+
+## Removed bv-search's zoom/crop feature
+
+Christer asked what the `--near`/`--place` match `_zoom.jpg`/`_zoom.mp4`
+files (task #667-673) were for. Explained the geometry-based crop/zoom
+from `docs/man/bv-search.md`'s ZOOM/CROP section. His reply: "I cant
+se any use of them" - never opens them after a search - followed by
+"gone, i dont have any use of it" once asked whether the crops were
+wrong, too imprecise, or just unused. Confirmed: outright removal, not
+a tuning request.
+
+Removed entirely:
+- `src/blackvue/search_zoom.py` (the whole module - `compute_crop_box()`,
+  `render_zoom_outputs()`, `DEFAULT_HORIZONTAL_FOV_DEGREES`) and its
+  test file `tests/blackvue/test_search_zoom.py`.
+- `bv_search.py`'s `--fov` CLI option and the whole zoom-rendering
+  block inside `_run()`'s GPS-match branch (front-video lookup,
+  `compute_crop_box()`/`render_zoom_outputs()` calls, the three
+  `zoom: ...`/`zoom thumbnail:`/`zoom clip:` `say()` lines). The
+  now-unused `Asset` import went with it.
+- The 3 zoom-specific tests in `test_bv_search.py`
+  (`test_run_near_renders_zoom_outputs_when_front_video_exists`,
+  `..._reports_zoom_skip_when_target_out_of_frame`,
+  `..._reports_zoom_failure_but_keeps_the_match`) plus their shared
+  `_make_test_video()` ffmpeg helper (unused by anything else), and
+  the `--fov` bits of `test_parse_args_defaults`/
+  `test_parse_args_fov_override`.
+- `docs/man/bv-search.md`'s `--fov` option row, the whole ZOOM/CROP
+  section, and the "or a zoom/crop render failure" aside in the exit-
+  status table.
+
+Nothing else referenced this feature - `start_bv_search()` (bv-web's
+job runner) never wired `--fov` through in the first place, so no web
+UI changes were needed. The "zoom"/"fov" hits elsewhere in the repo
+(bv-scribe's unrelated sign-OCR `--zoom-*` flags, `--map-zoom`,
+`--stitch-mirror-zoom`, etc.) are different features and untouched.
+
+Verified: `py_compile` on both changed source files, and the sandbox's
+standalone `test_bv_search.py` harness (Python 3.10 here lacks
+`tomllib`, needed transitively by `camera_config.py` - shimmed with a
+throwaway stub module for this run only, not part of the repo) - 26/30
+tests pass; the 4 failures are pre-existing harness limitations (no
+`pytest` installed, so `pytest.raises`-based tests error; an
+incomplete `tomllib` shim missing `TOMLDecodeError`; a `capsys` stub
+that doesn't support a test's second `readouterr()` call mid-test) -
+none touch zoom/crop and all reproduce identically on `main` before
+this change.
