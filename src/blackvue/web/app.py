@@ -1496,7 +1496,6 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         request: Request,
         camera_id: str,
         recording_id: str,
-        autoplay: bool = False,
         user: User = Depends(require_login),
     ):
         recording = _find_archive_recording(
@@ -1523,10 +1522,6 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
                 "camera_id": camera_id,
                 "recording": recording,
                 "gps_available": gps_available,
-                # Opt-in only (task #1390) - see the <video> tag's own
-                # comment in the template for why this defaults to False
-                # everywhere except the one place that sets it.
-                "autoplay": autoplay,
             },
         )
 

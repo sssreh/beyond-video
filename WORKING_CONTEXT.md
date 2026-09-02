@@ -23220,3 +23220,66 @@ cache-manipulation tests directly (no pytest in this sandbox) - all
 pass; re-ran the full 38-test `test_geocoding.py` standalone harness
 to confirm no regression from the same session's earlier geocoding
 changes.
+
+## Restore autoplay+transcode-on-entry for all archive video pages (task #1431)
+
+Third round on this behavior, after tasks #1388 and #1390. #1388: "look
+like i kick of a hevc to h264 every time i add a driver" - traced to
+opening a /drivers "Video" link, where `preload="metadata"` made the
+browser fetch a byte range from the video `src` on page load (hitting
+the file route, which unconditionally calls `open_hevc_preview_stream()`
+for genuinely-HEVC recordings - a real transcode kickoff) before Play
+was ever pressed. Fixed by switching `archive_recording_detail.html` to
+`preload="none"` unconditionally. #1390: Christer clarified he *did*
+want playback to start immediately once he deliberately clicked a
+/drivers Video link, just not from idle browsing elsewhere - added an
+opt-in `?autoplay=1` query param, wired only into drivers.html's 4
+Video links.
+
+This session, asked "what did i say about autoplay videos", then
+corrected the premise: "Well what i actually wanted: was to kicking
+off an HEVC->H.264 transcode and start playing it every time i entered
+a web archive page for a video. The problem i had was that somehow
+creating the link seemed to kick off HEVC->H.264 transcode." I.e. the
+original #1388 report was never really about not wanting autoplay -
+entering the page to watch footage should always start
+transcode+playback immediately, from any entry point (archive browser
+grid, bv-search results, trip pages, /drivers - not just /drivers).
+Confirmed scope via `AskUserQuestion` ("restore autoplay+transcode on
+entry everywhere, or keep it scoped to /drivers only?") - Christer
+picked "everywhere."
+
+Mid-implementation, Christer added: "But i dont want link creation to
+kick it off" - reaffirming that merely rendering a page with links or
+thumbnails to a recording must never itself trigger a transcode; only
+actually navigating into the specific video page should. Verified this
+already holds architecturally rather than assuming: the archive
+browser's thumbnail grid uses a completely separate
+`/thumbnail/{direction}` route (`FileResponse` on a static thumbnail
+file, never touches `open_hevc_preview_stream()`); `/drivers`' Video
+links are plain `<a href>` tags with no `<video>` element and no
+request to the file route just from rendering `drivers.html`; and
+`_recording_has_video_or_none()` (used to decide the "No video" label)
+only reads the `has_video` filesystem property, no I/O on the video
+file itself. Only the file route's `<video>` byte-range fetch, on the
+one page that actually renders a `<video>` tag, can trigger a
+transcode - and that only fires once you're on the specific detail
+page. So no code change was needed to satisfy this constraint; it
+already held.
+
+Made `preload="metadata" autoplay` unconditional on
+`archive_recording_detail.html` (removed the whole opt-in mechanism:
+the `?autoplay=1` query param, the `autoplay: bool = False` route
+parameter on `archive_recording_detail()`, and the corresponding
+context-dict entry in `app.py`), matching
+`archive_recording_watch.html`'s own long-standing unconditional
+behavior. Stripped `?autoplay=1` from all 4 "Video" links in
+`drivers.html` since it's now a no-op query param with no route
+parameter left to receive it.
+
+No tests referenced the removed `autoplay` parameter or query string
+(confirmed via `grep -rn "autoplay" tests/`), so none needed updating.
+Verified via a standalone Jinja2 `Environment` render of
+`archive_recording_detail.html` (this sandbox has no pytest/FastAPI) -
+asserted `preload="metadata" autoplay"` is present and `?autoplay=1` is
+absent from the rendered HTML.

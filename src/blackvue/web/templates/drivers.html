@@ -145,7 +145,7 @@ driver KB</a> first.</p>
                   {% if p_video_status[0] is sameas false %}
                   <div class="hint"><a href="/archive/{{ trip.camera_id }}?timestamp={{ trip.start_time.strftime('%Y%m%d') }}">No video</a></div>
                   {% else %}
-                  <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}?autoplay=1">Video</a></div>
+                  <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}">Video</a></div>
                   {% endif %}
                   {% endif %}
                 </td>
@@ -161,7 +161,7 @@ driver KB</a> first.</p>
                   {% if p_video_status[1] is sameas false %}
                   <div class="hint"><a href="/archive/{{ trip.camera_id }}?timestamp={{ trip.end_time.strftime('%Y%m%d') }}">No video</a></div>
                   {% else %}
-                  <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}?autoplay=1">Video</a></div>
+                  <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}">Video</a></div>
                   {% endif %}
                   {% endif %}
                 </td>
@@ -317,7 +317,7 @@ driver KB</a> first.</p>
         {% if video_status[0] is sameas false %}
         <div class="hint"><a href="/archive/{{ trip.camera_id }}?timestamp={{ trip.start_time.strftime('%Y%m%d') }}">No video</a></div>
         {% else %}
-        <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}?autoplay=1">Video</a></div>
+        <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.first_recording_id }}">Video</a></div>
         {% endif %}
         {% endif %}
       </td>
@@ -333,7 +333,7 @@ driver KB</a> first.</p>
         {% if video_status[1] is sameas false %}
         <div class="hint"><a href="/archive/{{ trip.camera_id }}?timestamp={{ trip.end_time.strftime('%Y%m%d') }}">No video</a></div>
         {% else %}
-        <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}?autoplay=1">Video</a></div>
+        <div class="hint"><a href="/archive/{{ trip.camera_id }}/{{ trip.last_recording_id }}">Video</a></div>
         {% endif %}
         {% endif %}
       </td>
