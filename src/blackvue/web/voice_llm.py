@@ -363,14 +363,14 @@ def _get_small_text_model(model_name: str, *, force_cpu: bool) -> _LoadedTextMod
 
 def unload_text_model() -> None:
     """Evict the cached small text model(s) and release their GPU
-    memory - mirrors generate/scene.py's unload_scene_model(). Not
-    currently wired into JobRunner._spawn()'s finally block the way
-    that function is: this quick synchronous voice-search route isn't
-    a JobRunner Job at all (see web/app.py's transcribe_voice_search()
-    docstring), so there's no long-running-server-process leak this
-    needs to guard against yet. Provided for symmetry and manual/test
-    cleanup; revisit wiring it into a cleanup hook if the small text
-    model turns out to matter for GPU memory pressure in practice."""
+    memory - mirrors generate/scene.py's unload_scene_model(). Not a
+    JobRunner Job (this quick synchronous voice-search route isn't
+    one, see web/app.py's transcribe_voice_search() docstring), so it
+    doesn't get JobRunner._spawn()'s finally-block unload for free the
+    way that function does - instead called from a shared idle timer
+    (web/voice_idle_unload.py's touch()/IDLE_SECONDS, task #1427) that
+    fires this and voice_asr.py's unload_asr_model() together after a
+    few minutes of voice-search inactivity."""
 
     if not _TEXT_MODEL_CACHE:
         return
@@ -388,6 +388,17 @@ def unload_text_model() -> None:
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def text_model_loaded() -> bool:
+    """Pure-ish (reads, doesn't mutate) - whether a small text model is
+    currently cached in memory. Used by web/app.py's voice-model-status
+    route so the bv-search form's JS can show "Loading model..."
+    instead of "Transcribing..." when a request is actually about to
+    pay the cold-start model-load cost (first use, or after the idle
+    timer evicted it) rather than reusing an already-warm model."""
+
+    return bool(_TEXT_MODEL_CACHE)
 
 
 def _generate_via_small_text_model(prompt: str, *, force_cpu: bool) -> str:

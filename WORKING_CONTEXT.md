@@ -23117,3 +23117,106 @@ confirm the harmless-no-op path) - no pytest in this sandbox, so the
 new pytest-style test file itself is unverified by pytest here, same
 limitation as every other test file in this repo when worked on from
 this sandbox.
+
+## Two geocoding fallback fixes: Swedish definite-article gap, sj/sk mishearing (tasks #1428, #1429)
+
+Christer, in the same message: "fix Geocoding side and The sj/sk
+mixup". Two separate real-report gaps in `export/geocoding.py`'s
+`forward_geocode()`, both closed by adding more fallback variants
+alongside the existing compound-word spacing logic from task #1310
+(`_spacing_variants()`/`_SWEDISH_COMPOUND_SUFFIXES`).
+
+**Definite-article gap**: natural spoken Swedish says "Vårbygården"/
+"Vårby gården" (the definite "-en" form, "the yard") even though the
+real OSM/Nominatim entry is the indefinite "Vårby gård". Neither
+never reduced down to the resolvable name before this fix - task
+#1310's spacing logic only handled concatenated-vs-spaced, not
+definite-vs-indefinite. Added `_strip_definite_article()`: a pure
+function that strips a trailing "-en"/"-et" suffix if present, else
+returns `None`. Wired into `_spacing_variants()`: alongside the
+literal name, it now also runs the existing spacing logic against the
+stripped indefinite form when one exists, so "Vårbygården" tries
+"Vårbygård" then "Vårby gård", and "Vårby gården" tries "Vårby gård"
+directly - regardless of which of concatenated/spaced and definite/
+indefinite the spoken report actually used.
+
+**sj/sk mishearing**: Christer traced a real failed search to
+Qwen3-ASR transcribing "Skärholmen" (a real Stockholm place) as
+"Sjärholmen" (which doesn't exist) - a genuine Swedish spelling
+ambiguity, not really an ASR bug: "sk" immediately before a front
+vowel (ä/ö/e/i/y) is pronounced identically to the sj-sound. Nominatim
+has zero fuzzy tolerance for this substitution (confirmed empirically
+against the live API in the prior session). Added
+`_sj_sk_substitutions()`: for any word starting with "sj" or "sk"
+followed by a front vowel, tries the opposite spelling too (both
+directions, for symmetry) - narrow and deliberate, same "handle the
+real shape hit" approach as the definite-article fix. Wired into
+`forward_geocode()` as a second fallback pass: only tried if every
+`_spacing_variants(name)` candidate from the first pass returns no
+match, and each sj/sk-swapped candidate is itself run back through
+`_spacing_variants()` too, since a real report ("Sjärholmen") can hit
+both fixes at once (ends in "-en" *and* contains the "holm" compound
+suffix).
+
+Wrote/updated tests in `tests/blackvue/export/test_geocoding.py`:
+direct unit tests for `_strip_definite_article()` and
+`_sj_sk_substitutions()`; `_spacing_variants()` integration tests for
+the definite-article wiring; and `forward_geocode()` integration tests
+for the sj/sk fallback pass, using synthetic "Sjöby"/"Sköby" names for
+the isolated request-count assertions (real "Sjärholmen"/"Skärholmen"
+triggers both fixes at once, producing more variants than either fix
+alone - correct but not the right fixture for pinning down exact call
+counts) plus one dedicated test using the real Skärholmen example that
+only asserts the final resolved result, not request counts.
+
+Verified via a standalone test harness (no pytest in this sandbox):
+all 38 tests in `test_geocoding.py` pass, including the new ones.
+
+## "Loading model..." status before "Transcribing..." (task #1430)
+
+Christer: "When you have the red flashing text Transcibing, can you
+show Loading model in the same way before transcribing" - a follow-up
+to task #1308's big red blinking "Transcribing..." status and task
+#1427's idle-timeout model unload. The gap: after 5 minutes idle (or
+on first-ever use), the next voice search pays a real cold-start
+model-load cost before transcription can even start, but the UI just
+showed "Transcribing..." the whole time with no way to tell the two
+apart.
+
+Added `text_model_loaded() -> bool` to `voice_llm.py` and
+`asr_model_loaded() -> bool` to `voice_asr.py`, both trivial - return
+`bool(_TEXT_MODEL_CACHE)`/`bool(_ASR_MODEL_CACHE)` - mirroring the
+existing `unload_*_model()` naming convention. In the same pass,
+corrected both functions' `unload_*_model()` docstrings, which had
+gone stale the moment task #1427 wired them into
+`voice_idle_unload.py`'s timer (they still said "Not currently wired
+into any cleanup hook").
+
+Added a new `GET /jobs/bv-search/voice-model-status` route to
+`web/app.py`, returning `{"asr_loaded": ..., "llm_loaded": ...}` via
+those two helpers - a read-only status check, doesn't itself load or
+touch anything.
+
+Updated `job_new_bv_search.html`'s `sendRecording()`: right before it
+used to unconditionally call `setStatus('Transcribing...', true)`, it
+now first fetches `/jobs/bv-search/voice-model-status` and shows
+"Loading model..." (same red/blinking `.transcribing` styling from
+task #1308) instead if either model isn't loaded yet, then falls
+through to "Transcribing..." once both are warm. Best-effort: if the
+status check itself fails (network hiccup, older server), it falls
+back to "Transcribing..." rather than blocking the real transcribe
+request on it.
+
+Wrote tests: `test_text_model_loaded_*`/`test_asr_model_loaded_*` in
+`test_voice_llm.py`/`test_voice_asr.py`, directly manipulating the
+module-level cache dicts rather than loading a real model - same "no
+GPU/transformers in this sandbox" reasoning the rest of those files
+already document.
+
+Verified: `py_compile` on `app.py`, `voice_asr.py`, `voice_llm.py`,
+and `geocoding.py`; extracted and `node --check`'d the bv-search
+form's `<script>` block to confirm valid JS syntax; ran the four new
+cache-manipulation tests directly (no pytest in this sandbox) - all
+pass; re-ran the full 38-test `test_geocoding.py` standalone harness
+to confirm no regression from the same session's earlier geocoding
+changes.

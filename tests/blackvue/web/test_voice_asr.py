@@ -206,3 +206,31 @@ def test_build_context_multiple_places_comma_joined():
 
 def test_default_asr_model_constant():
     assert DEFAULT_ASR_MODEL == "Qwen/Qwen3-ASR-1.7B"
+
+
+# ---------------------------------------------------------------------------
+# asr_model_loaded() - task #1430, backs web/app.py's voice-model-status
+# route so the bv-search form's JS can show "Loading model..." instead of
+# "Transcribing..." on a cold start. Directly manipulates the module-level
+# _ASR_MODEL_CACHE dict rather than actually loading a model - no GPU/
+# transformers/qwen_asr in this sandbox, same reasoning the rest of this
+# file already documents for the model-loading code.
+# ---------------------------------------------------------------------------
+
+
+def test_asr_model_loaded_false_when_cache_empty():
+    from blackvue.web import voice_asr
+
+    voice_asr._ASR_MODEL_CACHE.clear()
+    assert voice_asr.asr_model_loaded() is False
+
+
+def test_asr_model_loaded_true_when_cache_populated():
+    from blackvue.web import voice_asr
+
+    voice_asr._ASR_MODEL_CACHE.clear()
+    voice_asr._ASR_MODEL_CACHE["fake"] = object()
+    try:
+        assert voice_asr.asr_model_loaded() is True
+    finally:
+        voice_asr._ASR_MODEL_CACHE.clear()

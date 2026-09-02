@@ -252,10 +252,11 @@ def _get_asr_model(model_name: str = DEFAULT_ASR_MODEL, *, force_cpu: bool = Fal
 def unload_asr_model() -> None:
     """Evict the cached Qwen3-ASR model(s) and release their GPU
     memory - mirrors generate/scene.py's unload_scene_model() and
-    voice_llm.py's unload_text_model(). Not currently wired into any
-    cleanup hook, same "provided for symmetry / manual+test cleanup"
-    reasoning voice_llm.py's own unload_text_model() docstring
-    already gives - this route isn't a JobRunner Job either."""
+    voice_llm.py's unload_text_model(). Not a JobRunner Job (this
+    route isn't one), so called instead from a shared idle timer
+    (web/voice_idle_unload.py's touch()/IDLE_SECONDS, task #1427) that
+    fires this and voice_llm.py's unload_text_model() together after a
+    few minutes of voice-search inactivity."""
 
     if not _ASR_MODEL_CACHE:
         return
@@ -273,6 +274,18 @@ def unload_asr_model() -> None:
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def asr_model_loaded() -> bool:
+    """Pure-ish (reads, doesn't mutate) - whether the Qwen3-ASR model
+    is currently cached in memory. Used by web/app.py's voice-model-
+    status route so the bv-search form's JS can show "Loading
+    model..." instead of "Transcribing..." when a request is actually
+    about to pay the cold-start model-load cost (first use, or after
+    the idle timer evicted it) rather than reusing an already-warm
+    model."""
+
+    return bool(_ASR_MODEL_CACHE)
 
 
 def _convert_to_wav(source: Path) -> Path:

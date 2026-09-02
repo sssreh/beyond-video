@@ -364,9 +364,23 @@ with bv-config</a> first.</p>
     formData.append('llm_model', llmModelSelect ? llmModelSelect.value : 'none');
 
     btn.disabled = true;
-    setStatus('Transcribing...', true);
     if (llmPanel) llmPanel.hidden = true;
     if (llmApplyBtn) llmApplyBtn.hidden = true;
+
+    // Check whether this request is about to pay the cold-start
+    // model-load cost (task #1430, Christer: "When you have the red
+    // flashing text Transcibing, can you show Loading model in the
+    // same way before transcribing") before showing "Transcribing...".
+    // Best-effort: if the status check itself fails (network hiccup,
+    // old server), just fall back to "Transcribing..." rather than
+    // blocking the actual transcribe request on it.
+    fetch('/jobs/bv-search/voice-model-status')
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .catch(function () { return null; })
+      .then(function (modelStatus) {
+        var coldStart = modelStatus && (!modelStatus.asr_loaded || !modelStatus.llm_loaded);
+        setStatus(coldStart ? 'Loading model...' : 'Transcribing...', true);
+      });
 
     fetch('/jobs/bv-search/transcribe', { method: 'POST', body: formData })
       .then(function (response) {

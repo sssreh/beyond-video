@@ -95,12 +95,14 @@ from .trips import first_gpx_point
 from .trips import scan_all_trips
 from .users import User
 from .users import UsersConfig
+from .voice_asr import asr_model_loaded
 from .voice_asr import known_places_from_learned
 from .voice_asr import known_places_from_params
 from .voice_asr import transcribe_voice_query
 from .voice_idle_unload import touch as touch_voice_model_idle_timer
 from .voice_llm import VALID_MODEL_CHOICES as VOICE_LLM_MODEL_CHOICES
 from .voice_llm import extract_voice_query_llm
+from .voice_llm import text_model_loaded
 from .voice_query import parse_spoken_query
 from .voice_time import parse_spoken_timerange
 from ..core.camera_config import CameraConfigCache
@@ -3380,6 +3382,31 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
         )
         return RedirectResponse(
             url=f"/jobs/{job.id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @app.get("/jobs/bv-search/voice-model-status")
+    async def voice_model_status(
+        user: User = Depends(require_viewer_or_owner),
+    ):
+        """Lightweight status check the bv-search form's JS polls right
+        before it POSTs to /jobs/bv-search/transcribe (see
+        job_new_bv_search.html's sendRecording()), so it can show
+        "Loading model..." instead of "Transcribing..." when this
+        particular request is actually about to pay the cold-start
+        model-load cost (first use ever, or the idle timer -
+        voice_idle_unload.py, task #1427 - already evicted both models
+        after 5 minutes of inactivity) rather than reusing an
+        already-warm model. Doesn't itself load or touch anything -
+        just reports whether voice_asr.py's ASR model and
+        voice_llm.py's small text model are currently cached, per
+        those modules' own asr_model_loaded()/text_model_loaded()
+        helpers."""
+
+        return JSONResponse(
+            {
+                "asr_loaded": asr_model_loaded(),
+                "llm_loaded": text_model_loaded(),
+            }
         )
 
     @app.post("/jobs/bv-search/transcribe")

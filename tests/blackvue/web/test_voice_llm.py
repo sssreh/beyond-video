@@ -307,3 +307,30 @@ def test_model_choice_constants():
     assert MODEL_SCENE == "scene"
     assert MODEL_SMALL == "small"
     assert VALID_MODEL_CHOICES == (MODEL_SCENE, MODEL_SMALL)
+
+
+# ---------------------------------------------------------------------------
+# text_model_loaded() - task #1430, backs web/app.py's voice-model-status
+# route so the bv-search form's JS can show "Loading model..." instead of
+# "Transcribing..." on a cold start. Directly manipulates the module-level
+# _TEXT_MODEL_CACHE dict rather than actually loading a model - same
+# "no GPU/transformers in this sandbox" reasoning as the rest of this file.
+# ---------------------------------------------------------------------------
+
+
+def test_text_model_loaded_false_when_cache_empty():
+    from blackvue.web import voice_llm
+
+    voice_llm._TEXT_MODEL_CACHE.clear()
+    assert voice_llm.text_model_loaded() is False
+
+
+def test_text_model_loaded_true_when_cache_populated():
+    from blackvue.web import voice_llm
+
+    voice_llm._TEXT_MODEL_CACHE.clear()
+    voice_llm._TEXT_MODEL_CACHE["fake"] = object()
+    try:
+        assert voice_llm.text_model_loaded() is True
+    finally:
+        voice_llm._TEXT_MODEL_CACHE.clear()
