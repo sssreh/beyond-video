@@ -279,6 +279,26 @@ _SWEDISH_COMPOUND_SUFFIXES = (
 )
 
 
+def _strip_definite_article(word: str) -> str | None:
+    """Pure - if `word` ends with a common Swedish definite-article
+    suffix ("-en" or "-et"), return the base/indefinite form;
+    otherwise None.
+
+    Real gap this closes: natural spoken Swedish uses the definite
+    form ("gården" - "the yard") even when the actual place name (and
+    the OSM/Nominatim entry for it) is the indefinite/base form
+    ("gård"). Christer's "Vårbygården"/"Vårby gården" never reduced
+    down to the resolvable "Vårby gård" without this - the existing
+    _SWEDISH_COMPOUND_SUFFIXES/_spacing_variants() logic (task #1310)
+    only handled the concatenated-vs-spaced gap, not this one, so a
+    definite-article spoken form fell through both."""
+
+    for article in ("en", "et"):
+        if word.endswith(article) and len(word) > len(article):
+            return word[: -len(article)]
+    return None
+
+
 def _spacing_variants(name: str) -> list[str]:
     """Pure - alternate spellings of `name` worth also trying against
     Nominatim if the literal query comes back with no match.
@@ -287,27 +307,90 @@ def _spacing_variants(name: str) -> list[str]:
     first variant that gets a real result, so the literal query the
     caller actually asked for is tried before any guessed alternative.
 
-    If `name` has no space in it, tries inserting one before any
-    _SWEDISH_COMPOUND_SUFFIXES morpheme it happens to end with (so
-    "Vårbygård" also tries "Vårby gård"). If `name` already has a
-    space, also tries the fully concatenated form (so "Vårby gård"
-    also tries "Vårbygård") - some OSM entries are tagged without the
-    space even when the "official" written form has one."""
+    Runs the concatenated/spaced-compound logic below (task #1310)
+    against both `name` itself and, if `name` ends with a Swedish
+    definite-article suffix, its stripped indefinite form (see
+    _strip_definite_article() above) - so "Vårbygården" tries
+    "Vårbygård" -> "Vårby gård", and "Vårby gården" tries "Vårby gård"
+    directly, regardless of which of those two real reports (spaced
+    vs. concatenated, definite vs. indefinite) actually came in.
+
+    For each of those base forms: if it has no space in it, tries
+    inserting one before any _SWEDISH_COMPOUND_SUFFIXES morpheme it
+    happens to end with (so "Vårbygård" also tries "Vårby gård"). If
+    it already has a space, also tries the fully concatenated form (so
+    "Vårby gård" also tries "Vårbygård") - some OSM entries are tagged
+    without the space even when the "official" written form has one."""
 
     variants = [name]
 
-    if " " in name:
-        concatenated = name.replace(" ", "")
-        if concatenated not in variants:
-            variants.append(concatenated)
-    else:
-        lowered = name.lower()
-        for suffix in _SWEDISH_COMPOUND_SUFFIXES:
-            if lowered.endswith(suffix) and len(name) > len(suffix):
-                spaced = name[: -len(suffix)] + " " + name[-len(suffix):]
-                if spaced not in variants:
-                    variants.append(spaced)
+    def _add(candidate: str) -> None:
+        if candidate not in variants:
+            variants.append(candidate)
 
+    bases = [name]
+    stripped = _strip_definite_article(name)
+    if stripped is not None and stripped != name:
+        bases.append(stripped)
+        _add(stripped)
+
+    for base in bases:
+        if " " in base:
+            _add(base.replace(" ", ""))
+        else:
+            lowered = base.lower()
+            for suffix in _SWEDISH_COMPOUND_SUFFIXES:
+                if lowered.endswith(suffix) and len(base) > len(suffix):
+                    _add(base[: -len(suffix)] + " " + base[-len(suffix):])
+
+    return variants
+
+
+_SJ_SK_FRONT_VOWELS = "äöeiy"
+
+
+def _sj_sk_substitutions(name: str) -> list[str]:
+    """Pure - alternate spellings of `name` with a leading "sj"/"sk"
+    swapped on any word where that swap is phonetically plausible.
+
+    Real gap: in Swedish, "sk" before a front vowel (ä/ö/e/i/y) is
+    pronounced identically to the "sj-sound" (itself also spelled
+    "sj"/"skj"/"stj" depending on the word) - a genuine, well-known
+    spelling ambiguity even native speakers sometimes get wrong, not a
+    transcription bug to "fix" in the usual sense. Christer's real
+    case: Qwen3-ASR transcribed a spoken Stockholm place name as
+    "Sjärholmen", which doesn't exist, when the real place -
+    pronounced identically - is "Skärholmen". Nominatim has no fuzzy/
+    phonetic tolerance for this substitution on its own (confirmed
+    empirically against the live API), so this tries both directions
+    explicitly on any word that starts with "sj" or "sk" followed by a
+    front vowel, since that's the only position where the two spellings
+    are pronounced the same: "sj" -> "sk" (the direction that actually
+    hit) and "sk" -> "sj" (kept for symmetry, in case the reverse
+    mishearing ever occurs - e.g. a real "sj"-spelled place transcribed
+    as "sk"). Deliberately narrow, same "handle the real shape hit,
+    don't try to anticipate everything" approach _strip_definite_article()/
+    _SWEDISH_COMPOUND_SUFFIXES above already take."""
+
+    variants = []
+    words = name.split(" ")
+    for i, word in enumerate(words):
+        lowered = word.lower()
+        for from_prefix, to_prefix in (("sj", "sk"), ("sk", "sj")):
+            if not lowered.startswith(from_prefix):
+                continue
+            if len(word) <= len(from_prefix):
+                continue
+            if lowered[len(from_prefix)] not in _SJ_SK_FRONT_VOWELS:
+                continue
+            swapped_word = to_prefix + word[len(from_prefix):]
+            if word[:1].isupper():
+                swapped_word = swapped_word[:1].upper() + swapped_word[1:]
+            new_words = list(words)
+            new_words[i] = swapped_word
+            candidate = " ".join(new_words)
+            if candidate not in variants:
+                variants.append(candidate)
     return variants
 
 
@@ -327,20 +410,33 @@ def forward_geocode(
     genuine match - see that function's own docstring for why (real
     report: both "Vårby gård" and "Vårbygård" should geocode
     successfully, not just whichever spelling happens to match
-    Nominatim's index exactly). Returns None only if every variant
-    comes back with no match - a genuine, cacheable "no result".
-    Raises MediaToolError immediately if a request itself fails
-    (network error, malformed response), same convention as
-    reverse_geocode() - no point trying further spelling variants
-    against an unreachable service. Only the single best-ranked match
-    per variant is used - bv-search wants one search target, not a
-    disambiguation list.
+    Nominatim's index exactly). If every one of those fails, also
+    tries `_spacing_variants()` of each `_sj_sk_substitutions(name)`
+    candidate - see that function's own docstring for why (real
+    report: a mis-transcribed "Sjärholmen" should still resolve to the
+    real "Skärholmen"). This second pass only runs once the first has
+    fully failed, since it's a less certain guess than the spacing
+    variants - a name that already resolves shouldn't pay for it.
+    Returns None only if every variant from both passes comes back
+    with no match - a genuine, cacheable "no result". Raises
+    MediaToolError immediately if a request itself fails (network
+    error, malformed response), same convention as reverse_geocode() -
+    no point trying further spelling variants against an unreachable
+    service. Only the single best-ranked match per variant is used -
+    bv-search wants one search target, not a disambiguation list.
     """
 
     for variant in _spacing_variants(name):
         result = _forward_geocode_query(variant, timeout=timeout)
         if result is not None:
             return result
+
+    for swapped in _sj_sk_substitutions(name):
+        for variant in _spacing_variants(swapped):
+            result = _forward_geocode_query(variant, timeout=timeout)
+            if result is not None:
+                return result
+
     return None
 
 

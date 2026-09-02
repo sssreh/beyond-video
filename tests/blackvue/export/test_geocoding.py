@@ -5,7 +5,9 @@ import pytest
 
 from blackvue.export import geocoding as geocoding_module
 from blackvue.export.geocoding import GeocodeResult
+from blackvue.export.geocoding import _sj_sk_substitutions
 from blackvue.export.geocoding import _spacing_variants
+from blackvue.export.geocoding import _strip_definite_article
 from blackvue.export.geocoding import forward_geocode
 from blackvue.export.geocoding import load_or_forward_geocode
 from blackvue.generate.media import MediaToolError
@@ -178,7 +180,13 @@ def test_spacing_variants_single_word_no_suffix_match_returns_itself_only():
     # that variant is never actually queried - but it means
     # _spacing_variants() itself isn't a safe "no suffix overlap"
     # example for this particular assertion).
-    assert _spacing_variants("Slussen") == ["Slussen"]
+    #
+    # "Slussen" itself ends in "en" (task #1428's definite-article
+    # stripping), so it also picks up its own stripped form "Sluss" as
+    # a candidate - harmless (a real, cacheable no-result if ever
+    # actually queried, same as any other guessed variant that doesn't
+    # pan out; "Slussen" itself always matches first in practice).
+    assert _spacing_variants("Slussen") == ["Slussen", "Sluss"]
 
 
 def test_spacing_variants_inserts_space_before_known_suffix():
@@ -203,6 +211,162 @@ def test_spacing_variants_short_suffix_only_word_not_split():
     # "gård" alone is entirely the suffix - nothing left before it to
     # split off, so no variant is generated.
     assert _spacing_variants("gård") == ["gård"]
+
+
+# ---------------------------------------------------------------------------
+# _strip_definite_article() / _spacing_variants()'s definite-article
+# handling (task #1428) - Christer: "the voice search i pretty crappy
+# on swedish named places", example "vårbygården" - natural spoken
+# Swedish uses the definite form ("gården" - "the yard") even though
+# the actual Nominatim entry is the indefinite "Vårby gård", so neither
+# "Vårbygården" (concatenated) nor "Vårby gården" (already spaced)
+# reduced down to the resolvable "Vårby gård" before this fix.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_definite_article_en_suffix():
+    assert _strip_definite_article("gården") == "gård"
+
+
+def test_strip_definite_article_et_suffix():
+    assert _strip_definite_article("torget") == "torg"
+
+
+def test_strip_definite_article_no_match_returns_none():
+    assert _strip_definite_article("Stockholm") is None
+
+
+def test_strip_definite_article_too_short_returns_none():
+    # "en"/"et" is the entire word - nothing left to be a base form.
+    assert _strip_definite_article("en") is None
+    assert _strip_definite_article("et") is None
+
+
+def test_spacing_variants_concatenated_definite_article_reduces_to_indefinite_spaced():
+    # Christer's real concatenated+definite report.
+    assert _spacing_variants("Vårbygården") == [
+        "Vårbygården",
+        "Vårbygård",
+        "Vårby gård",
+    ]
+
+
+def test_spacing_variants_spaced_definite_article_reduces_to_indefinite():
+    # Christer's real already-spaced+definite report.
+    assert _spacing_variants("Vårby gården") == [
+        "Vårby gården",
+        "Vårby gård",
+        "Vårbygården",
+        "Vårbygård",
+    ]
+
+
+def test_spacing_variants_no_definite_article_unaffected():
+    # "Vårbygård" doesn't end in "en"/"et" - the definite-article step
+    # is a no-op, same result as before task #1428.
+    assert _spacing_variants("Vårbygård") == ["Vårbygård", "Vårby gård"]
+
+
+# ---------------------------------------------------------------------------
+# _sj_sk_substitutions() / forward_geocode()'s sj/sk fallback pass
+# (task #1429) - Christer: "the voice search i pretty crappy on swedish
+# named places", example "sjärholmen" - Qwen3-ASR transcribed the
+# spoken place name as "Sjärholmen", which doesn't exist, when the
+# real place - pronounced identically - is "Skärholmen" (a real
+# Stockholm district/station).
+# ---------------------------------------------------------------------------
+
+
+def test_sj_sk_substitutions_sj_to_sk():
+    assert _sj_sk_substitutions("Sjärholmen") == ["Skärholmen"]
+
+
+def test_sj_sk_substitutions_sk_to_sj_kept_for_symmetry():
+    assert _sj_sk_substitutions("Skärholmen") == ["Sjärholmen"]
+
+
+def test_sj_sk_substitutions_no_front_vowel_no_match():
+    # "Skogen" - "sk" followed by "o", not a front vowel, so the two
+    # spellings aren't pronounced the same and no swap is generated.
+    assert _sj_sk_substitutions("Skogen") == []
+
+
+def test_sj_sk_substitutions_no_sj_or_sk_prefix_no_match():
+    assert _sj_sk_substitutions("Vårby gård") == []
+
+
+def test_sj_sk_substitutions_only_swaps_the_matching_word_in_a_phrase():
+    assert _sj_sk_substitutions("Sjärholmen centrum") == ["Skärholmen centrum"]
+
+
+def test_sj_sk_substitutions_preserves_capitalization():
+    assert _sj_sk_substitutions("sjärholmen") == ["skärholmen"]
+
+
+def test_forward_geocode_falls_back_to_sj_sk_substitution(monkeypatch):
+    # Deliberately not the real "Sjärholmen"/"Skärholmen" example - that
+    # one also ends in "holmen" (a definite-article-suffixed compound,
+    # task #1428), which makes _spacing_variants() generate extra
+    # variants of its own and would make this test's request count
+    # depend on both fixes' interaction instead of isolating this one.
+    # "Sjöby"/"Sköby" has no compound suffix or definite article, so
+    # _spacing_variants() is a no-op and only the sj/sk swap is at play.
+    payload = [{"lat": "59.28", "lon": "17.90"}]
+    captured = []
+    monkeypatch.setattr(
+        geocoding_module,
+        "urlopen",
+        _fake_urlopen_by_query({"Sköby": payload}, captured=captured),
+    )
+
+    result = forward_geocode("Sjöby")
+
+    assert result == GeocodeResult(point=(59.28, 17.90), lines=())
+    # The literal query is tried first and genuinely comes back empty
+    # before the sj/sk substitution pass kicks in.
+    assert len(captured) == 2
+
+
+def test_forward_geocode_uses_literal_query_first_without_sj_sk_fallback(
+    monkeypatch,
+):
+    payload = [{"lat": "59.28", "lon": "17.90"}]
+    captured = []
+    monkeypatch.setattr(
+        geocoding_module,
+        "urlopen",
+        _fake_urlopen_by_query({"Sköby": payload}, captured=captured),
+    )
+
+    result = forward_geocode("Sköby")
+
+    assert result == GeocodeResult(point=(59.28, 17.90), lines=())
+    # The literal spelling already matched - no need for the sj/sk
+    # fallback pass at all.
+    assert len(captured) == 1
+
+
+def test_forward_geocode_falls_back_to_sj_sk_substitution_real_report(monkeypatch):
+    # Christer's actual real-world report: Qwen3-ASR transcribed a
+    # spoken Stockholm place name as "Sjärholmen"; the real place is
+    # "Skärholmen". Both "sj"->"sk" (task #1429) and the definite-
+    # article stripping (task #1428, "...holmen" -> "...holm" -> a
+    # spaced "... holm" variant) fire here, so more than one request
+    # is genuinely tried on both the literal and substituted passes
+    # before the match is found - this test only pins down the final
+    # result, not the exact request count (see the synthetic
+    # "Sjöby"/"Sköby" tests above for that, isolated from this
+    # interaction).
+    payload = [{"lat": "59.28", "lon": "17.90"}]
+    monkeypatch.setattr(
+        geocoding_module,
+        "urlopen",
+        _fake_urlopen_by_query({"Skärholmen": payload}),
+    )
+
+    result = forward_geocode("Sjärholmen")
+
+    assert result == GeocodeResult(point=(59.28, 17.90), lines=())
 
 
 def _fake_urlopen_by_query(responses: dict, *, captured: list | None = None):
