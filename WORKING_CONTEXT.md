@@ -23283,3 +23283,59 @@ Verified via a standalone Jinja2 `Environment` render of
 `archive_recording_detail.html` (this sandbox has no pytest/FastAPI) -
 asserted `preload="metadata" autoplay"` is present and `?autoplay=1` is
 absent from the rendered HTML.
+
+## Fix slow back-navigation from video detail to archive list (task #1432)
+
+Christer, right after task #1431 shipped: "When i have looked at a
+video in archive browser and chooses to go back to the overview via
+the back link, it takes a couple of seconds and the video is showin a
+load icon." Traced to `archive_recording_list()` (the `GET /archive/
+{camera_id}` route) calling `scan_archive()` directly - uncached, and
+never hopped onto a worker thread - on every single request. For a
+NAS-hosted archive with many recordings that's a real filesystem walk
+each time, and since it ran straight on the route's own coroutine, it
+blocked the whole server's event loop for its duration, stalling every
+other in-flight request too. The "load icon on the video" part: since
+task #1431 made `preload="metadata" autoplay` unconditional, the page
+being navigated *away* from almost always has its `<video>` element
+actively buffering right up until the new page arrives - so the
+browser keeps showing that element's own native loading spinner for
+however long the blocked scan takes. The slow scan itself wasn't new;
+#1431 just made it visible by giving the outgoing page something
+visibly "loading" to stare at during the wait.
+
+The single-recording lookup (detail page, thumbnails, playback) already
+had exactly this fix via `ArchiveRecordingCache` (task #435, 2-second
+TTL) - the full-listing route never got the same treatment.
+
+Added `ArchiveScanCache` to `archive_browser.py`, same short-TTL shape
+as `ArchiveRecordingCache` but keyed by `(camera_id, adapter_id)` and
+caching the whole `scan_archive()` result list. The real fix is its
+`get_async()` method: a cache miss runs `scan_archive()` via
+`asyncio.to_thread()` rather than inline, so even an uncached/expired
+scan can't block the event loop - only a plain synchronous `get()`
+(which ArchiveRecordingCache has) would have left that half of the bug
+in place. `clear()` included for parity with ArchiveRecordingCache,
+though nothing calls it yet (2s is already short enough that explicit
+invalidation wouldn't buy much here).
+
+Wired `app.state.archive_scan_cache = ArchiveScanCache()` into
+`create_app()` next to the existing `archive_recording_cache`, and
+replaced `archive_recording_list()`'s direct `scan_archive(...)` call
+with `await app.state.archive_scan_cache.get_async(...)`. Removed the
+now-unused `from .archive_browser import scan_archive` import from
+app.py (scan_archive() itself is still exported and used directly by
+ArchiveScanCache and by tests).
+
+Wrote 4 new tests in `test_archive_browser.py` mirroring
+ArchiveRecordingCache's own test shape (`_FakeClock` monkeypatching
+`time.monotonic` for deterministic TTL control): cache-hit-within-TTL,
+rescan-after-TTL-expiry, per-camera_id keying (same archive path, two
+camera_ids must stay distinct - ArchiveRecording objects carry their
+own camera_id), and immediate `clear()`. Verified via a manual asyncio
+script (this sandbox's Python is 3.10, one minor version short of
+`tomllib` - shimmed a stub `tomllib` module into `sys.modules` before
+import purely for this local verification, since `core/camera_config.py`
+imports it at module level but never calls it on this code path): all
+four behaviors pass. Also confirmed via `py_compile` that app.py and
+archive_browser.py still import cleanly.

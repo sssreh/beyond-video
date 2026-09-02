@@ -26,6 +26,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import re
 import time
@@ -1832,6 +1833,83 @@ class ArchiveRecordingCache:
         be. Safe to call on the short-TTL playback cache too (it's a
         no-op in practice there, since that TTL is already seconds
         long), but nothing currently does."""
+
+        self._entries.clear()
+
+
+class ArchiveScanCache:
+    """Caches scan_archive() results briefly, per (camera_id,
+    adapter_id) pair - same short-TTL reasoning as ArchiveRecordingCache
+    above, applied to the full-archive listing behind the archive
+    browser's overview page (GET /archive/{camera_id}) instead of a
+    single recording lookup.
+
+    Christer: navigating back from a video's detail page to that
+    overview page "takes a couple of seconds and the video is showin
+    a load icon." Traced to archive_recording_list() calling
+    scan_archive() directly, uncached, on every single request - for a
+    NAS-hosted archive with many recordings that's a real filesystem
+    walk each time, and since the route never hopped it onto a worker
+    thread, that scan was also blocking the whole server's event loop
+    for its duration, stalling every other in-flight request. Per task
+    #1431 making video playback autoplay-on-entry unconditional
+    everywhere, the page being navigated *away* from almost always has
+    a <video> element actively buffering right up until the new page
+    arrives - so the browser keeps showing that element's own native
+    loading spinner for however long the blocked scan takes. That's
+    the "load icon" Christer was seeing; the couple-second delay
+    wasn't new, task #1431 just made it visible.
+
+    Same short 2-second default TTL as ArchiveRecordingCache, for the
+    same reason: long enough to absorb a page's own repeat visits and
+    a quick back-and-forth, short enough that a recording bv-download
+    just finished writing shows up on the very next visit outside that
+    window rather than being held stale.
+    """
+
+    def __init__(self, ttl_seconds: float = 2.0) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[tuple[str, str], tuple[list[ArchiveRecording], float]] = {}
+
+    async def get_async(
+        self,
+        archive_path: Path,
+        camera_id: str,
+        adapter_id: str = DEFAULT_ADAPTER_ID,
+    ) -> list[ArchiveRecording]:
+        """Impure (reads the filesystem on a cache miss) - the entry
+        point archive_recording_list() calls. Deliberately async
+        rather than a plain synchronous get() like ArchiveRecordingCache
+        above: the bug here was never just "no caching", it was "no
+        caching *and* a blocking scan on the event loop" - a cache miss
+        still needs the asyncio.to_thread() hop below, or a big
+        archive's worst case (nothing cached yet, or the 2-second TTL
+        just lapsed) would still freeze every other request for as
+        long as the scan takes. Callers outside a running event loop
+        (tests, CLI code) should call scan_archive() directly instead."""
+
+        now = time.monotonic()
+        key = (camera_id, adapter_id)
+
+        cached = self._entries.get(key)
+        if cached is not None:
+            recordings, expires_at = cached
+            if now < expires_at:
+                return recordings
+
+        recordings = await asyncio.to_thread(
+            scan_archive, archive_path, camera_id, adapter_id
+        )
+        self._entries[key] = (recordings, now + self._ttl_seconds)
+        return recordings
+
+    def clear(self) -> None:
+        """Drop every cached entry immediately, instead of waiting out
+        the TTL - mirrors ArchiveRecordingCache.clear() (see its own
+        docstring). Not currently wired to anything (the 2-second TTL
+        here is already short enough that explicit invalidation
+        wouldn't buy much in practice), but kept for parity and so a
+        future caller doesn't have to reinvent it."""
 
         self._entries.clear()
 

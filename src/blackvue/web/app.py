@@ -60,6 +60,7 @@ from ..adapters.telemetry_bridge import recording_gps_available
 from ..adapters.telemetry_bridge import resolve_recording_gps_span
 from .archive_browser import ArchiveRecording
 from .archive_browser import ArchiveRecordingCache
+from .archive_browser import ArchiveScanCache
 from .archive_browser import _SCENE_ASSET_BY_DIRECTION
 from .archive_browser import _frame_viewer_timestamps
 from .archive_browser import _nominal_frame_timestamps
@@ -67,7 +68,6 @@ from .archive_browser import filter_recordings
 from .archive_browser import find_recording
 from .archive_browser import group_by_day
 from .archive_browser import kind_options
-from .archive_browser import scan_archive
 from .auth import SESSION_COOKIE_NAME
 from .auth import THEME_COOKIE_NAME
 from .auth import SessionStore
@@ -270,6 +270,15 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
     # trip_cache above, applied to the archive browser's detail/
     # thumbnail/file-serving routes instead of the trip player.
     app.state.archive_recording_cache = ArchiveRecordingCache()
+
+    # See ArchiveScanCache's own docstring - same reasoning as
+    # archive_recording_cache above, but for the full-archive listing
+    # behind the overview page (GET /archive/{camera_id}) rather than
+    # a single recording lookup. That route was calling scan_archive()
+    # directly, uncached and un-thread-hopped, on every request -
+    # traced to Christer's "takes a couple of seconds and the video is
+    # showin a load icon" report navigating back from a video page.
+    app.state.archive_scan_cache = ArchiveScanCache()
 
     # See CameraConfigCache's own docstring (core/camera_config.py) -
     # same reasoning again, one layer further out: every one of those
@@ -1426,7 +1435,13 @@ def create_app(target: Path, users_config: UsersConfig) -> FastAPI:
 
         archive_path = _find_camera_archive(app.state.camera_config_cache, camera_id)
         adapter_id = _find_camera_adapter_id(app.state.camera_config_cache, camera_id)
-        recordings = scan_archive(archive_path, camera_id, adapter_id)
+        # See ArchiveScanCache's own docstring: this used to be a
+        # direct, uncached scan_archive() call that also blocked the
+        # whole server's event loop for however long the filesystem
+        # walk took - traced to Christer's slow-back-navigation report.
+        recordings = await app.state.archive_scan_cache.get_async(
+            archive_path, camera_id, adapter_id
+        )
 
         # An empty `mode` (nothing checked) means "don't filter by
         # mode at all", not "show nothing" - see

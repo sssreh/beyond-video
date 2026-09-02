@@ -14,6 +14,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from datetime import datetime
 
@@ -25,6 +26,7 @@ from blackvue.archive.recording_id import RecordingId
 from blackvue.generate.scene import SceneOptions
 from blackvue.web.archive_browser import ArchiveRecording
 from blackvue.web.archive_browser import ArchiveRecordingCache
+from blackvue.web.archive_browser import ArchiveScanCache
 from blackvue.web.archive_browser import _frame_viewer_timestamps
 from blackvue.web.archive_browser import filter_recordings
 from blackvue.web.archive_browser import find_recording
@@ -2162,3 +2164,98 @@ def test_archive_recording_cache_does_not_cache_a_miss(tmp_path, monkeypatch):
     # still return None even though the recording now genuinely exists.
     _write(archive, "20260715_140212_NF.mp4")
     assert cache.get(archive, "kirby", "20260715_140212_N") is not None
+
+
+# ---------------------------------------------------------------------------
+# ArchiveScanCache - task #1432. Christer: navigating back from a video's
+# detail page to the archive overview page "takes a couple of seconds and
+# the video is showin a load icon" - traced to archive_recording_list()
+# calling scan_archive() directly, uncached and un-thread-hopped, on every
+# request. Same TTL-cache shape as ArchiveRecordingCache above, but get_async()
+# is the real fix: even a cache miss has to go through asyncio.to_thread()
+# so a slow scan never blocks the whole server's event loop.
+# ---------------------------------------------------------------------------
+
+
+def test_archive_scan_cache_reuses_result_within_ttl(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    cache = ArchiveScanCache(ttl_seconds=2.0)
+    first = asyncio.run(cache.get_async(archive, "kirby"))
+
+    # A second recording appears after the first (real) scan - a second
+    # get_async() still within the TTL should return the exact same cached
+    # list, not notice the new file yet.
+    _write(archive, "20260715_150000_NF.mp4")
+    clock.value += 1.0
+    second = asyncio.run(cache.get_async(archive, "kirby"))
+
+    assert second is first
+    assert len(second) == 1
+
+
+def test_archive_scan_cache_rescans_once_ttl_expires(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    cache = ArchiveScanCache(ttl_seconds=2.0)
+    first = asyncio.run(cache.get_async(archive, "kirby"))
+
+    _write(archive, "20260715_150000_NF.mp4")
+    clock.value += 2.1
+    second = asyncio.run(cache.get_async(archive, "kirby"))
+
+    assert second is not first
+    assert len(second) == 2
+
+
+def test_archive_scan_cache_keys_by_camera_id(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    cache = ArchiveScanCache(ttl_seconds=2.0)
+    kirby_result = asyncio.run(cache.get_async(archive, "kirby"))
+    other_result = asyncio.run(cache.get_async(archive, "other_cam"))
+
+    # Same archive path, different camera_id - both hit the same underlying
+    # scan_archive() call, but ArchiveRecording objects are tagged with
+    # their own camera_id, so the two cached entries must stay distinct.
+    assert kirby_result is not other_result
+    assert kirby_result[0].camera_id == "kirby"
+    assert other_result[0].camera_id == "other_cam"
+
+
+def test_archive_scan_cache_clear_drops_entries_immediately(tmp_path, monkeypatch):
+    import blackvue.web.archive_browser as archive_browser_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(archive_browser_module.time, "monotonic", clock)
+
+    archive = tmp_path / "archive"
+    _write(archive, "20260715_140212_NF.mp4")
+
+    cache = ArchiveScanCache(ttl_seconds=3600.0)
+    first = asyncio.run(cache.get_async(archive, "kirby"))
+
+    _write(archive, "20260715_150000_NF.mp4")
+    cache.clear()
+    second = asyncio.run(cache.get_async(archive, "kirby"))
+
+    assert second is not first
+    assert len(second) == 2
