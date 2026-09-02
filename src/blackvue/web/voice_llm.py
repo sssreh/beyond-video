@@ -21,7 +21,16 @@ Three design decisions, all Christer's own answers when asked:
    generate/scene.py Qwen3-VL-8B-Instruct model in text-only mode (no
    images/video attached to the prompt, via that module's own
    generate_text_only()), MODEL_SMALL loads a separate, dedicated small
-   text model (DEFAULT_SMALL_TEXT_MODEL, Qwen2.5-1.5B-Instruct) via
+   text model (DEFAULT_SMALL_TEXT_MODEL, Qwen3-1.7B - bumped from the
+   original Qwen2.5-1.5B-Instruct once Christer asked whether any of
+   this project's local models had newer versions worth using on his
+   24GB card: a same-size swap, basically free on VRAM, but a
+   generation newer with meaningfully better reasoning/instruction-
+   following per Qwen's own benchmarks. Qwen3 dropped the separate
+   Base/Instruct naming - Qwen/Qwen3-1.7B is itself the chat-tuned
+   checkpoint, unified with a thinking mode forced off via
+   enable_thinking=False below, since this is a fast structured-
+   extraction call, not a reasoning task) via
    plain transformers AutoModelForCausalLM/AutoTokenizer. Reusing the
    scene model avoids the VRAM-contention concern the original
    WORKING_CONTEXT.md note flagged (relevant on a shared/lower-VRAM
@@ -99,7 +108,7 @@ from datetime import datetime
 
 from ..generate.media import MediaToolError
 
-DEFAULT_SMALL_TEXT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_SMALL_TEXT_MODEL = "Qwen/Qwen3-1.7B"
 
 MODEL_SCENE = "scene"
 MODEL_SMALL = "small"
@@ -385,12 +394,20 @@ def _generate_via_small_text_model(prompt: str, *, force_cpu: bool) -> str:
     """Impure - loads/reuses a small dedicated text model
     (DEFAULT_SMALL_TEXT_MODEL) via plain transformers
     AutoModelForCausalLM/AutoTokenizer. See MODEL_SMALL's own
-    explanation in the module docstring for why this option exists."""
+    explanation in the module docstring for why this option exists.
+
+    enable_thinking=False: DEFAULT_SMALL_TEXT_MODEL is a Qwen3 model,
+    which defaults to emitting a <think>...</think> reasoning block
+    before its actual answer. Left on, that would burn most of
+    max_new_tokens on chain-of-thought for what's meant to be a quick
+    structured-extraction call, risking truncation before the JSON
+    object even starts. Qwen3's own apply_chat_template() accepts this
+    kwarg directly - no separate call needed to suppress it."""
 
     loaded = _get_small_text_model(DEFAULT_SMALL_TEXT_MODEL, force_cpu=force_cpu)
     messages = [{"role": "user", "content": prompt}]
     text = loaded.tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
     inputs = loaded.tokenizer([text], return_tensors="pt").to(loaded.model.device)
     generated_ids = loaded.model.generate(**inputs, max_new_tokens=512)

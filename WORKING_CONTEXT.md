@@ -22940,3 +22940,57 @@ profiles` call sites - both stub it out entirely (`lambda path:
 object()`), so neither depends on the old seed's content. All 39
 tests in `test_driver_detect.py` and all 25 in `test_bv_drivers.py`
 pass via the standalone harnesses.
+
+## Bumped voice-search's small text model: Qwen2.5-1.5B-Instruct -> Qwen3-1.7B
+
+Christer asked "any new versions of our llm" about beyond-video's
+local models, then "would any of them improve performane and quality
+for us with 24GB vram" once he had the list (scene description's
+Qwen3-VL-8B-Instruct, voice search's Qwen3-ASR-1.7B, voice-query
+parsing's small text model, faster-whisper). Answer, by model:
+
+- Scene description (Qwen3-VL-8B-Instruct) already eats ~19-20GB of
+  the 24GB card unquantized - essentially no headroom, and this
+  project has already hit real GPU-memory exhaustion at that
+  footprint (see the earlier adaptive-sampling VRAM-crash follow-up).
+  A bigger model (Qwen3-VL-32B-Instruct at int4, ~16-18GB; or the
+  newer Qwen3.8-27B, released Aug 14 2026, similar quantized
+  footprint) is a real option but risky to just swap in blind, and
+  Qwen3.8-27B is new enough it'd likely need a transformers/
+  qwen-vl-utils version bump the same way Qwen3-VL itself did when it
+  first landed - deferred, not done.
+- Voice-search ASR (Qwen3-ASR-1.7B) is tiny - VRAM was never the
+  constraint. Its newer sibling, Qwen3-ASR-Flash, is a hosted API
+  model (DashScope/OpenRouter), not open local weights, so it doesn't
+  fit how this project runs everything locally - no upgrade
+  available.
+- The small text model that parses voice-search transcripts into
+  place/radius/date filters (`voice_llm.py`'s `MODEL_SMALL` path) was
+  the one clear win: Qwen2.5-1.5B-Instruct is a generation behind, and
+  Qwen3-1.7B is roughly the same size (trivial VRAM either way against
+  24GB) but benchmarks meaningfully better on reasoning/instruction-
+  following. Christer said "ok" to making that swap.
+
+Change: `voice_llm.py`'s `DEFAULT_SMALL_TEXT_MODEL` is now
+`"Qwen/Qwen3-1.7B"` (Qwen3 dropped the separate Base/Instruct naming -
+the bare model *is* the chat-tuned checkpoint). `_generate_via_small_
+text_model()`'s `apply_chat_template()` call now passes
+`enable_thinking=False` - Qwen3 models default to emitting a
+`<think>...</think>` reasoning block before the real answer, which
+for this module's job (fast structured JSON extraction from one short
+transcript) would burn `max_new_tokens` on chain-of-thought and risk
+truncating before the JSON object even starts, not helping accuracy on
+a task that isn't really "reasoning" in the first place. Updated the
+module's own docstring (design decision 1) and the function's
+docstring to explain both the model bump and why thinking is forced
+off.
+
+No test needed updating: `test_voice_llm.py` only exercises the pure
+functions (prompt-building, JSON-parsing, validation) per its own
+docstring - `_generate_via_small_text_model()`'s model-loading path
+has never been under test in this sandbox (no GPU/transformers/
+network here), same reasoning `test_scene.py` already documents for
+`generate/scene.py`'s model loading. Verified via `py_compile` and by
+running all 30 tests in `test_voice_llm.py` through a standalone
+harness (no pytest in this sandbox) - all pass, unaffected by the
+constant/kwarg change since none of them touch that code path.
